@@ -93,36 +93,55 @@ macro_rules! generate_writer {
 /// Send or Sync, since it doesn't ensure any particular synchronization.
 #[derive(Debug)]
 pub struct HostMapping {
-    ptr: *mut u8,
-    size: usize,
+    #[cfg(not(target_os = "windows"))]
+    mmap: Mmap,
     #[cfg(target_os = "windows")]
-    handle: HANDLE,
+    mapping: WindowsMapping,
 }
 
-impl Drop for HostMapping {
-    #[cfg(target_os = "linux")]
-    fn drop(&mut self) {
-        use libc::munmap;
+/// Windows-side flavors of a [`HostMapping`].
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+enum WindowsMapping {
+    /// `[guard][blob][guard]` carved from a single anonymous file
+    /// mapping created via `CreateFileMappingA(INVALID_HANDLE_VALUE)`
+    /// and mapped with `MapViewOfFile`.
+    Anonymous {
+        view: MappedView,
+        file_mapping: FileMapping,
+    },
+}
 
-        unsafe {
-            munmap(self.ptr as *mut c_void, self.size);
+impl HostMapping {
+    /// Base address of the host mapping, including the surrounding guard pages.
+    pub(crate) fn ptr(&self) -> *mut u8 {
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.mmap.base as *mut u8
+        }
+        #[cfg(target_os = "windows")]
+        match &self.mapping {
+            WindowsMapping::Anonymous { view, .. } => view.addr as *mut u8,
         }
     }
-    #[cfg(target_os = "windows")]
-    fn drop(&mut self) {
-        let mem_mapped_address = MEMORY_MAPPED_VIEW_ADDRESS {
-            Value: self.ptr as *mut c_void,
-        };
-        if let Err(e) = unsafe { UnmapViewOfFile(mem_mapped_address) } {
-            tracing::error!(
-                "Failed to drop HostMapping (UnmapViewOfFile failed): {:?}",
-                e
-            );
-        }
 
-        let file_handle: HANDLE = self.handle;
-        if let Err(e) = unsafe { CloseHandle(file_handle) } {
-            tracing::error!("Failed to  drop HostMapping (CloseHandle failed): {:?}", e);
+    /// Total size of the host mapping, including the surrounding guard pages.
+    pub(crate) fn size(&self) -> usize {
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.mmap.len
+        }
+        #[cfg(target_os = "windows")]
+        match &self.mapping {
+            WindowsMapping::Anonymous { view, .. } => view.len,
+        }
+    }
+
+    /// Win32 file-mapping handle backing this mapping.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn file_mapping_handle(&self) -> HANDLE {
+        match &self.mapping {
+            WindowsMapping::Anonymous { file_mapping, .. } => file_mapping.0,
         }
     }
 }
@@ -384,11 +403,15 @@ impl ExclusiveSharedMemory {
                 Error::last_os_error().raw_os_error()
             ));
         }
+        let mmap = Mmap {
+            base: addr,
+            len: total_size,
+        };
 
         // protect the guard pages
         #[cfg(not(miri))]
         {
-            let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
+            let res = unsafe { mprotect(mmap.base, PAGE_SIZE_USIZE, PROT_NONE) };
             if res != 0 {
                 return Err(HyperlightError::MprotectFailed(
                     Error::last_os_error().raw_os_error(),
@@ -396,7 +419,7 @@ impl ExclusiveSharedMemory {
             }
             let res = unsafe {
                 mprotect(
-                    (addr as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
+                    (mmap.base as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
                     PAGE_SIZE_USIZE,
                     PROT_NONE,
                 )
@@ -418,10 +441,7 @@ impl ExclusiveSharedMemory {
             // type does have Send and Sync manually impl'd, the Arc
             // is not pointless as the lint suggests.
             #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping {
-                ptr: addr as *mut u8,
-                size: total_size,
-            }),
+            region: Arc::new(HostMapping { mmap }),
         })
     }
 
@@ -485,15 +505,20 @@ impl ExclusiveSharedMemory {
                 Error::last_os_error().raw_os_error()
             ));
         }
+        let file_mapping = FileMapping(handle);
 
         let file_map = FILE_MAP_ALL_ACCESS;
-        let addr = unsafe { MapViewOfFile(handle, file_map, 0, 0, 0) };
+        let addr = unsafe { MapViewOfFile(file_mapping.0, file_map, 0, 0, 0) };
 
         if addr.Value.is_null() {
             log_then_return!(HyperlightError::MemoryAllocationFailed(
                 Error::last_os_error().raw_os_error()
             ));
         }
+        let view = MappedView {
+            addr: addr.Value,
+            len: total_size,
+        };
 
         // Set the first and last pages to be guard pages
 
@@ -501,7 +526,7 @@ impl ExclusiveSharedMemory {
 
         // If the following calls to VirtualProtect are changed make sure to update the calls to VirtualProtectEx in surrogate_process_manager.rs
 
-        let first_guard_page_start = addr.Value;
+        let first_guard_page_start = view.addr;
         if let Err(e) = unsafe {
             VirtualProtect(
                 first_guard_page_start,
@@ -513,7 +538,7 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
-        let last_guard_page_start = unsafe { addr.Value.add(total_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start = unsafe { view.addr.add(total_size - PAGE_SIZE_USIZE) };
         if let Err(e) = unsafe {
             VirtualProtect(
                 last_guard_page_start,
@@ -536,9 +561,7 @@ impl ExclusiveSharedMemory {
             // is not pointless as the lint suggests.
             #[allow(clippy::arc_with_non_send_sync)]
             region: Arc::new(HostMapping {
-                ptr: addr.Value as *mut u8,
-                size: total_size,
-                handle,
+                mapping: WindowsMapping::Anonymous { view, file_mapping },
             }),
         })
     }
@@ -662,7 +685,7 @@ impl ExclusiveSharedMemory {
     /// Gets the file handle of the shared memory region for this Sandbox
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
-        self.region.handle
+        self.region.file_mapping_handle()
     }
 
     /// Create a [`HostSharedMemory`] view of this region without
@@ -742,7 +765,7 @@ pub trait SharedMemory {
     /// need to be marked as `unsafe` because doing anything with this
     /// pointer itself requires `unsafe`.
     fn base_addr(&self) -> usize {
-        self.region().ptr as usize + PAGE_SIZE_USIZE
+        self.region().ptr() as usize + PAGE_SIZE_USIZE
     }
 
     /// Return the base address of the host mapping of this region as
@@ -750,26 +773,26 @@ pub trait SharedMemory {
     /// not need to be marked as `unsafe` because doing anything with
     /// this pointer itself requires `unsafe`.
     fn base_ptr(&self) -> *mut u8 {
-        self.region().ptr.wrapping_add(PAGE_SIZE_USIZE)
+        self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
     }
 
     /// Return the length of usable memory contained in `self`.
     /// The returned size does not include the size of the surrounding
     /// guard pages.
     fn mem_size(&self) -> usize {
-        self.region().size - 2 * PAGE_SIZE_USIZE
+        self.region().size() - 2 * PAGE_SIZE_USIZE
     }
 
     /// Return the raw base address of the host mapping, including the
     /// guard pages.
     fn raw_ptr(&self) -> *mut u8 {
-        self.region().ptr
+        self.region().ptr()
     }
 
     /// Return the raw size of the host mapping, including the guard
     /// pages.
     fn raw_mem_size(&self) -> usize {
-        self.region().size
+        self.region().size()
     }
 
     /// Extract a base address that can be mapped into a VM for this
@@ -786,9 +809,9 @@ pub trait SharedMemory {
         #[cfg(windows)]
         {
             super::memory_region::HostRegionBase {
-                from_handle: self.region().handle.into(),
-                handle_base: self.region().ptr as usize,
-                handle_size: self.region().size,
+                from_handle: self.region().file_mapping_handle().into(),
+                handle_base: self.region().ptr() as usize,
+                handle_size: self.region().size(),
                 offset: PAGE_SIZE_USIZE,
             }
         }
@@ -829,8 +852,8 @@ pub trait SharedMemory {
             #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
             unsafe {
                 let ret = libc::madvise(
-                    e.region.ptr as *mut libc::c_void,
-                    e.region.size,
+                    e.region.ptr() as *mut libc::c_void,
+                    e.region.size(),
                     libc::MADV_DONTNEED,
                 );
                 if ret == 0 {
@@ -2025,6 +2048,75 @@ pub struct ReadonlySharedMemory {
 // ReadonlySharedMemory can be Send and Sync.
 unsafe impl Send for ReadonlySharedMemory {}
 unsafe impl Sync for ReadonlySharedMemory {}
+
+/// RAII guard for an `mmap` reservation. Calls `munmap` on drop.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Mmap {
+    base: *mut c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Mmap {
+    fn drop(&mut self) {
+        // SAFETY: `self.base` and `self.len` are exactly what was
+        // returned by the `mmap` that produced this `Mmap`, and that
+        // mapping has not been unmapped (we own it).
+        unsafe {
+            if libc::munmap(self.base, self.len) != 0 {
+                tracing::error!(
+                    "Mmap::drop: munmap failed: {:?}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+/// RAII guard for a Win32 mapped view. Calls `UnmapViewOfFile` on drop.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct MappedView {
+    addr: *mut c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for MappedView {
+    fn drop(&mut self) {
+        let view = MEMORY_MAPPED_VIEW_ADDRESS { Value: self.addr };
+        // SAFETY: `self.addr` is the base address returned by the
+        // `MapViewOfFile` call that produced this `MappedView`, and
+        // the view has not been unmapped (we own it).
+        if let Err(e) = unsafe { UnmapViewOfFile(view) } {
+            tracing::error!(
+                "MappedView::drop(addr={:?}, len={}) UnmapViewOfFile failed: {:?}",
+                self.addr,
+                self.len,
+                e
+            );
+        }
+    }
+}
+
+/// Owns a Win32 file-mapping `HANDLE`. Calls `CloseHandle` on drop.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct FileMapping(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for FileMapping {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a valid HANDLE returned by
+        // `CreateFileMappingA` that has not been closed (we own it).
+        unsafe {
+            if let Err(e) = CloseHandle(self.0) {
+                tracing::error!("FileMapping::drop: CloseHandle failed: {:?}", e);
+            }
+        }
+    }
+}
 
 impl ReadonlySharedMemory {
     pub(crate) fn from_bytes(contents: &[u8]) -> Result<Self> {
