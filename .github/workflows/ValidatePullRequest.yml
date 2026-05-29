@@ -23,7 +23,7 @@ jobs:
     outputs:
       docs-only: ${{ steps.docs-only.outputs.result }}
     steps:
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: changes
         with:
           filters: |
@@ -32,7 +32,7 @@ jobs:
               - '**/*.txt'
             all:
               - '**/*'
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         id: docs-only
         with:
           script: |
@@ -144,15 +144,15 @@ jobs:
     name: spell check with typos
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
     - name: Spell Check Repo
-      uses: crate-ci/typos@v1.47.2
+      uses: crate-ci/typos@3e8e1dbf18c56a9ed625484ca941497c73e7da2c  # v1.47.2
 
   license-headers:
     name: check license headers
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
     - name: Check License Headers
       run: ./dev/check-license-headers.sh
 

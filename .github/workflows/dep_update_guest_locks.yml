@@ -29,7 +29,7 @@ jobs:
       # Get GitHub App token for pushing commits back to the PR
       # Uses the same app as auto-merge-dependabot.yml
       - name: Get GitHub App token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         id: get-app-token
         with:
           app-id: ${{ secrets.DEPENDABOT_APP_ID }}
@@ -37,7 +37,7 @@ jobs:
           permission-contents: write
 
       - name: Checkout PR branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           token: ${{ steps.get-app-token.outputs.token }}
           ref: ${{ github.head_ref }}
@@ -45,7 +45,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+        uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
           rust-toolchain: "1.89"
         env:

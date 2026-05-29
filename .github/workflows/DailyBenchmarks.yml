@@ -63,7 +63,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Notify Benchmark Failure
         run: ./dev/notify-ci-failure.sh --title="Benchmark Failure - ${{ github.run_number }}" --labels="area/benchmarks,area/testing,lifecycle/needs-review,release-blocker"

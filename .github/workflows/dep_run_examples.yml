@@ -48,9 +48,9 @@ jobs:
           github.run_number,
           github.run_attempt)) }} 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
@@ -62,19 +62,19 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           shared-key: "${{ runner.os }}-${{ inputs.hypervisor }}-${{ inputs.config }}"
           save-if: "false"
 
       - name: Download Rust guests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rust-guests-${{ inputs.config }}
           path: src/tests/rust_guests/bin/${{ inputs.config }}/
 
       - name: Download C guests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: c-guests-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/

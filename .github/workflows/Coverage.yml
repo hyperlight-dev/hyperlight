@@ -35,9 +35,9 @@ jobs:
           matrix.hypervisor,
           matrix.cpu)) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
@@ -48,7 +48,7 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           shared-key: "${{ runner.os }}-debug"
           cache-on-failure: "true"
@@ -79,14 +79,14 @@ jobs:
           echo '> For a detailed per-file breakdown, download the **HTML coverage report** from the Artifacts section below.' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload HTML coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-html-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/html/
           if-no-files-found: error
 
       - name: Upload LCOV coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-lcov-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/lcov.info
@@ -100,7 +100,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Notify Coverage Failure
         run: ./dev/notify-ci-failure.sh --title="Weekly Coverage Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review"

@@ -31,9 +31,9 @@ jobs:
     timeout-minutes: 15
     runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=build-guests-${{ inputs.config }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
@@ -48,14 +48,14 @@ jobs:
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
       - name: Sysroot cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: |
             src/tests/rust_guests/target/sysroot
           key: sysroot-linux-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           shared-key: "guests-${{ inputs.config }}"
           cache-on-failure: "true"
@@ -80,7 +80,7 @@ jobs:
           just move-c-guests ${{ inputs.config }}
 
       - name: Upload Rust guests
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rust-guests-${{ inputs.config }}
           path: |
@@ -89,7 +89,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload C guests
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: c-guests-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload interface.wasm
         if: inputs.config == 'debug'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: interface-wasm
           path: src/tests/rust_guests/witguest/interface.wasm
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload twoworlds.wasm
         if: inputs.config == 'debug'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: twoworlds-wasm
           path: src/tests/rust_guests/witguest/twoworlds.wasm

@@ -77,9 +77,9 @@ jobs:
           github.run_number,
           github.run_attempt)) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
@@ -91,7 +91,7 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           shared-key: "${{ runner.os }}-${{ matrix.hypervisor }}-${{ matrix.config }}"
           cache-on-failure: "true"
