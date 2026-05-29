@@ -146,6 +146,227 @@ impl HostMapping {
     }
 }
 
+/// RAII guard for an `mmap` reservation. Calls `munmap` on drop.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Mmap {
+    base: *mut c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Mmap {
+    fn drop(&mut self) {
+        // SAFETY: `self.base` and `self.len` are exactly what was
+        // returned by the `mmap` that produced this `Mmap`, and that
+        // mapping has not been unmapped (we own it).
+        unsafe {
+            if libc::munmap(self.base, self.len) != 0 {
+                tracing::error!(
+                    "Mmap::drop: munmap failed: {:?}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+/// RAII guard for a Win32 mapped view. Calls `UnmapViewOfFile` on drop.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct MappedView {
+    addr: *mut c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for MappedView {
+    fn drop(&mut self) {
+        let view = MEMORY_MAPPED_VIEW_ADDRESS { Value: self.addr };
+        // SAFETY: `self.addr` is the base address returned by the
+        // `MapViewOfFile` call that produced this `MappedView`, and
+        // the view has not been unmapped (we own it).
+        if let Err(e) = unsafe { UnmapViewOfFile(view) } {
+            tracing::error!(
+                "MappedView::drop(addr={:?}, len={}) UnmapViewOfFile failed: {:?}",
+                self.addr,
+                self.len,
+                e
+            );
+        }
+    }
+}
+
+/// Owns a Win32 file-mapping `HANDLE`. Calls `CloseHandle` on drop.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct FileMapping(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for FileMapping {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a valid HANDLE returned by
+        // `CreateFileMappingA` that has not been closed (we own it).
+        unsafe {
+            if let Err(e) = CloseHandle(self.0) {
+                tracing::error!("FileMapping::drop: CloseHandle failed: {:?}", e);
+            }
+        }
+    }
+}
+
+/// An unsafe marker trait for types for which all bit patterns are valid.
+/// This is required in order for it to be safe to read a value of a particular
+/// type out of the sandbox from the HostSharedMemory.
+///
+/// # Safety
+/// This must only be implemented for types for which all bit patterns
+/// are valid. It requires that any (non-undef/poison) value of the
+/// correct size can be transmuted to the type.
+pub unsafe trait AllValid {}
+unsafe impl AllValid for u8 {}
+unsafe impl AllValid for u16 {}
+unsafe impl AllValid for u32 {}
+unsafe impl AllValid for u64 {}
+unsafe impl AllValid for i8 {}
+unsafe impl AllValid for i16 {}
+unsafe impl AllValid for i32 {}
+unsafe impl AllValid for i64 {}
+unsafe impl AllValid for [u8; 16] {}
+
+/// A trait that abstracts over the particular kind of SharedMemory,
+/// used when invoking operations from Rust that absolutely must have
+/// exclusive control over the shared memory for correctness +
+/// performance, like snapshotting.
+pub trait SharedMemory {
+    /// Return a readonly reference to the host mapping backing this SharedMemory
+    fn region(&self) -> &HostMapping;
+
+    /// Return the base address of the host mapping of this
+    /// region. Following the general Rust philosophy, this does not
+    /// need to be marked as `unsafe` because doing anything with this
+    /// pointer itself requires `unsafe`.
+    fn base_addr(&self) -> usize {
+        self.region().ptr() as usize + PAGE_SIZE_USIZE
+    }
+
+    /// Return the base address of the host mapping of this region as
+    /// a pointer. Following the general Rust philosophy, this does
+    /// not need to be marked as `unsafe` because doing anything with
+    /// this pointer itself requires `unsafe`.
+    fn base_ptr(&self) -> *mut u8 {
+        self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
+    }
+
+    /// Return the length of usable memory contained in `self`.
+    /// The returned size does not include the size of the surrounding
+    /// guard pages.
+    fn mem_size(&self) -> usize {
+        self.region().size() - 2 * PAGE_SIZE_USIZE
+    }
+
+    /// Return the raw base address of the host mapping, including the
+    /// guard pages.
+    fn raw_ptr(&self) -> *mut u8 {
+        self.region().ptr()
+    }
+
+    /// Return the raw size of the host mapping, including the guard
+    /// pages.
+    fn raw_mem_size(&self) -> usize {
+        self.region().size()
+    }
+
+    /// Extract a base address that can be mapped into a VM for this
+    /// SharedMemory.
+    ///
+    /// On Linux this returns a raw `usize` pointer. On Windows it
+    /// returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
+    /// that carries the file-mapping handle metadata needed by WHP.
+    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        #[cfg(not(windows))]
+        {
+            self.base_addr()
+        }
+        #[cfg(windows)]
+        {
+            super::memory_region::HostRegionBase {
+                from_handle: self.region().file_mapping_handle().into(),
+                handle_base: self.region().ptr() as usize,
+                handle_size: self.region().size(),
+                offset: PAGE_SIZE_USIZE,
+            }
+        }
+    }
+
+    /// Return the end address of the host region (base + usable size).
+    fn host_region_end(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        <HostGuestMemoryRegion as MemoryRegionKind>::add(self.host_region_base(), self.mem_size())
+    }
+
+    /// Run some code with exclusive access to the SharedMemory
+    /// underlying this.  If the SharedMemory is not an
+    /// ExclusiveSharedMemory, any concurrent accesses to the relevant
+    /// HostSharedMemory/GuestSharedMemory may make this fail, or be
+    /// made to fail by this, and should be avoided.
+    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+        &mut self,
+        f: F,
+    ) -> Result<T>;
+
+    /// Run some code that is allowed to access the contents of the
+    /// SharedMemory as if it is a normal slice.  By default, this is
+    /// implemented via [`SharedMemory::with_exclusivity`], which is
+    /// the correct implementation for a memory that can be mutated,
+    /// but a [`ReadonlySharedMemory`], can support this.
+    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
+        self.with_exclusivity(|m| f(m.as_slice()))
+    }
+
+    /// Zero a shared memory region
+    fn zero(&mut self) -> Result<()> {
+        self.with_exclusivity(|e| {
+            #[allow(unused_mut)] // unused on some platforms, although not others
+            let mut do_copy = true;
+            // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
+            // TODO: Find a similar lazy zeroing approach that works on MSHV.
+            //       (See Note [Keeping mappings in sync between userspace and the guest])
+            #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
+            unsafe {
+                let ret = libc::madvise(
+                    e.region.ptr() as *mut libc::c_void,
+                    e.region.size(),
+                    libc::MADV_DONTNEED,
+                );
+                if ret == 0 {
+                    do_copy = false;
+                }
+            }
+            if do_copy {
+                e.as_mut_slice().fill(0);
+            }
+        })
+    }
+}
+
+fn mapping_at(
+    s: &impl SharedMemory,
+    gpa: u64,
+    size: usize,
+    region_type: MemoryRegionType,
+    flags: MemoryRegionFlags,
+) -> MemoryRegion {
+    let guest_base = gpa as usize;
+
+    MemoryRegion {
+        guest_region: guest_base..(guest_base + size),
+        host_region: s.host_region_base()
+            ..<HostGuestMemoryRegion as MemoryRegionKind>::add(s.host_region_base(), size),
+        region_type,
+        flags,
+    }
+}
+
 /// These three structures represent various phases of the lifecycle of
 /// a memory buffer that is shared with the guest. An
 /// ExclusiveSharedMemory is used for certain operations that
@@ -156,192 +377,6 @@ pub struct ExclusiveSharedMemory {
     region: Arc<HostMapping>,
 }
 unsafe impl Send for ExclusiveSharedMemory {}
-
-/// A GuestSharedMemory is used to represent
-/// the reference to all-of-memory that is taken by the virtual cpu.
-/// Because of the memory model limitations that affect
-/// HostSharedMemory, it is likely fairly important (to ensure that
-/// our UB remains limited to interaction with an external compilation
-/// unit that likely can't be discovered by the compiler) that _rust_
-/// users do not perform racy accesses to the guest communication
-/// buffers that are also accessed by HostSharedMemory.
-#[derive(Debug)]
-pub struct GuestSharedMemory {
-    region: Arc<HostMapping>,
-    /// The lock that indicates this shared memory is being used by non-Rust code
-    ///
-    /// This lock _must_ be held whenever the guest is executing,
-    /// because it prevents the host from converting its
-    /// HostSharedMemory to an ExclusiveSharedMemory. Since the guest
-    /// may arbitrarily mutate the shared memory, only synchronized
-    /// accesses from Rust should be allowed!
-    ///
-    /// We cannot enforce this in the type system, because the memory
-    /// is mapped in to the VM at VM creation time.
-    pub lock: Arc<RwLock<()>>,
-}
-unsafe impl Send for GuestSharedMemory {}
-
-/// A HostSharedMemory allows synchronized accesses to guest
-/// communication buffers, allowing it to be used concurrently with a
-/// GuestSharedMemory.
-///
-/// # Concurrency model
-///
-/// Given future requirements for asynchronous I/O with a minimum
-/// amount of copying (e.g. WASIp3 streams), we would like it to be
-/// possible to safely access these buffers concurrently with the
-/// guest, ensuring that (1) data is read appropriately if the guest
-/// is well-behaved; and (2) the host's behaviour is defined
-/// regardless of whether or not the guest is well-behaved.
-///
-/// The ideal (future) flow for a guest->host message is something like
-///   - Guest writes (unordered) bytes describing a work item into a buffer
-///   - Guest reveals buffer via a release-store of a pointer into an
-///     MMIO ring-buffer
-///   - Host acquire-loads the buffer pointer from the "MMIO" ring
-///     buffer
-///   - Host (unordered) reads the bytes from the buffer
-///   - Host performs validation of those bytes and uses them
-///
-/// Unfortunately, there appears to be no way to do this with defined
-/// behaviour in present Rust (see
-/// e.g. <https://github.com/rust-lang/unsafe-code-guidelines/issues/152>).
-/// Rust does not yet have its own defined memory model, but in the
-/// interim, it is widely treated as inheriting the current C/C++
-/// memory models.  The most immediate problem is that regardless of
-/// anything else, under those memory models \[1, p. 17-18; 2, p. 88\],
-///
-///   > The execution of a program contains a _data race_ if it
-///   > contains two [C++23: "potentially concurrent"] conflicting
-///   > actions [C23: "in different threads"], at least one of which
-///   > is not atomic, and neither happens before the other [C++23: ",
-///   > except for the special case for signal handlers described
-///   > below"].  Any such data race results in undefined behavior.
-///
-/// Consequently, if a misbehaving guest fails to correctly
-/// synchronize its stores with the host, the host's innocent loads
-/// will trigger undefined behaviour for the entire program, including
-/// the host.  Note that this also applies if the guest makes an
-/// unsynchronized read of a location that the host is writing!
-///
-/// Despite Rust's de jure inheritance of the C memory model at the
-/// present time, the compiler in many cases de facto adheres to LLVM
-/// semantics, so it is worthwhile to consider what LLVM does in this
-/// case as well.  According to the the LangRef \[3\] memory model,
-/// loads which are involved in a race that includes at least one
-/// non-atomic access (whether the load or a store) return `undef`,
-/// making them roughly equivalent to reading uninitialized
-/// memory. While this is much better, it is still bad.
-///
-/// Considering a different direction, recent C++ papers have seemed
-/// to lean towards using `volatile` for similar use cases. For
-/// example, in P1152R0 \[4\], JF Bastien notes that
-///
-///   > We’ve shown that volatile is purposely defined to denote
-///   > external modifications. This happens for:
-///   >   - Shared memory with untrusted code, where volatile is the
-///   >     right way to avoid time-of-check time-of-use (ToCToU)
-///   >     races which lead to security bugs such as \[PWN2OWN\] and
-///   >     \[XENXSA155\].
-///
-/// Unfortunately, although this paper was adopted for C++20 (and,
-/// sadly, mostly un-adopted for C++23, although that does not concern
-/// us), the paper did not actually redefine volatile accesses or data
-/// races to prevent volatile accesses from racing with other accesses
-/// and causing undefined behaviour.  P1382R1 \[5\] would have amended
-/// the wording of the data race definition to specifically exclude
-/// volatile, but, unfortunately, despite receiving a
-/// generally-positive reception at its first WG21 meeting more than
-/// five years ago, it has not progressed.
-///
-/// Separately from the data race issue, there is also a concern that
-/// according to the various memory models in use, there may be ways
-/// in which the guest can semantically obtain uninitialized memory
-/// and write it into the shared buffer, which may also result in
-/// undefined behaviour on reads.  The degree to which this is a
-/// concern is unclear, however, since it is unclear to what degree
-/// the Rust abstract machine's conception of uninitialized memory
-/// applies to the sandbox.  Returning briefly to the LLVM level,
-/// rather than the Rust level, this, combined with the fact that
-/// racing loads in LLVM return `undef`, as discussed above, we would
-/// ideally `llvm.freeze` the result of any load out of the sandbox.
-///
-/// It would furthermore be ideal if we could run the flatbuffers
-/// parsing code directly on the guest memory, in order to avoid
-/// unnecessary copies.  That is unfortunately probably not viable at
-/// the present time: because the generated flatbuffers parsing code
-/// doesn't use atomic or volatile accesses, it is likely to introduce
-/// double-read vulnerabilities.
-///
-/// In short, none of the Rust-level operations available to us do the
-/// right thing, at the Rust spec level or the LLVM spec level. Our
-/// major remaining options are therefore:
-///   - Choose one of the options that is available to us, and accept
-///     that we are doing something unsound according to the spec, but
-///     hope that no reasonable compiler could possibly notice.
-///   - Use inline assembly per architecture, for which we would only
-///     need to worry about the _architecture_'s memory model (which
-///     is far less demanding).
-///
-/// The leading candidate for the first option would seem to be to
-/// simply use volatile accesses; there seems to be wide agreement
-/// that this _should_ be a valid use case for them (even if it isn't
-/// now), and projects like Linux and rust-vmm already use C11
-/// `volatile` for this purpose.  It is also worth noting that because
-/// we still do need to synchronize with the guest when it _is_ being
-/// well-behaved, we would ideally use volatile acquire loads and
-/// volatile release stores for interacting with the stack pointer in
-/// the guest in this case.  Unfortunately, while those operations are
-/// defined in LLVM, they are not presently exposed to Rust. While
-/// atomic fences that are not associated with memory accesses
-/// ([`std::sync::atomic::fence`]) might at first glance seem to help with
-/// this problem, they unfortunately do not \[6\]:
-///
-///    > A fence ‘A’ which has (at least) Release ordering semantics,
-///    > synchronizes with a fence ‘B’ with (at least) Acquire
-///    > semantics, if and only if there exist operations X and Y,
-///    > both operating on some atomic object ‘M’ such that A is
-///    > sequenced before X, Y is sequenced before B and Y observes
-///    > the change to M. This provides a happens-before dependence
-///    > between A and B.
-///
-/// Note that the X and Y must be to an _atomic_ object.
-///
-/// We consequently assume that there has been a strong architectural
-/// fence on a vmenter/vmexit between data being read and written.
-/// This is unsafe (not guaranteed in the type system)!
-///
-/// \[1\] N3047 C23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3047.pdf>
-/// \[2\] N4950 C++23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/n4950.pdf>
-/// \[3\] LLVM Language Reference Manual, Memory Model for Concurrent Operations. <https://llvm.org/docs/LangRef.html#memmodel>
-/// \[4\] P1152R0: Deprecating `volatile`. JF Bastien. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1152r0.html>
-/// \[5\] P1382R1: `volatile_load<T>` and `volatile_store<T>`. JF Bastien, Paul McKenney, Jeffrey Yasskin, and the indefatigable TBD. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1382r1.pdf>
-/// \[6\] Documentation for std::sync::atomic::fence. <https://doc.rust-lang.org/std/sync/atomic/fn.fence.html>
-///
-/// # Note \[Keeping mappings in sync between userspace and the guest\]
-///
-/// When using this structure with mshv on Linux, it is necessary to
-/// be a little bit careful: since the hypervisor is not directly
-/// integrated with the host kernel virtual memory subsystem, it is
-/// easy for the memory region in userspace to get out of sync with
-/// the memory region mapped into the guest.  Generally speaking, when
-/// the [`SharedMemory`] is mapped into a partition, the MSHV kernel
-/// module will call `pin_user_pages(FOLL_PIN|FOLL_WRITE)` on it,
-/// which will eagerly do any CoW, etc needing to obtain backing pages
-/// pinned in memory, and then map precisely those backing pages into
-/// the virtual machine. After that, the backing pages mapped into the
-/// VM will not change until the region is unmapped or remapped.  This
-/// means that code in this module needs to be very careful to avoid
-/// changing the backing pages of the region in the host userspace,
-/// since that would result in hyperlight-host's view of the memory
-/// becoming completely divorced from the view of the VM.
-#[derive(Clone, Debug)]
-pub struct HostSharedMemory {
-    region: Arc<HostMapping>,
-    lock: Arc<RwLock<()>>,
-}
-unsafe impl Send for HostSharedMemory {}
 
 impl ExclusiveSharedMemory {
     /// Create a new region of shared memory with the given minimum
@@ -701,23 +736,42 @@ impl ExclusiveSharedMemory {
     }
 }
 
-fn mapping_at(
-    s: &impl SharedMemory,
-    gpa: u64,
-    size: usize,
-    region_type: MemoryRegionType,
-    flags: MemoryRegionFlags,
-) -> MemoryRegion {
-    let guest_base = gpa as usize;
-
-    MemoryRegion {
-        guest_region: guest_base..(guest_base + size),
-        host_region: s.host_region_base()
-            ..<HostGuestMemoryRegion as MemoryRegionKind>::add(s.host_region_base(), size),
-        region_type,
-        flags,
+impl SharedMemory for ExclusiveSharedMemory {
+    fn region(&self) -> &HostMapping {
+        &self.region
+    }
+    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+        &mut self,
+        f: F,
+    ) -> Result<T> {
+        Ok(f(self))
     }
 }
+
+/// A GuestSharedMemory is used to represent
+/// the reference to all-of-memory that is taken by the virtual cpu.
+/// Because of the memory model limitations that affect
+/// HostSharedMemory, it is likely fairly important (to ensure that
+/// our UB remains limited to interaction with an external compilation
+/// unit that likely can't be discovered by the compiler) that _rust_
+/// users do not perform racy accesses to the guest communication
+/// buffers that are also accessed by HostSharedMemory.
+#[derive(Debug)]
+pub struct GuestSharedMemory {
+    region: Arc<HostMapping>,
+    /// The lock that indicates this shared memory is being used by non-Rust code
+    ///
+    /// This lock _must_ be held whenever the guest is executing,
+    /// because it prevents the host from converting its
+    /// HostSharedMemory to an ExclusiveSharedMemory. Since the guest
+    /// may arbitrarily mutate the shared memory, only synchronized
+    /// accesses from Rust should be allowed!
+    ///
+    /// We cannot enforce this in the type system, because the memory
+    /// is mapped in to the VM at VM creation time.
+    pub lock: Arc<RwLock<()>>,
+}
+unsafe impl Send for GuestSharedMemory {}
 
 impl GuestSharedMemory {
     /// Create a [`super::memory_region::MemoryRegion`] structure
@@ -752,133 +806,6 @@ impl GuestSharedMemory {
     }
 }
 
-/// A trait that abstracts over the particular kind of SharedMemory,
-/// used when invoking operations from Rust that absolutely must have
-/// exclusive control over the shared memory for correctness +
-/// performance, like snapshotting.
-pub trait SharedMemory {
-    /// Return a readonly reference to the host mapping backing this SharedMemory
-    fn region(&self) -> &HostMapping;
-
-    /// Return the base address of the host mapping of this
-    /// region. Following the general Rust philosophy, this does not
-    /// need to be marked as `unsafe` because doing anything with this
-    /// pointer itself requires `unsafe`.
-    fn base_addr(&self) -> usize {
-        self.region().ptr() as usize + PAGE_SIZE_USIZE
-    }
-
-    /// Return the base address of the host mapping of this region as
-    /// a pointer. Following the general Rust philosophy, this does
-    /// not need to be marked as `unsafe` because doing anything with
-    /// this pointer itself requires `unsafe`.
-    fn base_ptr(&self) -> *mut u8 {
-        self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
-    }
-
-    /// Return the length of usable memory contained in `self`.
-    /// The returned size does not include the size of the surrounding
-    /// guard pages.
-    fn mem_size(&self) -> usize {
-        self.region().size() - 2 * PAGE_SIZE_USIZE
-    }
-
-    /// Return the raw base address of the host mapping, including the
-    /// guard pages.
-    fn raw_ptr(&self) -> *mut u8 {
-        self.region().ptr()
-    }
-
-    /// Return the raw size of the host mapping, including the guard
-    /// pages.
-    fn raw_mem_size(&self) -> usize {
-        self.region().size()
-    }
-
-    /// Extract a base address that can be mapped into a VM for this
-    /// SharedMemory.
-    ///
-    /// On Linux this returns a raw `usize` pointer. On Windows it
-    /// returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
-    /// that carries the file-mapping handle metadata needed by WHP.
-    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
-        #[cfg(not(windows))]
-        {
-            self.base_addr()
-        }
-        #[cfg(windows)]
-        {
-            super::memory_region::HostRegionBase {
-                from_handle: self.region().file_mapping_handle().into(),
-                handle_base: self.region().ptr() as usize,
-                handle_size: self.region().size(),
-                offset: PAGE_SIZE_USIZE,
-            }
-        }
-    }
-
-    /// Return the end address of the host region (base + usable size).
-    fn host_region_end(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
-        <HostGuestMemoryRegion as MemoryRegionKind>::add(self.host_region_base(), self.mem_size())
-    }
-
-    /// Run some code with exclusive access to the SharedMemory
-    /// underlying this.  If the SharedMemory is not an
-    /// ExclusiveSharedMemory, any concurrent accesses to the relevant
-    /// HostSharedMemory/GuestSharedMemory may make this fail, or be
-    /// made to fail by this, and should be avoided.
-    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
-        &mut self,
-        f: F,
-    ) -> Result<T>;
-
-    /// Run some code that is allowed to access the contents of the
-    /// SharedMemory as if it is a normal slice.  By default, this is
-    /// implemented via [`SharedMemory::with_exclusivity`], which is
-    /// the correct implementation for a memory that can be mutated,
-    /// but a [`ReadonlySharedMemory`], can support this.
-    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
-        self.with_exclusivity(|m| f(m.as_slice()))
-    }
-
-    /// Zero a shared memory region
-    fn zero(&mut self) -> Result<()> {
-        self.with_exclusivity(|e| {
-            #[allow(unused_mut)] // unused on some platforms, although not others
-            let mut do_copy = true;
-            // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
-            // TODO: Find a similar lazy zeroing approach that works on MSHV.
-            //       (See Note [Keeping mappings in sync between userspace and the guest])
-            #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
-            unsafe {
-                let ret = libc::madvise(
-                    e.region.ptr() as *mut libc::c_void,
-                    e.region.size(),
-                    libc::MADV_DONTNEED,
-                );
-                if ret == 0 {
-                    do_copy = false;
-                }
-            }
-            if do_copy {
-                e.as_mut_slice().fill(0);
-            }
-        })
-    }
-}
-
-impl SharedMemory for ExclusiveSharedMemory {
-    fn region(&self) -> &HostMapping {
-        &self.region
-    }
-    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
-        &mut self,
-        f: F,
-    ) -> Result<T> {
-        Ok(f(self))
-    }
-}
-
 impl SharedMemory for GuestSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
@@ -901,24 +828,166 @@ impl SharedMemory for GuestSharedMemory {
     }
 }
 
-/// An unsafe marker trait for types for which all bit patterns are valid.
-/// This is required in order for it to be safe to read a value of a particular
-/// type out of the sandbox from the HostSharedMemory.
+/// A HostSharedMemory allows synchronized accesses to guest
+/// communication buffers, allowing it to be used concurrently with a
+/// GuestSharedMemory.
 ///
-/// # Safety
-/// This must only be implemented for types for which all bit patterns
-/// are valid. It requires that any (non-undef/poison) value of the
-/// correct size can be transmuted to the type.
-pub unsafe trait AllValid {}
-unsafe impl AllValid for u8 {}
-unsafe impl AllValid for u16 {}
-unsafe impl AllValid for u32 {}
-unsafe impl AllValid for u64 {}
-unsafe impl AllValid for i8 {}
-unsafe impl AllValid for i16 {}
-unsafe impl AllValid for i32 {}
-unsafe impl AllValid for i64 {}
-unsafe impl AllValid for [u8; 16] {}
+/// # Concurrency model
+///
+/// Given future requirements for asynchronous I/O with a minimum
+/// amount of copying (e.g. WASIp3 streams), we would like it to be
+/// possible to safely access these buffers concurrently with the
+/// guest, ensuring that (1) data is read appropriately if the guest
+/// is well-behaved; and (2) the host's behaviour is defined
+/// regardless of whether or not the guest is well-behaved.
+///
+/// The ideal (future) flow for a guest->host message is something like
+///   - Guest writes (unordered) bytes describing a work item into a buffer
+///   - Guest reveals buffer via a release-store of a pointer into an
+///     MMIO ring-buffer
+///   - Host acquire-loads the buffer pointer from the "MMIO" ring
+///     buffer
+///   - Host (unordered) reads the bytes from the buffer
+///   - Host performs validation of those bytes and uses them
+///
+/// Unfortunately, there appears to be no way to do this with defined
+/// behaviour in present Rust (see
+/// e.g. <https://github.com/rust-lang/unsafe-code-guidelines/issues/152>).
+/// Rust does not yet have its own defined memory model, but in the
+/// interim, it is widely treated as inheriting the current C/C++
+/// memory models.  The most immediate problem is that regardless of
+/// anything else, under those memory models \[1, p. 17-18; 2, p. 88\],
+///
+///   > The execution of a program contains a _data race_ if it
+///   > contains two [C++23: "potentially concurrent"] conflicting
+///   > actions [C23: "in different threads"], at least one of which
+///   > is not atomic, and neither happens before the other [C++23: ",
+///   > except for the special case for signal handlers described
+///   > below"].  Any such data race results in undefined behavior.
+///
+/// Consequently, if a misbehaving guest fails to correctly
+/// synchronize its stores with the host, the host's innocent loads
+/// will trigger undefined behaviour for the entire program, including
+/// the host.  Note that this also applies if the guest makes an
+/// unsynchronized read of a location that the host is writing!
+///
+/// Despite Rust's de jure inheritance of the C memory model at the
+/// present time, the compiler in many cases de facto adheres to LLVM
+/// semantics, so it is worthwhile to consider what LLVM does in this
+/// case as well.  According to the the LangRef \[3\] memory model,
+/// loads which are involved in a race that includes at least one
+/// non-atomic access (whether the load or a store) return `undef`,
+/// making them roughly equivalent to reading uninitialized
+/// memory. While this is much better, it is still bad.
+///
+/// Considering a different direction, recent C++ papers have seemed
+/// to lean towards using `volatile` for similar use cases. For
+/// example, in P1152R0 \[4\], JF Bastien notes that
+///
+///   > We’ve shown that volatile is purposely defined to denote
+///   > external modifications. This happens for:
+///   >   - Shared memory with untrusted code, where volatile is the
+///   >     right way to avoid time-of-check time-of-use (ToCToU)
+///   >     races which lead to security bugs such as \[PWN2OWN\] and
+///   >     \[XENXSA155\].
+///
+/// Unfortunately, although this paper was adopted for C++20 (and,
+/// sadly, mostly un-adopted for C++23, although that does not concern
+/// us), the paper did not actually redefine volatile accesses or data
+/// races to prevent volatile accesses from racing with other accesses
+/// and causing undefined behaviour.  P1382R1 \[5\] would have amended
+/// the wording of the data race definition to specifically exclude
+/// volatile, but, unfortunately, despite receiving a
+/// generally-positive reception at its first WG21 meeting more than
+/// five years ago, it has not progressed.
+///
+/// Separately from the data race issue, there is also a concern that
+/// according to the various memory models in use, there may be ways
+/// in which the guest can semantically obtain uninitialized memory
+/// and write it into the shared buffer, which may also result in
+/// undefined behaviour on reads.  The degree to which this is a
+/// concern is unclear, however, since it is unclear to what degree
+/// the Rust abstract machine's conception of uninitialized memory
+/// applies to the sandbox.  Returning briefly to the LLVM level,
+/// rather than the Rust level, this, combined with the fact that
+/// racing loads in LLVM return `undef`, as discussed above, we would
+/// ideally `llvm.freeze` the result of any load out of the sandbox.
+///
+/// It would furthermore be ideal if we could run the flatbuffers
+/// parsing code directly on the guest memory, in order to avoid
+/// unnecessary copies.  That is unfortunately probably not viable at
+/// the present time: because the generated flatbuffers parsing code
+/// doesn't use atomic or volatile accesses, it is likely to introduce
+/// double-read vulnerabilities.
+///
+/// In short, none of the Rust-level operations available to us do the
+/// right thing, at the Rust spec level or the LLVM spec level. Our
+/// major remaining options are therefore:
+///   - Choose one of the options that is available to us, and accept
+///     that we are doing something unsound according to the spec, but
+///     hope that no reasonable compiler could possibly notice.
+///   - Use inline assembly per architecture, for which we would only
+///     need to worry about the _architecture_'s memory model (which
+///     is far less demanding).
+///
+/// The leading candidate for the first option would seem to be to
+/// simply use volatile accesses; there seems to be wide agreement
+/// that this _should_ be a valid use case for them (even if it isn't
+/// now), and projects like Linux and rust-vmm already use C11
+/// `volatile` for this purpose.  It is also worth noting that because
+/// we still do need to synchronize with the guest when it _is_ being
+/// well-behaved, we would ideally use volatile acquire loads and
+/// volatile release stores for interacting with the stack pointer in
+/// the guest in this case.  Unfortunately, while those operations are
+/// defined in LLVM, they are not presently exposed to Rust. While
+/// atomic fences that are not associated with memory accesses
+/// ([`std::sync::atomic::fence`]) might at first glance seem to help with
+/// this problem, they unfortunately do not \[6\]:
+///
+///    > A fence ‘A’ which has (at least) Release ordering semantics,
+///    > synchronizes with a fence ‘B’ with (at least) Acquire
+///    > semantics, if and only if there exist operations X and Y,
+///    > both operating on some atomic object ‘M’ such that A is
+///    > sequenced before X, Y is sequenced before B and Y observes
+///    > the change to M. This provides a happens-before dependence
+///    > between A and B.
+///
+/// Note that the X and Y must be to an _atomic_ object.
+///
+/// We consequently assume that there has been a strong architectural
+/// fence on a vmenter/vmexit between data being read and written.
+/// This is unsafe (not guaranteed in the type system)!
+///
+/// \[1\] N3047 C23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3047.pdf>
+/// \[2\] N4950 C++23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/n4950.pdf>
+/// \[3\] LLVM Language Reference Manual, Memory Model for Concurrent Operations. <https://llvm.org/docs/LangRef.html#memmodel>
+/// \[4\] P1152R0: Deprecating `volatile`. JF Bastien. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1152r0.html>
+/// \[5\] P1382R1: `volatile_load<T>` and `volatile_store<T>`. JF Bastien, Paul McKenney, Jeffrey Yasskin, and the indefatigable TBD. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1382r1.pdf>
+/// \[6\] Documentation for std::sync::atomic::fence. <https://doc.rust-lang.org/std/sync/atomic/fn.fence.html>
+///
+/// # Note \[Keeping mappings in sync between userspace and the guest\]
+///
+/// When using this structure with mshv on Linux, it is necessary to
+/// be a little bit careful: since the hypervisor is not directly
+/// integrated with the host kernel virtual memory subsystem, it is
+/// easy for the memory region in userspace to get out of sync with
+/// the memory region mapped into the guest.  Generally speaking, when
+/// the [`SharedMemory`] is mapped into a partition, the MSHV kernel
+/// module will call `pin_user_pages(FOLL_PIN|FOLL_WRITE)` on it,
+/// which will eagerly do any CoW, etc needing to obtain backing pages
+/// pinned in memory, and then map precisely those backing pages into
+/// the virtual machine. After that, the backing pages mapped into the
+/// VM will not change until the region is unmapped or remapped.  This
+/// means that code in this module needs to be very careful to avoid
+/// changing the backing pages of the region in the host userspace,
+/// since that would result in hyperlight-host's view of the memory
+/// becoming completely divorced from the view of the VM.
+#[derive(Clone, Debug)]
+pub struct HostSharedMemory {
+    region: Arc<HostMapping>,
+    lock: Arc<RwLock<()>>,
+}
+unsafe impl Send for HostSharedMemory {}
 
 impl HostSharedMemory {
     /// Read a value of type T, whose representation is the same
@@ -1263,6 +1332,125 @@ impl SharedMemory for HostSharedMemory {
         drop(excl);
         drop(guard);
         Ok(ret)
+    }
+}
+
+/// A ReadonlySharedMemory is a different kind of shared memory,
+/// separate from the exclusive/host/guest lifecycle, used to
+/// represent read-only mappings of snapshot pages into the guest
+/// efficiently.
+#[derive(Clone, Debug)]
+pub struct ReadonlySharedMemory {
+    region: Arc<HostMapping>,
+    /// If `Some`, only this many bytes are mapped into guest PA space
+    /// by `mapping_at`. If `None`, the full `mem_size()` is mapped.
+    #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
+    guest_mapped_size: Option<usize>,
+}
+// Safety: HostMapping is only non-Send/Sync (causing
+// ReadonlySharedMemory to not be automatically Send/Sync) because raw
+// pointers are not ("as a lint", as the Rust docs say). We don't want
+// to mark HostMapping Send/Sync immediately, because that could
+// socially imply that it's "safe" to use unsafe accesses from
+// multiple threads at once in more cases, including ones that don't
+// actually ensure immutability/synchronisation. Since
+// ReadonlySharedMemory can only be accessed by reading, and reading
+// concurrently from multiple threads is not racy,
+// ReadonlySharedMemory can be Send and Sync.
+unsafe impl Send for ReadonlySharedMemory {}
+unsafe impl Sync for ReadonlySharedMemory {}
+
+impl ReadonlySharedMemory {
+    pub(crate) fn from_bytes(contents: &[u8]) -> Result<Self> {
+        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
+        anon.copy_from_slice(contents, 0)?;
+        Ok(ReadonlySharedMemory {
+            region: anon.region,
+            guest_mapped_size: None,
+        })
+    }
+
+    pub(crate) fn from_bytes_with_mapped_size(
+        contents: &[u8],
+        guest_mapped_size: usize,
+    ) -> Result<Self> {
+        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
+        anon.copy_from_slice(contents, 0)?;
+        Ok(ReadonlySharedMemory {
+            region: anon.region,
+            guest_mapped_size: Some(guest_mapped_size),
+        })
+    }
+
+    /// The number of bytes that should be mapped into guest PA space.
+    /// Returns `guest_mapped_size` if set, otherwise `mem_size()`.
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn guest_mapped_size(&self) -> usize {
+        self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.base_ptr(), self.mem_size()) }
+    }
+
+    #[cfg(unshared_snapshot_mem)]
+    pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
+        let mut writable = ExclusiveSharedMemory::new(self.mem_size())?;
+        writable.copy_from_slice(self.as_slice(), 0)?;
+        Ok(writable)
+    }
+
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn build(self) -> (Self, Self) {
+        (self.clone(), self)
+    }
+
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn mapping_at(
+        &self,
+        guest_base: u64,
+        region_type: MemoryRegionType,
+    ) -> MemoryRegion {
+        #[allow(clippy::panic)]
+        // This will not ever actually panic: the only place this is
+        // called is HyperlightVm::update_snapshot_mapping, which
+        // always calls it with the Snapshot region type.
+        if region_type != MemoryRegionType::Snapshot {
+            panic!("ReadonlySharedMemory::mapping_at should only be used for Snapshot regions");
+        }
+        mapping_at(
+            self,
+            guest_base,
+            self.guest_mapped_size(),
+            region_type,
+            MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+        )
+    }
+}
+
+impl SharedMemory for ReadonlySharedMemory {
+    fn region(&self) -> &HostMapping {
+        &self.region
+    }
+    // There's no way to get exclusive (and therefore writable) access
+    // to a ReadonlySharedMemory.
+    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+        &mut self,
+        _: F,
+    ) -> Result<T> {
+        Err(new_error!(
+            "Cannot take exclusive access to a ReadonlySharedMemory"
+        ))
+    }
+    // However, just access to the contents as a slice is doable
+    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
+        Ok(f(self.as_slice()))
+    }
+}
+
+impl<S: SharedMemory> PartialEq<S> for ReadonlySharedMemory {
+    fn eq(&self, other: &S) -> bool {
+        self.raw_ptr() == other.raw_ptr()
     }
 }
 
@@ -2021,193 +2209,5 @@ mod tests {
                 }
             }
         }
-    }
-}
-
-/// A ReadonlySharedMemory is a different kind of shared memory,
-/// separate from the exclusive/host/guest lifecycle, used to
-/// represent read-only mappings of snapshot pages into the guest
-/// efficiently.
-#[derive(Clone, Debug)]
-pub struct ReadonlySharedMemory {
-    region: Arc<HostMapping>,
-    /// If `Some`, only this many bytes are mapped into guest PA space
-    /// by `mapping_at`. If `None`, the full `mem_size()` is mapped.
-    #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
-    guest_mapped_size: Option<usize>,
-}
-// Safety: HostMapping is only non-Send/Sync (causing
-// ReadonlySharedMemory to not be automatically Send/Sync) because raw
-// pointers are not ("as a lint", as the Rust docs say). We don't want
-// to mark HostMapping Send/Sync immediately, because that could
-// socially imply that it's "safe" to use unsafe accesses from
-// multiple threads at once in more cases, including ones that don't
-// actually ensure immutability/synchronisation. Since
-// ReadonlySharedMemory can only be accessed by reading, and reading
-// concurrently from multiple threads is not racy,
-// ReadonlySharedMemory can be Send and Sync.
-unsafe impl Send for ReadonlySharedMemory {}
-unsafe impl Sync for ReadonlySharedMemory {}
-
-/// RAII guard for an `mmap` reservation. Calls `munmap` on drop.
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct Mmap {
-    base: *mut c_void,
-    len: usize,
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for Mmap {
-    fn drop(&mut self) {
-        // SAFETY: `self.base` and `self.len` are exactly what was
-        // returned by the `mmap` that produced this `Mmap`, and that
-        // mapping has not been unmapped (we own it).
-        unsafe {
-            if libc::munmap(self.base, self.len) != 0 {
-                tracing::error!(
-                    "Mmap::drop: munmap failed: {:?}",
-                    std::io::Error::last_os_error()
-                );
-            }
-        }
-    }
-}
-
-/// RAII guard for a Win32 mapped view. Calls `UnmapViewOfFile` on drop.
-#[cfg(target_os = "windows")]
-#[derive(Debug)]
-struct MappedView {
-    addr: *mut c_void,
-    len: usize,
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for MappedView {
-    fn drop(&mut self) {
-        let view = MEMORY_MAPPED_VIEW_ADDRESS { Value: self.addr };
-        // SAFETY: `self.addr` is the base address returned by the
-        // `MapViewOfFile` call that produced this `MappedView`, and
-        // the view has not been unmapped (we own it).
-        if let Err(e) = unsafe { UnmapViewOfFile(view) } {
-            tracing::error!(
-                "MappedView::drop(addr={:?}, len={}) UnmapViewOfFile failed: {:?}",
-                self.addr,
-                self.len,
-                e
-            );
-        }
-    }
-}
-
-/// Owns a Win32 file-mapping `HANDLE`. Calls `CloseHandle` on drop.
-#[cfg(target_os = "windows")]
-#[derive(Debug)]
-struct FileMapping(HANDLE);
-
-#[cfg(target_os = "windows")]
-impl Drop for FileMapping {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` is a valid HANDLE returned by
-        // `CreateFileMappingA` that has not been closed (we own it).
-        unsafe {
-            if let Err(e) = CloseHandle(self.0) {
-                tracing::error!("FileMapping::drop: CloseHandle failed: {:?}", e);
-            }
-        }
-    }
-}
-
-impl ReadonlySharedMemory {
-    pub(crate) fn from_bytes(contents: &[u8]) -> Result<Self> {
-        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
-        anon.copy_from_slice(contents, 0)?;
-        Ok(ReadonlySharedMemory {
-            region: anon.region,
-            guest_mapped_size: None,
-        })
-    }
-
-    pub(crate) fn from_bytes_with_mapped_size(
-        contents: &[u8],
-        guest_mapped_size: usize,
-    ) -> Result<Self> {
-        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
-        anon.copy_from_slice(contents, 0)?;
-        Ok(ReadonlySharedMemory {
-            region: anon.region,
-            guest_mapped_size: Some(guest_mapped_size),
-        })
-    }
-
-    /// The number of bytes that should be mapped into guest PA space.
-    /// Returns `guest_mapped_size` if set, otherwise `mem_size()`.
-    #[cfg(not(unshared_snapshot_mem))]
-    pub(crate) fn guest_mapped_size(&self) -> usize {
-        self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
-    }
-
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.base_ptr(), self.mem_size()) }
-    }
-
-    #[cfg(unshared_snapshot_mem)]
-    pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
-        let mut writable = ExclusiveSharedMemory::new(self.mem_size())?;
-        writable.copy_from_slice(self.as_slice(), 0)?;
-        Ok(writable)
-    }
-
-    #[cfg(not(unshared_snapshot_mem))]
-    pub(crate) fn build(self) -> (Self, Self) {
-        (self.clone(), self)
-    }
-
-    #[cfg(not(unshared_snapshot_mem))]
-    pub(crate) fn mapping_at(
-        &self,
-        guest_base: u64,
-        region_type: MemoryRegionType,
-    ) -> MemoryRegion {
-        #[allow(clippy::panic)]
-        // This will not ever actually panic: the only place this is
-        // called is HyperlightVm::update_snapshot_mapping, which
-        // always calls it with the Snapshot region type.
-        if region_type != MemoryRegionType::Snapshot {
-            panic!("ReadonlySharedMemory::mapping_at should only be used for Snapshot regions");
-        }
-        mapping_at(
-            self,
-            guest_base,
-            self.guest_mapped_size(),
-            region_type,
-            MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
-        )
-    }
-}
-
-impl SharedMemory for ReadonlySharedMemory {
-    fn region(&self) -> &HostMapping {
-        &self.region
-    }
-    // There's no way to get exclusive (and therefore writable) access
-    // to a ReadonlySharedMemory.
-    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
-        &mut self,
-        _: F,
-    ) -> Result<T> {
-        Err(new_error!(
-            "Cannot take exclusive access to a ReadonlySharedMemory"
-        ))
-    }
-    // However, just access to the contents as a slice is doable
-    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
-        Ok(f(self.as_slice()))
-    }
-}
-
-impl<S: SharedMemory> PartialEq<S> for ReadonlySharedMemory {
-    fn eq(&self, other: &S) -> bool {
-        self.raw_ptr() == other.raw_ptr()
     }
 }
