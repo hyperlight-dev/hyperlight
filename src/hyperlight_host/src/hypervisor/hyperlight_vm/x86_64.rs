@@ -1497,7 +1497,8 @@ mod tests {
             [layout.get_guest_code_offset()..layout.get_guest_code_offset() + code.len()]
             .copy_from_slice(code);
         layout.write_peb(&mut snapshot_contents).unwrap();
-        let ro_mem = ReadonlySharedMemory::from_bytes(&snapshot_contents).unwrap();
+        let ro_mem =
+            ReadonlySharedMemory::from_bytes(&snapshot_contents, snapshot_pt_start).unwrap();
 
         let scratch_mem = ExclusiveSharedMemory::new(config.get_scratch_size()).unwrap();
         let mem_mgr = SandboxMemoryManager::new(

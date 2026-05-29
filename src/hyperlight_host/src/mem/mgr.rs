@@ -723,7 +723,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         use crate::mem::memory_region::HostGuestMemoryRegion;
 
         let snapshot_base = SandboxMemoryLayout::BASE_ADDRESS;
-        let snapshot_size = self.shared_mem.mem_size();
+        let snapshot_size = self.layout.snapshot_size;
         let snapshot_host = self.shared_mem.base_addr();
 
         let scratch_size = self.scratch_mem.mem_size();

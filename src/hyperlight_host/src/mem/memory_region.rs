@@ -153,12 +153,14 @@ pub enum MemoryRegionType {
 impl MemoryRegionType {
     /// Derives the [`SurrogateMapping`] from this region type.
     ///
-    /// `MappedFile` regions use read-only file-backed mappings with no
-    /// guard pages; all other region types use the standard sandbox
-    /// shared memory mapping with guard pages.
+    /// `MappedFile` and `Snapshot` regions use read-only file-backed
+    /// mappings with no guard pages. All other region types use the
+    /// standard sandbox shared memory mapping with guard pages.
     pub fn surrogate_mapping(&self) -> SurrogateMapping {
         match self {
-            MemoryRegionType::MappedFile => SurrogateMapping::ReadOnlyFile,
+            MemoryRegionType::MappedFile | MemoryRegionType::Snapshot => {
+                SurrogateMapping::ReadOnlyFile
+            }
             _ => SurrogateMapping::SandboxMemory,
         }
     }

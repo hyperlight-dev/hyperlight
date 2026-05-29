@@ -30,8 +30,11 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::PAGE_READWRITE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
-    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, UnmapViewOfFile, VirtualProtect,
+    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
+    MapViewOfFile, MapViewOfFile3, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READONLY,
+    UnmapViewOfFile, VIRTUAL_ALLOCATION_TYPE, VIRTUAL_FREE_TYPE, VirtualAlloc2, VirtualFree,
+    VirtualProtect,
 };
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
@@ -106,8 +109,27 @@ enum WindowsMapping {
     /// `[guard][blob][guard]` carved from a single anonymous file
     /// mapping created via `CreateFileMappingA(INVALID_HANDLE_VALUE)`
     /// and mapped with `MapViewOfFile`.
+    ///
+    /// ```text
+    /// |<------------------ view ------------------>|
+    /// [   guard   ][         blob         ][   guard   ]
+    /// ```
     Anonymous {
         view: MappedView,
+        file_mapping: FileMapping,
+    },
+    /// File-backed: a `VirtualAlloc2` placeholder is split in three.
+    /// The middle slot is replaced by a `MapViewOfFile3` view of the
+    /// file. The flanking placeholder slots remain unmapped and act
+    /// as the guard pages.
+    ///
+    /// ```text
+    /// [ leading ][         view         ][ trailing ]
+    /// ```
+    FileBacked {
+        leading: Placeholder,
+        view: MappedView,
+        trailing: Placeholder,
         file_mapping: FileMapping,
     },
 }
@@ -122,6 +144,7 @@ impl HostMapping {
         #[cfg(target_os = "windows")]
         match &self.mapping {
             WindowsMapping::Anonymous { view, .. } => view.addr as *mut u8,
+            WindowsMapping::FileBacked { leading, .. } => leading.addr as *mut u8,
         }
     }
 
@@ -134,6 +157,12 @@ impl HostMapping {
         #[cfg(target_os = "windows")]
         match &self.mapping {
             WindowsMapping::Anonymous { view, .. } => view.len,
+            WindowsMapping::FileBacked {
+                leading,
+                view,
+                trailing,
+                ..
+            } => leading.size + view.len + trailing.size,
         }
     }
 
@@ -141,7 +170,8 @@ impl HostMapping {
     #[cfg(target_os = "windows")]
     pub(crate) fn file_mapping_handle(&self) -> HANDLE {
         match &self.mapping {
-            WindowsMapping::Anonymous { file_mapping, .. } => file_mapping.0,
+            WindowsMapping::Anonymous { file_mapping, .. }
+            | WindowsMapping::FileBacked { file_mapping, .. } => file_mapping.0,
         }
     }
 }
@@ -183,6 +213,11 @@ struct MappedView {
 impl Drop for MappedView {
     fn drop(&mut self) {
         let view = MEMORY_MAPPED_VIEW_ADDRESS { Value: self.addr };
+        // Plain `UnmapViewOfFile` fully releases the address range.
+        // `UnmapViewOfFile2(MEM_PRESERVE_PLACEHOLDER)` would convert
+        // it back into a placeholder for remapping, which is not
+        // what we want: the surrounding guard `Placeholder`s release
+        // their slots independently on drop.
         // SAFETY: `self.addr` is the base address returned by the
         // `MapViewOfFile` call that produced this `MappedView`, and
         // the view has not been unmapped (we own it).
@@ -209,8 +244,145 @@ impl Drop for FileMapping {
         // `CreateFileMappingA` that has not been closed (we own it).
         unsafe {
             if let Err(e) = CloseHandle(self.0) {
-                tracing::error!("FileMapping::drop: CloseHandle failed: {:?}", e);
+                tracing::error!(
+                    "FileMapping::drop(handle={:?}) CloseHandle failed: {:?}",
+                    self.0,
+                    e
+                );
             }
+        }
+    }
+}
+
+/// RAII guard for a `VirtualAlloc2` placeholder reservation. Owns
+/// the `[addr, addr + size)` range until split into smaller
+/// placeholders, replaced by a mapped view, or dropped (which calls
+/// `VirtualFree(MEM_RELEASE)`).
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub(crate) struct Placeholder {
+    addr: *mut c_void,
+    size: usize,
+}
+
+#[cfg(target_os = "windows")]
+impl Placeholder {
+    fn reserve(size: usize) -> Result<Self> {
+        // SAFETY: `VirtualAlloc2` with `MEM_RESERVE |
+        // MEM_RESERVE_PLACEHOLDER` and `PAGE_NOACCESS` only reserves
+        // address space. No pages are committed and no access is
+        // granted, so the call has no preconditions and the returned
+        // reservation cannot be misused from safe code.
+        let addr = unsafe {
+            VirtualAlloc2(
+                None,
+                None,
+                size,
+                VIRTUAL_ALLOCATION_TYPE(MEM_RESERVE.0 | MEM_RESERVE_PLACEHOLDER.0),
+                PAGE_NOACCESS.0,
+                None,
+            )
+        };
+        if addr.is_null() {
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+        Ok(Placeholder { addr, size })
+    }
+
+    fn split_front(self, front_size: usize) -> Result<(Placeholder, Placeholder)> {
+        debug_assert!(front_size > 0 && front_size < self.size);
+        debug_assert!(front_size.is_multiple_of(PAGE_SIZE_USIZE));
+        // SAFETY: `self` owns the placeholder reservation at
+        // `[self.addr, self.addr + self.size)`. `MEM_RELEASE |
+        // MEM_PRESERVE_PLACEHOLDER` is the Win32 idiom for splitting
+        // a placeholder in two: no memory is released, the
+        // reservation is just carved at `front_size`.
+        if let Err(e) = unsafe {
+            VirtualFree(
+                self.addr,
+                front_size,
+                VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_PRESERVE_PLACEHOLDER.0),
+            )
+        } {
+            // `self` drops here, releasing the unsplit reservation.
+            log_then_return!(WindowsAPIError(e.clone()));
+        }
+        let addr = self.addr;
+        let total = self.size;
+        // Forget the parent so its `Drop` does not release the two
+        // child slots as one.
+        std::mem::forget(self);
+        let front = Placeholder {
+            addr,
+            size: front_size,
+        };
+        let back = Placeholder {
+            // SAFETY: `front_size < total`, so `addr + front_size`
+            // is in-bounds of the original reservation.
+            addr: unsafe { (addr as *mut u8).add(front_size) as *mut c_void },
+            size: total - front_size,
+        };
+        Ok((front, back))
+    }
+
+    fn split_into_three(
+        self,
+        front_size: usize,
+        middle_size: usize,
+    ) -> Result<(Placeholder, Placeholder, Placeholder)> {
+        let (front, rest) = self.split_front(front_size)?;
+        let (middle, back) = rest.split_front(middle_size)?;
+        Ok((front, middle, back))
+    }
+
+    fn map_file_view(self, file_mapping: HANDLE) -> Result<MappedView> {
+        // SAFETY: `self` owns the placeholder slot at
+        // `[self.addr, self.addr + self.size)`.
+        // `MEM_REPLACE_PLACEHOLDER` requires the target range to be
+        // an existing placeholder of exactly that size, which the
+        // type system guarantees here. On success, ownership of the
+        // range transfers to the returned `MappedView`; the caller
+        // releases the file mapping handle via `FileMapping`.
+        let mapped = unsafe {
+            MapViewOfFile3(
+                file_mapping,
+                None,
+                Some(self.addr),
+                0,
+                self.size,
+                MEM_REPLACE_PLACEHOLDER,
+                PAGE_READONLY.0,
+                None,
+            )
+        };
+        if mapped.Value.is_null() {
+            // `self` drops here, releasing the placeholder.
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+        let addr = self.addr;
+        let len = self.size;
+        std::mem::forget(self);
+        Ok(MappedView { addr, len })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for Placeholder {
+    fn drop(&mut self) {
+        // SAFETY: `self.addr` is the base of a placeholder
+        // reservation we own. `MEM_RELEASE` with size 0 releases the
+        // entire reservation.
+        if let Err(e) = unsafe { VirtualFree(self.addr, 0, VIRTUAL_FREE_TYPE(MEM_RELEASE.0)) } {
+            tracing::error!(
+                "Placeholder::drop(addr={:?}, size={}) VirtualFree failed: {:?}",
+                self.addr,
+                self.size,
+                e
+            );
         }
     }
 }
@@ -1342,10 +1514,12 @@ impl SharedMemory for HostSharedMemory {
 #[derive(Clone, Debug)]
 pub struct ReadonlySharedMemory {
     region: Arc<HostMapping>,
-    /// If `Some`, only this many bytes are mapped into guest PA space
-    /// by `mapping_at`. If `None`, the full `mem_size()` is mapped.
+    /// Number of bytes from the start of the blob that `mapping_at`
+    /// exposes to the guest. Production callers pass the size of the
+    /// guest-visible prefix of the snapshot blob; the remainder of
+    /// the blob is the page-table tail that lives only host-side.
     #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
-    guest_mapped_size: Option<usize>,
+    guest_mapped_size: usize,
 }
 // Safety: HostMapping is only non-Send/Sync (causing
 // ReadonlySharedMemory to not be automatically Send/Sync) because raw
@@ -1361,32 +1535,205 @@ unsafe impl Send for ReadonlySharedMemory {}
 unsafe impl Sync for ReadonlySharedMemory {}
 
 impl ReadonlySharedMemory {
-    pub(crate) fn from_bytes(contents: &[u8]) -> Result<Self> {
+    pub(crate) fn from_bytes(contents: &[u8], guest_mapped_size: usize) -> Result<Self> {
+        if guest_mapped_size == 0 || !guest_mapped_size.is_multiple_of(PAGE_SIZE_USIZE) {
+            return Err(new_error!(
+                "guest_mapped_size {} must be a non-zero multiple of PAGE_SIZE",
+                guest_mapped_size
+            ));
+        }
+        if guest_mapped_size > contents.len() {
+            return Err(new_error!(
+                "guest_mapped_size {} exceeds blob length {}",
+                guest_mapped_size,
+                contents.len()
+            ));
+        }
         let mut anon = ExclusiveSharedMemory::new(contents.len())?;
         anon.copy_from_slice(contents, 0)?;
         Ok(ReadonlySharedMemory {
             region: anon.region,
-            guest_mapped_size: None,
-        })
-    }
-
-    pub(crate) fn from_bytes_with_mapped_size(
-        contents: &[u8],
-        guest_mapped_size: usize,
-    ) -> Result<Self> {
-        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
-        anon.copy_from_slice(contents, 0)?;
-        Ok(ReadonlySharedMemory {
-            region: anon.region,
-            guest_mapped_size: Some(guest_mapped_size),
+            guest_mapped_size,
         })
     }
 
     /// The number of bytes that should be mapped into guest PA space.
-    /// Returns `guest_mapped_size` if set, otherwise `mem_size()`.
     #[cfg(not(unshared_snapshot_mem))]
     pub(crate) fn guest_mapped_size(&self) -> usize {
-        self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
+        self.guest_mapped_size
+    }
+
+    /// Create a `ReadonlySharedMemory` backed by a file on disk.
+    ///
+    /// The file's length must be a non-zero multiple of `PAGE_SIZE`.
+    /// `guest_mapped_size` must be a non-zero multiple of `PAGE_SIZE`
+    /// no greater than the file's length.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn from_file(file: &std::fs::File, guest_mapped_size: usize) -> Result<Self> {
+        let len: usize = file
+            .metadata()
+            .map_err(|e| new_error!("Failed to read file metadata: {}", e))?
+            .len()
+            .try_into()
+            .map_err(|_| new_error!("File length exceeds usize::MAX"))?;
+
+        if len == 0 {
+            return Err(new_error!(
+                "Cannot create file-backed shared memory with size 0"
+            ));
+        }
+
+        if !len.is_multiple_of(PAGE_SIZE_USIZE) {
+            return Err(new_error!(
+                "file length {} must be a multiple of PAGE_SIZE",
+                len
+            ));
+        }
+
+        if guest_mapped_size == 0
+            || guest_mapped_size > len
+            || !guest_mapped_size.is_multiple_of(PAGE_SIZE_USIZE)
+        {
+            return Err(new_error!(
+                "guest_mapped_size {} must be a non-zero multiple of PAGE_SIZE no greater than file length {}",
+                guest_mapped_size,
+                len
+            ));
+        }
+
+        let region = Self::map_file(file, len)?;
+        Ok(ReadonlySharedMemory {
+            region,
+            guest_mapped_size,
+        })
+    }
+
+    /// Linux: reserve `[guard][blob][guard]` as one anonymous
+    /// `PROT_NONE` mapping, then `MAP_FIXED` the file over the
+    /// middle slot.
+    #[cfg(target_os = "linux")]
+    fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
+        use std::os::unix::io::AsRawFd;
+
+        use libc::{
+            MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE, PROT_READ,
+            mmap, off_t, size_t,
+        };
+
+        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+            new_error!("Memory required for file-backed mapping exceeded usize::MAX")
+        })?;
+
+        let fd = file.as_raw_fd();
+
+        // 1. Reserve the full `[guard][blob][guard]` address range as
+        //    one anonymous `PROT_NONE` mapping. This pins the layout
+        //    and gives us a single RAII owner for the whole region.
+        // SAFETY: anonymous `mmap` with a null address has no
+        // preconditions; the kernel picks the address.
+        let base = unsafe {
+            mmap(
+                null_mut(),
+                total_size as size_t,
+                PROT_NONE,
+                MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE,
+                -1,
+                0 as off_t,
+            )
+        };
+        if base == MAP_FAILED {
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+        let reservation = Mmap {
+            base,
+            len: total_size,
+        };
+
+        // 2. Overlay the file content on the middle slot with
+        //    `MAP_FIXED`. The guest maps these pages READ|EXECUTE,
+        //    so the host VMA is read-only. `MAP_PRIVATE` keeps the
+        //    mapping detached from the underlying file.
+        // SAFETY: `total_size = len + 2 * PAGE_SIZE_USIZE`, so
+        // `base + PAGE_SIZE_USIZE` is in-bounds of the reservation.
+        let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
+        // SAFETY: `usable_ptr..usable_ptr + len` lies entirely within
+        // the reservation owned by `reservation`. `MAP_FIXED`
+        // replaces that sub-range in place; on failure the
+        // surrounding anonymous mapping is unaffected and
+        // `reservation` releases it on drop.
+        let mapped = unsafe {
+            mmap(
+                usable_ptr as *mut c_void,
+                len as size_t,
+                PROT_READ,
+                MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE,
+                fd,
+                0 as off_t,
+            )
+        };
+        if mapped == MAP_FAILED {
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+
+        // 3. The first and last pages keep their `PROT_NONE` from the
+        //    anonymous reservation, so no extra `mprotect` is needed.
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(Arc::new(HostMapping { mmap: reservation }))
+    }
+
+    /// Windows: reserve `[guard][blob][guard]` as one
+    /// `VirtualAlloc2` placeholder, split the middle slot out, and
+    /// `MapViewOfFile3` the file over the middle slot.
+    #[cfg(target_os = "windows")]
+    fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
+        use std::os::windows::io::AsRawHandle;
+
+        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+            new_error!("Memory required for file-backed mapping exceeded usize::MAX")
+        })?;
+
+        let file_handle = HANDLE(file.as_raw_handle());
+
+        // 1. Reserve the full `[guard][blob][guard]` address range
+        //    as one `VirtualAlloc2` placeholder.
+        let whole = Placeholder::reserve(total_size)?;
+
+        // 2. Split the placeholder into three adjacent slots. The
+        //    leading and trailing slots stay unmapped and act as
+        //    guard pages. The middle slot will receive the file view.
+        let (leading, middle, trailing) = whole.split_into_three(PAGE_SIZE_USIZE, len)?;
+
+        // 3. Create a read-only file mapping section over the file.
+        // SAFETY: `file_handle` is a valid file HANDLE borrowed from
+        // `file` for the duration of this call. `CreateFileMappingA`
+        // returns a new handle that we wrap in `FileMapping` below.
+        let raw_handle =
+            unsafe { CreateFileMappingA(file_handle, None, PAGE_READONLY, 0, 0, PCSTR::null()) }?;
+        if raw_handle.is_invalid() {
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+        let file_mapping = FileMapping(raw_handle);
+
+        // 4. Replace the middle placeholder slot with a view of the
+        //    file mapping via `MapViewOfFile3(MEM_REPLACE_PLACEHOLDER)`.
+        let view = middle.map_file_view(raw_handle)?;
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(Arc::new(HostMapping {
+            mapping: WindowsMapping::FileBacked {
+                leading,
+                view,
+                trailing,
+                file_mapping,
+            },
+        }))
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -1431,6 +1778,32 @@ impl ReadonlySharedMemory {
 impl SharedMemory for ReadonlySharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
+    }
+    // Trait defaults work for `base_addr`, `base_ptr`, and
+    // `mem_size`: each `ReadonlySharedMemory` has the
+    // `[guard][blob][guard]` layout.
+    //
+    // `host_region_base` differs per Windows mapping flavour:
+    //  * `WindowsMapping::Anonymous` (`from_bytes`): file mapping
+    //    spans the whole region. Same as the trait default.
+    //  * `WindowsMapping::FileBacked` (`from_file`): file mapping
+    //    covers only the blob. Expose only the blob to the surrogate.
+    #[cfg(windows)]
+    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        match &self.region().mapping {
+            WindowsMapping::Anonymous { .. } => super::memory_region::HostRegionBase {
+                from_handle: self.region().file_mapping_handle().into(),
+                handle_base: self.region().ptr() as usize,
+                handle_size: self.region().size(),
+                offset: PAGE_SIZE_USIZE,
+            },
+            WindowsMapping::FileBacked { .. } => super::memory_region::HostRegionBase {
+                from_handle: self.region().file_mapping_handle().into(),
+                handle_base: self.base_ptr() as usize,
+                handle_size: self.mem_size(),
+                offset: 0,
+            },
+        }
     }
     // There's no way to get exclusive (and therefore writable) access
     // to a ReadonlySharedMemory.
@@ -2207,6 +2580,237 @@ mod tests {
                         test, exit_code, TEST_EXIT_CODE
                     );
                 }
+            }
+        }
+    }
+
+    #[cfg(not(miri))]
+    mod from_file_tests {
+        use std::io::Write;
+
+        use hyperlight_common::mem::PAGE_SIZE_USIZE;
+        use tempfile::NamedTempFile;
+
+        use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+
+        pub(super) fn make_temp_file(len: usize) -> NamedTempFile {
+            let mut f = NamedTempFile::new().expect("create temp file");
+            if len > 0 {
+                let mut buf = vec![0u8; len];
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = (i & 0xff) as u8;
+                }
+                f.write_all(&buf).expect("write temp file");
+                f.flush().expect("flush temp file");
+            }
+            f
+        }
+
+        #[test]
+        fn from_file_success_single_page() {
+            let tmp = make_temp_file(PAGE_SIZE_USIZE);
+            let mut rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                .expect("from_file should succeed");
+            assert_eq!(rsm.mem_size(), PAGE_SIZE_USIZE);
+            rsm.with_contents(|slice| {
+                for (i, b) in slice.iter().enumerate() {
+                    assert_eq!(*b, (i & 0xff) as u8);
+                }
+            })
+            .expect("with_contents should succeed");
+        }
+
+        #[test]
+        fn from_file_success_smaller_guest_mapped_size() {
+            let tmp = make_temp_file(2 * PAGE_SIZE_USIZE);
+            let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                .expect("from_file should succeed");
+            assert_eq!(rsm.mem_size(), 2 * PAGE_SIZE_USIZE);
+        }
+
+        #[test]
+        fn from_file_rejects_empty_file() {
+            let tmp = make_temp_file(0);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                .expect_err("empty file should be rejected");
+            assert!(format!("{}", err).contains("size 0"));
+        }
+
+        #[test]
+        fn from_file_rejects_unaligned_file_length() {
+            let tmp = make_temp_file(PAGE_SIZE_USIZE + 1);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                .expect_err("unaligned file length should be rejected");
+            assert!(format!("{}", err).contains("multiple of PAGE_SIZE"));
+        }
+
+        #[test]
+        fn from_file_rejects_zero_guest_mapped_size() {
+            let tmp = make_temp_file(PAGE_SIZE_USIZE);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 0)
+                .expect_err("zero guest_mapped_size should be rejected");
+            assert!(format!("{}", err).contains("guest_mapped_size"));
+        }
+
+        #[test]
+        fn from_file_rejects_unaligned_guest_mapped_size() {
+            let tmp = make_temp_file(2 * PAGE_SIZE_USIZE);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE + 1)
+                .expect_err("unaligned guest_mapped_size should be rejected");
+            assert!(format!("{}", err).contains("guest_mapped_size"));
+        }
+
+        #[test]
+        fn from_file_rejects_guest_mapped_size_exceeding_file() {
+            let tmp = make_temp_file(PAGE_SIZE_USIZE);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 2 * PAGE_SIZE_USIZE)
+                .expect_err("guest_mapped_size > file length should be rejected");
+            assert!(format!("{}", err).contains("guest_mapped_size"));
+        }
+
+        /// Tests in this submodule are `#[ignore]`'d because each one
+        /// is expected to die from a memory access violation. They are
+        /// not run by a plain `cargo test`. The `from_file_guard_page_shim`
+        /// test in the parent module re-executes each one in a subprocess
+        /// and asserts the trap occurred.
+        mod guard_page_crash_tests {
+            use hyperlight_common::mem::PAGE_SIZE_USIZE;
+
+            use super::make_temp_file;
+            use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+
+            /// Loads from the byte immediately before the mapping.
+            #[test]
+            #[ignore]
+            pub(super) fn leading_guard_page_traps() {
+                let tmp = make_temp_file(PAGE_SIZE_USIZE);
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                    .expect("from_file should succeed");
+                let guard_ptr = unsafe { rsm.base_ptr().sub(PAGE_SIZE_USIZE) };
+                println!("reached_guard");
+                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
+                println!("survived_guard");
+            }
+
+            /// Loads from the byte immediately after the mapping.
+            #[test]
+            #[ignore]
+            pub(super) fn trailing_guard_page_traps() {
+                let tmp = make_temp_file(PAGE_SIZE_USIZE);
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                    .expect("from_file should succeed");
+                let guard_ptr = unsafe { rsm.base_ptr().add(rsm.mem_size()) };
+                println!("reached_guard");
+                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
+                println!("survived_guard");
+            }
+        }
+
+        /// Spawn each ignored guard-page test as a subprocess and assert
+        /// it terminated by an OS access violation. Re-executes the
+        /// current test binary so no rebuild or `cargo` invocation is
+        /// needed.
+        #[test]
+        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
+        fn from_file_guard_page_shim() {
+            use guard_page_crash_tests::{leading_guard_page_traps, trailing_guard_page_traps};
+            let ignored_test_paths = [
+                test_path(leading_guard_page_traps),
+                test_path(trailing_guard_page_traps),
+            ];
+
+            let exe = std::env::current_exe().expect("current_exe");
+            for path in &ignored_test_paths {
+                run_guard_page_subprocess(&exe, path);
+            }
+        }
+
+        /// Derive a libtest filter path for a test function from its
+        /// type name. Strips the leading crate-name segment that
+        /// `type_name` includes but libtest does not.
+        fn test_path<F: Fn()>(_: F) -> &'static str {
+            let full = std::any::type_name::<F>();
+            let (_, rest) = full
+                .split_once("::")
+                .expect("type_name of a function item is always qualified by the crate name");
+            rest
+        }
+
+        fn run_guard_page_subprocess(exe: &std::path::Path, ignored_test_path: &str) {
+            let output = std::process::Command::new(exe)
+                .args([
+                    "--ignored",
+                    "--nocapture",
+                    "--exact",
+                    "--test-threads=1",
+                    ignored_test_path,
+                ])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("Unable to launch subprocess test");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // libtest with no matching filter exits 0, so verify the
+            // test actually ran via the "running 1 test" banner.
+            let ran_test = stdout.contains("running 1 test");
+            let reached = stdout.contains("reached_guard");
+            let survived = stdout.contains("survived_guard");
+            let by_access_violation = killed_by_access_violation(&output.status);
+
+            let ok = reached && !survived && by_access_violation && ran_test;
+            if !ok {
+                eprintln!("=== Guard page shim failed for {} ===", ignored_test_path);
+                eprintln!(
+                    "status={:?} ran_test={} reached={} survived={} by_access_violation={}",
+                    output.status, ran_test, reached, survived, by_access_violation
+                );
+                eprintln!("=== STDOUT ===\n{}", stdout);
+                eprintln!("=== STDERR ===\n{}", stderr);
+                let hint = if !ran_test {
+                    format!(
+                        "\nHINT: ran_test=false (subprocess reported 'running 0 tests'). \
+                         Most likely cause is a stale test path in the shim. Verify that \
+                         `{}` still exists and matches the path passed via --exact above.",
+                        ignored_test_path
+                    )
+                } else {
+                    String::new()
+                };
+                panic!(
+                    "Expected subprocess to run {}, print 'reached_guard', \
+                     then die from a memory access fault. ran_test={}, reached={}, \
+                     survived={}, by_access_violation={}, status={:?}{}",
+                    ignored_test_path,
+                    ran_test,
+                    reached,
+                    survived,
+                    by_access_violation,
+                    output.status,
+                    hint
+                );
+            }
+
+            println!(
+                "guard page trap confirmed for {}: subprocess terminated with {:?}",
+                ignored_test_path, output.status
+            );
+        }
+
+        /// Returns true if `status` indicates the process died from a
+        /// memory access fault (SIGSEGV on unix, STATUS_ACCESS_VIOLATION
+        /// on Windows).
+        fn killed_by_access_violation(status: &std::process::ExitStatus) -> bool {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                status.signal() == Some(libc::SIGSEGV)
+            }
+            #[cfg(windows)]
+            {
+                use windows::Win32::Foundation::STATUS_ACCESS_VIOLATION;
+                status.code() == Some(STATUS_ACCESS_VIOLATION.0)
             }
         }
     }

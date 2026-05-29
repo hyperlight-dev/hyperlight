@@ -232,9 +232,15 @@ pub(crate) struct SandboxMemoryLayout {
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
     pub(crate) scratch_size: usize,
-    /// The size of the snapshot region in physical memory.
+    /// Size of the primary guest memory region at `BASE_ADDRESS`
+    /// (code, PEB, heap, init data). For a snapshot-backed layout
+    /// this is also the guest-visible prefix of the host snapshot
+    /// mapping.
     pub(crate) snapshot_size: usize,
-    /// The size of the page tables (None if not yet set).
+    /// Size of the page-table region. Sits at the tail of the host
+    /// snapshot mapping but is never mapped to the guest from there.
+    /// On restore the host copies it into scratch, where the guest
+    /// sees it at `SNAPSHOT_PT_GVA`. `None` until page tables are built.
     pub(crate) pt_size: Option<usize>,
 }
 
@@ -497,7 +503,12 @@ impl SandboxMemoryLayout {
         }
     }
 
-    /// Sets the size of the memory region used for page tables
+    /// Record the size of the page-table tail appended to the
+    /// snapshot blob. The PT bytes live at the end of the blob and
+    /// the host mapping, outside the guest mapping of the snapshot
+    /// region, and are copied into the scratch region on restore.
+    /// `snapshot_size` (the guest-visible prefix of the blob) is an
+    /// independent field and must be set separately.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
@@ -508,8 +519,6 @@ impl SandboxMemoryLayout {
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
         }
-        let old_pt_size = self.pt_size.unwrap_or(0);
-        self.snapshot_size = self.snapshot_size - old_pt_size + size;
         self.pt_size = Some(size);
         Ok(())
     }

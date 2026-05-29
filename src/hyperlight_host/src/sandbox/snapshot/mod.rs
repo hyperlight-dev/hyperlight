@@ -377,7 +377,7 @@ impl Snapshot {
 
         Ok(Self {
             sandbox_id: SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
-            memory: ReadonlySharedMemory::from_bytes(&memory)?,
+            memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size)?,
             layout,
             regions: extra_regions,
             load_info,
@@ -548,9 +548,12 @@ impl Snapshot {
                 Ok::<_, crate::HyperlightError>(snapshot_memory)
             })
         })???;
-        // Only map the data portion into guest PA space. The PT tail
-        // must stay out of the KVM slot to avoid overlapping with
-        // map_file_cow regions that sit right after the snapshot.
+        // Only the data prefix is exposed to the guest. The PT tail
+        // sits past it in the host mapping and is copied into the
+        // scratch region on restore. Keeping it out of the guest
+        // mapping of the snapshot region avoids overlap with
+        // `map_file_cow` regions installed immediately after the
+        // snapshot in guest PA space.
         let guest_visible_size = memory.len() - layout.get_pt_size();
         debug_assert!(guest_visible_size.is_multiple_of(PAGE_SIZE));
         layout.set_snapshot_size(guest_visible_size);
@@ -567,7 +570,7 @@ impl Snapshot {
         Ok(Self {
             sandbox_id,
             layout,
-            memory: ReadonlySharedMemory::from_bytes_with_mapped_size(&memory, guest_visible_size)?,
+            memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
             regions,
             load_info,
             stack_top_gva,
@@ -729,7 +732,7 @@ mod tests {
         let mut snapshot_mem = vec![0u8; PAGE_SIZE + pt_bytes.len()];
         snapshot_mem[0..PAGE_SIZE].copy_from_slice(contents);
         snapshot_mem[PAGE_SIZE..].copy_from_slice(&pt_bytes);
-        ReadonlySharedMemory::from_bytes(&snapshot_mem)
+        ReadonlySharedMemory::from_bytes(&snapshot_mem, PAGE_SIZE)
             .unwrap()
             .to_mgr_snapshot_mem()
             .unwrap()
