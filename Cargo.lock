@@ -1500,7 +1500,7 @@ dependencies = [
  "quote",
  "syn",
  "tracing",
- "wasmparser 0.249.0",
+ "wasmparser 0.251.0",
 ]
 
 [[package]]
@@ -4207,9 +4207,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.249.0"
+version = "0.251.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30538cae9a794215f490b532df01c557e2e2bfac92569482554acd0992a102ea"
+checksum = "437970b35b1a85cfde9c74b2398352d8d653f3bd8e3a3db0c063ea8f5b4b36ff"
 dependencies = [
  "bitflags 2.12.1",
  "hashbrown 0.17.0",
