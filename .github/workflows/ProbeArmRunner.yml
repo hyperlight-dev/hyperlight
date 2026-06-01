@@ -1,12 +1,17 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 #
-# Probe ARM runner 
+# Probe ARM runner
 #
 # Purpose: verify the `cncf-ubuntu-16-64-arm` runner is:
-#   1. ensure 64-bit
+#   1. 64-bit
 #   2. has KVM available (/dev/kvm present + usable)
-#   3. if 64-bit but no KVM, install the userspace bits, load the module,
-#      then re-verify.
+#   3. if 64-bit but no KVM, install the userspace bits and re-verify, then
+#      capture the kernel's root-cause verdict (boot exception level / dmesg)
+#      when /dev/kvm still doesn't appear.
+#
+# Note: on arm64 KVM requires the CPU to have booted at EL2. A non-nested guest
+# VM boots at EL1, so the kernel never creates /dev/kvm and no userspace install
+# can fix that. The diagnostics step records which case this runner is in.
 #
 # Manual-only — this is a probe, not part of CI.
 name: Probe ARM Runner (KVM)
@@ -95,27 +100,45 @@ jobs:
             cpu-checker \
             libvirt-clients
 
-          # ARM64 has a single 'kvm' kernel module (no vendor split like kvm-intel/kvm-amd).
-          sudo modprobe kvm || {
-            echo "::error::Failed to load 'kvm' kernel module — host may lack virtualization extensions"
-            dmesg | tail -50 || true
-            exit 1
-          }
+          # On most arm64 kernels KVM is built in (CONFIG_KVM=y), so `modprobe kvm`
+          # is a no-op that returns success even when KVM is non-functional — its
+          # exit code tells us nothing. Attempt it for the rare modular kernel, but
+          # do NOT treat success as proof of working virtualization; the real check
+          # is whether /dev/kvm appears (handled in the verify step below).
+          sudo modprobe kvm 2>/dev/null || echo "(modprobe kvm not applicable — KVM likely built-in)"
 
-          # Make /dev/kvm usable for the runner user.
+          # Make /dev/kvm usable for the runner user (only if the kernel created it).
           if [[ -e /dev/kvm ]]; then
             sudo chgrp kvm /dev/kvm || true
             sudo chmod 660 /dev/kvm || true
             sudo usermod -aG kvm "$(id -un)" || true
           fi
 
+      - name: KVM root-cause diagnostics
+        if: always()
+        run: |
+          set -uxo pipefail
+          # Capture WHY KVM is (un)available. On arm64, KVM needs the CPU to have
+          # booted at EL2 (hypervisor exception level); a non-nested guest VM boots
+          # at EL1 and the kernel then refuses to initialize KVM, so /dev/kvm is
+          # never created. `dmesg` is restricted (kernel.dmesg_restrict=1) so it
+          # must be run via sudo to be useful.
+          echo "=== kernel KVM / boot-mode messages ==="
+          sudo dmesg 2>/dev/null | grep -iE 'kvm|hyp mode|EL2|EL1|booted in' || \
+            echo "(no KVM/EL messages found in dmesg)"
+          echo "=== /sys/module/kvm ==="
+          ls -la /sys/module/kvm 2>/dev/null || echo "(kvm module not present in /sys)"
+          echo "=== /dev nodes in the kvm group ==="
+          ls -la /dev/ | grep -i kvm || echo "(no /dev/kvm node)"
+          echo "=== CPU virtualization summary ==="
+          lscpu | grep -iE 'hypervisor|virtual' || true
+
       - name: Verify KVM is working
         run: |
           set -euxo pipefail
           if [[ ! -e /dev/kvm ]]; then
-            echo "::error::/dev/kvm still missing after install attempt"
-            ls -la /dev/ | grep -i kvm || true
-            dmesg | tail -50 || true
+            echo "::error::/dev/kvm is not available on this runner — KVM cannot be enabled here."
+            echo "::error::On arm64 this almost always means the runner is a guest VM booted at EL1 without nested virtualization (no EL2), so the kernel never creates /dev/kvm. Installing userspace packages cannot fix this; it requires a host/runner that exposes hardware virtualization. See the 'KVM root-cause diagnostics' step above for the kernel's verdict."
             exit 1
           fi
 
