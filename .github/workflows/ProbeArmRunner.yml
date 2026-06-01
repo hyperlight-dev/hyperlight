@@ -13,6 +13,12 @@ name: Probe ARM Runner (KVM)
 
 on:
   workflow_dispatch:
+  # Temporary: lets the probe run on push to its own branch since the file
+  # isn't on the default branch yet (workflow_dispatch UI needs it on main).
+  # Remove this push trigger before merging.
+  push:
+    branches:
+      - ci/probe-arm-kvm-runner
 
 permissions:
   contents: read
