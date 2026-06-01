@@ -302,7 +302,6 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn snapshot(
         &mut self,
-        sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
         root_pt_gpas: &[u64],
         rsp_gva: u64,
@@ -314,7 +313,6 @@ where
         Snapshot::new(
             &mut self.shared_mem,
             &mut self.scratch_mem,
-            sandbox_id,
             self.layout,
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,

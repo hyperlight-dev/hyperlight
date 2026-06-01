@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
@@ -34,8 +33,6 @@ use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-
-pub(super) static SANDBOX_CONFIGURATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const PTE_SIZE: usize = size_of::<vmem::PageTableEntry>();
 
@@ -65,15 +62,9 @@ pub enum NextAction {
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
 pub struct Snapshot {
-    /// Unique ID of the sandbox configuration for sandboxes where
-    /// this snapshot may be restored.
-    sandbox_id: u64,
     /// Layout object for the sandbox. TODO: get rid of this and
     /// replace with something saner and set up from the guest (early
     /// on?).
-    ///
-    /// Not checked on restore, since any sandbox with the same
-    /// configuration id will share the same layout
     layout: crate::mem::layout::SandboxMemoryLayout,
     /// Memory of the sandbox at the time this snapshot was taken
     memory: ReadonlySharedMemory,
@@ -376,7 +367,6 @@ impl Snapshot {
         let extra_regions = Vec::new();
 
         Ok(Self {
-            sandbox_id: SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size)?,
             layout,
             regions: extra_regions,
@@ -403,7 +393,6 @@ impl Snapshot {
     pub(crate) fn new<S: SharedMemory>(
         shared_mem: &mut SnapshotSharedMemory<S>,
         scratch_mem: &mut S,
-        sandbox_id: u64,
         mut layout: SandboxMemoryLayout,
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
@@ -568,7 +557,6 @@ impl Snapshot {
         let regions: Vec<MemoryRegion> = Vec::new();
 
         Ok(Self {
-            sandbox_id,
             layout,
             memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
             regions,
@@ -584,11 +572,6 @@ impl Snapshot {
     /// Generation number assigned to this snapshot when it was taken.
     pub(crate) fn snapshot_generation(&self) -> u64 {
         self.snapshot_generation
-    }
-
-    /// The id of the sandbox this snapshot was taken from.
-    pub(crate) fn sandbox_id(&self) -> u64 {
-        self.sandbox_id
     }
 
     /// Get the mapped regions from this snapshot
@@ -640,7 +623,10 @@ impl Snapshot {
     /// A snapshot with no recorded host functions (e.g. one
     /// produced by a test-only constructor) accepts any `provided`
     /// set.
-    pub(crate) fn validate_host_functions(&self, provided: &crate::HostFunctions) -> Result<()> {
+    pub(crate) fn validate_host_functions(
+        &self,
+        provided: &crate::sandbox::host_funcs::FunctionRegistry,
+    ) -> Result<()> {
         let required = match &self.host_functions.host_functions {
             Some(v) => v,
             None => return Ok(()),
@@ -653,7 +639,7 @@ impl Snapshot {
         let mut signature_mismatches: Vec<String> = Vec::new();
 
         for req in required {
-            match provided.inner().function_signature(&req.function_name) {
+            match provided.function_signature(&req.function_name) {
                 // Function name is absent from the provided registry.
                 None => missing.push(req.function_name.clone()),
                 // Function exists, but signature does not match.
@@ -684,11 +670,30 @@ impl Snapshot {
             return Ok(());
         }
 
-        Err(crate::new_error!(
-            "snapshot host function mismatch: missing={:?}, signature_mismatches={:?}",
+        Err(crate::HyperlightError::SnapshotHostFunctionMismatch {
             missing,
-            signature_mismatches
-        ))
+            signature_mismatches,
+        })
+    }
+
+    /// Validate that this snapshot can be applied to a sandbox with
+    /// the given memory layout and host-function registry.
+    ///
+    /// The layout must be structurally compatible with the snapshot's
+    /// layout (see
+    /// [`SandboxMemoryLayout::is_compatible_with`](crate::mem::layout::SandboxMemoryLayout::is_compatible_with)),
+    /// and the registry must be a superset of the host functions the
+    /// snapshot requires (see
+    /// [`validate_host_functions`](Self::validate_host_functions)).
+    pub(crate) fn validate_compatibility(
+        &self,
+        layout: &crate::mem::layout::SandboxMemoryLayout,
+        host_funcs: &crate::sandbox::host_funcs::FunctionRegistry,
+    ) -> Result<()> {
+        if !self.layout().is_compatible_with(layout) {
+            return Err(crate::HyperlightError::SnapshotLayoutMismatch);
+        }
+        self.validate_host_functions(host_funcs)
     }
 }
 
@@ -760,7 +765,6 @@ mod tests {
         let snapshot_a = super::Snapshot::new(
             &mut make_simple_pt_mem(&pattern_a).build().0,
             &mut mgr.scratch_mem,
-            1,
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),
@@ -778,7 +782,6 @@ mod tests {
         let snapshot_b = super::Snapshot::new(
             &mut make_simple_pt_mem(&pattern_b).build().0,
             &mut mgr.scratch_mem,
-            2,
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),

@@ -240,9 +240,25 @@ pub enum HyperlightError {
     #[error("Failed To Convert Return Value {0:?} to {1:?}")]
     ReturnValueConversionFailure(ReturnValue, &'static str),
 
-    /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
-    #[error("Snapshot was taken from a different sandbox")]
-    SnapshotSandboxMismatch,
+    /// Tried to restore a snapshot into a sandbox whose memory
+    /// layout is not compatible with the snapshot's.
+    #[error("Snapshot memory layout is not compatible with this sandbox")]
+    SnapshotLayoutMismatch,
+
+    /// Tried to restore a snapshot into a sandbox whose registered
+    /// host functions do not satisfy the snapshot's required set.
+    #[error(
+        "Snapshot host function mismatch: missing=[{}], signature mismatches=[{}]",
+        missing.join(", "),
+        signature_mismatches.join("; ")
+    )]
+    SnapshotHostFunctionMismatch {
+        /// Functions that are required by the snapshot but not present in the target sandbox.
+        missing: Vec<String>,
+        /// Human-readable descriptions of functions whose signatures
+        /// disagree between the snapshot and the target sandbox.
+        signature_mismatches: Vec<String>,
+    },
 
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
@@ -385,7 +401,8 @@ impl HyperlightError {
             | HyperlightError::RefCellBorrowFailed(_)
             | HyperlightError::RefCellMutBorrowFailed(_)
             | HyperlightError::ReturnValueConversionFailure(_, _)
-            | HyperlightError::SnapshotSandboxMismatch
+            | HyperlightError::SnapshotLayoutMismatch
+            | HyperlightError::SnapshotHostFunctionMismatch { .. }
             | HyperlightError::SystemTimeError(_)
             | HyperlightError::TryFromSliceError(_)
             | HyperlightError::UnexpectedNoOfArguments(_, _)

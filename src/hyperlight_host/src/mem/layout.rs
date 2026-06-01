@@ -296,6 +296,40 @@ impl Debug for SandboxMemoryLayout {
 }
 
 impl SandboxMemoryLayout {
+    /// Whether `other` has the same layout configuration as `self`,
+    /// i.e. the fields that come from the guest binary and the
+    /// `SandboxConfiguration`. `snapshot_size` and `pt_size` are
+    /// excluded because they are outputs of building a snapshot blob
+    /// (the compacted data size and the size of the rebuilt
+    /// page-table tail), not configuration inputs, so they differ
+    /// between the sandbox's live layout and any snapshot taken
+    /// from it.
+    ///
+    /// TODO: separate/remove snapshot_size and pt_size from this struct.
+    pub(crate) fn is_compatible_with(&self, other: &Self) -> bool {
+        // Exhaustive destructure so adding a field to
+        // `SandboxMemoryLayout` fails to compile here, forcing the
+        // author to decide whether it participates in compatibility.
+        let Self {
+            input_data_size,
+            output_data_size,
+            heap_size,
+            code_size,
+            init_data_size,
+            init_data_permissions,
+            scratch_size,
+            snapshot_size: _,
+            pt_size: _,
+        } = self;
+        *input_data_size == other.input_data_size
+            && *output_data_size == other.output_data_size
+            && *heap_size == other.heap_size
+            && *code_size == other.code_size
+            && *init_data_size == other.init_data_size
+            && *init_data_permissions == other.init_data_permissions
+            && *scratch_size == other.scratch_size
+    }
+
     /// The maximum amount of memory a single sandbox will be allowed.
     ///
     /// Both the scratch region and the snapshot region are bounded by
@@ -781,5 +815,57 @@ mod tests {
         cfg.set_input_data_size(16 * 1024 * 1024 * 1024);
         let layout = SandboxMemoryLayout::new(cfg, 4096, 4096, None);
         assert!(matches!(layout.unwrap_err(), MemoryRequestTooBig(..)));
+    }
+
+    #[test]
+    fn is_compatible_with_identical_layouts() {
+        let cfg = SandboxConfiguration::default();
+        let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let b = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        assert!(a.is_compatible_with(&b));
+        assert!(b.is_compatible_with(&a));
+    }
+
+    #[test]
+    fn is_compatible_with_ignores_snapshot_size_and_pt_size() {
+        // `snapshot_size` and `pt_size` are outputs of building a
+        // snapshot blob, not configuration inputs, so flipping
+        // them must not break compatibility.
+        let cfg = SandboxConfiguration::default();
+        let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let mut b = a;
+        b.snapshot_size = a.snapshot_size + PAGE_SIZE_USIZE;
+        b.set_pt_size(PAGE_SIZE_USIZE).unwrap();
+        assert!(a.is_compatible_with(&b));
+        assert!(b.is_compatible_with(&a));
+    }
+
+    #[test]
+    fn is_compatible_with_rejects_each_configured_field() {
+        let cfg = SandboxConfiguration::default();
+        let base = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+
+        // Each mutation must independently break compatibility.
+        let mutators: &[fn(&mut SandboxMemoryLayout)] = &[
+            |l| l.input_data_size += PAGE_SIZE_USIZE,
+            |l| l.output_data_size += PAGE_SIZE_USIZE,
+            |l| l.heap_size += PAGE_SIZE_USIZE,
+            |l| l.code_size += PAGE_SIZE_USIZE,
+            |l| l.init_data_size += PAGE_SIZE_USIZE,
+            |l| l.scratch_size += PAGE_SIZE_USIZE,
+            |l| {
+                l.init_data_permissions = Some(MemoryRegionFlags::READ);
+            },
+        ];
+        for mutate in mutators {
+            let mut other = base;
+            mutate(&mut other);
+            assert!(
+                !base.is_compatible_with(&other),
+                "mutation should have broken compatibility: {:?} vs {:?}",
+                base,
+                other,
+            );
+        }
     }
 }

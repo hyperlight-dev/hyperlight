@@ -16,7 +16,6 @@ limitations under the License.
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use flatbuffers::FlatBufferBuilder;
@@ -31,7 +30,6 @@ use super::Callable;
 use super::file_mapping::prepare_file_cow;
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
-use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
@@ -41,7 +39,7 @@ use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
-use crate::{Result, log_then_return};
+use crate::{HyperlightError, Result, log_then_return};
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -82,8 +80,6 @@ use crate::{Result, log_then_return};
 /// This is the **only safe way** to recover - it completely replaces all memory state,
 /// eliminating any inconsistencies. See [`restore()`](Self::restore) for details.
 pub struct MultiUseSandbox {
-    /// Unique identifier for this sandbox instance
-    id: u64,
     /// Whether this sandbox is poisoned
     poisoned: bool,
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
@@ -126,7 +122,6 @@ impl MultiUseSandbox {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
-            id: super::snapshot::SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
             poisoned: false,
             host_funcs,
             mem_mgr: mgr,
@@ -156,7 +151,9 @@ impl MultiUseSandbox {
     /// The provided [`HostFunctions`] must include every host function
     /// that was registered on the sandbox at the time the snapshot was
     /// taken (matched by name and signature). Additional host functions
-    /// not present in the snapshot are allowed.
+    /// not present in the snapshot are allowed. A mismatch returns
+    /// [`SnapshotHostFunctionMismatch`](crate::HyperlightError::SnapshotHostFunctionMismatch)
+    /// carrying the missing names and signature differences.
     ///
     /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
     /// can be supplied to override runtime settings such as timeouts and
@@ -201,7 +198,7 @@ impl MultiUseSandbox {
 
         // Validate that the provided host functions are a superset of
         // those required by the snapshot.
-        snapshot.validate_host_functions(&host_funcs)?;
+        snapshot.validate_host_functions(host_funcs.inner())?;
 
         let host_funcs = Arc::new(Mutex::new(host_funcs.into_inner()));
 
@@ -300,29 +297,25 @@ impl MultiUseSandbox {
         #[cfg(gdb)]
         let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
-        let mut sbox = MultiUseSandbox::from_uninit(
+        let sbox = MultiUseSandbox::from_uninit(
             host_funcs,
             hshm,
             vm,
             #[cfg(gdb)]
             dbg_mem_wrapper,
         );
-        // Use the snapshot's sandbox_id so that restore() back to this
-        // snapshot is permitted. The id is process-local and never
-        // persisted to disk: `Snapshot::from_oci` assigns a fresh id
-        // on every load, so two `from_file` calls of the same path
-        // yield restore-incompatible sandboxes (which is the intended
-        // safer default). Sandboxes built from clones of the same
-        // in-memory `Arc<Snapshot>` share the id and are mutually
-        // restore-compatible.
-        sbox.id = snapshot.sandbox_id();
         Ok(sbox)
     }
 
     /// Creates a snapshot of the sandbox's current memory state.
     ///
-    /// The snapshot is tied to this specific sandbox instance and can only be
-    /// restored to the same sandbox it was created from.
+    /// The returned snapshot can be applied to any
+    /// [`MultiUseSandbox`] whose memory layout is structurally
+    /// compatible with this sandbox's layout and whose registered
+    /// host functions are a superset of those registered here at the
+    /// time of capture. See [`MultiUseSandbox::restore`] and
+    /// [`MultiUseSandbox::from_snapshot`] for the exact compatibility
+    /// rules and the error variants returned on mismatch.
     ///
     /// ## Poisoned Sandbox
     ///
@@ -342,7 +335,7 @@ impl MultiUseSandbox {
     /// // Modify sandbox state
     /// sandbox.call_guest_function_by_name::<i32>("SetValue", 42)?;
     ///
-    /// // Create snapshot belonging to this sandbox
+    /// // Capture a snapshot of the current memory state
     /// let snapshot = sandbox.snapshot()?;
     /// # Ok(())
     /// # }
@@ -387,7 +380,6 @@ impl MultiUseSandbox {
             .into();
 
         let memory_snapshot = self.mem_mgr.snapshot(
-            self.id,
             mapped_regions_vec,
             &root_pt_gpas,
             stack_top_gpa,
@@ -402,11 +394,16 @@ impl MultiUseSandbox {
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
     ///
-    /// The snapshot must have been created from this same sandbox instance.
-    /// Attempting to restore a snapshot from a different sandbox will return
-    /// a [`SnapshotSandboxMismatch`](crate::HyperlightError::SnapshotSandboxMismatch) error.
+    /// The snapshot's memory layout must be structurally compatible
+    /// with this sandbox's layout, otherwise this returns
+    /// [`SnapshotLayoutMismatch`](crate::HyperlightError::SnapshotLayoutMismatch).
     ///
-    /// Registered host functions are not modified by `restore`.
+    /// The sandbox's registered host functions must be a superset of
+    /// those required by the snapshot (matched by name and
+    /// signature). Extras on the sandbox are allowed. The registry
+    /// itself is left unchanged. A mismatch returns
+    /// [`SnapshotHostFunctionMismatch`](crate::HyperlightError::SnapshotHostFunctionMismatch)
+    /// carrying the missing names and signature differences.
     ///
     /// ## Poison State Recovery
     ///
@@ -502,8 +499,12 @@ impl MultiUseSandbox {
         // However, out of an abundance of caution, the optimisation
         // is presently disabled.
 
-        if self.id != snapshot.sandbox_id() {
-            return Err(SnapshotSandboxMismatch);
+        {
+            let host_funcs = self
+                .host_funcs
+                .try_lock()
+                .map_err(|e| crate::new_error!("Error locking host_funcs: {}", e))?;
+            snapshot.validate_compatibility(&self.mem_mgr.layout, &host_funcs)?;
         }
 
         let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
@@ -1652,8 +1653,63 @@ mod tests {
         assert_eq!(new_read, orig_read);
     }
 
+    /// Compaction copies mapped-region pages into the snapshot blob,
+    /// so cross-instance restore preserves their contents without the
+    /// target ever mapping the region.
     #[test]
-    fn snapshot_different_sandbox() {
+    fn snapshot_restore_across_sandboxes_preserves_mapped_region_contents() {
+        let mut source: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let map_mem = allocate_guest_memory();
+        let guest_base = 0x200000000_usize;
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+        unsafe { source.map_region(&region).unwrap() };
+
+        // do_map=true installs the guest PTE for the region.
+        let orig_read = source
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    guest_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    true,
+                ),
+            )
+            .unwrap();
+
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+
+        // Snapshot PTEs resolve to GPAs in the snapshot blob, so the
+        // data is readable without re-mapping.
+        let new_read = target
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    guest_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    false,
+                ),
+            )
+            .unwrap();
+        assert_eq!(new_read, orig_read);
+    }
+
+    #[test]
+    fn snapshot_restore_across_sandboxes() {
         let mut sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
@@ -1665,23 +1721,183 @@ mod tests {
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
-        assert_ne!(sandbox.id, sandbox2.id);
+
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+        assert_eq!(sandbox2.call::<i32>("GetStatic", ()).unwrap(), 0);
 
         let snapshot = sandbox.snapshot().unwrap();
-        let err = sandbox2.restore(snapshot.clone());
-        assert!(matches!(err, Err(HyperlightError::SnapshotSandboxMismatch)));
+        sandbox2.restore(snapshot).unwrap();
+        assert_eq!(sandbox2.call::<i32>("GetStatic", ()).unwrap(), 42);
+    }
 
-        let sandbox_id = sandbox.id;
-        drop(sandbox);
-        drop(sandbox2);
-        drop(snapshot);
+    #[test]
+    fn snapshot_restore_rejects_incompatible_layout() {
+        let mut sandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_heap_size(0x10_000);
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
+            u_sbox.evolve().unwrap()
+        };
 
-        let sandbox3 = {
+        let mut sandbox2 = {
+            let path = simple_guest_as_string().unwrap();
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_heap_size(0x20_000);
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let snapshot = sandbox.snapshot().unwrap();
+        let err = sandbox2.restore(snapshot);
+        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+    }
+
+    /// Validation runs before any memory or vCPU mutation, so a
+    /// rejected `restore` leaves the target usable.
+    #[test]
+    fn snapshot_restore_failure_leaves_target_usable() {
+        let path = simple_guest_as_string().unwrap();
+        let mut cfg_a = SandboxConfiguration::default();
+        cfg_a.set_heap_size(0x10_000);
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg_a))
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        let path = simple_guest_as_string().unwrap();
+        let mut cfg_b = SandboxConfiguration::default();
+        cfg_b.set_heap_size(0x20_000);
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg_b))
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        target.call::<i32>("AddToStatic", 5i32).unwrap();
+        let bad_snapshot = source.snapshot().unwrap();
+        let err = target.restore(bad_snapshot);
+        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 5);
+        target.call::<i32>("AddToStatic", 3i32).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 8);
+
+        let good_snapshot = target.snapshot().unwrap();
+        target.call::<i32>("AddToStatic", 100i32).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 108);
+        target.restore(good_snapshot).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 8);
+    }
+
+    /// `snapshot.regions()` is empty post-compaction, so restore
+    /// unmaps anything the target had mapped.
+    #[test]
+    fn snapshot_restore_across_sandboxes_target_has_mapped_regions() {
+        let mut source: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
-        assert_ne!(sandbox3.id, sandbox_id);
+        source.call::<i32>("AddToStatic", 23i32).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        let map_mem = allocate_guest_memory();
+        let guest_base = 0x200000000_usize;
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+        unsafe { target.map_region(&region).unwrap() };
+        assert_eq!(target.vm.get_mapped_regions().count(), 1);
+
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 23);
+    }
+
+    /// Compacted snapshot data is reachable at the source's GVA even
+    /// when the target had a different region mapped at a different
+    /// GVA.
+    #[test]
+    fn snapshot_restore_across_sandboxes_both_have_different_mapped_regions() {
+        let mut source: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        let source_mem = allocate_guest_memory();
+        let source_base = 0x200000000_usize;
+        let source_region = region_for_memory(&source_mem, source_base, MemoryRegionFlags::READ);
+        unsafe { source.map_region(&source_region).unwrap() };
+        let orig_read = source
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    source_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    true,
+                ),
+            )
+            .unwrap();
+        source.call::<i32>("AddToStatic", 9i32).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        let target_mem = allocate_guest_memory();
+        let target_base = 0x300000000_usize;
+        let target_region = region_for_memory(&target_mem, target_base, MemoryRegionFlags::READ);
+        unsafe { target.map_region(&target_region).unwrap() };
+        assert_eq!(target.vm.get_mapped_regions().count(), 1);
+
+        target.restore(snapshot).unwrap();
+
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 9);
+
+        let new_read = target
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    source_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    false,
+                ),
+            )
+            .unwrap();
+        assert_eq!(new_read, orig_read);
+    }
+
+    /// Repeated restore of the same snapshot is idempotent.
+    #[test]
+    fn snapshot_restore_across_sandboxes_repeated() {
+        let mut source: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        source.call::<i32>("AddToStatic", 7i32).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        target.restore(snapshot.clone()).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 7);
+
+        target.call::<i32>("AddToStatic", 1000i32).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 1007);
+
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 7);
     }
 
     /// Test that snapshot restore properly resets vCPU debug registers. This test verifies
@@ -2926,7 +3142,9 @@ mod tests {
         use crate::func::Registerable;
         use crate::sandbox::SandboxConfiguration;
         use crate::sandbox::snapshot::Snapshot;
-        use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
+        use crate::{
+            GuestBinary, HostFunctions, HyperlightError, MultiUseSandbox, UninitializedSandbox,
+        };
 
         fn make_sandbox() -> MultiUseSandbox {
             let path = simple_guest_as_string().unwrap();
@@ -2976,9 +3194,9 @@ mod tests {
             assert_eq!(sbox.call::<i32>("GetStatic", ()).unwrap(), 0);
         }
 
-        /// Sandboxes built from clones of one `Arc<Snapshot>` share
-        /// `sandbox_id` (so both can `restore` to it) but are
-        /// memory-isolated from each other.
+        /// Two sandboxes built from clones of one `Arc<Snapshot>` can
+        /// each `restore` back to it, and stay memory-isolated from
+        /// each other in between.
         #[test]
         fn arc_clone_isolation_and_restore_compat() {
             let mut sbox = make_sandbox();
@@ -3020,8 +3238,84 @@ mod tests {
             let snap = sbox.snapshot().unwrap();
             let err = MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)
                 .expect_err("missing `Add` must be rejected");
-            let msg = format!("{}", err);
-            assert!(msg.contains("Add"), "got: {}", msg);
+            assert!(
+                matches!(
+                    &err,
+                    HyperlightError::SnapshotHostFunctionMismatch { missing, signature_mismatches }
+                        if missing.iter().any(|n| n == "Add") && signature_mismatches.is_empty()
+                ),
+                "got: {:?}",
+                err
+            );
+        }
+
+        /// `restore` must also reject a snapshot whose required host
+        /// functions are not a subset of the target sandbox's. This
+        /// matters across sandboxes: a snapshot taken from a sandbox
+        /// with `Add` registered cannot be restored into a layout
+        /// compatible sandbox that lacks `Add`.
+        #[test]
+        fn restore_rejects_missing_host_function() {
+            let mut sbox_with_add = make_sandbox_with_add();
+            let snap = sbox_with_add.snapshot().unwrap();
+            let mut sbox_without_add = make_sandbox();
+            let err = sbox_without_add
+                .restore(snap)
+                .expect_err("missing `Add` must be rejected on restore");
+            assert!(
+                matches!(
+                    &err,
+                    HyperlightError::SnapshotHostFunctionMismatch { missing, .. }
+                        if missing.iter().any(|n| n == "Add")
+                ),
+                "got: {:?}",
+                err
+            );
+        }
+
+        /// `restore` rejects a snapshot whose required host function
+        /// shares a name with the target's but disagrees on signature.
+        #[test]
+        fn restore_rejects_signature_mismatch() {
+            let mut sbox_with_add = make_sandbox_with_add();
+            let snap = sbox_with_add.snapshot().unwrap();
+            let path = simple_guest_as_string().unwrap();
+            let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u.register_host_function("Add", |a: String, b: String| Ok(format!("{a}{b}")))
+                .unwrap();
+            let mut sbox_wrong_add = u.evolve().unwrap();
+            let err = sbox_wrong_add
+                .restore(snap)
+                .expect_err("signature mismatch on `Add` must be rejected on restore");
+            assert!(
+                matches!(
+                    &err,
+                    HyperlightError::SnapshotHostFunctionMismatch { missing, signature_mismatches }
+                        if missing.is_empty() && signature_mismatches.iter().any(|s| s.contains("Add"))
+                ),
+                "got: {:?}",
+                err
+            );
+        }
+
+        /// Cross-instance `restore` succeeds when the target registers
+        /// a strict superset of the snapshot's host functions.
+        #[test]
+        fn restore_across_sandboxes_with_superset_host_funcs() {
+            let mut source = make_sandbox_with_add();
+            source.call::<i32>("AddToStatic", 17i32).unwrap();
+            let snap = source.snapshot().unwrap();
+
+            let path = simple_guest_as_string().unwrap();
+            let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
+                .unwrap();
+            u.register_host_function("Mul", |a: i32, b: i32| Ok(a * b))
+                .unwrap();
+            let mut target = u.evolve().unwrap();
+
+            target.restore(snap).unwrap();
+            assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 17);
         }
 
         #[test]
@@ -3033,8 +3327,15 @@ mod tests {
                 .unwrap();
             let err = MultiUseSandbox::from_snapshot(snap, hf, None)
                 .expect_err("signature mismatch on `Add` must be rejected");
-            let msg = format!("{}", err);
-            assert!(msg.contains("Add"), "got: {}", msg);
+            assert!(
+                matches!(
+                    &err,
+                    HyperlightError::SnapshotHostFunctionMismatch { missing, signature_mismatches }
+                        if missing.is_empty() && signature_mismatches.iter().any(|s| s.contains("Add"))
+                ),
+                "got: {:?}",
+                err
+            );
         }
 
         /// Supplied host-function set may be a strict superset of the
