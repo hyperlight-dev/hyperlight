@@ -158,7 +158,7 @@ impl HyperlightVm {
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] _dbg_mem_access_fn: Arc<
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<
             std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
         >,
     ) -> Result<(), DispatchGuestCallError> {
@@ -186,7 +186,7 @@ impl HyperlightVm {
                 mem_mgr,
                 host_funcs,
                 #[cfg(gdb)]
-                mem_access_fn,
+                dbg_mem_access_fn,
             )
             .map_err(DispatchGuestCallError::Run);
         self.pending_tlb_flush = false;
