@@ -54,9 +54,8 @@ fn mmio_read() {
         #[cfg(target_arch = "x86_64")]
         asm!("mov al, [0x8000]");
 
-        let mut out: u8;
         #[cfg(target_arch = "aarch64")]
-        asm!("ldr {0:x}, [{1}]", out(reg) out, in(reg) 0x8000);
+        asm!("ldr {0:x}, [{1}]", out(reg) _, in(reg) 0x8000);
     }
 }
 
