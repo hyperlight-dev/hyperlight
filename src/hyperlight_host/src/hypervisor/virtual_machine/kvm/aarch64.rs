@@ -186,19 +186,9 @@ impl VirtualMachine for KvmVm {
                 // instruction as usual, but set the Zero flag. The
                 // guest should detect this and attempt to fault in
                 // the page and re-try the operation.
-                use crate::hypervisor::regs::kvm_reg::{get_reg, set_reg};
-                let pc = get_reg!(
-                    &self.vcpu_fd,
-                    |e| { RunVcpuError::Unknown(e.into()) },
-                    PC,
-                    u64
-                )?;
-                let pstate = get_reg!(
-                    &self.vcpu_fd,
-                    |e| { RunVcpuError::Unknown(e.into()) },
-                    PSTATE,
-                    u64
-                )?;
+                use crate::hypervisor::regs::kvm_reg::{PC, PSTATE};
+                let pc = PC.get(RunVcpuError::Unknown, &self.vcpu_fd)?;
+                let pstate = PSTATE.get(RunVcpuError::Unknown, &self.vcpu_fd)?;
 
                 const Z_BIT: u64 = 1 << 30;
                 // Because we got here from the NISV mmio exit path,
@@ -216,20 +206,8 @@ impl VirtualMachine for KvmVm {
                     // any Cache Maintenance instruction in the VM is
                     // part of a Hyperlight-aware sequence and can
                     // deal with it.
-                    set_reg!(
-                        &self.vcpu_fd,
-                        |e| { RunVcpuError::Unknown(e.into()) },
-                        PSTATE,
-                        u64,
-                        pstate | Z_BIT
-                    )?;
-                    set_reg!(
-                        &self.vcpu_fd,
-                        |e| { RunVcpuError::Unknown(e.into()) },
-                        PC,
-                        u64,
-                        pc + 4
-                    )?;
+                    PSTATE.set(RunVcpuError::Unknown, &self.vcpu_fd, pstate | Z_BIT)?;
+                    PC.set(RunVcpuError::Unknown, &self.vcpu_fd, pc + 4)?;
                     continue;
                 }
             }
@@ -295,209 +273,81 @@ impl VirtualMachine for KvmVm {
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::get_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::GetSregs(e.into())
+        use crate::hypervisor::regs::kvm_reg::{X, SP, PC, PSTATE};
+        let mut x: [u64; 31] = [0; 31];
+        for i in 0..31 {
+            x[i] = X[i].get(RegisterError::GetSregs, &self.vcpu_fd)?;
         }
         Ok(CommonRegisters {
-            x: [
-                get_reg!(&self.vcpu_fd, err, X0, u64)?,
-                get_reg!(&self.vcpu_fd, err, X1, u64)?,
-                get_reg!(&self.vcpu_fd, err, X2, u64)?,
-                get_reg!(&self.vcpu_fd, err, X3, u64)?,
-                get_reg!(&self.vcpu_fd, err, X4, u64)?,
-                get_reg!(&self.vcpu_fd, err, X5, u64)?,
-                get_reg!(&self.vcpu_fd, err, X6, u64)?,
-                get_reg!(&self.vcpu_fd, err, X7, u64)?,
-                get_reg!(&self.vcpu_fd, err, X8, u64)?,
-                get_reg!(&self.vcpu_fd, err, X9, u64)?,
-                get_reg!(&self.vcpu_fd, err, X10, u64)?,
-                get_reg!(&self.vcpu_fd, err, X11, u64)?,
-                get_reg!(&self.vcpu_fd, err, X12, u64)?,
-                get_reg!(&self.vcpu_fd, err, X13, u64)?,
-                get_reg!(&self.vcpu_fd, err, X14, u64)?,
-                get_reg!(&self.vcpu_fd, err, X15, u64)?,
-                get_reg!(&self.vcpu_fd, err, X16, u64)?,
-                get_reg!(&self.vcpu_fd, err, X17, u64)?,
-                get_reg!(&self.vcpu_fd, err, X18, u64)?,
-                get_reg!(&self.vcpu_fd, err, X19, u64)?,
-                get_reg!(&self.vcpu_fd, err, X20, u64)?,
-                get_reg!(&self.vcpu_fd, err, X21, u64)?,
-                get_reg!(&self.vcpu_fd, err, X22, u64)?,
-                get_reg!(&self.vcpu_fd, err, X23, u64)?,
-                get_reg!(&self.vcpu_fd, err, X24, u64)?,
-                get_reg!(&self.vcpu_fd, err, X25, u64)?,
-                get_reg!(&self.vcpu_fd, err, X26, u64)?,
-                get_reg!(&self.vcpu_fd, err, X27, u64)?,
-                get_reg!(&self.vcpu_fd, err, X28, u64)?,
-                get_reg!(&self.vcpu_fd, err, X29, u64)?,
-                get_reg!(&self.vcpu_fd, err, X30, u64)?,
-            ],
-            sp: get_reg!(&self.vcpu_fd, err, SP, u64)?,
-            pc: get_reg!(&self.vcpu_fd, err, PC, u64)?,
-            pstate: get_reg!(&self.vcpu_fd, err, PSTATE, u64)?,
+            x,
+            sp: SP.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            pc: PC.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            pstate: PSTATE.get(RegisterError::GetSregs, &self.vcpu_fd)?,
         })
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::set_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::SetSregs(e.into())
+        use crate::hypervisor::regs::kvm_reg::{X, SP, PC, PSTATE};
+        for i in 0..31 {
+            X[i].set(RegisterError::SetSregs, &self.vcpu_fd, regs.x[i])?;
         }
-        set_reg!(&self.vcpu_fd, err, X0, u64, regs.x[0])?;
-        set_reg!(&self.vcpu_fd, err, X1, u64, regs.x[1])?;
-        set_reg!(&self.vcpu_fd, err, X2, u64, regs.x[2])?;
-        set_reg!(&self.vcpu_fd, err, X3, u64, regs.x[3])?;
-        set_reg!(&self.vcpu_fd, err, X4, u64, regs.x[4])?;
-        set_reg!(&self.vcpu_fd, err, X5, u64, regs.x[5])?;
-        set_reg!(&self.vcpu_fd, err, X6, u64, regs.x[6])?;
-        set_reg!(&self.vcpu_fd, err, X7, u64, regs.x[7])?;
-        set_reg!(&self.vcpu_fd, err, X8, u64, regs.x[8])?;
-        set_reg!(&self.vcpu_fd, err, X9, u64, regs.x[9])?;
-        set_reg!(&self.vcpu_fd, err, X10, u64, regs.x[10])?;
-        set_reg!(&self.vcpu_fd, err, X11, u64, regs.x[11])?;
-        set_reg!(&self.vcpu_fd, err, X12, u64, regs.x[12])?;
-        set_reg!(&self.vcpu_fd, err, X13, u64, regs.x[13])?;
-        set_reg!(&self.vcpu_fd, err, X14, u64, regs.x[14])?;
-        set_reg!(&self.vcpu_fd, err, X15, u64, regs.x[15])?;
-        set_reg!(&self.vcpu_fd, err, X16, u64, regs.x[16])?;
-        set_reg!(&self.vcpu_fd, err, X17, u64, regs.x[17])?;
-        set_reg!(&self.vcpu_fd, err, X18, u64, regs.x[18])?;
-        set_reg!(&self.vcpu_fd, err, X19, u64, regs.x[19])?;
-        set_reg!(&self.vcpu_fd, err, X20, u64, regs.x[20])?;
-        set_reg!(&self.vcpu_fd, err, X21, u64, regs.x[21])?;
-        set_reg!(&self.vcpu_fd, err, X22, u64, regs.x[22])?;
-        set_reg!(&self.vcpu_fd, err, X23, u64, regs.x[23])?;
-        set_reg!(&self.vcpu_fd, err, X24, u64, regs.x[24])?;
-        set_reg!(&self.vcpu_fd, err, X25, u64, regs.x[25])?;
-        set_reg!(&self.vcpu_fd, err, X26, u64, regs.x[26])?;
-        set_reg!(&self.vcpu_fd, err, X27, u64, regs.x[27])?;
-        set_reg!(&self.vcpu_fd, err, X28, u64, regs.x[28])?;
-        set_reg!(&self.vcpu_fd, err, X29, u64, regs.x[29])?;
-        set_reg!(&self.vcpu_fd, err, X30, u64, regs.x[30])?;
-        set_reg!(&self.vcpu_fd, err, SP, u64, regs.sp)?;
-        set_reg!(&self.vcpu_fd, err, PC, u64, regs.pc)?;
-        set_reg!(&self.vcpu_fd, err, PSTATE, u64, regs.pstate)?;
+        SP.set(RegisterError::SetSregs, &self.vcpu_fd, regs.sp)?;
+        PC.set(RegisterError::SetSregs, &self.vcpu_fd, regs.pc)?;
+        PSTATE.set(RegisterError::SetSregs, &self.vcpu_fd, regs.pstate)?;
 
         Ok(())
     }
 
     fn fpu(&self) -> Result<CommonFpu, RegisterError> {
-        use crate::hypervisor::regs::CommonFpu;
-        use crate::hypervisor::regs::kvm_reg::get_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::GetFpu(e.into())
+        use crate::hypervisor::regs::kvm_reg::{V, FPSR, FPCR};
+        let mut v: [u128; 32] = [0; 32];
+        for i in 0..32 {
+            v[i] = V[i].get(RegisterError::GetFpu, &self.vcpu_fd)?;
         }
         Ok(CommonFpu {
-            v: [
-                get_reg!(&self.vcpu_fd, err, V0, u128)?,
-                get_reg!(&self.vcpu_fd, err, V1, u128)?,
-                get_reg!(&self.vcpu_fd, err, V2, u128)?,
-                get_reg!(&self.vcpu_fd, err, V3, u128)?,
-                get_reg!(&self.vcpu_fd, err, V4, u128)?,
-                get_reg!(&self.vcpu_fd, err, V5, u128)?,
-                get_reg!(&self.vcpu_fd, err, V6, u128)?,
-                get_reg!(&self.vcpu_fd, err, V7, u128)?,
-                get_reg!(&self.vcpu_fd, err, V8, u128)?,
-                get_reg!(&self.vcpu_fd, err, V9, u128)?,
-                get_reg!(&self.vcpu_fd, err, V10, u128)?,
-                get_reg!(&self.vcpu_fd, err, V11, u128)?,
-                get_reg!(&self.vcpu_fd, err, V12, u128)?,
-                get_reg!(&self.vcpu_fd, err, V13, u128)?,
-                get_reg!(&self.vcpu_fd, err, V14, u128)?,
-                get_reg!(&self.vcpu_fd, err, V15, u128)?,
-                get_reg!(&self.vcpu_fd, err, V16, u128)?,
-                get_reg!(&self.vcpu_fd, err, V17, u128)?,
-                get_reg!(&self.vcpu_fd, err, V18, u128)?,
-                get_reg!(&self.vcpu_fd, err, V19, u128)?,
-                get_reg!(&self.vcpu_fd, err, V20, u128)?,
-                get_reg!(&self.vcpu_fd, err, V21, u128)?,
-                get_reg!(&self.vcpu_fd, err, V22, u128)?,
-                get_reg!(&self.vcpu_fd, err, V23, u128)?,
-                get_reg!(&self.vcpu_fd, err, V24, u128)?,
-                get_reg!(&self.vcpu_fd, err, V25, u128)?,
-                get_reg!(&self.vcpu_fd, err, V26, u128)?,
-                get_reg!(&self.vcpu_fd, err, V27, u128)?,
-                get_reg!(&self.vcpu_fd, err, V28, u128)?,
-                get_reg!(&self.vcpu_fd, err, V29, u128)?,
-                get_reg!(&self.vcpu_fd, err, V30, u128)?,
-                get_reg!(&self.vcpu_fd, err, V31, u128)?,
-            ],
-            fpsr: get_reg!(&self.vcpu_fd, err, FPSR, u32)?,
-            fpcr: get_reg!(&self.vcpu_fd, err, FPCR, u32)?,
+            v,
+            fpsr: FPSR.get(RegisterError::GetFpu, &self.vcpu_fd)?,
+            fpcr: FPCR.get(RegisterError::GetFpu, &self.vcpu_fd)?,
         })
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::set_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::SetFpu(e.into())
+        use crate::hypervisor::regs::kvm_reg::{V, FPSR, FPCR};
+        for i in 0..32 {
+            V[i].set(RegisterError::SetFpu, &self.vcpu_fd, fpu.v[0])?;
         }
-        set_reg!(&self.vcpu_fd, err, V0, u128, fpu.v[0])?;
-        set_reg!(&self.vcpu_fd, err, V1, u128, fpu.v[1])?;
-        set_reg!(&self.vcpu_fd, err, V2, u128, fpu.v[2])?;
-        set_reg!(&self.vcpu_fd, err, V3, u128, fpu.v[3])?;
-        set_reg!(&self.vcpu_fd, err, V4, u128, fpu.v[4])?;
-        set_reg!(&self.vcpu_fd, err, V5, u128, fpu.v[5])?;
-        set_reg!(&self.vcpu_fd, err, V6, u128, fpu.v[6])?;
-        set_reg!(&self.vcpu_fd, err, V7, u128, fpu.v[7])?;
-        set_reg!(&self.vcpu_fd, err, V8, u128, fpu.v[8])?;
-        set_reg!(&self.vcpu_fd, err, V9, u128, fpu.v[9])?;
-        set_reg!(&self.vcpu_fd, err, V10, u128, fpu.v[10])?;
-        set_reg!(&self.vcpu_fd, err, V11, u128, fpu.v[11])?;
-        set_reg!(&self.vcpu_fd, err, V12, u128, fpu.v[12])?;
-        set_reg!(&self.vcpu_fd, err, V13, u128, fpu.v[13])?;
-        set_reg!(&self.vcpu_fd, err, V14, u128, fpu.v[14])?;
-        set_reg!(&self.vcpu_fd, err, V15, u128, fpu.v[15])?;
-        set_reg!(&self.vcpu_fd, err, V16, u128, fpu.v[16])?;
-        set_reg!(&self.vcpu_fd, err, V17, u128, fpu.v[17])?;
-        set_reg!(&self.vcpu_fd, err, V18, u128, fpu.v[18])?;
-        set_reg!(&self.vcpu_fd, err, V19, u128, fpu.v[19])?;
-        set_reg!(&self.vcpu_fd, err, V20, u128, fpu.v[20])?;
-        set_reg!(&self.vcpu_fd, err, V21, u128, fpu.v[21])?;
-        set_reg!(&self.vcpu_fd, err, V22, u128, fpu.v[22])?;
-        set_reg!(&self.vcpu_fd, err, V23, u128, fpu.v[23])?;
-        set_reg!(&self.vcpu_fd, err, V24, u128, fpu.v[24])?;
-        set_reg!(&self.vcpu_fd, err, V25, u128, fpu.v[25])?;
-        set_reg!(&self.vcpu_fd, err, V26, u128, fpu.v[26])?;
-        set_reg!(&self.vcpu_fd, err, V27, u128, fpu.v[27])?;
-        set_reg!(&self.vcpu_fd, err, V28, u128, fpu.v[28])?;
-        set_reg!(&self.vcpu_fd, err, V29, u128, fpu.v[29])?;
-        set_reg!(&self.vcpu_fd, err, V30, u128, fpu.v[30])?;
-        set_reg!(&self.vcpu_fd, err, V31, u128, fpu.v[31])?;
-        set_reg!(&self.vcpu_fd, err, FPSR, u32, fpu.fpsr)?;
-        set_reg!(&self.vcpu_fd, err, FPCR, u32, fpu.fpcr)?;
+        FPSR.set(RegisterError::SetFpu, &self.vcpu_fd, fpu.fpsr)?;
+        FPCR.set(RegisterError::SetFpu, &self.vcpu_fd, fpu.fpcr)?;
         Ok(())
     }
 
     fn sregs(&self) -> Result<CommonSpecialRegisters, RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::get_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::GetSregs(e.into())
-        }
+        use crate::hypervisor::regs::kvm_reg::{
+            TTBR0_EL1, TCR_EL1, MAIR_EL1, SCTLR_EL1, CPACR_EL1, VBAR_EL1, SP_EL1,
+        };
         Ok(CommonSpecialRegisters {
-            ttbr0_el1: get_reg!(&self.vcpu_fd, err, TTBR0_EL1, u64)?,
-            tcr_el1: get_reg!(&self.vcpu_fd, err, TCR_EL1, u64)?,
-            mair_el1: get_reg!(&self.vcpu_fd, err, MAIR_EL1, u64)?,
-            sctlr_el1: get_reg!(&self.vcpu_fd, err, SCTLR_EL1, u64)?,
-            cpacr_el1: get_reg!(&self.vcpu_fd, err, CPACR_EL1, u64)?,
-            vbar_el1: get_reg!(&self.vcpu_fd, err, VBAR_EL1, u64)?,
-            sp_el1: get_reg!(&self.vcpu_fd, err, SP_EL1, u64)?,
+            ttbr0_el1: TTBR0_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            tcr_el1: TCR_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            mair_el1: MAIR_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            sctlr_el1: SCTLR_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            cpacr_el1: CPACR_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            vbar_el1: VBAR_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            sp_el1: SP_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
         })
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::set_reg;
-        fn err(e: kvm_ioctls::Error) -> RegisterError {
-            RegisterError::SetSregs(e.into())
-        }
-        set_reg!(&self.vcpu_fd, err, TTBR0_EL1, u64, sregs.ttbr0_el1)?;
-        set_reg!(&self.vcpu_fd, err, TCR_EL1, u64, sregs.tcr_el1)?;
-        set_reg!(&self.vcpu_fd, err, MAIR_EL1, u64, sregs.mair_el1)?;
-        set_reg!(&self.vcpu_fd, err, SCTLR_EL1, u64, sregs.sctlr_el1)?;
-        set_reg!(&self.vcpu_fd, err, CPACR_EL1, u64, sregs.cpacr_el1)?;
-        set_reg!(&self.vcpu_fd, err, VBAR_EL1, u64, sregs.vbar_el1)?;
-        set_reg!(&self.vcpu_fd, err, SP_EL1, u64, sregs.sp_el1)?;
+        use crate::hypervisor::regs::kvm_reg::{
+            TTBR0_EL1, TCR_EL1, MAIR_EL1, SCTLR_EL1, CPACR_EL1, VBAR_EL1, SP_EL1,
+        };
+        TTBR0_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.ttbr0_el1)?;
+        TCR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.tcr_el1)?;
+        MAIR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.mair_el1)?;
+        SCTLR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.sctlr_el1)?;
+        CPACR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.cpacr_el1)?;
+        VBAR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.vbar_el1)?;
+        SP_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.sp_el1)?;
+
         Ok(())
     }
 
