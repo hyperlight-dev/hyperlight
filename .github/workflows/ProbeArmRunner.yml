@@ -1,0 +1,167 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Probe ARM runner 
+#
+# Purpose: verify the `cncf-ubuntu-16-64-arm` runner is:
+#   1. ensure 64-bit
+#   2. has KVM available (/dev/kvm present + usable)
+#   3. if 64-bit but no KVM, install the userspace bits, load the module,
+#      then re-verify.
+#
+# Manual-only — this is a probe, not part of CI.
+name: Probe ARM Runner (KVM)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe-arm-kvm:
+    name: Probe cncf-ubuntu-16-64-arm
+    runs-on: cncf-ubuntu-16-64-arm
+    timeout-minutes: 20
+
+    steps:
+      - name: Show runner basics
+        run: |
+          set -euxo pipefail
+          uname -a
+          echo "arch=$(uname -m)"
+          echo "long_bit=$(getconf LONG_BIT)"
+          lscpu || true
+          # Show first few CPU features (ARM uses "Features", x86 uses "flags").
+          grep -m1 -E '^(Features|flags)' /proc/cpuinfo || true
+          free -h || true
+          df -h / || true
+
+      - name: Verify runner is 64-bit
+        id: bits
+        run: |
+          set -euo pipefail
+          bits=$(getconf LONG_BIT)
+          arch=$(uname -m)
+          echo "Detected: arch=${arch} bits=${bits}"
+          echo "bits=${bits}" >> "$GITHUB_OUTPUT"
+          echo "arch=${arch}" >> "$GITHUB_OUTPUT"
+          if [[ "${bits}" != "64" ]]; then
+            echo "::error::Runner is not 64-bit (got ${bits}-bit, arch=${arch})"
+            exit 1
+          fi
+          echo "✅ 64-bit confirmed (${arch})"
+
+      - name: Check for existing KVM
+        id: kvm_pre
+        run: |
+          set -euo pipefail
+          status=missing
+          reason=""
+          if [[ -e /dev/kvm ]]; then
+            ls -la /dev/kvm
+            if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+              status=present
+            else
+              status=present_no_access
+              reason="exists but not r/w for $(id -un)"
+            fi
+          else
+            reason="/dev/kvm does not exist"
+          fi
+          echo "Pre-install KVM status: ${status} (${reason})"
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          lsmod | grep -i kvm || echo "(no kvm module currently loaded)"
+
+      - name: Install KVM userspace (only if missing)
+        if: steps.bits.outputs.bits == '64' && steps.kvm_pre.outputs.status == 'missing'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          # On arm64, the native KVM userspace ships with qemu-system-arm.
+          # cpu-checker provides `kvm-ok` for diagnostics.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            qemu-system-arm \
+            qemu-utils \
+            cpu-checker \
+            libvirt-clients
+
+          # ARM64 has a single 'kvm' kernel module (no vendor split like kvm-intel/kvm-amd).
+          sudo modprobe kvm || {
+            echo "::error::Failed to load 'kvm' kernel module — host may lack virtualization extensions"
+            dmesg | tail -50 || true
+            exit 1
+          }
+
+          # Make /dev/kvm usable for the runner user.
+          if [[ -e /dev/kvm ]]; then
+            sudo chgrp kvm /dev/kvm || true
+            sudo chmod 660 /dev/kvm || true
+            sudo usermod -aG kvm "$(id -un)" || true
+          fi
+
+      - name: Verify KVM is working
+        run: |
+          set -euxo pipefail
+          if [[ ! -e /dev/kvm ]]; then
+            echo "::error::/dev/kvm still missing after install attempt"
+            ls -la /dev/ | grep -i kvm || true
+            dmesg | tail -50 || true
+            exit 1
+          fi
+
+          ls -la /dev/kvm
+          lsmod | grep -i kvm || true
+
+          if command -v kvm-ok >/dev/null 2>&1; then
+            # `kvm-ok` needs root to probe MSRs etc.; tolerate non-zero exit on ARM
+            # where its output is less informative than on x86.
+            sudo kvm-ok || true
+          fi
+
+          # Final access check. usermod changes don't take effect in the current
+          # shell, so fall back to sudo for the read/write probe.
+          if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+            echo "✅ /dev/kvm is r/w for $(id -un)"
+          elif sudo test -r /dev/kvm && sudo test -w /dev/kvm; then
+            echo "✅ /dev/kvm is r/w via sudo (group membership pending re-login)"
+          else
+            echo "::error::/dev/kvm exists but is not readable/writable"
+            exit 1
+          fi
+
+          # Open + KVM_GET_API_VERSION ioctl as the ultimate liveness check.
+          # KVM_GET_API_VERSION = _IO(KVMIO=0xAE, 0x00) = 0xAE00
+          # Expected return: 12 (stable since Linux 2.6.22).
+          sudo python3 - <<'PY'
+          import fcntl, os, sys
+          KVM_GET_API_VERSION = 0xAE00
+          EXPECTED = 12
+          fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
+          try:
+              api = fcntl.ioctl(fd, KVM_GET_API_VERSION, 0)
+          finally:
+              os.close(fd)
+          print(f"KVM_GET_API_VERSION returned {api}")
+          if api != EXPECTED:
+              print(f"::error::Unexpected KVM API version: {api} (expected {EXPECTED})", file=sys.stderr)
+              sys.exit(1)
+          print("✅ KVM ioctl probe succeeded")
+          PY
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ARM runner KVM probe 🛰️"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Architecture | \`$(uname -m)\` |"
+            echo "| Bits | $(getconf LONG_BIT) |"
+            echo "| /dev/kvm present | $([[ -e /dev/kvm ]] && echo yes || echo no) |"
+            echo "| KVM module loaded | $(lsmod | grep -qi '^kvm' && echo yes || echo no) |"
+          } >> "$GITHUB_STEP_SUMMARY"
