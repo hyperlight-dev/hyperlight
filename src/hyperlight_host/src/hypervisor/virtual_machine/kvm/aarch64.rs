@@ -216,7 +216,7 @@ impl VirtualMachine for KvmVm {
         match exit {
             Ok(VcpuExit::MmioWrite(addr, data)) => {
                 let io_page_gpa = const { hyperlight_common::layout::io_page().unwrap().0 };
-                if addr > io_page_gpa
+                if addr >= io_page_gpa
                     && let off = (addr - io_page_gpa) as usize
                     && off < hyperlight_common::vmem::PAGE_SIZE
                 {
