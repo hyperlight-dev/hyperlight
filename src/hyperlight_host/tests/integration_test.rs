@@ -929,7 +929,7 @@ fn interrupt_random_kill_stress_test() {
     use std::sync::atomic::AtomicUsize;
 
     use hyperlight_host::sandbox::snapshot::Snapshot;
-    use log::{error, trace};
+    use tracing::{error, trace};
 
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;

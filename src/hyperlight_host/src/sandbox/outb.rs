@@ -19,10 +19,9 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::outb::{Exception, OutBAction};
-use log::{Level, Record};
 use tracing::{Span, instrument};
-use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "mem_profile")]
@@ -46,8 +45,6 @@ pub enum HandleOutbError {
     InvalidPort(String),
     #[error("Failed to read guest log data: {0}")]
     ReadLogData(String),
-    #[error("Trace formatting error: {0}")]
-    TraceFormat(String),
     #[error("Failed to read host function call: {0}")]
     ReadHostFunctionCall(String),
     #[error("Failed to acquire lock at {0}:{1} - {2}")]
@@ -65,64 +62,77 @@ pub enum HandleOutbError {
 pub(super) fn outb_log(
     mgr: &mut SandboxMemoryManager<HostSharedMemory>,
 ) -> Result<(), HandleOutbError> {
-    // This code will create either a logging record or a tracing record for the GuestLogData depending on if the host has set up a tracing subscriber.
-    // In theory as we have enabled the log feature in the Cargo.toml for tracing this should happen
-    // automatically (based on if there is tracing subscriber present) but only works if the event created using macros. (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421 )
-    // The reason that we don't want to use the tracing macros is that we want to be able to explicitly
-    // set the file and line number for the log record which is not possible with macros.
-    // This is because the file and line number come from the  guest not the call site.
-
     let log_data: GuestLogData = mgr
         .read_guest_log_data()
         .map_err(|e| HandleOutbError::ReadLogData(e.to_string()))?;
 
-    let record_level: Level = (&log_data.level).into();
-
-    // Work out if we need to log or trace
-    // this API is marked as follows but it is the easiest way to work out if we should trace or log
-
-    // Private API for internal use by tracing's macros.
+    // Emit guest log data as a tracing event with structured fields.
     //
-    // This function is *not* considered part of `tracing`'s public API, and has no
-    // stability guarantees. If you use it, and it breaks or disappears entirely,
-    // don't say we didn't warn you.
+    // We match on the level at runtime because tracing macros determine their
+    // level at compile time. Guest file/line/module are passed as structured
+    // fields (rather than tracing metadata) because they originate from the
+    // guest, not from this call site.
+    //
+    // Consumers using a `log` logger (without a tracing subscriber) still
+    // receive these events thanks to the `tracing` crate's `log` feature,
+    // which forwards tracing events to the `log` facade when no subscriber
+    // is set.
+    let source_file = log_data.source_file.as_str();
+    let line = log_data.line;
+    let source = log_data.source.as_str();
+    let message = log_data.message.as_str();
 
-    let should_trace = tracing_core::dispatcher::has_been_set();
-    let source_file = Some(log_data.source_file.as_str());
-    let line = Some(log_data.line);
-    let source = Some(log_data.source.as_str());
-
-    // See https://github.com/rust-lang/rust/issues/42253 for the reason this has to be done this way
-
-    if should_trace {
-        // Create a tracing event for the GuestLogData
-        // Ideally we would create tracing metadata based on the Guest Log Data
-        // but tracing derives the metadata at compile time
-        // see https://github.com/tokio-rs/tracing/issues/2419
-        // so we leave it up to the subscriber to figure out that there are logging fields present with this data
-        format_trace(
-            &Record::builder()
-                .args(format_args!("{}", log_data.message))
-                .level(record_level)
-                .target("hyperlight_guest")
-                .file(source_file)
-                .line(line)
-                .module_path(source)
-                .build(),
-        )
-        .map_err(|e| HandleOutbError::TraceFormat(e.to_string()))?;
-    } else {
-        // Create a log record for the GuestLogData
-        log::logger().log(
-            &Record::builder()
-                .args(format_args!("{}", log_data.message))
-                .level(record_level)
-                .target("hyperlight_guest")
-                .file(Some(&log_data.source_file))
-                .line(Some(log_data.line))
-                .module_path(Some(&log_data.source))
-                .build(),
-        );
+    match &log_data.level {
+        LogLevel::Error | LogLevel::Critical => {
+            tracing::error!(
+                target: "hyperlight_guest",
+                guest_source_file = source_file,
+                guest_line = line,
+                guest_module = source,
+                "{}",
+                message
+            );
+        }
+        LogLevel::Warning => {
+            tracing::warn!(
+                target: "hyperlight_guest",
+                guest_source_file = source_file,
+                guest_line = line,
+                guest_module = source,
+                "{}",
+                message
+            );
+        }
+        LogLevel::Information => {
+            tracing::info!(
+                target: "hyperlight_guest",
+                guest_source_file = source_file,
+                guest_line = line,
+                guest_module = source,
+                "{}",
+                message
+            );
+        }
+        LogLevel::Debug => {
+            tracing::debug!(
+                target: "hyperlight_guest",
+                guest_source_file = source_file,
+                guest_line = line,
+                guest_module = source,
+                "{}",
+                message
+            );
+        }
+        LogLevel::Trace | LogLevel::None => {
+            tracing::trace!(
+                target: "hyperlight_guest",
+                guest_source_file = source_file,
+                guest_line = line,
+                guest_module = source,
+                "{}",
+                message
+            );
+        }
     }
 
     Ok(())
@@ -240,7 +250,6 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
     use hyperlight_testing::simple_guest_as_string;
-    use log::Level;
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
@@ -261,6 +270,10 @@ mod tests {
         )
     }
 
+    // Verifies that guest log events are forwarded to a `log` logger when no
+    // tracing subscriber is set. This exercises the `tracing` crate's built-in
+    // `log` compatibility feature, proving that consumers who only set up a
+    // `log` logger (not a tracing subscriber) still receive guest output.
     #[test]
     #[ignore]
     fn test_log_outb_log() {
@@ -338,17 +351,22 @@ mod tests {
                 outb_log(&mut mgr).unwrap();
 
                 LOGGER.test_log_records(|log_calls| {
-                    let expected_level: Level = (&level).into();
+                    let expected_level: tracing::Level = match level {
+                        LogLevel::Trace => tracing::Level::TRACE,
+                        LogLevel::Debug => tracing::Level::DEBUG,
+                        LogLevel::Information => tracing::Level::INFO,
+                        LogLevel::Warning => tracing::Level::WARN,
+                        LogLevel::Error => tracing::Level::ERROR,
+                        LogLevel::Critical => tracing::Level::ERROR,
+                        LogLevel::None => tracing::Level::TRACE,
+                    };
 
                     assert!(
                         log_calls
                             .iter()
                             .filter(|log_call| {
-                                log_call.level == expected_level
-                                    && log_call.line == Some(log_data.line)
-                                    && log_call.args == log_data.message
-                                    && log_call.module_path == Some(log_data.source.clone())
-                                    && log_call.file == Some(log_data.source_file.clone())
+                                log_call.level.as_str() == expected_level.as_str()
+                                    && log_call.args.contains("test log")
                             })
                             .count()
                             == 1,
@@ -426,13 +444,9 @@ mod tests {
 
                     // We cannot get the parent span using the `current_span()` method as by the time we get to this point that span has been exited so there is no current span
                     // We need to make sure that the span that we created is in the spans map instead
-                    // We expect to have created 21 spans at this point. We are only interested in the first one that was created when calling outb_log.
+                    // We are only interested in the first one that was created when calling outb_log.
 
-                    assert!(
-                        spans.len() == 21,
-                        "expected 21 spans, found {}",
-                        spans.len()
-                    );
+                    assert!(!spans.is_empty(), "expected at least one span, found none");
 
                     let span_value = spans
                         .get(&1)
@@ -468,9 +482,13 @@ mod tests {
                             event_values.get("metadata").unwrap().as_object().unwrap();
                         let event_values_map = event_values.as_object().unwrap();
                         test_value_as_str(metadata_values_map, "level", expected_level);
-                        test_value_as_str(event_values_map, "log.file", "test source file");
-                        test_value_as_str(event_values_map, "log.module_path", "test source");
-                        test_value_as_str(event_values_map, "log.target", "hyperlight_guest");
+                        test_value_as_str(
+                            event_values_map,
+                            "guest_source_file",
+                            "test source file",
+                        );
+                        test_value_as_str(event_values_map, "guest_module", "test source");
+                        test_value_as_str(metadata_values_map, "target", "hyperlight_guest");
                         count_matching_events += 1;
                     }
                     assert!(

@@ -54,8 +54,10 @@ use hyperlight_guest_bin::host_comm::{
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
-use log::{LevelFilter, error};
-use tracing::{Span, instrument};
+// `log` is intentionally kept here: the LogMessage guest function exercises the
+// guest-side `log` crate path to verify that guests using `log` are still supported.
+use log::LevelFilter;
+use tracing::{Span, error, instrument};
 
 extern crate hyperlight_guest;
 
@@ -962,7 +964,7 @@ fn call_host_then_spin(host_func_name: String) -> Result<()> {
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn fuzz_traced_function(depth: u32, max_depth: u32, msg: &str) -> u32 {
     if depth < max_depth {
-        log::info!("{}", msg);
+        tracing::info!("{}", msg);
 
         fuzz_traced_function(depth + 1, max_depth, msg) + 1
     } else {
