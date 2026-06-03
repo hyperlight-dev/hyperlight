@@ -51,9 +51,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            src/tests/rust_guests/simpleguest/target/sysroot
-            src/tests/rust_guests/dummyguest/target/sysroot
-            src/tests/rust_guests/witguest/target/sysroot
+            src/tests/rust_guests/target/sysroot
           key: sysroot-linux-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
@@ -66,9 +64,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
-            src/tests/rust_guests/simpleguest -> target
-            src/tests/rust_guests/dummyguest -> target
-            src/tests/rust_guests/witguest -> target
+            src/tests/rust_guests -> target
 
       - name: Install cargo-hyperlight
         run: cargo install cargo-hyperlight --version 0.1.10 --locked --force

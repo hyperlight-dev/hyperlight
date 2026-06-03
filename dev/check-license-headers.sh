@@ -34,7 +34,7 @@ MISSING_FILES=""
 # Find all Rust files, excluding target directory
 while IFS= read -r -d $'\0' file; do
     # Skip some files which appear when the guests are build
-    if grep -q '^src/tests/rust_guests/[^/]*/target/' <<< "$file"; then
+    if grep -q '^src/tests/rust_guests/target/' <<< "$file"; then
         continue
     fi
 

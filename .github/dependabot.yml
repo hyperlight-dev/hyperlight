@@ -16,25 +16,7 @@ updates:
       - "kind/dependencies"
     open-pull-requests-limit: 20
   - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/dummyguest"
-    schedule:
-      interval: "daily"
-      time: "03:00"
-    labels:
-      - "kind/dependencies"
-      - "area/guest"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/simpleguest"
-    schedule:
-      interval: "daily"
-      time: "03:00"
-    labels:
-      - "kind/dependencies"
-      - "area/guest"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/witguest"
+    directory: "/src/tests/rust_guests"
     schedule:
       interval: "daily"
       time: "03:00"

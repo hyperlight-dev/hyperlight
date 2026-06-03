@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 
-# This reusable workflow updates the Cargo.lock files in guest crates when
+# This reusable workflow updates the guest workspace Cargo.lock when
 # Dependabot updates dependencies. Without this, Dependabot PRs only update the
-# root Cargo.lock, leaving the guest crate Cargo.lock files stale.
+# root Cargo.lock, leaving the guest workspace Cargo.lock stale.
 #
 # See: https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automating-dependabot-with-github-actions
 
@@ -55,16 +55,8 @@ jobs:
         run: |
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
-      - name: Update simpleguest Cargo.lock
-        working-directory: src/tests/rust_guests/simpleguest
-        run: cargo fetch
-
-      - name: Update dummyguest Cargo.lock
-        working-directory: src/tests/rust_guests/dummyguest
-        run: cargo fetch
-
-      - name: Update witguest Cargo.lock
-        working-directory: src/tests/rust_guests/witguest
+      - name: Update guest Cargo.lock
+        working-directory: src/tests/rust_guests
         run: cargo fetch
 
       # Commits created via the Git Data API are automatically signed/verified
@@ -88,13 +80,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check if there are any changes to the guest Cargo.lock files
-          if git diff --quiet -- src/tests/rust_guests/*/Cargo.lock; then
-            echo "No changes to guest Cargo.lock files"
+          # Check if there are any changes to the guest Cargo.lock file
+          if git diff --quiet -- src/tests/rust_guests/Cargo.lock; then
+            echo "No changes to guest Cargo.lock file"
             exit 0
           fi
 
-          echo "Guest Cargo.lock files have changed, committing via API..."
+          echo "Guest Cargo.lock file has changed, committing via API..."
 
           # Get app identity for DCO sign-off trailer
           # Use the app-slug output from create-github-app-token (the /app API
@@ -110,7 +102,7 @@ jobs:
           # The tree API accepts "content" directly and creates blobs for us,
           # avoiding the need for separate blob creation API calls.
           TREE_JSON="[]"
-          for file in $(git diff --name-only -- src/tests/rust_guests/*/Cargo.lock); do
+          for file in $(git diff --name-only -- src/tests/rust_guests/Cargo.lock); do
             TREE_JSON=$(jq \
               --arg path "$file" \
               --arg content "$(cat "$file")" \
@@ -128,7 +120,7 @@ jobs:
           # Build commit message with DCO sign-off
           SIGNOFF="${app_slug}[bot] <${app_user_id}+${app_slug}[bot]@users.noreply.github.com>"
           COMMIT_MSG=$(printf '%s\n\n%s\n%s\n\n%s' \
-            "chore: update guest Cargo.lock files" \
+            "chore: update guest Cargo.lock file" \
             "Automatically updated by dependabot-update-guest-locks workflow." \
             "Triggered by: ${PR_TITLE}" \
             "Signed-off-by: ${SIGNOFF}")

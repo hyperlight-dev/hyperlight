@@ -41,9 +41,9 @@ jobs:
             return all_file_count === docs_file_count;
           result-encoding: string
 
-  # Update guest Cargo.lock files for Dependabot PRs.
-  # Dependabot only updates the root Cargo.lock, leaving the guest crate
-  # Cargo.lock files stale. This job updates them before code-checks runs
+  # Update guest Cargo.lock for Dependabot PRs.
+  # Dependabot only updates the root Cargo.lock, leaving the guest workspace
+  # Cargo.lock stale. This job updates it before code-checks runs
   # `cargo fetch --locked` so that the first CI run succeeds.
   update-guest-locks:
     if: github.event.pull_request.user.login == 'dependabot[bot]'

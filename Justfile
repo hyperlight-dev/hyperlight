@@ -24,9 +24,13 @@ export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } e
 root := justfile_directory()
 
 default-target := "debug"
-simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-hyperlight-none"
-dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-hyperlight-none"
-witguest_source := "src/tests/rust_guests/witguest/target/x86_64-hyperlight-none"
+# All three guest crates share one workspace under src/tests/rust_guests,
+# so they share one target dir and hyperlight-libc / hyperlight-guest-bin
+# get compiled once per profile instead of once per crate.
+rust_guests_target := "src/tests/rust_guests/target/x86_64-hyperlight-none"
+simpleguest_source := rust_guests_target
+dummyguest_source := rust_guests_target
+witguest_source := rust_guests_target
 rust_guests_bin_dir := "src/tests/rust_guests/bin"
 
 ################
@@ -52,9 +56,10 @@ witguest-wit:
     cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit) (ensure-cargo-hyperlight)
-    cd src/tests/rust_guests/simpleguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/dummyguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/witguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
+    @# --workspace unifies feature resolution so shared deps build once. Needed because witguest
+    @# pulls bindgen via hyperlight-component-macro, which would otherwise turn on extra features
+    @# on libc's build.rs host deps and force a libc rebuild. simple/dummyguest don't hit this.
+    cd src/tests/rust_guests && cargo hyperlight build --workspace {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -68,9 +73,7 @@ clean: clean-rust
 
 clean-rust: 
     cargo clean
-    cd src/tests/rust_guests/simpleguest && cargo clean
-    cd src/tests/rust_guests/dummyguest && cargo clean
-    {{ if os() == "windows" { "cd src/tests/rust_guests/witguest -ErrorAction SilentlyContinue; cargo clean" } else { "[ -d src/tests/rust_guests/witguest ] && cd src/tests/rust_guests/witguest && cargo clean || true" } }}
+    cd src/tests/rust_guests && cargo clean
     {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
 
@@ -106,9 +109,7 @@ test-like-ci config=default-target hypervisor="kvm":
 code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
-    cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
-    cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
-    cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
+    cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
     @# fmt
     just fmt-check
@@ -297,9 +298,7 @@ check:
 
 fmt-check: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --all -- --check
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/Cargo.toml --all -- --check
     cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
 
 [private]
@@ -311,9 +310,7 @@ check-license-headers:
 
 fmt-apply: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --all
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
-    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/Cargo.toml --all
     cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
@@ -324,8 +321,7 @@ clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit) (ensure-cargo-hyperlight)
-    cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
-    cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cd src/tests/rust_guests && cargo hyperlight clippy --workspace --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:
     cargo clippy --fix --all 

@@ -47,9 +47,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            src/tests/rust_guests/simpleguest/target/sysroot
-            src/tests/rust_guests/dummyguest/target/sysroot
-            src/tests/rust_guests/witguest/target/sysroot
+            src/tests/rust_guests/target/sysroot
           key: sysroot-linux-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
@@ -62,16 +60,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
-            src/tests/rust_guests/simpleguest -> target
-            src/tests/rust_guests/dummyguest -> target
-            src/tests/rust_guests/witguest -> target
+            src/tests/rust_guests -> target
 
       - name: Ensure up-to-date Cargo.lock
         run: |
           cargo fetch --locked
-          cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
-          cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
-          cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
       - name: fmt
         run: just fmt-check
@@ -121,9 +115,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            src/tests/rust_guests/simpleguest/target/sysroot
-            src/tests/rust_guests/dummyguest/target/sysroot
-            src/tests/rust_guests/witguest/target/sysroot
+            src/tests/rust_guests/target/sysroot
           key: sysroot-windows-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
@@ -136,16 +128,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
-            src/tests/rust_guests/simpleguest -> target
-            src/tests/rust_guests/dummyguest -> target
-            src/tests/rust_guests/witguest -> target
+            src/tests/rust_guests -> target
 
       - name: Ensure up-to-date Cargo.lock
         run: |
           cargo fetch --locked
-          cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
-          cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
-          cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
       - name: fmt
         run: just fmt-check

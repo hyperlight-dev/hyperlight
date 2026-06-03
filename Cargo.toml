@@ -20,11 +20,10 @@ members = [
     "src/hyperlight_component_macro",
     "src/trace_dump",
 ]
-# Guests have custom linker flags, so we need to exclude them from the workspace
+# Guests have custom linker flags and live in their own nested workspace,
+# so we exclude the whole directory from the host workspace.
 exclude = [
-    "src/tests/rust_guests/dummyguest",
-    "src/tests/rust_guests/simpleguest",
-    "src/tests/rust_guests/witguest",
+    "src/tests/rust_guests",
 ]
 
 [workspace.package]

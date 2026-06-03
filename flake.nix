@@ -114,9 +114,7 @@
 
           manifests = [
             "Cargo.toml"
-            "src/tests/rust_guests/dummyguest/Cargo.toml"
-            "src/tests/rust_guests/simpleguest/Cargo.toml"
-            "src/tests/rust_guests/witguest/Cargo.toml"
+            "src/tests/rust_guests/Cargo.toml"
           ];
           manifestDeps = builtins.map (manifest:
             let lockPath = builtins.replaceStrings [ "toml" ] [ "lock" ] manifest; in
