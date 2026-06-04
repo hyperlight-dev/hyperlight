@@ -547,3 +547,329 @@ impl OciSnapshotConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod schema_pin {
+    use super::*;
+
+    const PINNED_INITIALISE: &str = r#"{
+  "hyperlight_version": "x.y.z",
+  "arch": "x86_64",
+  "abi_version": 1,
+  "hypervisor": "kvm",
+  "stack_top_gva": 3735928559,
+  "entrypoint": {
+    "kind": "initialise",
+    "addr": 4096
+  },
+  "layout": {
+    "input_data_size": 1,
+    "output_data_size": 2,
+    "heap_size": 3,
+    "code_size": 4,
+    "init_data_size": 5,
+    "init_data_permissions": 7,
+    "scratch_size": 8,
+    "snapshot_size": 9,
+    "pt_size": 10
+  },
+  "memory_size": 65536,
+  "host_functions": [
+    {
+      "function_name": "fn_int",
+      "parameter_types": [
+        "int",
+        "u_int",
+        "long",
+        "u_long",
+        "float",
+        "double",
+        "string",
+        "bool",
+        "vec_bytes"
+      ],
+      "return_type": "int"
+    },
+    {
+      "function_name": "fn_uint",
+      "parameter_types": [],
+      "return_type": "u_int"
+    },
+    {
+      "function_name": "fn_long",
+      "parameter_types": [],
+      "return_type": "long"
+    },
+    {
+      "function_name": "fn_ulong",
+      "parameter_types": [],
+      "return_type": "u_long"
+    },
+    {
+      "function_name": "fn_float",
+      "parameter_types": [],
+      "return_type": "float"
+    },
+    {
+      "function_name": "fn_double",
+      "parameter_types": [],
+      "return_type": "double"
+    },
+    {
+      "function_name": "fn_string",
+      "parameter_types": [],
+      "return_type": "string"
+    },
+    {
+      "function_name": "fn_bool",
+      "parameter_types": [],
+      "return_type": "bool"
+    },
+    {
+      "function_name": "fn_void",
+      "parameter_types": [],
+      "return_type": "void"
+    },
+    {
+      "function_name": "fn_vecbytes",
+      "parameter_types": [],
+      "return_type": "vec_bytes"
+    }
+  ],
+  "snapshot_generation": 42
+}"#;
+
+    const PINNED_CALL: &str = r#"{
+  "hyperlight_version": "x.y.z",
+  "arch": "x86_64",
+  "abi_version": 1,
+  "hypervisor": "mshv",
+  "stack_top_gva": 3735928559,
+  "entrypoint": {
+    "kind": "call",
+    "addr": 8192,
+    "sregs": {
+      "cs": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "ds": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "es": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "fs": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "gs": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "ss": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "tr": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "ldt": {
+        "base": 1,
+        "limit": 2,
+        "selector": 3,
+        "type_": 4,
+        "present": 5,
+        "dpl": 6,
+        "db": 7,
+        "s": 8,
+        "l": 9,
+        "g": 10,
+        "avl": 11,
+        "unusable": 12,
+        "padding": 13
+      },
+      "gdt": {
+        "base": 1,
+        "limit": 2
+      },
+      "idt": {
+        "base": 3,
+        "limit": 4
+      },
+      "cr0": 1,
+      "cr2": 2,
+      "cr3": 3,
+      "cr4": 4,
+      "cr8": 5,
+      "efer": 6,
+      "apic_base": 7,
+      "interrupt_bitmap": [
+        8,
+        9,
+        10,
+        11
+      ]
+    }
+  },
+  "layout": {
+    "input_data_size": 1,
+    "output_data_size": 2,
+    "heap_size": 3,
+    "code_size": 4,
+    "init_data_size": 5,
+    "init_data_permissions": null,
+    "scratch_size": 8,
+    "snapshot_size": 9,
+    "pt_size": null
+  },
+  "memory_size": 65536,
+  "host_functions": [
+    {
+      "function_name": "fn_void",
+      "parameter_types": [
+        "bool"
+      ],
+      "return_type": "void"
+    }
+  ],
+  "snapshot_generation": 42
+}"#;
+
+    const PINNED_ARCH: &str = r#"[
+        "x86_64",
+        "aarch64",
+        "i686"
+    ]"#;
+
+    const PINNED_HYPERVISOR: &str = r#"[
+        "kvm",
+        "mshv",
+        "whp"
+    ]"#;
+
+    fn assert_round_trip(pinned: &str) {
+        let parsed: OciSnapshotConfig =
+            serde_json::from_str(pinned).expect("pinned JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(
+            actual.trim(),
+            pinned.trim(),
+            "Snapshot config JSON schema changed. If the change can break \
+             existing snapshots on disk, bump `MT_CONFIG_V1` in \
+             `super::media_types` and follow `docs/snapshot-versioning.md`. \
+             Either way, paste the actual output below into the matching \
+             `PINNED_*`.\n\nactual:\n{actual}"
+        );
+    }
+
+    #[test]
+    fn initialise_round_trip() {
+        assert_round_trip(PINNED_INITIALISE);
+    }
+
+    #[test]
+    fn call_round_trip() {
+        assert_round_trip(PINNED_CALL);
+    }
+
+    #[test]
+    fn arch_variants_round_trip() {
+        let parsed: Vec<Arch> =
+            serde_json::from_str(PINNED_ARCH).expect("pinned arch JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(actual.trim(), PINNED_ARCH.trim(), "Arch variants changed.");
+    }
+
+    #[test]
+    fn hypervisor_variants_round_trip() {
+        let parsed: Vec<Hypervisor> = serde_json::from_str(PINNED_HYPERVISOR)
+            .expect("pinned hypervisor JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(
+            actual.trim(),
+            PINNED_HYPERVISOR.trim(),
+            "Hypervisor variants changed."
+        );
+    }
+}

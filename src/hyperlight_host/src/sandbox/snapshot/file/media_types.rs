@@ -22,13 +22,15 @@ limitations under the License.
 //   2. Point `MT_FOO_CURRENT` at `MT_FOO_V2`.
 //   3. Add a dispatch arm in the loader that converts v1 -> v2 (or
 //      rejects v1 if no compatibility window is offered).
-pub(super) const MT_CONFIG_V1: &str = "application/vnd.hyperlight.snapshot.config.v1+json";
-pub(super) const MT_CONFIG_CURRENT: &str = MT_CONFIG_V1;
-pub(super) const MT_SNAPSHOT_V1: &str = "application/vnd.hyperlight.snapshot.memory.v1";
-pub(super) const MT_SNAPSHOT_CURRENT: &str = MT_SNAPSHOT_V1;
+pub(in crate::sandbox::snapshot) const MT_CONFIG_V1: &str =
+    "application/vnd.hyperlight.snapshot.config.v1+json";
+pub(in crate::sandbox::snapshot) const MT_CONFIG_CURRENT: &str = MT_CONFIG_V1;
+pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_V1: &str =
+    "application/vnd.hyperlight.snapshot.memory.v1";
+pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_CURRENT: &str = MT_SNAPSHOT_V1;
 
 /// ABI version for the snapshot memory blob. Bumped whenever the
 /// host-guest contract for the bytes inside the snapshot blob changes
 /// (PEB layout, calling convention, init state, etc.). Independent of
 /// the config blob's media-type version.
-pub(super) const SNAPSHOT_ABI_VERSION: u32 = 1;
+pub(in crate::sandbox::snapshot) const SNAPSHOT_ABI_VERSION: u32 = 1;

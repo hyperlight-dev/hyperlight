@@ -16,6 +16,7 @@ limitations under the License.
 
 mod file;
 mod file_tests;
+mod tripwires;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -274,7 +275,7 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
 impl Snapshot {
     /// Create a new snapshot from the guest binary identified by `env`. With the configuration
     /// specified in `cfg`.
-    pub(crate) fn from_env<'a, 'b>(
+    pub fn from_env<'a, 'b>(
         env: impl Into<GuestEnvironment<'a, 'b>>,
         cfg: SandboxConfiguration,
     ) -> Result<Self> {

@@ -36,7 +36,7 @@ use self::config::{
 };
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{read_bounded, write_blob_if_absent, write_file_atomic};
-use self::media_types::{
+pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use super::{NextAction, Snapshot};
@@ -45,7 +45,7 @@ use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 
-const OCI_LAYOUT_VERSION: &str = "1.0.0";
+pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
 /// Maximum size of the config JSON blob. Bounds the allocation done
 /// before we parse the JSON.
