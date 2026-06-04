@@ -86,7 +86,7 @@ pub(super) fn outb_log(
         LogLevel::Error | LogLevel::Critical => {
             tracing::error!(
                 target: "hyperlight_guest",
-                guest_source_file = source_file,
+                guest_file = source_file,
                 guest_line = line,
                 guest_module = source,
                 "{}",
@@ -96,7 +96,7 @@ pub(super) fn outb_log(
         LogLevel::Warning => {
             tracing::warn!(
                 target: "hyperlight_guest",
-                guest_source_file = source_file,
+                guest_file = source_file,
                 guest_line = line,
                 guest_module = source,
                 "{}",
@@ -106,7 +106,7 @@ pub(super) fn outb_log(
         LogLevel::Information => {
             tracing::info!(
                 target: "hyperlight_guest",
-                guest_source_file = source_file,
+                guest_file = source_file,
                 guest_line = line,
                 guest_module = source,
                 "{}",
@@ -116,7 +116,7 @@ pub(super) fn outb_log(
         LogLevel::Debug => {
             tracing::debug!(
                 target: "hyperlight_guest",
-                guest_source_file = source_file,
+                guest_file = source_file,
                 guest_line = line,
                 guest_module = source,
                 "{}",
@@ -126,7 +126,7 @@ pub(super) fn outb_log(
         LogLevel::Trace | LogLevel::None => {
             tracing::trace!(
                 target: "hyperlight_guest",
-                guest_source_file = source_file,
+                guest_file = source_file,
                 guest_line = line,
                 guest_module = source,
                 "{}",
@@ -482,11 +482,7 @@ mod tests {
                             event_values.get("metadata").unwrap().as_object().unwrap();
                         let event_values_map = event_values.as_object().unwrap();
                         test_value_as_str(metadata_values_map, "level", expected_level);
-                        test_value_as_str(
-                            event_values_map,
-                            "guest_source_file",
-                            "test source file",
-                        );
+                        test_value_as_str(event_values_map, "guest_file", "test source file");
                         test_value_as_str(event_values_map, "guest_module", "test source");
                         test_value_as_str(metadata_values_map, "target", "hyperlight_guest");
                         count_matching_events += 1;
