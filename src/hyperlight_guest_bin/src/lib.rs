@@ -203,6 +203,8 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
 
 unsafe extern "C" {
     fn hyperlight_main();
+
+    #[cfg(feature = "libc")]
     fn srand(seed: u32);
 }
 
@@ -222,7 +224,7 @@ core::arch::global_asm!(
 /// user initialisation
 pub(crate) extern "C" fn generic_init(
     peb_address: u64,
-    seed: u64,
+    _seed: u64,
     ops: u64,
     max_log_level: u64,
 ) -> u64 {
@@ -248,11 +250,13 @@ pub(crate) extern "C" fn generic_init(
     #[cfg(feature = "trace_guest")]
     let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
 
+    #[cfg(feature = "libc")]
     unsafe {
-        let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
-        // Set the seed for the random number generator for C code using rand;
+        let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
         srand(srand_seed);
+    }
 
+    unsafe {
         OS_PAGE_SIZE = ops as u32;
     }
 
