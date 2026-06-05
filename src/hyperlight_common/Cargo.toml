@@ -20,7 +20,7 @@ anyhow = { version = "1.0.102", default-features = false }
 bitflags = "2.12.1"
 bytemuck = { version = "1.24", features = ["derive"] }
 flatbuffers = { version = "25.12.19", default-features = false }
-log = "0.4.31"
+log = "0.4.32"
 smallvec = "1.15.1"
 spin = "0.12.0"
 thiserror = { version = "2.0.18", default-features = false }
