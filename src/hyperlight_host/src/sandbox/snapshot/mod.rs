@@ -68,9 +68,6 @@ pub struct Snapshot {
     layout: crate::mem::layout::SandboxMemoryLayout,
     /// Memory of the sandbox at the time this snapshot was taken
     memory: ReadonlySharedMemory,
-    /// The memory regions that were mapped when this snapshot was
-    /// taken (excluding initial sandbox regions)
-    regions: Vec<MemoryRegion>,
     /// Extra debug information about the binary in this snapshot,
     /// from when the binary was first loaded into the snapshot.
     ///
@@ -364,12 +361,9 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
-        let extra_regions = Vec::new();
-
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size)?,
             layout,
-            regions: extra_regions,
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
@@ -547,19 +541,9 @@ impl Snapshot {
         debug_assert!(guest_visible_size.is_multiple_of(PAGE_SIZE));
         layout.set_snapshot_size(guest_visible_size);
 
-        // Drop the embedder-provided regions: post-compaction every
-        // VA that used to map into a `map_file_cow` region has been
-        // rewritten to point at the new copy inside the snapshot blob
-        // (see the `guest_page` walk above). Re-mapping the originals
-        // on restore is unnecessary for the translation to work and
-        // actively risks corrupting the snapshot if the new snapshot
-        // PAs overlap the old region PAs.
-        let regions: Vec<MemoryRegion> = Vec::new();
-
         Ok(Self {
             layout,
             memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
-            regions,
             load_info,
             stack_top_gva,
             sregs: Some(sregs),
@@ -572,11 +556,6 @@ impl Snapshot {
     /// Generation number assigned to this snapshot when it was taken.
     pub(crate) fn snapshot_generation(&self) -> u64 {
         self.snapshot_generation
-    }
-
-    /// Get the mapped regions from this snapshot
-    pub(crate) fn regions(&self) -> &[MemoryRegion] {
-        &self.regions
     }
 
     /// Return the main memory contents of the snapshot

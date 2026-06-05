@@ -864,23 +864,19 @@ impl SandboxMemoryManager<HostSharedMemory> {
 #[cfg(test)]
 #[cfg(all(not(feature = "i686-guest"), target_arch = "x86_64"))]
 mod tests {
-    use hyperlight_common::vmem::{MappingKind, PAGE_TABLE_SIZE};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::GuestBinary;
-    use crate::mem::memory_region::MemoryRegionFlags;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::Snapshot;
 
-    /// Verify page tables for a given configuration.
-    /// Creates a Snapshot and verifies every page in every region has correct PTEs.
+    /// Build a Snapshot for the given configuration and verify the
+    /// NULL page is not mapped in its page tables.
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
         let path = simple_guest_as_string().expect("failed to get simple guest path");
         let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
             .unwrap_or_else(|e| panic!("{}: failed to create snapshot: {}", name, e));
-
-        let regions = snapshot.regions();
 
         // Verify NULL page (0x0) is NOT mapped
         assert!(
@@ -890,57 +886,6 @@ mod tests {
             "{}: NULL page (0x0) should NOT be mapped",
             name
         );
-
-        // Verify every page in every region
-        for region in regions {
-            let mut addr = region.guest_region.start as u64;
-
-            while addr < region.guest_region.end as u64 {
-                let mapping = unsafe { hyperlight_common::vmem::virt_to_phys(&snapshot, addr, 1) }
-                    .next()
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{}: {:?} region: address 0x{:x} is not mapped",
-                            name, region.region_type, addr
-                        )
-                    });
-
-                // Verify identity mapping (phys == virt for low memory)
-                assert_eq!(
-                    mapping.phys_base, addr,
-                    "{}: {:?} region: address 0x{:x} should identity map, got phys 0x{:x}",
-                    name, region.region_type, addr, mapping.phys_base
-                );
-
-                // Verify kind is Basic
-                let MappingKind::Basic(bm) = mapping.kind else {
-                    panic!(
-                        "{}: {:?} region: address 0x{:x} should be kind basic, got {:?}",
-                        name, region.region_type, addr, mapping.kind
-                    );
-                };
-
-                // Verify writable
-                let actual = bm.writable;
-                let expected = region.flags.contains(MemoryRegionFlags::WRITE);
-                assert_eq!(
-                    actual, expected,
-                    "{}: {:?} region: address 0x{:x} has writable {}, expected {} (region flags: {:?})",
-                    name, region.region_type, addr, actual, expected, region.flags
-                );
-
-                // Verify executable
-                let actual = bm.executable;
-                let expected = region.flags.contains(MemoryRegionFlags::EXECUTE);
-                assert_eq!(
-                    actual, expected,
-                    "{}: {:?} region: address 0x{:x} has executable {}, expected {} (region flags: {:?})",
-                    name, region.region_type, addr, actual, expected, region.flags
-                );
-
-                addr += PAGE_TABLE_SIZE as u64;
-            }
-        }
     }
 
     #[test]

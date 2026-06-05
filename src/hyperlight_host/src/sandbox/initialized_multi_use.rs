@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -534,22 +533,11 @@ impl MultiUseSandbox {
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());
 
-        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
-        let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
-
-        let regions_to_unmap = current_regions.difference(&snapshot_regions);
-        let regions_to_map = snapshot_regions.difference(&current_regions);
-
-        for region in regions_to_unmap {
+        let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
+        for region in &current_regions {
             self.vm
                 .unmap_region(region)
                 .map_err(HyperlightVmError::UnmapRegion)?;
-        }
-
-        for region in regions_to_map {
-            // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
-            // in their call to `MultiUseSandbox::map_region`
-            unsafe { self.vm.map_region(region) }.map_err(HyperlightVmError::MapRegion)?;
         }
 
         // The restored snapshot is now our most current snapshot
