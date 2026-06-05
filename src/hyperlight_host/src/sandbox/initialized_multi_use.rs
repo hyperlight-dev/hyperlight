@@ -754,7 +754,6 @@ impl MultiUseSandbox {
         // Map first so overlaps are rejected before resetting the snapshot
         unsafe { self.vm.map_region(rgn) }.map_err(HyperlightVmError::MapRegion)?;
         self.snapshot = None;
-        self.mem_mgr.mapped_rgns += 1;
         Ok(())
     }
 
@@ -841,7 +840,6 @@ impl MultiUseSandbox {
         // On Linux the hypervisor holds a reference to the host mmap;
         // freeing it here would leave a dangling backing.
         prepared.mark_consumed();
-        self.mem_mgr.mapped_rgns += 1;
 
         // Record the mapping metadata in the PEB. If this fails the VM
         // still holds a valid mapping but the PEB won't list it — the

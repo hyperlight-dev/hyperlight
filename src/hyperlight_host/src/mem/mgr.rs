@@ -145,8 +145,6 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) layout: SandboxMemoryLayout,
     /// Offset for the execution entrypoint from `load_addr`
     pub(crate) entrypoint: NextAction,
-    /// How many memory regions were mapped after sandbox creation
-    pub(crate) mapped_rgns: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
     /// Generation counter: how many snapshots have been taken from
@@ -287,7 +285,6 @@ where
             shared_mem,
             scratch_mem,
             entrypoint,
-            mapped_rgns: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
         }
@@ -366,7 +363,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: hscratch,
             layout: self.layout,
             entrypoint: self.entrypoint,
-            mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
         };
@@ -375,7 +371,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: gscratch,
             layout: self.layout,
             entrypoint: self.entrypoint,
-            mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
         };
