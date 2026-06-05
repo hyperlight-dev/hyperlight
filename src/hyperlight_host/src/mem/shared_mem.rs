@@ -2800,7 +2800,7 @@ mod tests {
 
         /// Returns true if `status` indicates the process died from a
         /// memory access fault (SIGSEGV on unix, STATUS_ACCESS_VIOLATION
-        /// on Windows).
+        /// (or 0xDEAD) on Windows).
         fn killed_by_access_violation(status: &std::process::ExitStatus) -> bool {
             #[cfg(unix)]
             {
@@ -2810,7 +2810,8 @@ mod tests {
             #[cfg(windows)]
             {
                 use windows::Win32::Foundation::STATUS_ACCESS_VIOLATION;
-                status.code() == Some(STATUS_ACCESS_VIOLATION.0)
+                // See https://github.com/hyperlight-dev/hyperlight/issues/1507
+                status.code() == Some(STATUS_ACCESS_VIOLATION.0) || status.code() == Some(0xDEAD)
             }
         }
     }
