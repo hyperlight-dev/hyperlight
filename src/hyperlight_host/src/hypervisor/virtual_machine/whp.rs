@@ -803,7 +803,7 @@ impl VirtualMachine for WhpVm {
         self.partition
     }
 
-    #[cfg(feature = "enable_guest_clock")]
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
     fn setup_pvclock(
         &mut self,
         clock_page_gpa: u64,
@@ -828,7 +828,7 @@ impl VirtualMachine for WhpVm {
         Ok(hyperlight_common::time::ClockType::HyperVReferenceTsc)
     }
 
-    #[cfg(feature = "enable_guest_clock")]
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
     fn current_monotonic_ns(&self) -> crate::Result<u64> {
         // WHP exposes the partition reference time (same time base as the
         // Reference TSC page) via a partition property, NOT a vCPU register.
