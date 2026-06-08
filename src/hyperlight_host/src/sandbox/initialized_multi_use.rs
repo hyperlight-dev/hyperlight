@@ -289,7 +289,7 @@ impl MultiUseSandbox {
             vm.apply_sregs(hshm.layout.get_pt_base_gpa(), sregs)
                 .map_err(|e| {
                     crate::HyperlightError::HyperlightVmError(
-                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e.into()),
                     )
                 })?;
         }

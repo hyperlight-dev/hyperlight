@@ -32,7 +32,7 @@ use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
-    ResetVcpuError, VirtualMachine, get_available_hypervisor,
+    RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
 };
 use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
@@ -210,18 +210,25 @@ impl HyperlightVm {
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), ResetVcpuError> {
-        self.pending_tlb_flush = true;
         debug_assert!(
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
         self.vm.reset_vcpu()?;
+        self.apply_sregs(cr3, sregs)?;
+        Ok(())
+    }
+
+    pub(crate) fn apply_sregs(
+        &mut self,
+        cr3: u64,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         let mut sregs = *sregs;
         sregs.ttbr0_el1 = cr3 & ((1 << 48) - 2);
+        self.pending_tlb_flush = true;
 
         self.vm
             .set_sregs(&sregs)
-            .map_err(ResetVcpuError::Register)?;
-        Ok(())
     }
 }
