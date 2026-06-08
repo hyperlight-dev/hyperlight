@@ -469,6 +469,13 @@ impl VirtualMachine for KvmVm {
         Ok(())
     }
 
+    /// Arm the KVM pvclock by writing `MSR_KVM_SYSTEM_TIME_NEW` with the
+    /// guest-physical address of the clock page.
+    ///
+    /// This can be called at any point after vCPU creation. Note however
+    /// that `current_monotonic_ns()` (via `KVM_GET_CLOCK`) may return
+    /// unreliable values until after the first vCPU entry, when KVM
+    /// establishes its "master clock".
     #[cfg(feature = "enable_guest_clock")]
     fn setup_pvclock(
         &mut self,

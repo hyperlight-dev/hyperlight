@@ -353,7 +353,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(not(feature = "i686-guest"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
-    /// Arm the hypervisor's paravirtualized clock for this vCPU, pointing it
+    /// Setup the hypervisor's paravirtualized clock for this vCPU, pointing it
     /// at the guest physical address of the sandbox's clock page.
     ///
     /// Must be called before the first `run_vcpu`, and again on snapshot

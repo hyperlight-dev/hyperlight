@@ -184,8 +184,8 @@ pub enum InitializeError {
     #[error("Guest initialised stack pointer to architecturally invalid value: {0}")]
     InvalidStackPointer(u64),
     #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
-    #[error("Failed to arm paravirtualized guest clock: {0}")]
-    ArmClock(#[source] Box<HyperlightError>),
+    #[error("Failed to setup paravirtualized guest clock: {0}")]
+    ClockSetup(#[source] Box<HyperlightError>),
 }
 
 /// Errors that can occur during VM execution in the run loop

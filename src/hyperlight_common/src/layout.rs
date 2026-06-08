@@ -33,7 +33,10 @@ pub use arch::{MAX_GPA, MAX_GVA};
 ))]
 pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
 
-// offsets down from the top of scratch memory for various things
+// The topmost page of scratch serves as a host→guest bookkeeping /
+// configuration page. The host writes these fields before the first vCPU
+// run and on snapshot restore; the guest reads them at startup and on
+// each clock query. All fields are u64, little-endian, naturally aligned.
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
 pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;

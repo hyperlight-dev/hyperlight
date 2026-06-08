@@ -228,7 +228,7 @@ impl HyperlightVm {
         // vCPU run — see arm_clock below.
         #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
         self.setup_clock(&mem_mgr.scratch_mem)
-            .map_err(|e| InitializeError::ArmClock(Box::new(e)))?;
+            .map_err(|e| InitializeError::ClockSetup(Box::new(e)))?;
 
         let regs = CommonRegisters {
             rip: initialise,
@@ -269,7 +269,7 @@ impl HyperlightVm {
         // subsequent dispatch calls.
         #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
         self.arm_clock(&mem_mgr.scratch_mem)
-            .map_err(|e| InitializeError::ArmClock(Box::new(e)))?;
+            .map_err(|e| InitializeError::ClockSetup(Box::new(e)))?;
 
         let regs = self.vm.regs()?;
         // todo(portability): this is architecture-specific
