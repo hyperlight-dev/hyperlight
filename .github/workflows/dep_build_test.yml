@@ -19,6 +19,10 @@ on:
         required: true
         type: string
       cpu:
+        description: CPU vendor for the build (passed from caller matrix)
+        required: true
+        type: string
+      arch:
         description: CPU architecture for the build (passed from caller matrix)
         required: true
         type: string
@@ -39,14 +43,11 @@ jobs:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 45
     runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=build-and-test-{3}-{4}-{5}-{6}"]', 
-          inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
-          inputs.cpu,
-          inputs.config,
-          github.run_id,
-          github.run_number,
-          github.run_attempt)) }} 
+        format('["self-hosted", "{0}", "{1}", {2} {3}]',
+          inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+          inputs.arch,
+          inputs.arch == 'X64' && format('"1ES.Pool=hld-{0}-{1}"', inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, inputs.cpu) || inputs.hypervisor == 'kvm' && '"kvm", "ubuntu-24.04"' || '',
+          inputs.arch == 'X64' && format(', "JobId=build-and-test-{0}-{1}-{2}-{3}"', inputs.config, github.run_id, github.run_number, github.run_attempt) || '')) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
@@ -64,7 +65,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          shared-key: "${{ runner.os }}-${{ inputs.hypervisor }}-${{ inputs.config }}"
+          shared-key: "${{ inputs.arch }}-${{ runner.os }}-${{ inputs.hypervisor }}-${{ inputs.config }}"
           cache-on-failure: "true"
           # Only save on main as caches are not shared across branches.
           # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
@@ -73,13 +74,13 @@ jobs:
       - name: Download Rust guests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: rust-guests-${{ inputs.config }}
+          name: rust-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/rust_guests/bin/${{ inputs.config }}/
 
       - name: Download C guests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: c-guests-${{ inputs.config }}
+          name: c-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
 
       - name: Download interface.wasm
@@ -119,22 +120,25 @@ jobs:
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
       - name: Run Rust tests with hw-interrupts
+        if: runner.arch == 'X64'
         run: |
           # with hw-interrupts feature enabled (+ explicit driver on Linux)
           just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
 
       - name: Run Rust Gdb tests
+        if: runner.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
 
       - name: Run Rust Crashdump tests
+        if: runner.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-crashdump ${{ inputs.config }}
 
       - name: Run Rust Tracing tests
-        if: runner.os == 'Linux'
+        if: runner.arch == 'X64' && runner.os == 'Linux'
         env:
           RUST_LOG: debug
         run: just test-rust-tracing ${{ inputs.config }}
