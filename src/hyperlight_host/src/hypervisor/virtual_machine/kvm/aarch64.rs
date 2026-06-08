@@ -66,7 +66,7 @@ impl KvmVm {
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
         if vm_fd.check_extension_raw(KVM_CAP_ARM_NISV_TO_USER as u64) != 0 {
             // Available since Linux 5.5. Needed for the workaround
-            // described below for KVM mis-behaviour when a cache
+            // described below for KVM misbehaviour when a cache
             // maintenance operation is applied to a VA that is paged
             // out at Stage 2.
             //
