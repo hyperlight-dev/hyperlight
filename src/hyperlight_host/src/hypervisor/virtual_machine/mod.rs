@@ -356,12 +356,14 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
     /// Set the debug registers of the vCPU
+    #[allow(dead_code)]
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
     /// Get xsave
     #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
     /// Reset xsave to default state
+    #[allow(dead_code)]
     fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
     /// Set xsave - only used for tests
     #[cfg(test)]
