@@ -99,7 +99,7 @@ impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTabl
 #[allow(clippy::precedence)]
 fn desc_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
     Op::to_phys(table_addr) |
-        // Don't set APTable[1:0] - we don't use hierachical permissions
+        // Don't set APTable[1:0] - we don't use hierarchical permissions
         // Don't set {U,P,}XNTable - we don't use hierarchical permissions
         // Don't set set Protected - we don't use FEAT_THE
         // We don't need to set AF on a table descriptor to avoid AF
@@ -483,7 +483,7 @@ unsafe fn internal_walk_va_spaces<'a, Op: TableReadOps + 'a>(
                 if let Some(FinalLevelDescriptorKind::Page) = final_level_descriptor_kind(desc) {
                     let phys_addr = bits::<47, 12>(desc) << 12;
                     // Don't sign-extend to canonicalise, because we
-                    // only uses addresess in the lower half right
+                    // only uses addresses in the lower half right
                     // now---VA_BITS does not include the bit that
                     // selects between the ttbr0 and ttbr1 spaces.
                     let virt_addr = rq.vmin;
