@@ -664,7 +664,6 @@ pub(crate) const LIBC_FILES_AARCH64: &[&str] = &[
     "machine/aarch64/interrupt_vector.S",
     "machine/aarch64/memchr.S",
     "machine/aarch64/memcmp.S",
-    "machine/aarch64/memcpy.S",
     "machine/aarch64/memmove.S",
     "machine/aarch64/memrchr.S",
     "machine/aarch64/memset.S",
