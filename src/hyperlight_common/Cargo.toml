@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 anyhow = { version = "1.0.102", default-features = false }
-bitflags = "2.12.1"
+bitflags = "2.13.0"
 bytemuck = { version = "1.24", features = ["derive"] }
 flatbuffers = { version = "25.12.19", default-features = false }
 log = "0.4.32"
