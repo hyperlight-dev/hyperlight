@@ -169,7 +169,7 @@ impl HyperlightVm {
             pc: dispatch_func_addr,
             sp: self.rsp_gva,
             // start with interrupts disabled in EL1t
-            pstate: 0b1 << 21 | 0b11 << 6 | 0b100,
+            pstate: 0b11 << 6 | 0b100,
             ..Default::default()
         };
         if self.pending_tlb_flush {
