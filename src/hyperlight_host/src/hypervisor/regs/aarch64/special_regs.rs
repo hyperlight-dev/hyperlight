@@ -28,10 +28,13 @@ pub(crate) struct CommonSpecialRegisters {
 
 pub(crate) const TCR_EL1_PS_48: u64 = 0b101u64 << 32;
 pub(crate) const TCR_EL1_TG0_4K: u64 = 0b00u64 << 14;
-pub(crate) const TCR_EL1_TG1_4K: u64 = 0b00u64 << 30;
+pub(crate) const TCR_EL1_TG1_4K: u64 = 0b10u64 << 30;
 #[allow(clippy::identity_op)]
 pub(crate) const TCR_EL1_T0SZ_48: u64 = 16u64 << 0;
 pub(crate) const TCR_EL1_T1SZ_48: u64 = 16u64 << 16;
+pub(crate) const TCR_EL1_IRGN0_WB_AA: u64 = 0b01 << 8;
+pub(crate) const TCR_EL1_ORGN0_WB_AA: u64 = 0b01 << 10;
+pub(crate) const TCR_EL1_SH0_ISH: u64 = 0b11 << 12;
 
 pub(crate) const MAIR_NORMAL_OWB_NT_AA: u64 = 0b1111_1111;
 pub(crate) const MAIR_ITEM_WIDTH: u8 = 8;
@@ -51,7 +54,10 @@ impl CommonSpecialRegisters {
                 | TCR_EL1_TG0_4K
                 | TCR_EL1_TG1_4K
                 | TCR_EL1_T0SZ_48
-                | TCR_EL1_T1SZ_48,
+                | TCR_EL1_T1SZ_48
+                | TCR_EL1_IRGN0_WB_AA
+                | TCR_EL1_ORGN0_WB_AA
+                | TCR_EL1_SH0_ISH,
             mair_el1: MAIR_NORMAL_OWB_NT_AA
                 << (MAIR_ITEM_WIDTH * hyperlight_common::vmem::ATTR_INDEX_NORMAL),
             sctlr_el1: SCTLR_EL1_RES1 | SCTLR_EL1_M | SCTLR_EL1_C | SCTLR_EL1_I,
