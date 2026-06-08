@@ -136,12 +136,18 @@ impl From<ClockType> for u64 {
     }
 }
 
-// Compile-time size invariants. These layouts are dictated by the hypervisor
-// ABI (KVM pvclock, Hyper-V TLFS §12.7) — a size mismatch is a programming
-// error that must surface at build time.
+// Compile-time size and alignment invariants. These layouts are dictated by
+// the hypervisor ABI (KVM pvclock, Hyper-V TLFS §12.7) — a mismatch is a
+// programming error that must surface at build time.
 const _: () = {
     assert!(core::mem::size_of::<KvmPvclockVcpuTimeInfo>() == 32);
     assert!(core::mem::size_of::<HvReferenceTscPage>() == 4096);
+
+    // The clock page is page-aligned (4 KiB), so any struct placed at
+    // offset 0 in the page is guaranteed to be aligned as long as its
+    // alignment requirement does not exceed 4096.
+    assert!(core::mem::align_of::<KvmPvclockVcpuTimeInfo>() <= 4096);
+    assert!(core::mem::align_of::<HvReferenceTscPage>() <= 4096);
 };
 
 #[cfg(test)]

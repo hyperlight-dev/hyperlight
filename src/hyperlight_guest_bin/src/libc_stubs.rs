@@ -35,13 +35,6 @@ fn set_errno(val: u32) {
 
 static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
 
-/// Matches picolibc `struct timespec` layout for x86_64 and aarch64.
-#[repr(C)]
-pub(crate) struct Timespec {
-    tv_sec: c_long,
-    tv_nsec: c_long,
-}
-
 /// Matches picolibc `struct timeval` layout for x86_64 and aarch64.
 #[repr(C)]
 pub(crate) struct Timeval {
@@ -130,7 +123,7 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
     }
 
     match clk_id {
-        CLOCK_REALTIME => {
+        CLOCK_ID_REALTIME => {
             let (secs, nanos) = realtime();
             unsafe {
                 (*tp).tv_sec = secs as c_long;
@@ -138,7 +131,7 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
             }
             0
         }
-        CLOCK_MONOTONIC => {
+        CLOCK_ID_MONOTONIC => {
             let (secs, nanos) = monotonic();
             unsafe {
                 (*tp).tv_sec = secs as c_long;

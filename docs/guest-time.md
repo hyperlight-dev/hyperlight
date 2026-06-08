@@ -101,7 +101,10 @@ clock page is still reserved in the layout (so memory maps are stable) but
 left un-mapped against any hypervisor clock source; `hyperlight_guest::time`
 readers then report "unavailable" and fall back to whatever the guest wants
 to do about it (the picolibc wiring returns a synthetic 1-second-per-call
-counter, which is enough to stop `strftime` crashing and not much else).
+counter).
+
+It is also a good stopgap for many other things that expect `gettimeofday` /
+`clock_gettime` to work (like StarlingMonkey and QuickJS).
 
 ## Layout details
 
