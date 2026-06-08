@@ -564,8 +564,8 @@ impl HyperlightVm {
     ///
     /// Does NOT stamp `boot_time_ns` — on some backends (KVM) the
     /// monotonic clock source is unreliable until after the first
-    /// vCPU run (see [`arm_clock`]). Wall-clock time returns `None`
-    /// until `arm_clock` is called.
+    /// vCPU run (see [`stamp_pvclock_time_origin`]). Wall-clock time returns `None`
+    /// until `stamp_pvclock_time_origin` is called.
     ///
     /// Must be called before the first vCPU run.
     #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
@@ -622,7 +622,7 @@ impl HyperlightVm {
     ///
     /// Must be called while `scratch_memory` is `Some`.
     #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
-    pub(crate) fn arm_clock(
+    pub(crate) fn stamp_pvclock_time_origin(
         &mut self,
         scratch: &crate::mem::shared_mem::HostSharedMemory,
     ) -> crate::Result<()> {
