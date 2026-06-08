@@ -26,7 +26,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::VcpuFd;
 
-trait KvmRegisterType: Sized {
+pub(crate) trait KvmRegisterType: Sized {
     const KVM_REG_SIZE: u64;
     fn get_reg(fd: &VcpuFd, reg: KvmRegister<Self>) -> Result<Self, kvm_ioctls::Error>;
     fn set_reg(fd: &VcpuFd, reg: KvmRegister<Self>, val: Self) -> Result<(), kvm_ioctls::Error>;
