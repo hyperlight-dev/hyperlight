@@ -35,13 +35,6 @@ fn set_errno(val: u32) {
 
 static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
 
-/// Matches picolibc `struct timeval` layout for x86_64 and aarch64.
-#[repr(C)]
-pub(crate) struct Timeval {
-    tv_sec: c_long,
-    tv_usec: c_long,
-}
-
 /// Fallback clock used when the host has not armed a paravirtualized
 /// clock. Returns a synthetic `(secs, nsecs)` pair that advances by one
 /// second per call, preserving long-standing guest behaviour for hosts
@@ -144,21 +137,6 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
             -1
         }
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn gettimeofday(tv: *mut Timeval, _tz: *mut c_void) -> c_int {
-    if tv.is_null() {
-        set_errno(EINVAL);
-        return -1;
-    }
-
-    let (secs, nanos) = realtime();
-    unsafe {
-        (*tv).tv_sec = secs as c_long;
-        (*tv).tv_usec = (nanos / 1000) as c_long;
-    }
-    0
 }
 
 #[unsafe(no_mangle)]
