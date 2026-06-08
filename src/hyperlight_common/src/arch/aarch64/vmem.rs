@@ -546,5 +546,5 @@ pub unsafe fn space_aware_map<Op: TableOps>(
 ) {
     // in practice, we never construct page tables that would result
     // in reaching this right now. todo: implement this properly
-    unreachable!()
+    debug_assert!(false, "space_aware_map is not yet supported on aarch64");
 }
