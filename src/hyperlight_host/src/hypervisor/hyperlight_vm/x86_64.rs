@@ -225,7 +225,7 @@ impl HyperlightVm {
 
         // Set up the pvclock MSR so monotonic time works during init.
         // boot_time_ns (wall clock) is deferred until after the first
-        // vCPU run — see arm_clock below.
+        // vCPU run — see stamp_pvclock_time_origin below.
         #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
         self.setup_clock(&mem_mgr.scratch_mem)
             .map_err(|e| InitializeError::ClockSetup(Box::new(e)))?;
@@ -268,7 +268,7 @@ impl HyperlightVm {
         // first vCPU entry. Wall clock becomes available on
         // subsequent dispatch calls.
         #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
-        self.arm_clock(&mem_mgr.scratch_mem)
+        self.stamp_pvclock_time_origin(&mem_mgr.scratch_mem)
             .map_err(|e| InitializeError::ClockSetup(Box::new(e)))?;
 
         let regs = self.vm.regs()?;

@@ -536,7 +536,8 @@ impl MultiUseSandbox {
         // be re-stamped so the restored guest sees wall-clock reflecting
         // the restore moment, not the original boot.
         #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
-        self.vm.arm_clock(&self.mem_mgr.scratch_mem)?;
+        self.vm
+            .stamp_pvclock_time_origin(&self.mem_mgr.scratch_mem)?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());

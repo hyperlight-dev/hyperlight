@@ -47,7 +47,7 @@ const IDLE_BEFORE_FIRST_CALL: Duration = Duration::from_secs(2);
 /// Tight tolerance used by the no-drift test.
 ///
 /// The host computes `boot_time_ns = wall_now - monotonic_now`
-/// back-to-back in `arm_clock` (where `monotonic_now` comes from
+/// back-to-back in `stamp_pvclock_time_origin` (where `monotonic_now` comes from
 /// `KVM_GET_CLOCK` on KVM, or `HV_REGISTER_TIME_REF_COUNT` on
 /// Hyper-V). On KVM, `KVM_GET_CLOCK` can disagree with the live
 /// pvclock page by up to ~13ms (observed on WSL2; root cause
@@ -141,7 +141,7 @@ fn wall_clock_advances_across_snapshot_restore() {
 
 /// Diagnostic for the `boot_time_ns` calibration formula.
 ///
-/// `arm_clock` stamps `boot_time_ns` and the guest computes
+/// `stamp_pvclock_time_origin` stamps `boot_time_ns` and the guest computes
 /// `wall = boot_time_ns + monotonic_time_ns()`. For that to match the
 /// host's wall clock, `boot_time_ns` must be `wall_at_arm - monotonic_at_arm`
 /// — i.e. the Unix-epoch origin of the monotonic clock — not just
