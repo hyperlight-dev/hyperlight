@@ -10,6 +10,10 @@ on:
         required: false
         type: string
         default: "false"
+      arch:
+        description: CPU architecture for the build (passed from caller matrix)
+        required: true
+        type: string
       config:
         description: Build configuration (debug or release)
         required: true
@@ -29,7 +33,17 @@ jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=build-guests-${{ inputs.config }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
+    runs-on: ${{ fromJson(
+      format('["self-hosted", "Linux", "{0}", "{1}" {2}]',
+        inputs.arch,
+        inputs.arch == 'X64' && '1ES.Pool=hld-kvm-amd' || 'ubuntu-24.04',
+        inputs.arch == 'X64' && format(', "JobId=build-guests-{0}-{1}-{2}-{3}"',
+                                  inputs.config,
+                                  github.run_id,
+                                  github.run_number,
+                                  github.run_attempt)
+                             || ''
+      )) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -52,12 +66,12 @@ jobs:
         with:
           path: |
             src/tests/rust_guests/target/sysroot
-          key: sysroot-linux-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
+          key: sysroot-linux-${{ inputs.arch }}-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          shared-key: "guests-${{ inputs.config }}"
+          shared-key: "guests-${{ inputs.arch }}-${{ inputs.config }}"
           cache-on-failure: "true"
           # Only save on main as caches are not shared across branches.
           # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
@@ -82,7 +96,7 @@ jobs:
       - name: Upload Rust guests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: rust-guests-${{ inputs.config }}
+          name: rust-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: |
             src/tests/rust_guests/bin/${{ inputs.config }}/
           retention-days: 1
@@ -91,13 +105,13 @@ jobs:
       - name: Upload C guests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: c-guests-${{ inputs.config }}
+          name: c-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
           retention-days: 1
           if-no-files-found: error
 
       - name: Upload interface.wasm
-        if: inputs.config == 'debug'
+        if: inputs.config == 'debug' && inputs.arch == 'X64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: interface-wasm
@@ -106,7 +120,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload twoworlds.wasm
-        if: inputs.config == 'debug'
+        if: inputs.config == 'debug' && inputs.arch == 'X64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: twoworlds-wasm
