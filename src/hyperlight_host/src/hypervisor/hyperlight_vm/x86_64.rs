@@ -1529,7 +1529,6 @@ mod tests {
 
         let seed = rand::rng().random::<u64>();
         let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
-        let page_size = u32::try_from(page_size::get()).unwrap();
 
         #[cfg(gdb)]
         let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
