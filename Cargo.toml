@@ -47,11 +47,6 @@ hyperlight-libc = { path = "src/hyperlight_libc", version = "0.15.0", default-fe
 hyperlight-component-util = { path = "src/hyperlight_component_util", version = "0.15.0", default-features = false }
 hyperlight-component-macro = { path = "src/hyperlight_component_macro", version = "0.15.0", default-features = false }
 
-[patch.crates-io]
-# Fixes #1490, #1494, and #1495 by using upstream piet commit 618083f,
-# which replaces the unmaintained unic-bidi dependency with icu_properties.
-piet = { git = "https://github.com/linebender/piet", rev = "618083f8a6671c7ab8c198724487348d2ccf9a8f" }
-
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
