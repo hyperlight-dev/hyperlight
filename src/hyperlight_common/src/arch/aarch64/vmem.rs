@@ -245,9 +245,6 @@ unsafe fn alloc_table_if_needed<
 where
     P::ChildType: UpdateParent<Op>,
 {
-    #[cfg(target_os = "linux")]
-    extern crate std;
-
     let new_update_parent = x.update_parent.for_child_at_entry(x.entry_ptr);
     if let Some(table_base) = unsafe { next_level_table_if_present(op, x.entry_ptr) } {
         return MapRequest {
@@ -439,8 +436,6 @@ unsafe fn internal_walk_va_spaces<'a, Op: TableReadOps + 'a>(
         impl Iterator<Item = crate::vmem::SpaceAwareMapping>,
     ),
 > + 'a {
-    #[cfg(target_os = "linux")]
-    extern crate std;
     let addr = address & ((1u64 << VA_BITS) - 1);
     let vmin = addr & !((PAGE_SIZE as u64) - 1);
     let vmax = core::cmp::min(addr + len, 1u64 << VA_BITS);
