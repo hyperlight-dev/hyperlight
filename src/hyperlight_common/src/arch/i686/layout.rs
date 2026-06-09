@@ -21,6 +21,10 @@ pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff;
 /// regions are large enough to reach that address.
 pub const SCRATCH_TOP_GPA: usize = 0xFEDF_FFFF;
 
+pub fn io_page() -> Option<(u64, u64)> {
+    None
+}
+
 /// Minimum scratch region size: IO buffers (page-aligned) plus 12 pages
 /// for bookkeeping and the exception stack. Page table space is validated
 /// separately by `set_pt_size()`.
