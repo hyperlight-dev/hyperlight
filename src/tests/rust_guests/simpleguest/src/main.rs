@@ -32,7 +32,9 @@ use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -65,8 +67,11 @@ extern crate hyperlight_guest;
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 // Exception handler test state
 static HANDLER_INVOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_VALUE: u64 = 0x1234567890ABCDEF;
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_MODIFIED_VALUE: u64 = 0xBADC0FFEE;
+#[cfg(target_arch = "x86_64")]
 const TEST_R10_VALUE: u64 = 0xDEADBEEF;
 
 #[guest_function("SetStatic")]
@@ -530,6 +535,7 @@ fn outb_with_port(port: u32, value: u32) {
 // =============================================================================
 
 /// Counter incremented by the timer interrupt handler.
+#[cfg(target_arch = "x86_64")]
 static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Timer IRQ handler (vector 0x20 = IRQ0 after PIC remapping).
@@ -557,6 +563,7 @@ unsafe extern "C" {
 }
 
 /// IDT pointer structure for SIDT/LIDT instructions.
+#[cfg(target_arch = "x86_64")]
 #[repr(C, packed)]
 struct IdtPtr {
     limit: u16,

@@ -43,7 +43,7 @@ fn halt() {
         );
         #[cfg(target_arch = "aarch64")]
         asm!(
-            "str {val}, [{addr}]",
+            "str {val:x}, [{addr}]",
             val = in(reg) 0, addr = in(reg) 0xffff_ffff_e000u64 + 108 * 8,
         );
     }
@@ -55,7 +55,7 @@ fn mmio_read() {
         asm!("mov al, [0x8000]");
 
         #[cfg(target_arch = "aarch64")]
-        asm!("ldr {0:x}, [{1}]", out(reg) _, in(reg) 0x8000);
+        asm!("ldr {0:x}, [{1:x}]", out(reg) _, in(reg) 0x8000);
     }
 }
 
