@@ -3,6 +3,7 @@ name = "trace_dump"
 version = "0.10.0"
 publish = false
 edition = "2021"
+rust-version = "1.92"
 
 [dependencies]
 addr2line = "0.26.1"
