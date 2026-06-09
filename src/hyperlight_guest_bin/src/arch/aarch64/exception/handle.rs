@@ -212,7 +212,7 @@ pub(super) extern "C" fn handle_exception(
     // anyway). So, use 0xfe which is invalid as an exception on x86,
     // to let the host know not to try to print anything extra.
     let mut w = HyperlightAbortWriter;
-    write_abort(&[ErrorCode::GuestError as u8, 0xfe as u8]);
+    write_abort(&[ErrorCode::GuestError as u8, 0xfeu8]);
     let write_res = write!(
         w,
         "Exception vector: {:?} {:?}\n\

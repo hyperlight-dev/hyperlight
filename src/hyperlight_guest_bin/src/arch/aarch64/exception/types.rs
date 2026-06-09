@@ -20,8 +20,8 @@ use core::mem::{offset_of, size_of};
 #[repr(u64)]
 pub(super) enum ExceptionType {
     Synchronous,
-    IRQ,
-    FIQ,
+    Irq,
+    Fiq,
     SError,
 }
 
