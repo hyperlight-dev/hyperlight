@@ -228,7 +228,6 @@ impl HyperlightVm {
         sregs.ttbr0_el1 = cr3 & ((1 << 48) - 2);
         self.pending_tlb_flush = true;
 
-        self.vm
-            .set_sregs(&sregs)
+        self.vm.set_sregs(&sregs)
     }
 }

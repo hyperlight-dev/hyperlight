@@ -273,7 +273,7 @@ impl VirtualMachine for KvmVm {
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{X, SP, PC, PSTATE};
+        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
         let mut x: [u64; 31] = [0; 31];
         for i in 0..31 {
             x[i] = X[i].get(RegisterError::GetSregs, &self.vcpu_fd)?;
@@ -287,7 +287,7 @@ impl VirtualMachine for KvmVm {
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{X, SP, PC, PSTATE};
+        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
         for i in 0..31 {
             X[i].set(RegisterError::SetSregs, &self.vcpu_fd, regs.x[i])?;
         }
@@ -299,7 +299,7 @@ impl VirtualMachine for KvmVm {
     }
 
     fn fpu(&self) -> Result<CommonFpu, RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{V, FPSR, FPCR};
+        use crate::hypervisor::regs::kvm_reg::{FPCR, FPSR, V};
         let mut v: [u128; 32] = [0; 32];
         for i in 0..32 {
             v[i] = V[i].get(RegisterError::GetFpu, &self.vcpu_fd)?;
@@ -312,7 +312,7 @@ impl VirtualMachine for KvmVm {
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{V, FPSR, FPCR};
+        use crate::hypervisor::regs::kvm_reg::{FPCR, FPSR, V};
         for i in 0..32 {
             V[i].set(RegisterError::SetFpu, &self.vcpu_fd, fpu.v[0])?;
         }
@@ -323,7 +323,7 @@ impl VirtualMachine for KvmVm {
 
     fn sregs(&self) -> Result<CommonSpecialRegisters, RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{
-            TTBR0_EL1, TCR_EL1, MAIR_EL1, SCTLR_EL1, CPACR_EL1, VBAR_EL1, SP_EL1,
+            CPACR_EL1, MAIR_EL1, SCTLR_EL1, SP_EL1, TCR_EL1, TTBR0_EL1, VBAR_EL1,
         };
         Ok(CommonSpecialRegisters {
             ttbr0_el1: TTBR0_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)?,
@@ -338,7 +338,7 @@ impl VirtualMachine for KvmVm {
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<(), RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{
-            TTBR0_EL1, TCR_EL1, MAIR_EL1, SCTLR_EL1, CPACR_EL1, VBAR_EL1, SP_EL1,
+            CPACR_EL1, MAIR_EL1, SCTLR_EL1, SP_EL1, TCR_EL1, TTBR0_EL1, VBAR_EL1,
         };
         TTBR0_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.ttbr0_el1)?;
         TCR_EL1.set(RegisterError::SetSregs, &self.vcpu_fd, sregs.tcr_el1)?;
