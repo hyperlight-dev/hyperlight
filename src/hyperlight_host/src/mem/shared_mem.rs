@@ -1568,6 +1568,8 @@ impl ReadonlySharedMemory {
     fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
         use std::os::unix::io::AsRawFd;
 
+        #[cfg(mshv3)]
+        use libc::PROT_WRITE;
         use libc::{
             MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE, PROT_READ,
             mmap, off_t, size_t,
@@ -1605,9 +1607,17 @@ impl ReadonlySharedMemory {
         };
 
         // 2. Overlay the file content on the middle slot with
-        //    `MAP_FIXED`. The guest maps these pages READ|EXECUTE,
-        //    so the host VMA is read-only. `MAP_PRIVATE` keeps the
-        //    mapping detached from the underlying file.
+        //    `MAP_FIXED`. `MAP_PRIVATE` keeps the mapping detached
+        //    from the underlying file.
+        //
+        //    MSHV's map_user_memory requires host-writable pages
+        //    (the kernel module calls `pin_user_pages(FOLL_PIN|FOLL_WRITE)`
+        //    on the region when it is mapped into the partition).
+        //    KVM accepts read-only host pages for read-only guest slots.
+        #[cfg(mshv3)]
+        let file_prot = PROT_READ | PROT_WRITE;
+        #[cfg(not(mshv3))]
+        let file_prot = PROT_READ;
         // SAFETY: `total_size = len + 2 * PAGE_SIZE_USIZE`, so
         // `base + PAGE_SIZE_USIZE` is in-bounds of the reservation.
         let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
@@ -1620,7 +1630,7 @@ impl ReadonlySharedMemory {
             mmap(
                 usable_ptr as *mut c_void,
                 len as size_t,
-                PROT_READ,
+                file_prot,
                 MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE,
                 fd,
                 0 as off_t,
