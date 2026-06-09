@@ -364,19 +364,6 @@ impl VirtualMachine for KvmVm {
         todo!()
     }
 
-    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
-        unimplemented!("aarch64 does not support XSAVE operations")
-    }
-
-    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
-        unimplemented!("aarch64 does not support XSAVE operations")
-    }
-
-    #[cfg(test)]
-    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
-        unimplemented!("aarch64 does not support XSAVE operations")
-    }
-
     fn can_reset_vcpu(&self) -> bool {
         true
     }
