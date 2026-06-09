@@ -162,7 +162,6 @@ impl HyperlightVm {
 
             mmap_regions: Vec::new(),
 
-            vm_can_reset_vcpu: false,
             pending_tlb_flush: false,
 
             #[cfg(gdb)]

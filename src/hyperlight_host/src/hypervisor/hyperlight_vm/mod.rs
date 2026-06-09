@@ -390,6 +390,7 @@ pub(crate) struct HyperlightVm {
 
     pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
+    #[cfg(target_arch = "aarch64")]
     pub(self) vm_can_reset_vcpu: bool,
     pub(super) pending_tlb_flush: bool,
 

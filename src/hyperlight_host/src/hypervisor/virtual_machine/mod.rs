@@ -371,9 +371,11 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
     /// Single-operation vCPU reset
+    #[cfg(target_arch = "aarch64")]
     fn can_reset_vcpu(&self) -> bool {
         false
     }
+    #[cfg(target_arch = "aarch64")]
     fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
         Err(ResetVcpuError::NotSupported)
     }
