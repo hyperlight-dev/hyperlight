@@ -20,7 +20,7 @@ pub const MAIN_STACK_LIMIT_GVA: u64 = 0x0000_fe00_0000_0000;
 
 pub fn scratch_size() -> u64 {
     let addr = crate::layout::scratch_size_gva();
-    unsafe { (addr as *mut u64).read_volatile() }
+    unsafe { addr.read_volatile() }
 }
 
 pub fn scratch_base_gpa() -> u64 {
