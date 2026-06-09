@@ -146,7 +146,7 @@ jobs:
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
     - name: Spell Check Repo
-      uses: crate-ci/typos@3e8e1dbf18c56a9ed625484ca941497c73e7da2c  # v1.47.2
+      uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89  # v1.47.2
 
   license-headers:
     name: check license headers
