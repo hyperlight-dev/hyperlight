@@ -154,8 +154,8 @@ pub mod barrier {
     /// > - TLB invalidation is not required because an entry that
     /// >   generates one of the listed faults is never cached in a TLB.
     /// > - A Context synchronization event is required to ensure that
-    ///     the completed change to the translation table entry affects
-    ///     subsequent instruction fetches.
+    /// >   the completed change to the translation table entry affects
+    /// >   subsequent instruction fetches.
     ///
     /// In theory, without FEAT_nTLBPA, there could be some subtlety
     /// here if the physical memory location used for the descriptor
