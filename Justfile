@@ -316,7 +316,7 @@ fmt-apply: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
-    {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
+    {{ cargo-cmd }} clippy --all-targets {{ if hyperlight-target-arch == "x86_64" { "--all-features" } else { "" } }} --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
 # for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
 clippyw target=default-target: (witguest-wit)
@@ -341,7 +341,7 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
-    ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
+    {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
 # Test a specific package with all feature combinations
