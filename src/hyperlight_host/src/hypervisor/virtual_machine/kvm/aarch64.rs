@@ -275,8 +275,8 @@ impl VirtualMachine for KvmVm {
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
         let mut x: [u64; 31] = [0; 31];
-        for i in 0..31 {
-            x[i] = X[i].get(RegisterError::GetSregs, &self.vcpu_fd)?;
+        for (i, xi) in X.iter().enumerate() {
+            x[i] = xi.get(RegisterError::GetSregs, &self.vcpu_fd)?;
         }
         Ok(CommonRegisters {
             x,
@@ -288,8 +288,8 @@ impl VirtualMachine for KvmVm {
 
     fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
-        for i in 0..31 {
-            X[i].set(RegisterError::SetSregs, &self.vcpu_fd, regs.x[i])?;
+        for (i, xi) in X.iter().enumerate() {
+            xi.set(RegisterError::SetSregs, &self.vcpu_fd, regs.x[i])?;
         }
         SP.set(RegisterError::SetSregs, &self.vcpu_fd, regs.sp)?;
         PC.set(RegisterError::SetSregs, &self.vcpu_fd, regs.pc)?;
@@ -301,8 +301,8 @@ impl VirtualMachine for KvmVm {
     fn fpu(&self) -> Result<CommonFpu, RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{FPCR, FPSR, V};
         let mut v: [u128; 32] = [0; 32];
-        for i in 0..32 {
-            v[i] = V[i].get(RegisterError::GetFpu, &self.vcpu_fd)?;
+        for (i, vi) in V.iter().enumerate() {
+            v[i] = vi.get(RegisterError::GetFpu, &self.vcpu_fd)?;
         }
         Ok(CommonFpu {
             v,
@@ -313,8 +313,8 @@ impl VirtualMachine for KvmVm {
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<(), RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{FPCR, FPSR, V};
-        for i in 0..32 {
-            V[i].set(RegisterError::SetFpu, &self.vcpu_fd, fpu.v[0])?;
+        for (i, vi) in V.iter().enumerate() {
+            vi.set(RegisterError::SetFpu, &self.vcpu_fd, fpu.v[i])?;
         }
         FPSR.set(RegisterError::SetFpu, &self.vcpu_fd, fpu.fpsr)?;
         FPCR.set(RegisterError::SetFpu, &self.vcpu_fd, fpu.fpcr)?;
