@@ -47,7 +47,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.92"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
