@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* `Snapshot::to_oci`, `Snapshot::from_oci`, and `Snapshot::from_oci_unchecked` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465
+
 ## [v0.15.0] - 2026-05-06
 
 ### Added
