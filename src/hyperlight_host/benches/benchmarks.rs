@@ -153,6 +153,15 @@ fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
         );
     }
 
+    // Isolates the cost of building a MultiUseSandbox from an
+    // already-resident Snapshot. The Snapshot is loaded outside the
+    // timed region.
+    for size in SandboxSize::all() {
+        group.bench_function(format!("sandbox_from_snapshot/{}", size.name()), |b| {
+            bench_sandbox_from_snapshot(b, size)
+        });
+    }
+
     group.finish();
 }
 
@@ -344,6 +353,25 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
         }
 
         total_duration
+    });
+}
+
+fn bench_sandbox_from_snapshot(b: &mut criterion::Bencher, size: SandboxSize) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::Snapshot;
+
+    let dir = tempfile::tempdir().unwrap();
+    let snap_path = dir.path().join("bench");
+    {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let snapshot = sbox.snapshot().unwrap();
+        snapshot.to_oci(&snap_path, "latest").unwrap();
+    }
+    let loaded = std::sync::Arc::new(Snapshot::from_oci(&snap_path, "latest").unwrap());
+
+    b.iter(|| {
+        let _ =
+            MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None).unwrap();
     });
 }
 
@@ -551,6 +579,118 @@ fn shared_memory_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Benchmark Category: Snapshot Files
+// ============================================================================
+
+fn snapshot_file_benchmark(c: &mut Criterion) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::Snapshot;
+
+    let mut group = c.benchmark_group("snapshot_files");
+
+    // Pre-create OCI snapshot images for all sizes.
+    let dirs: Vec<_> = SandboxSize::all()
+        .iter()
+        .map(|size| {
+            let dir = tempfile::tempdir().unwrap();
+            let snap_path = dir.path().join(size.name());
+            let snapshot = {
+                let mut sbox = create_multiuse_sandbox_with_size(*size);
+                sbox.snapshot().unwrap()
+            };
+            snapshot.to_oci(&snap_path, "latest").unwrap();
+            (dir, snapshot, snap_path)
+        })
+        .collect();
+
+    // Benchmark: save_snapshot. Wipe the layout between iterations
+    // so each save measures a fresh write rather than a tag-append.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_dir = tempfile::tempdir().unwrap();
+        let path = snap_dir.path().join("bench");
+        let snapshot = &dirs[i].1;
+        group.bench_function(format!("save_snapshot/{}", size.name()), |b| {
+            b.iter_batched(
+                || {
+                    let _ = std::fs::remove_dir_all(&path);
+                },
+                |_| snapshot.to_oci(&path, "latest").unwrap(),
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: load_snapshot (parse manifest + config + mmap blob).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::from_oci(&snap_path, "latest").unwrap();
+            });
+        });
+    }
+
+    // Benchmark: load_snapshot_unchecked (skip blob digest verification).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot_unchecked/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::from_oci_unchecked(&snap_path, "latest").unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_evolve (new + evolve + call)
+    for size in SandboxSize::all() {
+        group.bench_function(format!("cold_start_via_evolve/{}", size.name()), |b| {
+            b.iter(|| {
+                let mut sbox = create_multiuse_sandbox_with_size(size);
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot (load + from_snapshot + call)
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("cold_start_via_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let loaded = Snapshot::from_oci(&snap_path, "latest").unwrap();
+                let mut sbox = MultiUseSandbox::from_snapshot(
+                    std::sync::Arc::new(loaded),
+                    HostFunctions::default(),
+                    None,
+                )
+                .unwrap();
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot_unchecked (load unchecked + from_snapshot + call)
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(
+            format!("cold_start_via_snapshot_unchecked/{}", size.name()),
+            |b| {
+                b.iter(|| {
+                    let loaded = Snapshot::from_oci_unchecked(&snap_path, "latest").unwrap();
+                    let mut sbox = MultiUseSandbox::from_snapshot(
+                        std::sync::Arc::new(loaded),
+                        HostFunctions::default(),
+                        None,
+                    )
+                    .unwrap();
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
@@ -561,6 +701,7 @@ criterion_group! {
         guest_call_benchmark_large_param,
         function_call_serialization_benchmark,
         sample_workloads_benchmark,
-        shared_memory_benchmark
+        shared_memory_benchmark,
+        snapshot_file_benchmark
 }
 criterion_main!(benches);

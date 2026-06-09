@@ -568,3 +568,52 @@ install-vcpkg:
 
 install-flatbuffers-with-vcpkg: install-vcpkg
     cd ../vcpkg && ./vcpkg install flatbuffers || cd -
+
+###################################
+### SNAPSHOT GOLDEN HELPERS     ###
+###################################
+# Custom-harness test binary that verifies / regenerates snapshot
+# goldens stored on an OCI registry. The test binary itself never
+# touches the network: it reads only from
+# target/snapshot-goldens-cache/{version}/{tag}/. Populating that
+# cache is the job of `snapshot-goldens-pull`, which shells out to
+# `oras` (install from https://oras.land).
+
+# Default OCI registry image (without tag) that hosts the goldens.
+default-snapshot-goldens-image := "ghcr.io/hyperlight-dev/hyperlight-snapshot-goldens"
+
+# Verify the local snapshots against the goldens for the current
+# GOLDENS_VERSION. Run `snapshot-goldens-pull` first to populate
+# the local cache; missing cache entries cause hard test failures
+# (the harness does not skip).
+snapshot-goldens target=default-target:
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens
+
+# Pull goldens for the local platform's two tags (init + call)
+# from `image` into the on-disk cache used by `snapshot-goldens`.
+# Auto-detects hypervisor and CPU vendor on Linux; pass
+# `profile=release` to fetch the release-profile tags.
+snapshot-goldens-pull image=default-snapshot-goldens-image profile="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(awk -F'"' '/GOLDENS_VERSION: &str =/{print $2; exit}' src/hyperlight_host/tests/snapshot_goldens/platform.rs)
+    hv=${HYPERLIGHT_GOLDENS_HV:-$([[ -e /dev/mshv ]] && echo mshv || ([[ -e /dev/kvm ]] && echo kvm))}
+    cpu=$(awk -F: '/vendor_id/{gsub(/ /,"",$2); print $2; exit}' /proc/cpuinfo \
+        | sed 's/GenuineIntel/intel/;s/AuthenticAMD/amd/')
+    [[ -n "${hv:-}" && -n "${cpu:-}" ]] || { echo "snapshot-goldens-pull: could not detect hv/cpu (set HYPERLIGHT_GOLDENS_HV)" >&2; exit 1; }
+    for kind in init call; do
+        tag="${version}-${hv}-${cpu}-{{ profile }}-${kind}"
+        dir="target/snapshot-goldens-cache/${version}/${tag}"
+        mkdir -p "${dir}"
+        oras copy --to-oci-layout "{{ image }}:${tag}" "${dir}:${tag}"
+    done
+
+# Generate the canonical local snapshots into the cache that
+# `snapshot-goldens` reads from. Locally, `snapshot-goldens-generate`
+# followed by `snapshot-goldens` is a pure local round-trip with
+# no registry involved. The regen workflow calls the harness
+# directly with an explicit out-dir for staging.
+snapshot-goldens-generate target=default-target:
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens -- generate

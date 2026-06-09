@@ -387,6 +387,149 @@ fn get_size_prefixed_buffer(data: Vec<u8>) -> Vec<u8> {
     data
 }
 
+// --- Type-coverage echoes (used by snapshot golden tests F6) ---
+//
+// One guest function per primitive parameter/return type, so the
+// guest-call wire format for each variant of `ParameterValue` /
+// `ReturnValue` is exercised by a single round-trip call.
+//
+// Strings (`Echo`), `Vec<u8>` (`GetSizePrefixedBuffer`), `f32`
+// (`EchoFloat`) and `f64` (`EchoDouble`) are already covered above.
+// The `unit` return type is exercised by `NoOp` below.
+
+#[guest_function("EchoI32")]
+fn echo_i32(v: i32) -> i32 {
+    v
+}
+
+#[guest_function("EchoU32")]
+fn echo_u32(v: u32) -> u32 {
+    v
+}
+
+#[guest_function("EchoI64")]
+fn echo_i64(v: i64) -> i64 {
+    v
+}
+
+#[guest_function("EchoU64")]
+fn echo_u64(v: u64) -> u64 {
+    v
+}
+
+#[guest_function("EchoBool")]
+fn echo_bool(v: bool) -> bool {
+    v
+}
+
+#[guest_function("NoOp")]
+fn no_op() {}
+
+// --- Host-fn round trips (used by snapshot golden tests F7) ---
+//
+// One host function per primitive type. The host registers each;
+// the guest invokes each via a `RoundTripHostT` wrapper so the test
+// can verify the value round-trips through the host. This exercises
+// the persisted `HostFunctionDetails` flatbuffer schema for every
+// primitive type (both as parameter and as return).
+
+#[host_function("HostEchoI32")]
+fn host_echo_i32(v: i32) -> Result<i32>;
+
+#[host_function("HostEchoU32")]
+fn host_echo_u32(v: u32) -> Result<u32>;
+
+#[host_function("HostEchoI64")]
+fn host_echo_i64(v: i64) -> Result<i64>;
+
+#[host_function("HostEchoU64")]
+fn host_echo_u64(v: u64) -> Result<u64>;
+
+#[host_function("HostEchoF32")]
+fn host_echo_f32(v: f32) -> Result<f32>;
+
+#[host_function("HostEchoF64")]
+fn host_echo_f64(v: f64) -> Result<f64>;
+
+#[host_function("HostEchoBool")]
+fn host_echo_bool(v: bool) -> Result<bool>;
+
+#[host_function("HostEchoString")]
+fn host_echo_string(v: String) -> Result<String>;
+
+#[host_function("HostEchoVecBytes")]
+fn host_echo_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>>;
+
+#[guest_function("RoundTripHostI32")]
+fn round_trip_host_i32(v: i32) -> Result<i32> {
+    host_echo_i32(v)
+}
+
+#[guest_function("RoundTripHostU32")]
+fn round_trip_host_u32(v: u32) -> Result<u32> {
+    host_echo_u32(v)
+}
+
+#[guest_function("RoundTripHostI64")]
+fn round_trip_host_i64(v: i64) -> Result<i64> {
+    host_echo_i64(v)
+}
+
+#[guest_function("RoundTripHostU64")]
+fn round_trip_host_u64(v: u64) -> Result<u64> {
+    host_echo_u64(v)
+}
+
+#[guest_function("RoundTripHostF32")]
+fn round_trip_host_f32(v: f32) -> Result<f32> {
+    host_echo_f32(v)
+}
+
+#[guest_function("RoundTripHostF64")]
+fn round_trip_host_f64(v: f64) -> Result<f64> {
+    host_echo_f64(v)
+}
+
+#[guest_function("RoundTripHostBool")]
+fn round_trip_host_bool(v: bool) -> Result<bool> {
+    host_echo_bool(v)
+}
+
+#[guest_function("RoundTripHostString")]
+fn round_trip_host_string(v: String) -> Result<String> {
+    host_echo_string(v)
+}
+
+#[guest_function("RoundTripHostVecBytes")]
+fn round_trip_host_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>> {
+    host_echo_vec_bytes(v)
+}
+
+// --- Heap pattern (used by snapshot golden test F5) ---
+//
+// `AllocAndWritePattern(len)` allocates a `Vec<u8>` of length `len`,
+// writes a deterministic byte pattern into it, and pins it in a
+// static so the heap allocation survives the snapshot.
+// `ReadPattern()` returns whatever is currently pinned. The test
+// snapshots between the two calls and asserts the bytes round-trip
+// across the on-disk save/load.
+
+static mut HEAP_PATTERN: Option<Vec<u8>> = None;
+
+#[guest_function("AllocAndWritePattern")]
+fn alloc_and_write_pattern(len: u64) {
+    let v: Vec<u8> = (0..len as usize).map(|i| (i & 0xff) as u8).collect();
+    unsafe { HEAP_PATTERN = Some(v) };
+}
+
+#[guest_function("ReadPattern")]
+fn read_pattern() -> Vec<u8> {
+    #[allow(static_mut_refs)]
+    unsafe {
+        HEAP_PATTERN.clone().unwrap_or_default()
+    }
+}
+
 #[expect(
     clippy::empty_loop,
     reason = "This function is used to keep the CPU busy"

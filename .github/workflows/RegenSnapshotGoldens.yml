@@ -1,0 +1,148 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# Regenerate snapshot goldens stored at
+# ghcr.io/hyperlight-dev/hyperlight-snapshot-goldens.
+#
+# Run order:
+#
+#  1. Bump `GOLDENS_VERSION` in
+#     `src/hyperlight_host/tests/snapshot_goldens/platform.rs` and any
+#     matching constants in
+#     `src/hyperlight_host/src/sandbox/snapshot/tripwires.rs`.
+#  2. Push the bump on a branch.
+#  3. Dispatch this workflow against the branch, passing the same
+#     version string as the `version` input.
+#
+# The workflow walks every (hv, cpu, config) cell, dumps the
+# canonical init+call snapshots locally, then `oras copy`s each as
+# its own GHCR tag named
+# `{version}-{hv}-{cpu}-{profile}-{kind}`.
+
+name: Regenerate Snapshot Goldens
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Goldens version string. Must match GOLDENS_VERSION in source (e.g. "v1.0").
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  GHCR_IMAGE: ghcr.io/hyperlight-dev/hyperlight-snapshot-goldens
+
+permissions:
+  contents: read
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-guests:
+    strategy:
+      matrix:
+        config: [debug, release]
+    uses: ./.github/workflows/dep_build_guests.yml
+    with:
+      config: ${{ matrix.config }}
+    secrets: inherit
+
+  dump-and-push:
+    needs: build-guests
+    strategy:
+      fail-fast: false
+      matrix:
+        hypervisor: [kvm, mshv3, hyperv-ws2025]
+        cpu: [amd, intel]
+        config: [debug, release]
+    runs-on: ${{ fromJson(
+        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=regen-goldens-{3}-{4}-{5}-{6}"]',
+          matrix.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+          matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor,
+          matrix.cpu,
+          matrix.config,
+          github.run_id,
+          github.run_number,
+          github.run_attempt)) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: runner.os == 'Linux'
+        run: sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Download Rust guests
+        uses: actions/download-artifact@v7
+        with:
+          name: rust-guests-${{ matrix.config }}
+          path: src/tests/rust_guests/bin/${{ matrix.config }}/
+
+      - name: Install oras
+        run: |
+          set -euo pipefail
+          if command -v oras >/dev/null 2>&1; then
+            echo "oras already installed: $(oras version)"
+            exit 0
+          fi
+          ORAS_VERSION=1.2.2
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            curl -sSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_windows_amd64.zip"
+            unzip -q "oras_${ORAS_VERSION}_windows_amd64.zip" -d oras_install
+            mv oras_install/oras.exe /usr/bin/oras.exe
+          else
+            curl -sSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+            mkdir -p oras_install
+            tar -xzf "oras_${ORAS_VERSION}_linux_amd64.tar.gz" -C oras_install
+            sudo install -m 0755 oras_install/oras /usr/local/bin/oras
+          fi
+          oras version
+
+      - name: Verify GOLDENS_VERSION matches input
+        run: |
+          set -euo pipefail
+          IN_SRC=$(grep -oE 'GOLDENS_VERSION: &str = "[^"]+"' src/hyperlight_host/tests/snapshot_goldens/platform.rs | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "GOLDENS_VERSION in source: ${IN_SRC}"
+          echo "version input:             ${{ inputs.version }}"
+          if [ "${IN_SRC}" != "${{ inputs.version }}" ]; then
+            echo "::error::version input does not match GOLDENS_VERSION in source"
+            exit 1
+          fi
+
+      - name: Generate snapshots
+        run: |
+          set -euo pipefail
+          OUT="${{ github.workspace }}/snapshot-goldens-out"
+          mkdir -p "$OUT"
+          PROFILE_FLAG=$([ "${{ matrix.config }}" = "release" ] && echo "--release" || echo "")
+          FEATURES=$([ "${{ matrix.hypervisor }}" = "mshv3" ] && echo "mshv3" || echo "kvm")
+          if [ "${{ runner.os }}" = "Windows" ]; then FEATURES=""; fi
+          cargo test $PROFILE_FLAG -p hyperlight-host \
+            ${FEATURES:+--no-default-features --features "$FEATURES,build-metadata"} \
+            --test snapshot_goldens -- generate "$OUT"
+          ls -la "$OUT"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push goldens to GHCR
+        run: |
+          set -euo pipefail
+          OUT="${{ github.workspace }}/snapshot-goldens-out"
+          for layout in "$OUT"/*/; do
+            tag=$(basename "$layout")
+            tag=${tag%/}
+            echo "::group::push ${tag}"
+            oras copy --from-oci-layout "${layout%/}:${tag}" "${GHCR_IMAGE}:${tag}"
+            echo "::endgroup::"
+          done
