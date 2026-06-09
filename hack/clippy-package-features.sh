@@ -30,13 +30,19 @@ if [[ "$PACKAGE" == "hyperlight-host" ]]; then
     REQUIRED_FEATURES=("kvm" "mshv3")
 elif [[ "$PACKAGE" == "hyperlight-guest-bin" ]]; then
     REQUIRED_FEATURES=("libc")
-else 
+else
     REQUIRED_FEATURES=()
+fi
+
+EXCLUDED_FEATURES=("${REQUIRED_FEATURES[@]}")
+
+if [[ -n "${TARGET_TRIPLE}" && "$TARGET_TRIPLE" =~ aarch64 ]] || [[ -z "${TARGET_TRIPLE}" && "$(uname -m)" = "aarch64" ]]; then
+    EXCLUDED_FEATURES+=("crashdump" "trace_guest" "mem_profile" "hw-interrupts" "gdb" "i686-guest" "nanvix-unstable")
 fi
 
 # Get all features for the package (excluding default and required features)
 # Always exclude "default", and exclude any required features using jq
-features=$(cargo metadata --format-version 1 --no-deps | jq -r --arg pkg "$PACKAGE" '.packages[] | select(.name == $pkg) | .features | keys[] | select(. != "default" and (IN($ARGS.positional[])|not))' --args "${REQUIRED_FEATURES[@]}" || true)
+features=$(cargo metadata --format-version 1 --no-deps | jq -r --arg pkg "$PACKAGE" '.packages[] | select(.name == $pkg) | .features | keys[] | select(. != "default" and (IN($ARGS.positional[])|not))' --args "${EXCLUDED_FEATURES[@]}" || true)
 
 # Convert required features array to comma-separated string for cargo
 if [[ ${#REQUIRED_FEATURES[@]} -gt 0 ]]; then

@@ -31,7 +31,9 @@ pub(crate) struct MshvVm {
     _placeholder: (),
 }
 
+#[allow(unused)]
 impl MshvVm {
+    #[allow(unused)]
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         unimplemented!("MshvVm::new")
     }
