@@ -42,7 +42,7 @@ jobs:
     env:
       TARGET_TRIPLE: x86_64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
@@ -134,7 +134,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Notify Nightly Failure
         run: ./dev/notify-ci-failure.sh --title="Nightly musl Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
