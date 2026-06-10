@@ -278,7 +278,6 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
 
 /// Type for memory regions that only track guest addresses.
 ///
-#[cfg_attr(feature = "i686-guest", allow(dead_code))]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct GuestMemoryRegion {}
 
@@ -331,27 +330,6 @@ impl MemoryRegionKind for CrashDumpMemoryRegion {
 #[cfg(crashdump)]
 pub(crate) type CrashDumpRegion = MemoryRegion_<CrashDumpMemoryRegion>;
 
-#[cfg(all(crashdump, feature = "i686-guest"))]
-impl HostGuestMemoryRegion {
-    /// Extract the raw `usize` host address from the platform-specific
-    /// host base type.
-    ///
-    /// On Linux this is identity (`HostBaseType` = `usize`).
-    /// On Windows it computes `handle_base + offset` via the existing
-    /// `From<HostRegionBase> for usize` impl.
-    pub(crate) fn to_addr(val: <Self as MemoryRegionKind>::HostBaseType) -> usize {
-        #[cfg(not(target_os = "windows"))]
-        {
-            val
-        }
-        #[cfg(target_os = "windows")]
-        {
-            val.into()
-        }
-    }
-}
-
-#[cfg_attr(feature = "i686-guest", allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,
     host_base_virt_addr: K::HostBaseType,

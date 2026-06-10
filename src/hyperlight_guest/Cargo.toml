@@ -24,5 +24,3 @@ hyperlight-guest-tracing = { workspace = true, default-features = false, optiona
 [features]
 default = []
 trace_guest = ["dep:hyperlight-guest-tracing", "hyperlight-guest-tracing?/trace"]
-i686-guest = ["hyperlight-common/i686-guest"]
-guest-counter = ["hyperlight-common/guest-counter"]

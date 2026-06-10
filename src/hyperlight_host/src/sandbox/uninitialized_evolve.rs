@@ -39,20 +39,6 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
 
-    // Publish the HostSharedMemory for scratch so any pre-existing
-    // GuestCounter can begin issuing volatile writes.
-    #[cfg(feature = "guest-counter")]
-    {
-        #[allow(clippy::unwrap_used)]
-        // The mutex can only be poisoned if a previous lock holder
-        // panicked.  Since we are the only writer at this point (the
-        // GuestCounter only reads inside `increment`/`decrement`),
-        // poisoning cannot happen.
-        {
-            *u_sbox.deferred_hshm.lock().unwrap() = Some(hshm.scratch_mem.clone());
-        }
-    }
-
     // Get the host page size. Narrowed to u32 because the guest ABI
     // passes it via a 32-bit register (rdx), but widened back to usize
     // for host-side alignment calculations in set_up_hypervisor_partition.
@@ -107,15 +93,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         // WhpVm::drop would release the same handle — a double-close.
         // For linux see https://github.com/hyperlight-dev/hyperlight/issues/1290.
         prepared.mark_consumed();
-        // Record the mapping metadata in the PEB. This runs after
-        // mark_consumed() because map_region already transferred
-        // resource ownership to the VM layer. If this write fails,
-        // the VM still holds a valid mapping but the PEB won't list
-        // it — acceptable since we're about to return Err and the
-        // VM will be dropped. The limit was already validated in
-        // UninitializedSandbox::map_file_cow.
-        #[cfg(feature = "nanvix-unstable")]
-        hshm.write_file_mapping_entry(prepared.guest_base, prepared.size as u64, &prepared.label)?;
     }
 
     vm.initialise(

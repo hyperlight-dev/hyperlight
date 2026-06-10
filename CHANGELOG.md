@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Removed
+* Removed the experimental `i686-guest`, `nanvix-unstable`, and `guest-counter` feature flags, along with 32-bit (i686) guest support and its page-table/snapshot code paths. Hyperlight guests are now 64-bit only (x86_64 and aarch64).
+
 ## [v0.15.0] - 2026-05-06
 
 ### Added

@@ -333,10 +333,6 @@ unsafe fn map_page<
 /// independently and emits all leaves as `ThisSpace`. Aliased
 /// intermediate-table detection is not implemented here because no
 /// current embedder exercises that pattern on amd64.
-///
-/// TODO: align with the i686 implementation and detect aliased
-/// intermediate tables to avoid semantic divergence across arches.
-/// Tracking: follow-up issue.
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn walk_va_spaces<Op: TableReadOps>(
     op: &Op,
