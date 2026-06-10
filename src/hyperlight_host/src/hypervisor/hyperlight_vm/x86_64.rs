@@ -100,13 +100,7 @@ impl HyperlightVm {
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
-        #[cfg(not(feature = "i686-guest"))]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
-            _root_pt_addr,
-        ))
-        .map_err(VmError::Register)?;
-        #[cfg(feature = "i686-guest")]
-        vm.set_sregs(&CommonSpecialRegisters::standard_32bit_paging_defaults(
             _root_pt_addr,
         ))
         .map_err(VmError::Register)?;
@@ -877,7 +871,6 @@ pub(super) mod debug {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "i686-guest"))]
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use std::sync::{Arc, Mutex};

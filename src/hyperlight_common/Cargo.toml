@@ -34,9 +34,6 @@ fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []
 std = ["thiserror/std", "log/std", "tracing/std"]
-i686-guest = []
-nanvix-unstable = ["i686-guest"]
-guest-counter = []
 
 [dev-dependencies]
 quickcheck = "1.0.3"

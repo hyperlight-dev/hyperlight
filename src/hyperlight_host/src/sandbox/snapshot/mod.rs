@@ -213,14 +213,11 @@ fn skip_virt(virt_base: u64, scratch_gva: u64) -> bool {
     if virt_base >= scratch_gva {
         return true;
     }
-    #[cfg(not(feature = "i686-guest"))]
     if virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
         && virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
     {
         return true;
     }
-    #[cfg(feature = "i686-guest")]
-    let _ = virt_base;
     false
 }
 
@@ -296,7 +293,6 @@ impl Snapshot {
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 
-        #[cfg_attr(feature = "i686-guest", allow(unused_mut))]
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
@@ -677,7 +673,6 @@ impl Snapshot {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "i686-guest"))]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
@@ -784,147 +779,5 @@ mod tests {
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "i686-guest")]
-mod i686_tests {
-    use hyperlight_common::vmem::{
-        self, BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE,
-    };
-
-    use crate::mem::mgr::GuestPageTableBuffer;
-
-    const PT_BASE: usize = 0x10_0000;
-
-    #[test]
-    fn map_single_page() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let mapping = Mapping {
-            phys_base: 0x2000,
-            virt_base: 0x1000,
-            len: PAGE_SIZE as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: true,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].phys_base, 0x2000);
-        assert_eq!(results[0].virt_base, 0x1000);
-        assert!(matches!(
-            results[0].kind,
-            MappingKind::Basic(BasicMapping { writable: true, .. })
-        ));
-    }
-
-    #[test]
-    fn map_cow_page() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let mapping = Mapping {
-            phys_base: 0x3000,
-            virt_base: 0x2000,
-            len: PAGE_SIZE as u64,
-            kind: MappingKind::Cow(CowMapping {
-                readable: true,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x2000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].phys_base, 0x3000);
-        assert!(matches!(results[0].kind, MappingKind::Cow(_)));
-    }
-
-    #[test]
-    fn map_multiple_pages_across_pd_boundary() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        // Map pages spanning a 4MB PD boundary (PD[0] -> PD[1])
-        let va_start = 0x003F_F000u64; // last page of PD[0]
-        let pa_start = 0x5000u64;
-        let mapping = Mapping {
-            phys_base: pa_start,
-            virt_base: va_start,
-            len: 2 * PAGE_SIZE as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: false,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, va_start, 2 * PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].phys_base, pa_start);
-        assert_eq!(results[0].virt_base, va_start);
-        assert_eq!(results[1].phys_base, pa_start + PAGE_SIZE as u64);
-        assert_eq!(results[1].virt_base, va_start + PAGE_SIZE as u64);
-    }
-
-    #[test]
-    fn virt_to_phys_unmapped_returns_empty() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn map_reuses_existing_page_table() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        // Map two pages in the same 4MB region (same PD entry)
-        unsafe {
-            vmem::map(
-                &pt,
-                Mapping {
-                    phys_base: 0x1000,
-                    virt_base: 0x1000,
-                    len: PAGE_SIZE as u64,
-                    kind: MappingKind::Basic(BasicMapping {
-                        readable: true,
-                        writable: true,
-                        executable: true,
-                    }),
-                    user_accessible: false,
-                },
-            );
-            vmem::map(
-                &pt,
-                Mapping {
-                    phys_base: 0x5000,
-                    virt_base: 0x5000,
-                    len: PAGE_SIZE as u64,
-                    kind: MappingKind::Basic(BasicMapping {
-                        readable: true,
-                        writable: true,
-                        executable: true,
-                    }),
-                    user_accessible: false,
-                },
-            );
-        }
-        // Both should be visible
-        let r1: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        let r2: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x5000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(r1.len(), 1);
-        assert_eq!(r2.len(), 1);
-        assert_eq!(r1[0].phys_base, 0x1000);
-        assert_eq!(r2[0].phys_base, 0x5000);
-        // Should have allocated: 1 PD (pre-existing) + 1 PT = 2 pages total
-        assert_eq!(pt.size(), 2 * PAGE_SIZE);
     }
 }

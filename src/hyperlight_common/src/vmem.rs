@@ -14,26 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-#[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
-#[cfg_attr(
-    all(target_arch = "x86_64", not(feature = "i686-guest")),
-    path = "arch/amd64/vmem.rs"
-)]
-#[cfg_attr(
-    all(target_arch = "x86_64", feature = "i686-guest"),
-    path = "arch/i686/vmem.rs"
-)]
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
-
-#[cfg(all(
-    feature = "i686-guest",
-    not(any(target_arch = "x86", target_arch = "x86_64"))
-))]
-compile_error!(
-    "the `i686-guest` feature is only supported on `target_arch = \"x86\"` (guest) or \
-     `target_arch = \"x86_64\"` (host) targets"
-);
 
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
@@ -145,10 +128,6 @@ pub(in crate::vmem) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
 /// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
 /// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
 /// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
-///
-/// On i686:
-/// - PD:   HIGH_BIT=31, LOW_BIT=22 (10 bits = 1024 entries, each covering 4MB)
-/// - PT:   HIGH_BIT=21, LOW_BIT=12 (10 bits = 1024 entries, each covering 4KB)
 pub(in crate::vmem) struct ModifyPteIterator<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
@@ -475,8 +454,6 @@ pub type SpaceId = u64;
 /// that sub-tree — PDEs, PTEs, leaf mappings — is shared wholesale.
 ///
 /// `depth` is counted from the root:
-/// - `depth = 1` on i686: the shared thing is a leaf PT (the thing a
-///   PDE points to).
 /// - `depth = 1, 2, 3` on amd64: PDPT, PD, or PT respectively.
 #[derive(Debug, Clone, Copy)]
 pub struct SpaceReferenceMapping {
