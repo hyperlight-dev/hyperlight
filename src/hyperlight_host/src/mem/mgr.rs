@@ -22,7 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
@@ -37,7 +37,7 @@ use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegion
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
     match kind {
         MappingKind::Basic(BasicMapping {
@@ -75,7 +75,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
 /// in both guest and host address space and has the same flags.
 ///
 /// Returns `true` if the region was coalesced, `false` if a new region is needed.
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 fn try_coalesce_region(
     regions: &mut [CrashDumpRegion],
     virt_base: usize,
@@ -581,7 +581,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ///
     /// By default, walks the guest page tables to discover
     /// GVA→GPA mappings and translates them to host-backed regions.
-    #[cfg(feature = "crashdump")]
+    #[cfg(crashdump)]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         root_pt: u64,
