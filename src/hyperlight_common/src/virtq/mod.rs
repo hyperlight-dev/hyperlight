@@ -167,6 +167,7 @@ impl Layout {
 }
 
 const _: () = {
+    #[allow(clippy::panic)]
     #[allow(clippy::unwrap_used)]
     const fn verify_layout(num_descs: usize) {
         let base = 0x1000u64;
