@@ -20,6 +20,10 @@ use core::arch::x86_64::{__cpuid, _rdtsc};
 /// Check if the processor supports invariant TSC
 ///
 /// Returns true if CPUID.80000007H:EDX[8] is set, indicating invariant TSC support
+// TODO: Remove this when MSRV is raised above 1.89.
+// On Rust 1.89, __cpuid requires `unsafe`; on newer compilers it is safe and
+// clippy flags these blocks as unnecessary.
+#[allow(unused_unsafe)]
 pub fn has_invariant_tsc() -> bool {
     // Check if extended CPUID functions are available
     let max_extended = unsafe { __cpuid(0x80000000) };

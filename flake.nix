@@ -91,9 +91,9 @@
           # for rustfmt and old toolchains to verify MSRV
           toolchains = lib.mapAttrs (_: customisedRustChannelOf) {
             stable = {
-              date = "2025-12-11";
+              date = "2026-03-05";
               channel = "stable";
-              sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
+              sha256 = "sha256-qqF33vNuAdU5vua96VKVIwuc43j4EFeEXbjQ6+l4mO4=";
             };
             nightly = {
               date = "2026-02-27";
