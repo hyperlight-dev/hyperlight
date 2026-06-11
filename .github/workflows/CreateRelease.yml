@@ -138,7 +138,7 @@ jobs:
           echo "HYPERLIGHT_VERSION=$version"
 
       - name: Install cargo-hyperlight
-        run: cargo install cargo-hyperlight --version 0.1.10 --locked --force
+        run: just ensure-cargo-hyperlight
 
       - name: Build and archive guest library + header files
         run: |

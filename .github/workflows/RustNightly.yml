@@ -74,7 +74,7 @@ jobs:
             src/tests/rust_guests -> target
 
       - name: Install cargo-hyperlight
-        run: cargo install cargo-hyperlight --version 0.1.10 --locked --force
+        run: just ensure-cargo-hyperlight
 
       - name: Build and move Rust guests
         run: |
