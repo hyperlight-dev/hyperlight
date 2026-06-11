@@ -1256,6 +1256,10 @@ mod tests {
     /// - size: CPUID.0DH.n:EAX - size in bytes
     /// - offset: CPUID.0DH.n:EBX - offset from XSAVE base (standard format only)
     /// - align_64: CPUID.0DH.n:ECX bit 1 - true if 64-byte aligned (compacted format)
+    // TODO: Remove this when MSRV is raised above 1.89.
+    // On Rust 1.89, __cpuid_count requires `unsafe`; on newer compilers it is safe and
+    // clippy flags these blocks as unnecessary.
+    #[allow(unused_unsafe)]
     fn xsave_component_info(comp_id: u32) -> (usize, usize, bool) {
         let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, comp_id) };
         let size = result.eax as usize;
@@ -1266,6 +1270,10 @@ mod tests {
 
     /// Query CPUID.0DH.00H for the bitmap of supported user state components.
     /// EDX:EAX forms a 64-bit bitmap where bit i indicates support for component i.
+    // TODO: Remove this when MSRV is raised above 1.89.
+    // On Rust 1.89, __cpuid_count requires `unsafe`; on newer compilers it is safe and
+    // clippy flags these blocks as unnecessary.
+    #[allow(unused_unsafe)]
     fn xsave_supported_components() -> u64 {
         let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, 0) };
         (result.edx as u64) << 32 | (result.eax as u64)
