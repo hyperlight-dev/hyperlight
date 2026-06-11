@@ -134,8 +134,10 @@ fn test_exception_handler(
 /// Install handler for a specific vector
 #[guest_function("InstallHandler")]
 fn install_handler(vector: i32) {
-    hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize]
-        .store(test_exception_handler as *const () as usize as u64, Ordering::Release);
+    hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize].store(
+        test_exception_handler as *const () as usize as u64,
+        Ordering::Release,
+    );
 }
 
 /// Get how many times the handler was invoked

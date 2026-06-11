@@ -48,7 +48,7 @@ build target=default-target:
 guests: build-and-move-rust-guests build-and-move-c-guests
 
 ensure-cargo-hyperlight:
-    cargo install --locked cargo-hyperlight
+    cargo install --locked --version 0.1.11 cargo-hyperlight
 
 witguest-wit:
     cargo install --locked wasm-tools
