@@ -89,23 +89,7 @@ pub struct MultiUseSandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
-    /// Optional callback to discover page table roots from guest memory.
-    /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
-    /// If not set, only CR3 is used as the single root.
-    pt_root_finder: Option<PtRootFinder>,
 }
-
-/// Callback for discovering page table roots from guest memory.
-///
-/// Called during [`MultiUseSandbox::snapshot`] with:
-/// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
-/// - `scratch_mem` - the sandbox's scratch memory as a byte slice
-/// - `root_pt_gpa` - the root page table GPA of the currently-executing
-///   address space
-///
-/// Returns a list of root page table GPAs to walk. If the list is
-/// empty, only `root_pt_gpa` is used.
-pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
 
 impl MultiUseSandbox {
     /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
@@ -128,15 +112,7 @@ impl MultiUseSandbox {
             #[cfg(gdb)]
             dbg_mem_access_fn,
             snapshot: None,
-            pt_root_finder: None,
         }
-    }
-
-    /// Set a callback that discovers page table roots from guest memory.
-    /// The callback receives (snapshot_mem, scratch_mem, cr3) and returns
-    /// the list of root GPAs to walk during snapshot creation.
-    pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
-        self.pt_root_finder = Some(finder);
     }
 
     /// Create a `MultiUseSandbox` directly from a [`Snapshot`],
@@ -354,17 +330,6 @@ impl MultiUseSandbox {
             .vm
             .get_root_pt()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        // Use the callback if set, otherwise just CR3
-        let root_pt_gpas = if let Some(finder) = &self.pt_root_finder {
-            let roots = self.mem_mgr.shared_mem.with_contents(|snap| {
-                self.mem_mgr
-                    .scratch_mem
-                    .with_contents(|scratch| finder(snap, scratch, cr3))
-            })??;
-            if roots.is_empty() { vec![cr3] } else { roots }
-        } else {
-            vec![cr3]
-        };
 
         let stack_top_gpa = self.vm.get_stack_top();
         let sregs = self
@@ -379,7 +344,7 @@ impl MultiUseSandbox {
 
         let memory_snapshot = self.mem_mgr.snapshot(
             mapped_regions_vec,
-            &root_pt_gpas,
+            cr3,
             stack_top_gpa,
             sregs,
             entrypoint,
