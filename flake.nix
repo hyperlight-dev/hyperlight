@@ -51,7 +51,7 @@
               toolchainVersionAttrs = args;
             };
           })) // {
-            targetPlatforms = [ "x86_64-linux" ];
+            targetPlatforms = [ "aarch64-linux" "x86_64-linux" ];
             badTargetPlatforms = [ ];
           };
           overrideRustPkg = pkg: self.lib.makeOverridable (origArgs:
@@ -68,21 +68,21 @@
               args = [ "-c" "declare > $out" ];
             });
         in {
-          shells.default = gcrootForShell devShells.x86_64-linux.default;
+          shells.x86_64-linux.default = gcrootForShell devShells.x86_64-linux.default;
+          shells.aarch64-linux.default = gcrootForShell devShells.aarch64-linux.default;
         };
-      devShells.x86_64-linux.default =
-        let pkgs = import nixpkgs {
-              system = "x86_64-linux";
-              overlays = [ (import (nixpkgs-mozilla + "/rust-overlay.nix")) overlays.fix-rust ];
-            };
-        in with pkgs; let
+      devShells = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (system: {
+        default = let pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import (nixpkgs-mozilla + "/rust-overlay.nix")) overlays.fix-rust ];
+        }; in with pkgs; let
           customisedRustChannelOf = args:
             lib.flip builtins.mapAttrs (rustChannelOf args) (_: pkg: pkg.override {
               targets = [
                 "x86_64-unknown-linux-gnu"
                 "x86_64-pc-windows-msvc" "x86_64-unknown-none"
                 "wasm32-wasip1" "wasm32-wasip2" "wasm32-unknown-unknown"
-                "i686-unknown-linux-gnu"
+                "i686-unknown-linux-gnu" "aarch64-unknown-none"
               ];
               extensions = [ "rust-src" ] ++ (if args.channel == "nightly" then [ "miri-preview" ] else []);
             });
@@ -225,10 +225,11 @@
             src = fetchFromGitHub {
               owner = "hyperlight-dev";
               repo = "cargo-hyperlight";
-              tag = "v${version}";
-              hash = "sha256-xq4/c69N0wG/I8WOYVloo0J0JqoSIKiWWtECdSKrsxo=";
+              rev = "28ac7b57e8e7b83f80bd601f1fab334aa3ae6d4a";
+              hash = "sha256-a/mvPEDJycrCbmd826SmFdasE8BFtMkCsefCNR5JnkM=";
             };
-            cargoHash = "sha256-muiMVrK1TydQiMitihfo7xYidqUIIQ+Hw3BIeo5rLFw=";
+            cargoHash = "sha256-wLapaao8qcB/toltV/xjQ7SXXcfh2J19nw6jWljmb2s=";
+            doCheck = false;
           };
         in (buildRustPackageClang (mkDerivationAttrs: {
           pname = "hyperlight";
@@ -278,5 +279,6 @@
         })).overrideAttrs(oA: {
           hardeningDisable = [ "all" ];
         });
+      });
     };
 }

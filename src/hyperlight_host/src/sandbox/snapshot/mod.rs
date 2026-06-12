@@ -17,7 +17,7 @@ limitations under the License.
 use std::collections::{BTreeMap, HashMap};
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
+use hyperlight_common::layout::{io_page, scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
 use hyperlight_common::vmem::{
     BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId, TableOps,
@@ -248,6 +248,21 @@ unsafe fn guest_page<'a>(
 }
 
 fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
+    if let Some((phys_base, virt_base)) = io_page() {
+        // Map the IO page
+        let mapping = Mapping {
+            phys_base,
+            virt_base,
+            len: PAGE_SIZE as u64,
+            kind: MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
+            user_accessible: false,
+        };
+        unsafe { vmem::map(pt_buf, mapping) };
+    }
     // Map the scratch region
     let mapping = Mapping {
         phys_base: scratch_base_gpa(scratch_size),
@@ -357,7 +372,7 @@ impl Snapshot {
         layout.set_pt_size(pt_bytes.len())?;
         memory.extend(&pt_bytes);
 
-        let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+        let exn_stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
@@ -422,7 +437,7 @@ impl Snapshot {
                         &op,
                         root_pt_gpas,
                         0,
-                        hyperlight_common::layout::MAX_GVA as u64,
+                        hyperlight_common::layout::SCRATCH_TOP_GVA as u64,
                     )
                 };
 

@@ -23,7 +23,9 @@ use std::{env, fs};
 use anyhow::{Context, Result, bail};
 use bindgen::Formatter::Prettyplease;
 use bindgen::RustEdition::Edition2021;
-use build_files::{LIBC_FILES, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_X86};
+use build_files::{
+    LIBC_FILES, LIBC_FILES_AARCH64, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_AARCH64, LIBM_FILES_X86,
+};
 
 fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
     include_dir: P,
@@ -52,7 +54,39 @@ fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
     Ok(())
 }
 
-fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
+#[derive(Copy, Clone)]
+enum Target {
+    X86,
+    AArch64,
+}
+use Target::*;
+impl Target {
+    fn get() -> Result<Self> {
+        match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+            Err(_) => bail!("cargo TARGET_ARCH not set"),
+            Ok("x86") | Ok("x86_64") => Ok(X86),
+            Ok("aarch64") => Ok(AArch64),
+            Ok(arch) => bail!("Unsupported target architecture: {arch}"),
+        }
+    }
+    fn clang_flag(self) -> &'static str {
+        // This is a terrible hack, because
+        // - we need stack clash protection, because we have put the
+        //   stack right smack in the middle of everything in the guest
+        // - clang refuses to do stack clash protection unless it is
+        //   required by a target ABI (Windows, MacOS) or the target is
+        //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
+        //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
+        //   Hopefully a flag to force stack clash protection on generic
+        //   targets will eventually show up.
+        match self {
+            X86 => "--target=x86_64-unknown-linux-none",
+            AArch64 => "--target=aarch64-unknown-linux-none",
+        }
+    }
+}
+
+fn cc_build(picolibc_dir: &PathBuf, target: Target) -> Result<cc::Build> {
     let mut build = cc::Build::new();
     let compiler = env::var("HYPERLIGHT_GUEST_clang").unwrap_or("clang".to_string());
 
@@ -89,16 +123,7 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         // Hyperlight's stack management was not designed with a redzone in mind,
         // so we leave it disabled for now
         .flag("-mno-red-zone")
-        // This is a terrible hack, because
-        // - we need stack clash protection, because we have put the
-        //   stack right smack in the middle of everything in the guest
-        // - clang refuses to do stack clash protection unless it is
-        //   required by a target ABI (Windows, MacOS) or the target is
-        //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
-        //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
-        //   Hopefully a flag to force stack clash protection on generic
-        //   targets will eventually show up.
-        .flag("--target=x86_64-unknown-linux-none");
+        .flag(target.clang_flag());
 
     build
         .flag_if_supported("-fdirect-access-external-data")
@@ -117,12 +142,13 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         .define("_FILE_OFFSET_BITS", "64");
 
     match target {
-        "x86" | "x86_64" => {
+        X86 => {
             build.include(picolibc_dir.join("libm/machine/x86"));
             build.include(picolibc_dir.join("libc/machine/x86"));
         }
-        arch => {
-            bail!("Unsupported target architecture: {arch}");
+        AArch64 => {
+            build.include(picolibc_dir.join("libc/machine/aarch64"));
+            build.include(picolibc_dir.join("libm/machine/aarch64"));
         }
     }
 
@@ -135,11 +161,11 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
     Ok(build)
 }
 
-fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<()> {
+fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: Target) -> Result<()> {
     let base = LIBC_FILES.iter();
     let files = match target {
-        "x86" | "x86_64" => base.chain(LIBC_FILES_X86.iter()),
-        arch => bail!("Unsupported target architecture: {arch}"),
+        X86 => base.chain(LIBC_FILES_X86.iter()),
+        AArch64 => base.chain(LIBC_FILES_AARCH64.iter()),
     };
 
     for file in files {
@@ -150,13 +176,13 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
     Ok(())
 }
 
-fn add_libm(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<()> {
+fn add_libm(build: &mut cc::Build, picolibc_dir: &Path, target: Target) -> Result<()> {
     build.include(picolibc_dir.join("libm/common"));
 
     let base = LIBM_FILES.iter();
     let files = match target {
-        "x86" | "x86_64" => base.chain(LIBM_FILES_X86.iter()),
-        arch => bail!("Unsupported target architecture: {arch}"),
+        X86 => base.chain(LIBM_FILES_X86.iter()),
+        AArch64 => base.chain(LIBM_FILES_AARCH64.iter()),
     };
 
     for file in files {
@@ -200,7 +226,7 @@ fn generate_bindings(include_dir: &Path, out_dir: &Path) -> Result<()> {
         .header(include_dir.join("sys/time.h").to_string_lossy())
         .clang_arg(format!("-I{}", include_dir.display()))
         .clang_arg("-nostdlibinc")
-        .clang_arg("--target=x86_64-unknown-linux-none")
+        .clang_arg(Target::get()?.clang_flag())
         .clang_arg("-fno-stack-protector")
         .clang_arg("-D_POSIX_MONOTONIC_CLOCK=1")
         .use_core()
@@ -232,7 +258,7 @@ fn cargo_main() -> Result<()> {
     println!("cargo:rerun-if-env-changed=HYPERLIGHT_GUEST_TOOLCHAIN_ROOT");
 
     let out_dir = env::var("OUT_DIR").expect("cargo OUT_DIR not set");
-    let target = env::var("CARGO_CFG_TARGET_ARCH").expect("cargo TARGET_ARCH not set");
+    let target = Target::get()?;
 
     let include_dir = PathBuf::from(&out_dir).join("include");
     fs::create_dir_all(&include_dir)
@@ -247,13 +273,13 @@ fn cargo_main() -> Result<()> {
         init_submodule().with_context(|| "failed to init picolibc submodule")?;
     }
 
-    let mut build = cc_build(&picolibc_dir, &target)?;
+    let mut build = cc_build(&picolibc_dir, target)?;
 
     // include for picolibc configuration: picolibc.h
     build.include(manifest_dir.join("include"));
 
-    add_libc(&mut build, &picolibc_dir, &target)?;
-    add_libm(&mut build, &picolibc_dir, &target)?;
+    add_libc(&mut build, &picolibc_dir, target)?;
+    add_libm(&mut build, &picolibc_dir, target)?;
 
     if cfg!(windows) {
         unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
@@ -374,19 +400,7 @@ fn find_next(root_dir: &Path, tool_name: &str) -> PathBuf {
     panic!("Could not find another implementation of {}", tool_name);
 }
 
-fn main() -> std::process::ExitCode {
-    let exe = env::current_exe().expect("expected program name");
-    let name = Path::file_name(exe.as_ref()).expect("program name should not be directory");
-    let tool: Tool = name.into();
-
-    if tool == Tool::CargoBuildScript {
-        if let Err(err) = cargo_main() {
-            eprintln!("{:#}", err);
-            return std::process::ExitCode::FAILURE;
-        }
-        return std::process::ExitCode::SUCCESS;
-    }
-
+fn clang_main(exe: PathBuf) -> Result<Option<std::process::ExitCode>> {
     let exe_abs = fs::canonicalize(&exe).expect("program name should be possible to canonicalize");
     let root_dir = exe_abs
         .parent()
@@ -396,30 +410,42 @@ fn main() -> std::process::ExitCode {
     let mut args = env::args();
     args.next(); // ignore the exe name
     let include_dir = <String as AsRef<Path>>::as_ref(&out_dir).join("include");
+    Ok(std::process::Command::new(find_next(root_dir, "clang"))
+        // terrible hack, see above
+        .arg(Target::get()?.clang_flag())
+        .args([
+            // We don't support stack protectors at the moment, but Arch Linux clang
+            // auto-enables them for -linux platforms, so explicitly disable them.
+            "-fno-stack-protector",
+            "-fstack-clash-protection",
+            "-mstack-probe-size=4096",
+            "-mno-red-zone",
+        ])
+        .arg("-nostdinc")
+        .arg("-isystem")
+        .arg(include_dir)
+        .args(args)
+        .status()
+        .ok()
+        .and_then(|x| x.code())
+        .map(|x| (x as u8).into()))
+}
 
-    match tool {
-        Tool::CargoBuildScript => unreachable!("cargo build script should not be called directly"),
-        Tool::Clang => {
-            std::process::Command::new(find_next(root_dir, "clang"))
-                // terrible hack, see above
-                .arg("--target=x86_64-unknown-linux-none")
-                .args([
-                    // We don't support stack protectors at the moment, but Arch Linux clang
-                    // auto-enables them for -linux platforms, so explicitly disable them.
-                    "-fno-stack-protector",
-                    "-fstack-clash-protection",
-                    "-mstack-probe-size=4096",
-                    "-mno-red-zone",
-                ])
-                .arg("-nostdinc")
-                .arg("-isystem")
-                .arg(include_dir)
-                .args(args)
-                .status()
-                .ok()
-                .and_then(|x| x.code())
-                .map(|x| (x as u8).into())
-                .unwrap_or(std::process::ExitCode::FAILURE)
+fn main() -> std::process::ExitCode {
+    let exe = env::current_exe().expect("expected program name");
+    let name = Path::file_name(exe.as_ref()).expect("program name should not be directory");
+    let tool: Tool = name.into();
+
+    let res = match tool {
+        Tool::CargoBuildScript => cargo_main().map(|_| None),
+        Tool::Clang => clang_main(exe),
+    };
+    match res {
+        Err(e) => {
+            eprintln!("{:#}", e);
+            std::process::ExitCode::FAILURE
         }
+        Ok(None) => std::process::ExitCode::SUCCESS,
+        Ok(Some(ec)) => ec,
     }
 }

@@ -213,7 +213,6 @@ impl HyperlightVm {
         &mut self,
         peb_addr: RawPtr,
         seed: u64,
-        page_size: u32,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
@@ -236,7 +235,7 @@ impl HyperlightVm {
             // function args
             rdi: peb_addr.into(),
             rsi: seed,
-            rdx: page_size.into(),
+            rdx: self.page_size as u64,
             rcx: get_guest_log_filter(guest_max_log_level),
             rflags: 1 << 1,
 
@@ -349,7 +348,7 @@ impl HyperlightVm {
         &mut self,
         cr3: u64,
         sregs: &CommonSpecialRegisters,
-    ) -> std::result::Result<(), RegisterError> {
+    ) -> std::result::Result<(), ResetVcpuError> {
         self.vm.set_regs(&CommonRegisters {
             rflags: 1 << 1, // Reserved bit always set
             ..Default::default()
@@ -357,7 +356,9 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
-        self.apply_sregs(cr3, sregs)
+        self.apply_sregs(cr3, sregs)?;
+
+        Ok(())
     }
 
     /// Apply special registers and mark TLB for flush.
@@ -1511,7 +1512,7 @@ mod tests {
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
         let peb_address = gshm.layout.peb_address();
-        let stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+        let stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         let mut vm = set_up_hypervisor_partition(
@@ -1527,7 +1528,6 @@ mod tests {
 
         let seed = rand::rng().random::<u64>();
         let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
-        let page_size = u32::try_from(page_size::get()).unwrap();
 
         #[cfg(gdb)]
         let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
@@ -1537,7 +1537,6 @@ mod tests {
         vm.initialise(
             peb_addr,
             seed,
-            page_size,
             &mut hshm,
             &host_funcs,
             None,
@@ -2124,7 +2123,7 @@ mod tests {
 
             /// Get the stack top GVA, same as the regular codepath.
             fn stack_top_gva(&self) -> u64 {
-                hyperlight_common::layout::MAX_GVA as u64
+                hyperlight_common::layout::SCRATCH_TOP_GVA as u64
                     - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
                     + 1
             }

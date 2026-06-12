@@ -172,3 +172,9 @@ below the exception stack within the scratch region.
 
 Hyperlight unconditionally uses 48-bit virtual addresses (4-level
 paging) and enables PAE.  The guest is always entered in long mode.
+
+## aarch64
+
+Hyperlight unconditionally uses 48-bit virtual addresses. Hyperlight
+presently only uses addresses in the lower (ttbr0) half of the address range.
+

@@ -24,10 +24,12 @@ export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } e
 root := justfile_directory()
 
 default-target := "debug"
+hyperlight-target-arch := env("HYPERLIGHT_TARGET", arch())
+hyperlight-target := if hyperlight-target-arch == "x86_64" { "x86_64-hyperlight-none" } else if hyperlight-target-arch == "aarch64" { "aarch64-hyperlight-none" } else { error("Unsupported architecture: " + arch()) }
 # All three guest crates share one workspace under src/tests/rust_guests,
 # so they share one target dir and hyperlight-libc / hyperlight-guest-bin
 # get compiled once per profile instead of once per crate.
-rust_guests_target := "src/tests/rust_guests/target/x86_64-hyperlight-none"
+rust_guests_target := "src/tests/rust_guests/target/" + hyperlight-target
 simpleguest_source := rust_guests_target
 dummyguest_source := rust_guests_target
 witguest_source := rust_guests_target
@@ -314,7 +316,7 @@ fmt-apply: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
-    {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
+    {{ cargo-cmd }} clippy --all-targets {{ if hyperlight-target-arch == "x86_64" { "--all-features" } else { "" } }} --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
 # for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
 clippyw target=default-target: (witguest-wit)
@@ -339,7 +341,7 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
-    ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
+    {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
 # Test a specific package with all feature combinations

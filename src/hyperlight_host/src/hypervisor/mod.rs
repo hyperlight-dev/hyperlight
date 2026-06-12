@@ -487,7 +487,7 @@ pub(crate) mod tests {
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (mut mem_mgr, gshm) = sandbox.mgr.build().unwrap();
-        let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+        let exn_stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         let mut vm = set_up_hypervisor_partition(
@@ -503,7 +503,6 @@ pub(crate) mod tests {
         // Set up required parameters for initialise
         let peb_addr = RawPtr::from(0x1000u64); // Dummy PEB address
         let seed = 12345u64; // Random seed
-        let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
         let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
@@ -514,7 +513,6 @@ pub(crate) mod tests {
         vm.initialise(
             peb_addr,
             seed,
-            page_size,
             &mut mem_mgr,
             &host_funcs,
             guest_max_log_level,

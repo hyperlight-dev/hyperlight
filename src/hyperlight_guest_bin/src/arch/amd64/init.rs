@@ -92,7 +92,7 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
         let tss_ptr = &raw mut (*pc).tss;
         // copy byte by byte to avoid alignment issues
         let ist1_ptr = &raw mut (*tss_ptr).ist1 as *mut [u8; 8];
-        let exn_stack = hyperlight_common::layout::MAX_GVA as u64
+        let exn_stack = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         ist1_ptr.write_volatile(exn_stack.to_ne_bytes());
@@ -102,28 +102,6 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
             options(nostack, preserves_flags)
         );
     }
-}
-
-/// To initialise the main stack, we just pre-emptively map the first
-/// page of it.
-unsafe fn init_stack() -> u64 {
-    use hyperlight_guest::layout::MAIN_STACK_TOP_GVA;
-    let stack_top_page_base = (MAIN_STACK_TOP_GVA - 1) & !0xfff;
-    unsafe {
-        use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
-        crate::paging::map_region(
-            hyperlight_guest::prim_alloc::alloc_phys_pages(1),
-            stack_top_page_base as *mut u8,
-            PAGE_SIZE as u64,
-            MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: true,
-                executable: false,
-            }),
-        );
-        crate::paging::barrier::first_valid_same_ctx();
-    }
-    MAIN_STACK_TOP_GVA
 }
 
 /// Machine-specific initialisation; calls [`crate::generic_init`]
@@ -138,7 +116,7 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
         init_gdt(pc);
         init_tss(pc);
         init_idt(pc);
-        let stack_top = init_stack();
+        let stack_top = crate::init::init_stack();
 
         // Architecture early init is complete! We pivot now to
         // executing on the main stack, and jump into generic

@@ -51,13 +51,15 @@ pub mod error;
 pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
-#[cfg(target_arch = "x86_64")]
 pub mod paging;
 
 /// Bridge between picolibc's POSIX expectations and the Hyperlight host.
 /// cbindgen:ignore
 #[cfg(feature = "libc")]
 mod libc_stubs;
+
+/// Shared initialisation code used by multiple architectures
+mod init;
 
 /// Re-export the libc bindings from hyperlight-libc when the libc feature is enabled.
 #[cfg(feature = "libc")]

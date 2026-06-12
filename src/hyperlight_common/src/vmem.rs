@@ -42,6 +42,13 @@ pub use arch::{PAGE_PRESENT, PAGE_TABLE_SIZE, PTE_ADDR_MASK, PageTableEntry, Phy
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
+// It would be nice not to have any arch-dependent re-exports here,
+// but on arm64 the MAIR indices used need to be synced between the
+// descriptor creation code and the register initialisation code to
+// make sure that MAIR is set up properly.
+#[cfg(target_arch = "aarch64")]
+pub use arch::ATTR_INDEX_NORMAL;
+
 // Shared page table iterator infrastructure used by each arch module.
 
 /// Utility function to extract an (inclusive on both ends) bit range
@@ -114,6 +121,33 @@ impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
         self
     }
 }
+
+/// A struct implementing [`UpdateParent`] to be used when a table's
+/// parent is another table that needs to be updated recursively.
+#[allow(unused)] // not all architectures use UpdateParentTable
+pub(in crate::vmem) struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
+    pub(in crate::vmem) parent: P,
+    pub(in crate::vmem) entry_ptr: Op::TableAddr,
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
+impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
+    #[allow(unused)] // not all architectures use UpdateParentTable
+    pub(in crate::vmem) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
+        UpdateParentTable { parent, entry_ptr }
+    }
+}
+
+/// A struct implementing [`UpdateParent`] to be used when a table's
+/// parent is the "root table" (with access to that root pointer
+/// provided in an architecture/environment-insensitive manner via
+/// `TableOps`)
+#[derive(Copy, Clone)]
+pub struct UpdateParentRoot {}
 
 /// A helper structure indicating a mapping operation that needs to be
 /// performed.
@@ -319,6 +353,7 @@ mod sealed {
 use sealed::*;
 
 /// A sealed trait used to collect some information about the marker structures [`MayMoveTable`] and [`MayNotMoveTable`]
+#[allow(private_bounds)] // this trait is intentionally sealed
 pub trait TableMovability<Op: TableReadOps + ?Sized>:
     TableMovabilityBase<Op>
     + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>

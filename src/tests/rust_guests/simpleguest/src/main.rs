@@ -32,7 +32,9 @@ use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -45,6 +47,7 @@ use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+#[cfg(target_arch = "x86_64")]
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
@@ -64,8 +67,11 @@ extern crate hyperlight_guest;
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 // Exception handler test state
 static HANDLER_INVOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_VALUE: u64 = 0x1234567890ABCDEF;
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_MODIFIED_VALUE: u64 = 0xBADC0FFEE;
+#[cfg(target_arch = "x86_64")]
 const TEST_R10_VALUE: u64 = 0xDEADBEEF;
 
 #[guest_function("SetStatic")]
@@ -85,6 +91,7 @@ fn echo_double(value: f64) -> f64 {
 
 // Test exception handler that validates stack layout and records invocation
 // It is designed to interact with the trigger_int3 breakpoint exception function below
+#[cfg(target_arch = "x86_64")]
 fn test_exception_handler(
     exception_number: u64,
     _exception_info: *mut ExceptionInfo,
@@ -133,6 +140,7 @@ fn test_exception_handler(
 
 /// Install handler for a specific vector
 #[guest_function("InstallHandler")]
+#[cfg(target_arch = "x86_64")]
 fn install_handler(vector: i32) {
     hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize]
         .store(test_exception_handler as usize as u64, Ordering::Release);
@@ -147,6 +155,7 @@ fn get_exception_handler_call_count() -> i32 {
 
 /// Trigger an INT3 breakpoint exception (vector 3)
 #[guest_function("TriggerInt3")]
+#[cfg(target_arch = "x86_64")]
 fn trigger_int3() -> i32 {
     // Set up test value in R9 before triggering exception
     let test_value: u64 = TEST_R9_VALUE;
@@ -348,7 +357,7 @@ fn fill_heap_and_cause_exception() {
     }
 
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    trigger_exception();
 }
 
 #[guest_function("ExhaustHeap")]
@@ -449,7 +458,13 @@ fn test_guest_panic(message: String) {
 fn execute_on_heap() -> String {
     unsafe {
         // NO-OP followed by RET
-        let heap_memory = Box::new([0x90u8, 0xC3]);
+        let mut heap_memory = Box::new(
+            #[cfg(target_arch = "x86_64")]
+            [0x90u8, 0xC3],
+            #[cfg(target_arch = "aarch64")]
+            [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6],
+        );
+        dicachesync(heap_memory.as_mut_ptr(), heap_memory.len());
         let heap_fn: fn() = core::mem::transmute(Box::into_raw(heap_memory));
         heap_fn();
         black_box(heap_fn); // avoid optimization when running in release mode
@@ -484,13 +499,21 @@ fn log_message(message: String, level: i32) {
 #[guest_function("TriggerException")]
 fn trigger_exception() {
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("udf #0")
+    };
 }
 
 /// Execute an OUT instruction with an arbitrary port and value.
 /// This is used to test that invalid OUT ports cause errors.
 #[guest_function("OutbWithPort")]
 fn outb_with_port(port: u32, value: u32) {
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
             "out dx, eax",
@@ -499,6 +522,12 @@ fn outb_with_port(port: u32, value: u32) {
             options(preserves_flags, nomem, nostack)
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        (hyperlight_common::layout::io_page().unwrap().1 as *mut u64)
+            .wrapping_add(port as usize)
+            .write_volatile(value as u64);
+    }
 }
 
 // =============================================================================
@@ -506,6 +535,7 @@ fn outb_with_port(port: u32, value: u32) {
 // =============================================================================
 
 /// Counter incremented by the timer interrupt handler.
+#[cfg(target_arch = "x86_64")]
 static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Timer IRQ handler (vector 0x20 = IRQ0 after PIC remapping).
@@ -515,6 +545,7 @@ static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 // for the atomic counter update, and sends a non-specific EOI to the master PIC.
 //
 // NOTE: global_asm! on x86_64 in Rust defaults to Intel syntax.
+#[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".globl _timer_irq_handler",
     "_timer_irq_handler:",
@@ -532,6 +563,7 @@ unsafe extern "C" {
 }
 
 /// IDT pointer structure for SIDT/LIDT instructions.
+#[cfg(target_arch = "x86_64")]
 #[repr(C, packed)]
 struct IdtPtr {
     limit: u16,
@@ -553,6 +585,7 @@ struct IdtPtr {
 /// - `max_spin`:  maximum busy-wait iterations before giving up
 ///
 /// Returns the number of timer interrupts received.
+#[cfg(target_arch = "x86_64")]
 #[guest_function("TestTimerInterrupts")]
 fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
     // Reset counter
@@ -702,6 +735,7 @@ fn call_given_paramless_hostfunc_that_returns_i64(hostfuncname: String) -> Resul
 }
 
 #[guest_function("UseSSE2Registers")]
+#[cfg(target_arch = "x86_64")]
 fn use_sse2_registers() {
     let val: f32 = 1.2f32;
     unsafe { core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val) };
@@ -709,13 +743,27 @@ fn use_sse2_registers() {
 
 #[guest_function("SetDr0")]
 fn set_dr0(value: u64) {
-    unsafe { core::arch::asm!("mov dr0, {}", in(reg) value) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov dr0, {}", in(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr dbgbvr0_el1, {}", in(reg) value)
+    };
 }
 
 #[guest_function("GetDr0")]
 fn get_dr0() -> u64 {
     let value: u64;
-    unsafe { core::arch::asm!("mov {}, dr0", out(reg) value) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, dr0", out(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, dbgbvr0_el1", out(reg) value)
+    };
     value
 }
 
@@ -810,6 +858,60 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     true
 }
 
+fn dicachesync(_base: *mut u8, _len: usize) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let ctr_el0: u64;
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0);
+        let iminline = 4 * (1 << (ctr_el0 & 0xf));
+        #[allow(unused)]
+        let dminline = 4 * (1 << ((ctr_el0 >> 16) & 0xf));
+        // See the comment in the `KVM_EXIT_ARM_NISV` case of
+        // `run_vcpu` in
+        // src/hyperlight_host/src/hypervisor/virtual_machine/kvm.rs
+        // for an explanation of why this cache maintenance sequence
+        // is so complex.
+        core::arch::asm!("
+            ldr xzr, [{addr}]
+            msr nzcv, xzr
+            b 2f
+
+        0:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 3f
+        1:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 4f
+
+        2:  mov {tmp}, {addr}
+
+        3:  dc cvau, {tmp}
+            b.eq 0b
+            add {tmp}, {tmp}, {dminline:x}
+            cmp {tmp}, {max}
+            b.lt 3b
+
+            dsb ish
+
+            mov {tmp}, {addr}
+
+        4:  ic ivau, {tmp}
+            b.eq 1b
+            add {tmp}, {tmp}, {iminline:x}
+            cmp {tmp}, {max}
+            b.lt 4b
+
+            dsb ish
+            isb
+        ",
+            iminline = in(reg) iminline,
+            dminline = in(reg) dminline,
+            addr = in(reg) _base as usize,
+            max = in(reg) _base as usize + _len,
+            tmp = out(reg) _);
+    }
+}
+
 #[guest_function("ExecMappedBuffer")]
 fn exec_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
@@ -833,6 +935,9 @@ fn exec_mapped_buffer(base: u64, len: u64) -> bool {
 
     // Should be safe as long as data is something like a NOOP followed by a RET
     let func: fn() = unsafe { core::mem::transmute(data.as_ptr()) };
+
+    dicachesync(base, len);
+
     func();
 
     true
@@ -989,15 +1094,8 @@ fn corrupt_output_size_prefix() -> i32 {
         buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
         buf[12..16].copy_from_slice(&[0u8; 4]);
         buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
     }
 }
 
@@ -1012,15 +1110,8 @@ fn corrupt_output_back_pointer() -> i32 {
         buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
         buf[8..16].copy_from_slice(&[0u8; 8]);
         buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
     }
 }
 

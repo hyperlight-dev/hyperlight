@@ -659,6 +659,28 @@ pub(crate) const LIBC_FILES_X86: &[&str] = &[
     "machine/x86/tls.c",
 ];
 
+pub(crate) const LIBC_FILES_AARCH64: &[&str] = &[
+    "machine/aarch64/interrupt.c",
+    "machine/aarch64/interrupt_vector.S",
+    "machine/aarch64/memchr.S",
+    "machine/aarch64/memcmp.S",
+    "machine/aarch64/memmove.S",
+    "machine/aarch64/memrchr.S",
+    "machine/aarch64/memset.S",
+    "machine/aarch64/rawmemchr.S",
+    "machine/aarch64/setjmp.S",
+    "machine/aarch64/stpcpy.S",
+    "machine/aarch64/strchr.S",
+    "machine/aarch64/strchrnul.S",
+    "machine/aarch64/strcmp.S",
+    "machine/aarch64/strcpy.S",
+    "machine/aarch64/strlen.S",
+    "machine/aarch64/strncmp.S",
+    "machine/aarch64/strnlen.S",
+    "machine/aarch64/strrchr.S",
+    "machine/aarch64/tls.c",
+];
+
 pub(crate) const LIBM_FILES: &[&str] = &[
     "common/copysignl.c",
     "common/exp10l.c",
@@ -942,3 +964,5 @@ pub(crate) const LIBM_FILES: &[&str] = &[
 ];
 
 pub(crate) const LIBM_FILES_X86: &[&str] = &["machine/x86/fenv.c"];
+
+pub(crate) const LIBM_FILES_AARCH64: &[&str] = &[];

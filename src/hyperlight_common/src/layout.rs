@@ -26,7 +26,7 @@ limitations under the License.
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 mod arch;
 
-pub use arch::{MAX_GPA, MAX_GVA};
+pub use arch::{SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, io_page};
 #[cfg(any(
     all(target_arch = "x86_64", not(feature = "i686-guest")),
     target_arch = "aarch64"
@@ -50,10 +50,10 @@ pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
 pub const SCRATCH_TOP_GUEST_COUNTER_OFFSET: u64 = 0x1008;
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
-    (MAX_GPA - size + 1) as u64
+    (SCRATCH_TOP_GPA - size + 1) as u64
 }
 pub fn scratch_base_gva(size: usize) -> u64 {
-    (MAX_GVA - size + 1) as u64
+    (SCRATCH_TOP_GVA - size + 1) as u64
 }
 
 /// Compute the minimum scratch region size needed for a sandbox.

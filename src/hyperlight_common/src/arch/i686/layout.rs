@@ -16,10 +16,14 @@ limitations under the License.
 
 // i686 layout constants for 32-bit protected mode with paging.
 
-pub const MAX_GVA: usize = 0xffff_ffff;
+pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff;
 /// Set below the KVM APIC access page at 0xFEE00000 to avoid EEXIST when scratch
 /// regions are large enough to reach that address.
-pub const MAX_GPA: usize = 0xFEDF_FFFF;
+pub const SCRATCH_TOP_GPA: usize = 0xFEDF_FFFF;
+
+pub fn io_page() -> Option<(u64, u64)> {
+    None
+}
 
 /// Minimum scratch region size: IO buffers (page-aligned) plus 12 pages
 /// for bookkeeping and the exception stack. Page table space is validated

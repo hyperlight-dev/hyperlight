@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2026 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,21 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// TODO(aarch64): implement real register definitions
-
-mod common_regs;
-pub(crate) use common_regs::*;
-
-mod special_regs;
-pub(crate) use special_regs::*;
-
-mod common_fpu;
-pub(crate) use common_fpu::*;
-
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
-pub(crate) struct CommonDebugRegs {
-    _placeholder: u64,
+pub(crate) struct CommonRegisters {
+    pub(crate) x: [u64; 31],
+    pub(crate) sp: u64,
+    pub(crate) pc: u64,
+    pub(crate) pstate: u64,
 }
-
-#[cfg(kvm)]
-pub(crate) mod kvm_reg;
