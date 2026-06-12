@@ -632,6 +632,11 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .map(|p| emit_func_param(&mut s, p))
                         .collect::<Vec<_>>();
                     let result = emit_func_result(&mut s, &ft.result);
+                    let result = if !s.is_guest {
+                        quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                    } else {
+                        result
+                    };
                     quote! {
                         fn #n(&mut self, #(#params),*) -> #result;
                     }
@@ -654,12 +659,22 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         }
                         ResourceItemName::Method(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = if !sv.is_guest {
+                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                            } else {
+                                result
+                            };
                             sv.cur_trait().items.extend(quote! {
                                 fn #n(&mut self, #(#params),*) -> #result;
                             });
                         }
                         ResourceItemName::Static(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = if !sv.is_guest {
+                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                            } else {
+                                result
+                            };
                             sv.cur_trait().items.extend(quote! {
                                 fn #n(&mut self, #(#params),*) -> #result;
                             });
