@@ -50,7 +50,8 @@ use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionD
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
     call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
-    print_output_with_host_print, read_n_bytes_from_user_memory,
+    print_output_with_host_print, read_n_bytes_from_user_memory, read_user_data, user_data_ptr,
+    user_data_size, with_user_data_mut,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
@@ -696,6 +697,22 @@ fn twenty_four_k_in_eight_k_out(input: Vec<u8>) -> Vec<u8> {
     input[..8 * 1024].to_vec()
 }
 
+#[guest_function("24K_in_8K_out_UserData")]
+fn twenty_four_k_in_eight_k_out_user_data(input_len: u64, output_len: u64) -> Result<i32> {
+    if input_len != 24 * 1024 || output_len != 8 * 1024 {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "Expected 24K input and 8K output sizes".to_string(),
+        ));
+    }
+
+    with_user_data_mut(input_len, |bytes| {
+        let output_len = output_len as usize;
+        black_box(&bytes[..output_len]);
+        output_len as i32
+    })
+}
+
 #[guest_function("CallGivenParamlessHostFuncThatReturnsI64")]
 fn call_given_paramless_hostfunc_that_returns_i64(hostfuncname: String) -> Result<i64> {
     call_host_function::<i64>(&hostfuncname, None, ReturnType::Long)
@@ -747,6 +764,56 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
     }
 
     Ok(bytes)
+}
+
+#[guest_function("UserDataSize")]
+fn get_user_data_size() -> Result<u64> {
+    user_data_size()
+}
+
+#[guest_function("UserDataAddress")]
+fn get_user_data_address() -> Result<u64> {
+    Ok(user_data_ptr()? as u64)
+}
+
+#[guest_function("VerifyUserDataZeros")]
+fn verify_user_data_zeros(len: u64) -> Result<bool> {
+    with_user_data_mut(len, |bytes| bytes.iter().all(|byte| *byte == 0))
+}
+
+#[guest_function("TransformUserData")]
+fn transform_user_data(len: u64) -> Result<i32> {
+    with_user_data_mut(len, |bytes| {
+        for byte in bytes.iter_mut() {
+            *byte = byte.wrapping_add(1);
+        }
+        bytes.len() as i32
+    })
+}
+
+#[guest_function("ReadUserData")]
+fn read_user_data_guest(len: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
+    let bytes = read_user_data(len)?;
+    if bytes != expected {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "User data does not contain the expected data".to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[guest_function("TransformUserDataAndFail")]
+fn transform_user_data_and_fail(len: u64) -> Result<i32> {
+    with_user_data_mut(len, |bytes| {
+        if let Some(first) = bytes.first_mut() {
+            *first = first.wrapping_add(1);
+        }
+    })?;
+    Err(HyperlightGuestError::new(
+        ErrorCode::GuestError,
+        "User data transformed before failing".to_string(),
+    ))
 }
 
 #[guest_function("ReadMappedBuffer")]

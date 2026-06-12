@@ -26,7 +26,7 @@ This project is composed internally of several components, depicted in the below
 
 * [Getting Started](./getting-started.md)
 * [Glossary](./glossary.md)
-* [How code gets executed in a VM](./hyperlight-execution-details.md)
+* [How code gets executed in a VM](./hyperlight-execution-details.md), including the user data region
 * [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary.md)
 * [Security considerations](./security.md)
 * [Technical requirements document](./technical-requirements-document.md)

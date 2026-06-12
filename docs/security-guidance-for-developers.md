@@ -10,6 +10,7 @@ This document discusses the security requirements and best practices for service
 * All host functions that receive parameters from a guest, or operate indirectly on guest data _MUST_ be continuously fuzzed
 * Host functions _MUST NOT_ call APIs or be used to expose functionality deemed risky in a multi-tenant context
 * Guests and host processes _MUST_ use the same version of a FlatBuffer definition
+* Raw user data region bytes _MUST_ be treated as guest-controlled and validated by the host protocol before use
 
 More detailed guidance on the requirements and best practices is detailed below.
 
@@ -55,6 +56,10 @@ We emit this recommendation because there is a history of compiler bugs, which m
 ## Flatbuffers – a verifier should always be called before any decoder. In the case of failed verification, the input _MUST NOT_ be processed.
 
 For Rust code, if the return code is InvalidFlatBuffer, the input _MUST_ be rejected.
+
+## User data region – raw bytes must be validated before use
+
+The user data region intentionally bypasses the FlatBuffers call/return schema so applications can exchange large raw byte payloads. Hosts that read from the user data region _MUST_ treat those bytes as tainted guest-controlled input. Any length fields, offsets, nested formats, or semantic claims encoded in the region _MUST_ be validated by the host protocol before they are used to access memory, call host functions, or influence security-sensitive decisions. Hosts _SHOULD_ restore the sandbox or clear the full configured region between tenants or requests when stale bytes would be sensitive.
 
 ## Flatbuffers – the host process _MUST NOT_ operate on Flatbuffers from several threads.
 

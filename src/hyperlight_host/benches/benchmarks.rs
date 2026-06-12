@@ -462,10 +462,12 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
 
 fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
+    const INPUT_SIZE_24K: usize = 24 * 1024;
+    const OUTPUT_SIZE_8K: usize = 8 * 1024;
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: String) {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(25 * 1024);
+        cfg.set_input_data_size(INPUT_SIZE_24K + 1024);
 
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
             .unwrap()
@@ -473,13 +475,44 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
             .unwrap();
 
         b.iter_with_setup(
-            || vec![1; 24 * 1024],
+            || vec![1; INPUT_SIZE_24K],
             |input| {
                 let ret: Vec<u8> = sandbox.call("24K_in_8K_out", (input,)).unwrap();
-                assert_eq!(ret.len(), 8 * 1024, "Expected output length to be 8K");
+                assert_eq!(ret.len(), OUTPUT_SIZE_8K, "Expected output length to be 8K");
                 std::hint::black_box(ret);
             },
         );
+    }
+
+    fn bench_24k_in_8k_out_user_data(b: &mut criterion::Bencher, guest_path: String) {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_user_data_size(INPUT_SIZE_24K);
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            SandboxConfiguration::DEFAULT_INPUT_SIZE,
+            SandboxConfiguration::DEFAULT_OUTPUT_SIZE,
+            INPUT_SIZE_24K,
+        );
+        cfg.set_scratch_size(min_scratch_size + 0x20000);
+
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let input = vec![1; INPUT_SIZE_24K];
+        let mut output = vec![0; OUTPUT_SIZE_8K];
+
+        b.iter(|| {
+            sandbox.write_user_data(&input).unwrap();
+            let output_len: i32 = sandbox
+                .call(
+                    "24K_in_8K_out_UserData",
+                    (INPUT_SIZE_24K as u64, OUTPUT_SIZE_8K as u64),
+                )
+                .unwrap();
+            assert_eq!(output_len as usize, OUTPUT_SIZE_8K);
+            sandbox.read_user_data(&mut output).unwrap();
+            std::hint::black_box(&output);
+        });
     }
 
     group.bench_function("24K_in_8K_out_c", |b| {
@@ -488,6 +521,14 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
 
     group.bench_function("24K_in_8K_out_rust", |b| {
         bench_24k_in_8k_out(b, simple_guest_as_string().unwrap());
+    });
+
+    group.bench_function("24K_in_8K_out_user_data_c", |b| {
+        bench_24k_in_8k_out_user_data(b, c_simple_guest_as_string().unwrap());
+    });
+
+    group.bench_function("24K_in_8K_out_user_data_rust", |b| {
+        bench_24k_in_8k_out_user_data(b, simple_guest_as_string().unwrap());
     });
 
     group.finish();

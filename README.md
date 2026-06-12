@@ -53,7 +53,7 @@ fn say_hello(name: String) -> Result<String> {
 }
 ```
 
-To get started, see the [Getting Started](./docs/getting-started.md) guide. For more details on writing guests, see [How to build a Hyperlight guest binary](./docs/how-to-build-a-hyperlight-guest-binary.md).
+To get started, see the [Getting Started](./docs/getting-started.md) guide. For more details on writing guests, see [How to build a Hyperlight guest binary](./docs/how-to-build-a-hyperlight-guest-binary.md). For execution internals, including the user data region, see [How code gets executed in a VM](./docs/hyperlight-execution-details.md).
 
 ## When to use Hyperlight
 

@@ -35,6 +35,87 @@ use crate::error::{HyperlightGuestError, Result};
 use crate::exit::out32;
 
 impl GuestHandle {
+    /// Get the configured user data region size.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn user_data_size(&self) -> Result<u64> {
+        let peb_ptr = self.peb().unwrap();
+        Ok(unsafe { (*peb_ptr).user_data.size })
+    }
+
+    /// Get the configured user data region pointer.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn user_data_ptr(&self) -> Result<*mut u8> {
+        let peb_ptr = self.peb().unwrap();
+        Ok(unsafe { (*peb_ptr).user_data.ptr as *mut u8 })
+    }
+
+    fn validate_user_data_len(&self, operation: &str, len: u64) -> Result<()> {
+        let capacity = self.user_data_size()?;
+        if len > capacity {
+            Err(HyperlightGuestError::new(
+                ErrorCode::GuestError,
+                format!(
+                    "User data {} length {} exceeds configured user data size {}",
+                    operation, len, capacity
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn user_data_len_to_usize(&self, operation: &str, len: u64) -> Result<usize> {
+        self.validate_user_data_len(operation, len)?;
+        usize::try_from(len).map_err(|_| {
+            HyperlightGuestError::new(
+                ErrorCode::GuestError,
+                format!("User data {} length exceeds usize::MAX", operation),
+            )
+        })
+    }
+
+    /// Borrow bytes from the configured user data region for the duration of `f`.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn with_user_data<T>(&self, len: u64, f: impl FnOnce(&[u8]) -> T) -> Result<T> {
+        let len = self.user_data_len_to_usize("read", len)?;
+        // SAFETY: The host writes the PEB before guest entry, and the user_data
+        // descriptor points into the sandbox's scratch mapping. The length is
+        // checked against the advertised capacity above. This helper only
+        // creates a temporary shared borrow for the closure duration; callers
+        // that need mutation must use `with_user_data_mut`.
+        let user_data_slice = unsafe { core::slice::from_raw_parts(self.user_data_ptr()?, len) };
+        Ok(f(user_data_slice))
+    }
+
+    /// Mutably borrow bytes from the configured user data region for the duration of `f`.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn with_user_data_mut<T>(&self, len: u64, f: impl FnOnce(&mut [u8]) -> T) -> Result<T> {
+        let len = self.user_data_len_to_usize("write", len)?;
+        // SAFETY: The host writes the PEB before guest entry, and the user_data
+        // descriptor points into the sandbox's scratch mapping. The length is
+        // checked against the advertised capacity above. Hyperlight guest code
+        // is single-threaded here, so this temporary mutable borrow is the
+        // official helper contract for in-guest user-data mutation; it is not a
+        // VM guard against arbitrary unsafe pointer misuse.
+        let user_data_slice =
+            unsafe { core::slice::from_raw_parts_mut(self.user_data_ptr()?, len) };
+        Ok(f(user_data_slice))
+    }
+
+    /// Read bytes from the configured user data region into a new `Vec`.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn read_user_data(&self, len: u64) -> Result<Vec<u8>> {
+        self.with_user_data(len, |user_data| user_data.to_vec())
+    }
+
+    /// Write bytes to the configured user data region.
+    #[instrument(skip_all, level = "Trace")]
+    pub fn write_user_data(&self, data: &[u8]) -> Result<()> {
+        self.with_user_data_mut(data.len() as u64, |user_data| {
+            user_data.copy_from_slice(data);
+        })
+    }
+
     /// Get user memory region as bytes.
     #[instrument(skip_all, level = "Trace")]
     pub fn read_n_bytes_from_user_memory(&self, num: u64) -> Result<Vec<u8>> {

@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* User data region APIs for transient host/guest byte exchange, including host read/write methods and Rust/C guest discovery helpers.
+
 ## [v0.15.0] - 2026-05-06
 
 ### Added

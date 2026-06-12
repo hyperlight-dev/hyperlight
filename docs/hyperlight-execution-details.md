@@ -35,6 +35,18 @@ At the highest level, Hyperlight takes roughly the following steps to create and
    1. In the former case, exit successfully
    2. In any of the latter cases, exit with a failure message
 
+## User data region
+
+Sandboxes can optionally reserve a user data region for transient host/guest byte exchange. The default capacity is zero; embedders configure a positive capacity with `SandboxConfiguration::set_user_data_size`. Fresh regions read as zeroes, and larger capacities may require increasing scratch size to satisfy the sandbox's existing scratch memory limits.
+
+When configured, the region is advertised to the guest through the PEB and can be accessed from the host with `MultiUseSandbox::write_user_data`, `MultiUseSandbox::read_user_data`, and `MultiUseSandbox::user_data_size`. Host reads and writes start at the beginning of the region and fail if the caller's buffer exceeds the configured capacity. Successful shorter writes preserve existing tail bytes, so callers should track logical payload length or clear unused bytes explicitly.
+
+The region is scratch memory, so it is not captured in snapshots. A restore clears the region, including restore performed by convenience call paths that restore the sandbox before returning to the host. Snapshot restore compatibility includes the configured capacity and reports the existing layout-mismatch error for capacity mismatches; `MultiUseSandbox::from_snapshot` rejects a caller-supplied configuration whose user data capacity differs from the snapshot layout. The intended exchange pattern is host write, mutating guest call, then host read before restore; after a failed guest call, callers should treat region contents as application-defined unless their protocol defines a successful handoff.
+
+Rust guest helpers expose bounded access to the region, including non-allocating borrowed access for larger payloads. The C guest API exposes `hl_user_data_size()` and `hl_user_data_ptr()`; C callers must use the reported size to bound copies. These APIs are helper-level bounds, not VM guard-page isolation around the region.
+
+Representative tests cover 4097-byte, 64 KiB, and 1 MiB capacities across Rust and C guests. Larger capacities should be measured for the application's expected copy and restore costs.
+
 ---
 
 _<sup>[1]</sup> nearly universal support_

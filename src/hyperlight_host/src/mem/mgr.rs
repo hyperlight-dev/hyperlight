@@ -378,6 +378,41 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Get the configured user data region size.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn user_data_size(&self) -> usize {
+        self.layout.user_data_size()
+    }
+
+    fn validate_user_data_len(&self, operation: &str, len: usize) -> Result<()> {
+        let capacity = self.user_data_size();
+        if len > capacity {
+            return Err(new_error!(
+                "user data {} length {} exceeds configured user data size {}",
+                operation,
+                len,
+                capacity
+            ));
+        }
+        Ok(())
+    }
+
+    /// Copy bytes into the configured user data region.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn write_user_data(&mut self, data: &[u8]) -> Result<()> {
+        self.validate_user_data_len("write", data.len())?;
+        self.scratch_mem
+            .copy_from_slice(data, self.layout.get_user_data_buffer_scratch_host_offset())
+    }
+
+    /// Copy bytes from the configured user data region.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn read_user_data(&mut self, out: &mut [u8]) -> Result<()> {
+        self.validate_user_data_len("read", out.len())?;
+        self.scratch_mem
+            .copy_to_slice(out, self.layout.get_user_data_buffer_scratch_host_offset())
+    }
+
     /// Write a [`FileMappingInfo`] entry into the PEB's preallocated array.
     ///
     /// Reads the current entry count from the PEB, validates that the
@@ -858,6 +893,124 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 Ok(result)
             })
         })??
+    }
+}
+
+#[cfg(test)]
+mod user_data_tests {
+    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+
+    use super::*;
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::snapshot::NextAction;
+
+    fn build_host_manager(user_data_size: usize) -> SandboxMemoryManager<HostSharedMemory> {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_user_data_size(user_data_size);
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+            cfg.get_user_data_size(),
+        );
+        cfg.set_scratch_size(min_scratch_size);
+
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE_USIZE, 0, None).unwrap();
+        #[cfg(not(unshared_snapshot_mem))]
+        let shared_mem =
+            ReadonlySharedMemory::from_bytes(&vec![0; PAGE_SIZE_USIZE], PAGE_SIZE_USIZE).unwrap();
+        #[cfg(unshared_snapshot_mem)]
+        let shared_mem = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let scratch_mem = ExclusiveSharedMemory::new(layout.get_scratch_size()).unwrap();
+
+        SandboxMemoryManager::new(layout, shared_mem, scratch_mem, NextAction::None)
+            .build()
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn user_data_size_reports_configured_capacity() {
+        for user_data_size in [0, 1, 4097, 64 * 1024, 1024 * 1024] {
+            let mgr = build_host_manager(user_data_size);
+            assert_eq!(user_data_size, mgr.user_data_size());
+        }
+    }
+
+    #[test]
+    fn fresh_user_data_reads_as_zero() {
+        let mut mgr = build_host_manager(4097);
+        let mut out = vec![0xff; mgr.user_data_size()];
+
+        mgr.read_user_data(&mut out).unwrap();
+
+        assert!(out.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn user_data_read_write_boundaries_are_enforced() {
+        let mut zero_capacity_mgr = build_host_manager(0);
+        zero_capacity_mgr.write_user_data(&[]).unwrap();
+        zero_capacity_mgr.read_user_data(&mut []).unwrap();
+        assert!(zero_capacity_mgr.write_user_data(&[1]).is_err());
+        assert!(zero_capacity_mgr.read_user_data(&mut [0]).is_err());
+
+        let mut mgr = build_host_manager(4097);
+        let data: Vec<u8> = (0..mgr.user_data_size()).map(|i| (i % 251) as u8).collect();
+        let mut out = vec![0; data.len()];
+        mgr.write_user_data(&data).unwrap();
+        mgr.read_user_data(&mut out).unwrap();
+        assert_eq!(data, out);
+
+        assert!(
+            mgr.write_user_data(&vec![0; mgr.user_data_size() + 1])
+                .is_err()
+        );
+        assert!(
+            mgr.read_user_data(&mut vec![0; mgr.user_data_size() + 1])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn oversized_user_data_write_is_atomic() {
+        let mut mgr = build_host_manager(4097);
+        let initial = vec![0xaa; mgr.user_data_size()];
+        mgr.write_user_data(&initial).unwrap();
+
+        let sentinel_offset =
+            mgr.layout.get_user_data_buffer_scratch_host_offset() + mgr.user_data_size();
+        let sentinel = [0x55; 16];
+        mgr.scratch_mem
+            .copy_from_slice(&sentinel, sentinel_offset)
+            .unwrap();
+
+        let err = mgr.write_user_data(&vec![0xbb; mgr.user_data_size() + 1]);
+        assert!(err.is_err());
+
+        let mut current = vec![0; mgr.user_data_size()];
+        mgr.read_user_data(&mut current).unwrap();
+        assert_eq!(initial, current);
+
+        let mut current_sentinel = [0; 16];
+        mgr.scratch_mem
+            .copy_to_slice(&mut current_sentinel, sentinel_offset)
+            .unwrap();
+        assert_eq!(sentinel, current_sentinel);
+    }
+
+    #[test]
+    fn shorter_user_data_write_preserves_tail() {
+        let mut mgr = build_host_manager(4097);
+        let initial = vec![0xaa; mgr.user_data_size()];
+        mgr.write_user_data(&initial).unwrap();
+
+        let shorter = vec![0xbb; 16];
+        mgr.write_user_data(&shorter).unwrap();
+
+        let mut current = vec![0; mgr.user_data_size()];
+        mgr.read_user_data(&mut current).unwrap();
+        assert_eq!(&shorter, &current[..shorter.len()]);
+        assert!(current[shorter.len()..].iter().all(|byte| *byte == 0xaa));
     }
 }
 

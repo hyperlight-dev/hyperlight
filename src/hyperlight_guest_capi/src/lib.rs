@@ -24,3 +24,4 @@ pub mod error;
 pub mod flatbuffer;
 pub mod logging;
 pub mod types;
+pub mod user_data;

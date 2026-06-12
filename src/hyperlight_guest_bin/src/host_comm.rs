@@ -71,6 +71,36 @@ pub fn read_n_bytes_from_user_memory(num: u64) -> Result<Vec<u8>> {
     handle.read_n_bytes_from_user_memory(num)
 }
 
+pub fn user_data_size() -> Result<u64> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.user_data_size()
+}
+
+pub fn user_data_ptr() -> Result<*mut u8> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.user_data_ptr()
+}
+
+pub fn read_user_data(len: u64) -> Result<Vec<u8>> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.read_user_data(len)
+}
+
+pub fn with_user_data<T>(len: u64, f: impl FnOnce(&[u8]) -> T) -> Result<T> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.with_user_data(len, f)
+}
+
+pub fn with_user_data_mut<T>(len: u64, f: impl FnOnce(&mut [u8]) -> T) -> Result<T> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.with_user_data_mut(len, f)
+}
+
+pub fn write_user_data(data: &[u8]) -> Result<()> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.write_user_data(data)
+}
+
 /// Print a message using the host's print function.
 ///
 /// This function requires memory to be setup to be used. In particular, the
