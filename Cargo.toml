@@ -6,6 +6,7 @@ default-members = [
     "src/hyperlight_testing",
 ]
 members = [
+    "src/hyperlight_ci",
     "src/hyperlight_common",
     "src/hyperlight_guest",
     "src/hyperlight_host",
