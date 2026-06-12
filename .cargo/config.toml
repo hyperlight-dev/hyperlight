@@ -1,0 +1,2 @@
+[alias] # command aliases
+ci = ["run", "--quiet", "--package=hyperlight-ci", "--"]
