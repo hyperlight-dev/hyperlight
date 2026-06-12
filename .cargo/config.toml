@@ -1,2 +1,5 @@
 [target.'cfg(target_os = "macos")']
 runner = "dev/macos-sign-and-run.sh"
+
+[alias] # command aliases
+ci = ["run", "--quiet", "--package=hyperlight-ci", "--"]
