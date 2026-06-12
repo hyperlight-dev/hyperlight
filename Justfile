@@ -177,7 +177,7 @@ run-examples-like-ci config=default-target hypervisor="kvm":
 
 benchmarks-like-ci config=default-target hypervisor="kvm":
     @# Run benchmarks
-    {{ if config == "release" { "just bench-ci main" } else { "" } }}
+    {{ if config == "release" { "just bench-ci" } else { "" } }}
 
 fuzz-like-ci target config=default-target hypervisor="kvm":
     @# Run Fuzzing
@@ -400,13 +400,12 @@ bench-download os hypervisor cpu tag="":
     tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz -C target/criterion/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
-bench-ci baseline features="":
-    @# Benchmarks are always run with release builds for meaningful results
-    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
+bench-ci features="":
+    cargo ci bench --no-progress {{ if features == "" {''} else { "--features " + features } }}
 
 bench features="":
     @# Benchmarks are always run with release builds for meaningful results
-    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose
+    cargo ci bench {{ if features == "" {''} else { "--features " + features } }}
 
 ###############
 ### FUZZING ###

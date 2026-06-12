@@ -68,9 +68,18 @@ impl BenchmarkDiscovery {
             if let Some(filenames) = msg.get("filenames").and_then(|f| f.as_array()) {
                 for f in filenames {
                     if let Some(path) = f.as_str() {
-                        if !path.ends_with(".d") {
-                            binaries.push(PathBuf::from(path));
+                        // Skip non-executable artifacts:
+                        //   .d    = dep-info files (all platforms)
+                        //   .pdb  = debug symbols (Windows)
+                        //   .dSYM = debug symbol bundles (macOS)
+                        //   .dwp  = DWARF packages (Linux, split-debuginfo)
+                        //   .lib  = import libraries (Windows)
+                        //   .exp  = export files (Windows)
+                        let dominated = [".d", ".pdb", ".dSYM", ".dwp", ".lib", ".exp"];
+                        if dominated.iter().any(|ext| path.ends_with(ext)) {
+                            continue;
                         }
+                        binaries.push(PathBuf::from(path));
                     }
                 }
             }
