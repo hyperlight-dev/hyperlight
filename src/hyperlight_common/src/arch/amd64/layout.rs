@@ -38,6 +38,12 @@ pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 /// - (up to) 3 pages for mapping that
 /// - Two pages for the exception stack and metadata
 /// - A page-aligned amount of memory for I/O buffers (for now)
+///
+/// Note: the 12 pages do NOT include the 3 reserved pages at the top of
+/// scratch (bookkeeping, shared-state counter, clock page) — those are
+/// accounted for separately by the host layout via
+/// [`super::CLOCK_PAGE_SIZE`]. The guest allocator skips the top 3 pages
+/// unconditionally so the memory map is stable regardless of feature flags.
 pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
     (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
         + 12 * crate::vmem::PAGE_SIZE

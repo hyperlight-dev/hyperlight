@@ -92,8 +92,12 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
         let tss_ptr = &raw mut (*pc).tss;
         // copy byte by byte to avoid alignment issues
         let ist1_ptr = &raw mut (*tss_ptr).ist1 as *mut [u8; 8];
+        // The exception stack (IST1) grows downward. Place it below
+        // the reserved clock page so page-fault / COW handlers never
+        // clobber the hypervisor-owned clock page or the bookkeeping
+        // data at the top of scratch.
         let exn_stack = hyperlight_common::layout::MAX_GVA as u64
-            - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
+            - hyperlight_common::layout::SCRATCH_TOP_CLOCK_PAGE_OFFSET
             + 1;
         ist1_ptr.write_volatile(exn_stack.to_ne_bytes());
         asm!(
