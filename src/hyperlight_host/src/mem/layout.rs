@@ -61,8 +61,6 @@ limitations under the License.
 //! +-------------------------------------------+ (scratch size)
 
 use std::fmt::Debug;
-#[cfg(feature = "nanvix-unstable")]
-use std::mem::offset_of;
 use std::mem::size_of;
 
 use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
@@ -73,7 +71,7 @@ use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
     MemoryRegionVecBuilder,
 };
-#[cfg(any(gdb, feature = "mem_profile"))]
+#[cfg(readable_shared_mem)]
 use super::shared_mem::HostSharedMemory;
 use super::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
 use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
@@ -141,28 +139,55 @@ impl<'a> ResolvedGpa<&'a [u8], &'a [u8]> {
         &self.base.as_ref()[self.offset..]
     }
 }
-#[cfg(any(gdb, feature = "mem_profile"))]
-#[allow(unused)] // may be unused when i686-guest is also enabled
+/// A read-only abstraction over the different kinds of backing memory
+/// a [`ResolvedGpa`] can point at (the host snapshot mapping, the
+/// scratch mapping, or a raw `&[u8]` view of either), letting callers
+/// copy guest bytes out without caring which concrete memory type they
+/// hold.
+///
+/// This trait only exists in builds that actually read guest memory
+/// through it — see the `readable_shared_mem` cfg alias in `build.rs`
+/// for the exact conditions (the `gdb` debug path and the
+/// shared-snapshot `mem_profile` path). In every other configuration it
+/// is compiled out entirely, so there is no dead code to `#[allow]`.
+#[cfg(readable_shared_mem)]
 pub(crate) trait ReadableSharedMemory {
     fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()>;
 }
-#[cfg(any(gdb, feature = "mem_profile"))]
+#[cfg(readable_shared_mem)]
 impl ReadableSharedMemory for &HostSharedMemory {
     fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
         HostSharedMemory::copy_to_slice(self, slice, offset)
     }
 }
-#[cfg(any(gdb, feature = "mem_profile"))]
+/// Coherence workaround for the blanket impl below.
+///
+/// We want `ReadableSharedMemory` for both `&HostSharedMemory` (above)
+/// and for any `T: AsRef<[u8]>` (so that `ExclusiveSharedMemory` /
+/// `ReadonlySharedMemory` and their references are covered by a single
+/// impl). A naive `impl<T: AsRef<[u8]>> ReadableSharedMemory for T`
+/// would *overlap* the `&HostSharedMemory` impl — the compiler can't
+/// prove `&HostSharedMemory` never implements `AsRef<[u8]>` — and is
+/// rejected with E0119.
+///
+/// To break the overlap we introduce a private marker trait and
+/// implement it *only* for the specific types we want the blanket impl
+/// to cover (deliberately excluding `&HostSharedMemory`). The blanket
+/// impl is then bounded on this marker rather than on `AsRef<[u8]>`
+/// directly, so the two impls provably never overlap.
+#[cfg(readable_shared_mem)]
 mod coherence_hack {
     use super::{ExclusiveSharedMemory, ReadonlySharedMemory};
-    #[allow(unused)] // it actually is; see the impl below
+    // Used only as a bound on the blanket impl below, so the name reads
+    // as unused even though removing it breaks compilation.
+    #[allow(unused)]
     pub(super) trait SharedMemoryAsRefMarker: AsRef<[u8]> {}
     impl SharedMemoryAsRefMarker for ExclusiveSharedMemory {}
     impl SharedMemoryAsRefMarker for &ExclusiveSharedMemory {}
     impl SharedMemoryAsRefMarker for ReadonlySharedMemory {}
     impl SharedMemoryAsRefMarker for &ReadonlySharedMemory {}
 }
-#[cfg(any(gdb, feature = "mem_profile"))]
+#[cfg(readable_shared_mem)]
 impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
     fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
         let ss: &[u8] = self.as_ref();
@@ -178,9 +203,15 @@ impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
         Ok(())
     }
 }
-#[cfg(any(gdb, feature = "mem_profile"))]
+/// Copy `slice.len()` bytes out of the resolved guest region.
+///
+/// Only the `gdb` debug path uses this one-argument convenience (it
+/// already carries the offset inside `self`); `mem_profile` reads via
+/// the two-argument inherent methods instead. Hence it is gated on the
+/// `gdb` cfg alone, even though the [`ReadableSharedMemory`] trait it
+/// relies on is available slightly more widely.
+#[cfg(gdb)]
 impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
-    #[allow(unused)] // may be unused when i686-guest is also enabled
     pub(crate) fn copy_to_slice(&self, slice: &mut [u8]) -> Result<()> {
         match &self.base {
             BaseGpaRegion::Snapshot(sn) => sn.copy_to_slice(slice, self.offset),
@@ -228,7 +259,6 @@ pub(crate) struct SandboxMemoryLayout {
     /// The size of the init data section (guest blob).
     pub(crate) init_data_size: usize,
     /// Permission flags for the init data region.
-    #[cfg_attr(feature = "i686-guest", allow(unused))]
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
     pub(crate) scratch_size: usize,
@@ -274,15 +304,6 @@ impl Debug for SandboxMemoryLayout {
         )
         .field("PEB Offset", &format_args!("{:#x}", self.peb_offset()))
         .field("PEB Address", &format_args!("{:#x}", self.peb_address()));
-        #[cfg(feature = "nanvix-unstable")]
-        ff.field(
-            "File Mappings Offset",
-            &format_args!("{:#x}", self.peb_file_mappings_offset()),
-        )
-        .field(
-            "File Mappings Array Offset",
-            &format_args!("{:#x}", self.get_file_mappings_array_offset()),
-        );
         ff.field(
             "Guest Heap Buffer Offset",
             &format_args!("{:#x}", self.guest_heap_buffer_offset()),
@@ -385,12 +406,6 @@ impl SandboxMemoryLayout {
         self.code_size.next_multiple_of(PAGE_SIZE_USIZE)
     }
 
-    /// Offset of the PEB file_mappings field.
-    #[cfg(feature = "nanvix-unstable")]
-    fn peb_file_mappings_offset(&self) -> usize {
-        self.peb_offset() + offset_of!(HyperlightPEB, file_mappings)
-    }
-
     /// Guest physical address of the PEB.
     pub(crate) fn peb_address(&self) -> usize {
         Self::BASE_ADDRESS + self.peb_offset()
@@ -398,18 +413,7 @@ impl SandboxMemoryLayout {
 
     /// Offset of the guest heap buffer within the snapshot region.
     pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
-        #[cfg(feature = "nanvix-unstable")]
-        {
-            let file_mappings_array_end = self.peb_offset()
-                + size_of::<HyperlightPEB>()
-                + hyperlight_common::mem::MAX_FILE_MAPPINGS
-                    * size_of::<hyperlight_common::mem::FileMappingInfo>();
-            file_mappings_array_end.next_multiple_of(PAGE_SIZE_USIZE)
-        }
-        #[cfg(not(feature = "nanvix-unstable"))]
-        {
-            (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
-        }
+        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
     }
 
     /// Offset of the init data section within the snapshot region.
@@ -474,26 +478,6 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
         self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
-    }
-
-    /// Get the offset in guest memory to the file_mappings count field
-    /// (the `size` field of the `GuestMemoryRegion` in the PEB).
-    #[cfg(feature = "nanvix-unstable")]
-    pub(crate) fn get_file_mappings_size_offset(&self) -> usize {
-        self.peb_file_mappings_offset()
-    }
-
-    /// Get the offset in snapshot memory where the FileMappingInfo array starts
-    /// (immediately after the PEB struct, within the same page).
-    #[cfg(feature = "nanvix-unstable")]
-    pub(crate) fn get_file_mappings_array_offset(&self) -> usize {
-        self.peb_offset() + size_of::<HyperlightPEB>()
-    }
-
-    /// Get the guest address of the FileMappingInfo array.
-    #[cfg(feature = "nanvix-unstable")]
-    fn get_file_mappings_array_gva(&self) -> u64 {
-        (Self::BASE_ADDRESS + self.get_file_mappings_array_offset()) as u64
     }
 
     /// Get the total size of guest memory in `self`'s memory
@@ -570,7 +554,6 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    #[cfg_attr(feature = "i686-guest", allow(unused))]
     pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
         &self,
         host_base: K::HostBaseType,
@@ -594,19 +577,7 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        // PEB + preallocated FileMappingInfo array
-        #[cfg(feature = "nanvix-unstable")]
-        let heap_offset = {
-            let peb_and_array_size = size_of::<HyperlightPEB>()
-                + hyperlight_common::mem::MAX_FILE_MAPPINGS
-                    * size_of::<hyperlight_common::mem::FileMappingInfo>();
-            builder.push_page_aligned(
-                peb_and_array_size,
-                MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-                Peb,
-            )
-        };
-        #[cfg(not(feature = "nanvix-unstable"))]
+        // PEB
         let heap_offset =
             builder.push_page_aligned(size_of::<HyperlightPEB>(), MemoryRegionFlags::READ, Peb);
 
@@ -704,17 +675,6 @@ impl SandboxMemoryLayout {
                 size: self.heap_size as u64,
                 ptr: guest_base + self.guest_heap_buffer_offset() as u64,
             },
-            // Set up the file_mappings descriptor in the PEB.
-            // - The `size` field holds the number of valid FileMappingInfo
-            //   entries currently written (initially 0 — entries are added
-            //   later by map_file_cow / evolve).
-            // - The `ptr` field holds the guest address of the preallocated
-            //   FileMappingInfo array
-            #[cfg(feature = "nanvix-unstable")]
-            file_mappings: GuestMemoryRegion {
-                size: 0, // entry count, populated later by map_file_cow
-                ptr: self.get_file_mappings_array_gva(),
-            },
         };
 
         let offset = self.peb_offset();
@@ -783,12 +743,7 @@ mod tests {
         // in order of layout
         expected_size += layout.code_size;
 
-        // PEB + preallocated FileMappingInfo array
-        #[cfg(feature = "nanvix-unstable")]
-        let peb_and_array = size_of::<HyperlightPEB>()
-            + hyperlight_common::mem::MAX_FILE_MAPPINGS
-                * size_of::<hyperlight_common::mem::FileMappingInfo>();
-        #[cfg(not(feature = "nanvix-unstable"))]
+        // PEB
         let peb_and_array = size_of::<HyperlightPEB>();
         expected_size += peb_and_array.next_multiple_of(PAGE_SIZE_USIZE);
 

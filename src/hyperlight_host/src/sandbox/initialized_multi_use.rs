@@ -89,23 +89,7 @@ pub struct MultiUseSandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
-    /// Optional callback to discover page table roots from guest memory.
-    /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
-    /// If not set, only CR3 is used as the single root.
-    pt_root_finder: Option<PtRootFinder>,
 }
-
-/// Callback for discovering page table roots from guest memory.
-///
-/// Called during [`MultiUseSandbox::snapshot`] with:
-/// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
-/// - `scratch_mem` - the sandbox's scratch memory as a byte slice
-/// - `root_pt_gpa` - the root page table GPA of the currently-executing
-///   address space
-///
-/// Returns a list of root page table GPAs to walk. If the list is
-/// empty, only `root_pt_gpa` is used.
-pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
 
 impl MultiUseSandbox {
     /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
@@ -128,15 +112,7 @@ impl MultiUseSandbox {
             #[cfg(gdb)]
             dbg_mem_access_fn,
             snapshot: None,
-            pt_root_finder: None,
         }
-    }
-
-    /// Set a callback that discovers page table roots from guest memory.
-    /// The callback receives (snapshot_mem, scratch_mem, cr3) and returns
-    /// the list of root GPAs to walk during snapshot creation.
-    pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
-        self.pt_root_finder = Some(finder);
     }
 
     /// Create a `MultiUseSandbox` directly from a [`Snapshot`],
@@ -280,7 +256,6 @@ impl MultiUseSandbox {
         // If the snapshot was taken from an already-initialized guest
         // (NextAction::Call), apply the captured special registers so
         // the guest resumes in the correct CPU state.
-        #[cfg(not(feature = "i686-guest"))]
         if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
             let sregs = snapshot.sregs().ok_or_else(|| {
                 crate::new_error!("snapshot with NextAction::Call must have captured sregs")
@@ -355,17 +330,6 @@ impl MultiUseSandbox {
             .vm
             .get_root_pt()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        // Use the callback if set, otherwise just CR3
-        let root_pt_gpas = if let Some(finder) = &self.pt_root_finder {
-            let roots = self.mem_mgr.shared_mem.with_contents(|snap| {
-                self.mem_mgr
-                    .scratch_mem
-                    .with_contents(|scratch| finder(snap, scratch, cr3))
-            })??;
-            if roots.is_empty() { vec![cr3] } else { roots }
-        } else {
-            vec![cr3]
-        };
 
         let stack_top_gpa = self.vm.get_stack_top();
         let sregs = self
@@ -380,7 +344,7 @@ impl MultiUseSandbox {
 
         let memory_snapshot = self.mem_mgr.snapshot(
             mapped_regions_vec,
-            &root_pt_gpas,
+            cr3,
             stack_top_gpa,
             sregs,
             entrypoint,
@@ -748,45 +712,20 @@ impl MultiUseSandbox {
 
     /// Map the contents of a file into the guest at a particular address
     ///
-    /// An optional `label` identifies this mapping in the PEB's
-    /// `FileMappingInfo` array (max 63 bytes, defaults to the file name).
-    ///
     /// Returns the length of the mapping in bytes.
     ///
     /// ## Poisoned Sandbox
     ///
     /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
     /// is currently poisoned. Use [`restore()`](Self::restore) to recover from a poisoned state.
-    #[instrument(err(Debug), skip(self, file_path, guest_base, label), parent = Span::current())]
-    pub fn map_file_cow(
-        &mut self,
-        file_path: &Path,
-        guest_base: u64,
-        label: Option<&str>,
-    ) -> Result<u64> {
+    #[instrument(err(Debug), skip(self, file_path, guest_base), parent = Span::current())]
+    pub fn map_file_cow(&mut self, file_path: &Path, guest_base: u64) -> Result<u64> {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
 
-        // Pre-check the file mapping limit before doing any expensive
-        // OS or VM work. The PEB count is the source of truth.
-        #[cfg(feature = "nanvix-unstable")]
-        let current_count = self
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(self.mem_mgr.layout.get_file_mappings_size_offset())?
-            as usize;
-        #[cfg(feature = "nanvix-unstable")]
-        if current_count >= hyperlight_common::mem::MAX_FILE_MAPPINGS {
-            return Err(crate::HyperlightError::Error(format!(
-                "map_file_cow: file mapping limit reached ({} of {})",
-                current_count,
-                hyperlight_common::mem::MAX_FILE_MAPPINGS,
-            )));
-        }
-
         // Phase 1: host-side OS work (open file, create mapping)
-        let mut prepared = prepare_file_cow(file_path, guest_base, label)?;
+        let mut prepared = prepare_file_cow(file_path, guest_base)?;
 
         // Validate that the full mapped range doesn't overlap the
         // sandbox's primary shared memory region.
@@ -829,14 +768,6 @@ impl MultiUseSandbox {
         // On Linux the hypervisor holds a reference to the host mmap;
         // freeing it here would leave a dangling backing.
         prepared.mark_consumed();
-
-        // Record the mapping metadata in the PEB. If this fails the VM
-        // still holds a valid mapping but the PEB won't list it — the
-        // limit was already pre-checked above so this should not fail
-        // in practice.
-        #[cfg(feature = "nanvix-unstable")]
-        self.mem_mgr
-            .write_file_mapping_entry(prepared.guest_base, size, &prepared.label)?;
 
         Ok(size)
     }
@@ -1201,7 +1132,7 @@ mod tests {
         // map_file_cow should fail when poisoned
         {
             let temp_file = std::env::temp_dir().join("test_poison_map_file.bin");
-            let res = sbox.map_file_cow(&temp_file, 0x0, None).unwrap_err();
+            let res = sbox.map_file_cow(&temp_file, 0x0).unwrap_err();
             assert!(matches!(res, HyperlightError::PoisonedSandbox));
             std::fs::remove_file(&temp_file).ok(); // Clean up
         }
@@ -2102,7 +2033,7 @@ mod tests {
         .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
-        let mapped_size = sbox.map_file_cow(&path, guest_base, None).unwrap();
+        let mapped_size = sbox.map_file_cow(&path, guest_base).unwrap();
         assert!(mapped_size > 0, "mapped_size should be positive");
         assert!(
             mapped_size >= expected.len() as u64,
@@ -2142,7 +2073,7 @@ mod tests {
         .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
-        sbox.map_file_cow(&path, guest_base, None).unwrap();
+        sbox.map_file_cow(&path, guest_base).unwrap();
 
         // Writing to the mapped region should fail with MemoryAccessViolation
         let err = sbox
@@ -2182,13 +2113,13 @@ mod tests {
         assert!(sbox.poisoned());
 
         // map_file_cow should fail with PoisonedSandbox
-        let err = sbox.map_file_cow(&path, 0x1_0000_0000, None).unwrap_err();
+        let err = sbox.map_file_cow(&path, 0x1_0000_0000).unwrap_err();
         assert!(matches!(err, HyperlightError::PoisonedSandbox));
 
         // Restore and verify map_file_cow works again
         sbox.restore(snapshot).unwrap();
         assert!(!sbox.poisoned());
-        let result = sbox.map_file_cow(&path, 0x1_0000_0000, None);
+        let result = sbox.map_file_cow(&path, 0x1_0000_0000);
         assert!(result.is_ok());
 
         let _ = std::fs::remove_file(&path);
@@ -2221,8 +2152,8 @@ mod tests {
         .unwrap();
 
         // Map the same file into both sandboxes
-        sbox1.map_file_cow(&path, guest_base, None).unwrap();
-        sbox2.map_file_cow(&path, guest_base, None).unwrap();
+        sbox1.map_file_cow(&path, guest_base).unwrap();
+        sbox2.map_file_cow(&path, guest_base).unwrap();
 
         // Both should read the correct content
         let actual1: Vec<u8> = sbox1
@@ -2281,7 +2212,7 @@ mod tests {
                 .unwrap();
 
                 let guest_base: u64 = 0x1_0000_0000;
-                sbox.map_file_cow(&path, guest_base, None).unwrap();
+                sbox.map_file_cow(&path, guest_base).unwrap();
 
                 let actual: Vec<u8> = sbox
                     .call(
@@ -2317,7 +2248,7 @@ mod tests {
             .evolve()
             .unwrap();
 
-            sbox.map_file_cow(&path, 0x1_0000_0000, None).unwrap();
+            sbox.map_file_cow(&path, 0x1_0000_0000).unwrap();
             // sandbox dropped here
         }
 
@@ -2348,7 +2279,7 @@ mod tests {
         let snapshot1 = sbox.snapshot().unwrap();
 
         // 2. Map the file
-        sbox.map_file_cow(&path, guest_base, None).unwrap();
+        sbox.map_file_cow(&path, guest_base).unwrap();
 
         // Verify we can read it
         let actual: Vec<u8> = sbox
@@ -2409,7 +2340,7 @@ mod tests {
         .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
-        sbox.map_file_cow(&path, guest_base, None).unwrap();
+        sbox.map_file_cow(&path, guest_base).unwrap();
 
         // Read the content to verify mapping works
         let actual: Vec<u8> = sbox
@@ -2459,7 +2390,7 @@ mod tests {
         .unwrap();
 
         // Map the file before evolving — this defers the VM-side work.
-        let mapped_size = u_sbox.map_file_cow(&path, guest_base, None).unwrap();
+        let mapped_size = u_sbox.map_file_cow(&path, guest_base).unwrap();
         assert!(mapped_size > 0, "mapped_size should be positive");
         assert!(
             mapped_size >= expected.len() as u64,
@@ -2504,7 +2435,7 @@ mod tests {
             )
             .unwrap();
 
-            u_sbox.map_file_cow(&path, guest_base, None).unwrap();
+            u_sbox.map_file_cow(&path, guest_base).unwrap();
             // u_sbox dropped here without evolving — PreparedFileMapping::drop
             // should clean up host-side OS resources.
         }
@@ -2533,7 +2464,7 @@ mod tests {
 
         // Use an intentionally unaligned address (page_size + 1).
         let unaligned_base: u64 = (page_size::get() + 1) as u64;
-        let result = u_sbox.map_file_cow(&path, unaligned_base, None);
+        let result = u_sbox.map_file_cow(&path, unaligned_base);
         assert!(
             result.is_err(),
             "map_file_cow should reject unaligned guest_base"
@@ -2557,347 +2488,8 @@ mod tests {
         .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
-        let result = u_sbox.map_file_cow(&path, guest_base, None);
+        let result = u_sbox.map_file_cow(&path, guest_base);
         assert!(result.is_err(), "map_file_cow should reject empty files");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that `map_file_cow` with a custom label succeeds.
-    #[test]
-    fn test_map_file_cow_custom_label() {
-        let (path, _) = create_test_file("hyperlight_test_map_file_cow_label.bin", &[0xDD; 4096]);
-
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
-
-        let result = sbox.map_file_cow(&path, 0x1_0000_0000, Some("my_ramfs"));
-        assert!(
-            result.is_ok(),
-            "map_file_cow with custom label should succeed"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that `map_file_cow` on a MultiUseSandbox correctly writes
-    /// the FileMappingInfo entry (count, guest_addr, size, label) into
-    /// the PEB.
-    #[test]
-    #[cfg(feature = "nanvix-unstable")]
-    fn test_map_file_cow_peb_entry_multiuse() {
-        use std::mem::offset_of;
-
-        use hyperlight_common::mem::{FILE_MAPPING_LABEL_MAX_LEN, FileMappingInfo};
-
-        let (path, _) = create_test_file("hyperlight_test_peb_entry_multiuse.bin", &[0xDD; 4096]);
-
-        let guest_base: u64 = 0x1_0000_0000;
-        let label = "my_ramfs";
-
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
-
-        // Map with an explicit label.
-        let mapped_size = sbox.map_file_cow(&path, guest_base, Some(label)).unwrap();
-
-        // Read back the PEB file_mappings count.
-        let count = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(sbox.mem_mgr.layout.get_file_mappings_size_offset())
-            .unwrap();
-        assert_eq!(
-            count, 1,
-            "PEB file_mappings count should be 1 after one mapping"
-        );
-
-        // Read back the first FileMappingInfo entry.
-        let entry_offset = sbox.mem_mgr.layout.get_file_mappings_array_offset();
-
-        let stored_addr = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(entry_offset + offset_of!(FileMappingInfo, guest_addr))
-            .unwrap();
-        assert_eq!(stored_addr, guest_base, "PEB entry guest_addr should match");
-
-        let stored_size = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(entry_offset + offset_of!(FileMappingInfo, size))
-            .unwrap();
-        assert_eq!(
-            stored_size, mapped_size,
-            "PEB entry size should match mapped_size"
-        );
-
-        // Read back the label bytes and verify.
-        let label_offset = entry_offset + offset_of!(FileMappingInfo, label);
-        let mut label_buf = [0u8; FILE_MAPPING_LABEL_MAX_LEN + 1];
-        for (i, byte) in label_buf.iter_mut().enumerate() {
-            *byte = sbox
-                .mem_mgr
-                .shared_mem
-                .read::<u8>(label_offset + i)
-                .unwrap();
-        }
-        let label_len = label_buf
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(label_buf.len());
-        let stored_label = std::str::from_utf8(&label_buf[..label_len]).unwrap();
-        assert_eq!(stored_label, label, "PEB entry label should match");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that deferred `map_file_cow` (before evolve) correctly
-    /// writes FileMappingInfo entries into the PEB during evolve.
-    #[test]
-    #[cfg(feature = "nanvix-unstable")]
-    fn test_map_file_cow_peb_entry_deferred() {
-        use std::mem::offset_of;
-
-        use hyperlight_common::mem::{FILE_MAPPING_LABEL_MAX_LEN, FileMappingInfo};
-
-        let (path, _) = create_test_file("hyperlight_test_peb_entry_deferred.bin", &[0xEE; 4096]);
-
-        let guest_base: u64 = 0x1_0000_0000;
-        let label = "deferred_fs";
-
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        let mapped_size = u_sbox.map_file_cow(&path, guest_base, Some(label)).unwrap();
-
-        // Evolve — PEB entries should be written during this step.
-        let sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
-
-        // Read back count.
-        let count = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(sbox.mem_mgr.layout.get_file_mappings_size_offset())
-            .unwrap();
-        assert_eq!(count, 1, "PEB file_mappings count should be 1 after evolve");
-
-        // Read back the entry.
-        let entry_offset = sbox.mem_mgr.layout.get_file_mappings_array_offset();
-
-        let stored_addr = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(entry_offset + offset_of!(FileMappingInfo, guest_addr))
-            .unwrap();
-        assert_eq!(stored_addr, guest_base);
-
-        let stored_size = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(entry_offset + offset_of!(FileMappingInfo, size))
-            .unwrap();
-        assert_eq!(stored_size, mapped_size);
-
-        // Verify the label.
-        let label_offset = entry_offset + offset_of!(FileMappingInfo, label);
-        let mut label_buf = [0u8; FILE_MAPPING_LABEL_MAX_LEN + 1];
-        for (i, byte) in label_buf.iter_mut().enumerate() {
-            *byte = sbox
-                .mem_mgr
-                .shared_mem
-                .read::<u8>(label_offset + i)
-                .unwrap();
-        }
-        let label_len = label_buf
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(label_buf.len());
-        let stored_label = std::str::from_utf8(&label_buf[..label_len]).unwrap();
-        assert_eq!(
-            stored_label, label,
-            "PEB entry label should match after evolve"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that mapping 5 files (3 deferred + 2 post-evolve) correctly
-    /// populates all PEB FileMappingInfo slots with the right guest_addr,
-    /// size, and label for each entry.
-    #[test]
-    #[cfg(feature = "nanvix-unstable")]
-    fn test_map_file_cow_peb_multiple_entries() {
-        use std::mem::{offset_of, size_of};
-
-        use hyperlight_common::mem::{FILE_MAPPING_LABEL_MAX_LEN, FileMappingInfo};
-
-        const NUM_FILES: usize = 5;
-        const DEFERRED_COUNT: usize = 3;
-
-        // Create 5 test files with distinct content.
-        let mut paths = Vec::new();
-        let mut labels: Vec<String> = Vec::new();
-        for i in 0..NUM_FILES {
-            let name = format!("hyperlight_test_peb_multi_{}.bin", i);
-            let content = vec![i as u8 + 0xA0; 4096];
-            let (path, _) = create_test_file(&name, &content);
-            paths.push(path);
-            labels.push(format!("file_{}", i));
-        }
-
-        // Each file gets a unique guest base, spaced 1 page apart
-        // (well outside the shared memory region).
-        let page_size = page_size::get() as u64;
-        let base: u64 = 0x1_0000_0000;
-        let guest_bases: Vec<u64> = (0..NUM_FILES as u64)
-            .map(|i| base + i * page_size)
-            .collect();
-
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        // Map 3 files before evolve (deferred path).
-        let mut mapped_sizes = Vec::new();
-        for i in 0..DEFERRED_COUNT {
-            let size = u_sbox
-                .map_file_cow(&paths[i], guest_bases[i], Some(&labels[i]))
-                .unwrap();
-            mapped_sizes.push(size);
-        }
-
-        // Evolve — deferred mappings applied + PEB entries written.
-        let mut sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
-
-        // Map 2 more files post-evolve (MultiUseSandbox path).
-        for i in DEFERRED_COUNT..NUM_FILES {
-            let size = sbox
-                .map_file_cow(&paths[i], guest_bases[i], Some(&labels[i]))
-                .unwrap();
-            mapped_sizes.push(size);
-        }
-
-        // Verify PEB count equals 5.
-        let count = sbox
-            .mem_mgr
-            .shared_mem
-            .read::<u64>(sbox.mem_mgr.layout.get_file_mappings_size_offset())
-            .unwrap();
-        assert_eq!(
-            count, NUM_FILES as u64,
-            "PEB should have {NUM_FILES} entries"
-        );
-
-        // Verify each entry's guest_addr, size, and label.
-        let array_base = sbox.mem_mgr.layout.get_file_mappings_array_offset();
-        for i in 0..NUM_FILES {
-            let entry_offset = array_base + i * size_of::<FileMappingInfo>();
-
-            let stored_addr = sbox
-                .mem_mgr
-                .shared_mem
-                .read::<u64>(entry_offset + offset_of!(FileMappingInfo, guest_addr))
-                .unwrap();
-            assert_eq!(
-                stored_addr, guest_bases[i],
-                "Entry {i}: guest_addr mismatch"
-            );
-
-            let stored_size = sbox
-                .mem_mgr
-                .shared_mem
-                .read::<u64>(entry_offset + offset_of!(FileMappingInfo, size))
-                .unwrap();
-            assert_eq!(stored_size, mapped_sizes[i], "Entry {i}: size mismatch");
-
-            // Read and verify the label.
-            let label_base = entry_offset + offset_of!(FileMappingInfo, label);
-            let mut label_buf = [0u8; FILE_MAPPING_LABEL_MAX_LEN + 1];
-            for (j, byte) in label_buf.iter_mut().enumerate() {
-                *byte = sbox.mem_mgr.shared_mem.read::<u8>(label_base + j).unwrap();
-            }
-            let label_len = label_buf
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(label_buf.len());
-            let stored_label = std::str::from_utf8(&label_buf[..label_len]).unwrap();
-            assert_eq!(stored_label, labels[i], "Entry {i}: label mismatch");
-        }
-
-        // Clean up.
-        for path in &paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
-    /// Tests that an explicitly provided label exceeding 63 bytes is rejected.
-    #[test]
-    fn test_map_file_cow_label_too_long() {
-        let (path, _) =
-            create_test_file("hyperlight_test_map_file_cow_long_label.bin", &[0xEE; 4096]);
-
-        let guest_base: u64 = 0x1_0000_0000;
-
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        // A label of exactly 64 bytes exceeds the 63-byte max.
-        let long_label = "A".repeat(64);
-        let result = u_sbox.map_file_cow(&path, guest_base, Some(&long_label));
-        assert!(
-            result.is_err(),
-            "map_file_cow should reject labels longer than 63 bytes"
-        );
-
-        // Labels at exactly 63 bytes should be fine.
-        let ok_label = "B".repeat(63);
-        let result = u_sbox.map_file_cow(&path, guest_base, Some(&ok_label));
-        assert!(
-            result.is_ok(),
-            "map_file_cow should accept labels of exactly 63 bytes"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that labels containing null bytes are rejected.
-    #[test]
-    fn test_map_file_cow_label_null_byte() {
-        let (path, _) =
-            create_test_file("hyperlight_test_map_file_cow_null_label.bin", &[0xFF; 4096]);
-
-        let guest_base: u64 = 0x1_0000_0000;
-
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        let result = u_sbox.map_file_cow(&path, guest_base, Some("has\0null"));
-        assert!(
-            result.is_err(),
-            "map_file_cow should reject labels containing null bytes"
-        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -2919,10 +2511,10 @@ mod tests {
         .unwrap();
 
         // First mapping should succeed.
-        u_sbox.map_file_cow(&path1, guest_base, None).unwrap();
+        u_sbox.map_file_cow(&path1, guest_base).unwrap();
 
         // Second mapping at the same address should fail (overlap).
-        let result = u_sbox.map_file_cow(&path2, guest_base, None);
+        let result = u_sbox.map_file_cow(&path2, guest_base);
         assert!(
             result.is_err(),
             "map_file_cow should reject overlapping guest address ranges"
@@ -2950,56 +2542,12 @@ mod tests {
         // Use BASE_ADDRESS itself — smack in the middle of shared memory.
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         // page-align it (BASE_ADDRESS is 0x1000, already page-aligned)
-        let result = u_sbox.map_file_cow(&path, base_addr, None);
+        let result = u_sbox.map_file_cow(&path, base_addr);
         assert!(
             result.is_err(),
             "map_file_cow should reject guest_base inside shared memory"
         );
 
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Tests that exceeding MAX_FILE_MAPPINGS on UninitializedSandbox
-    /// is rejected at registration time.
-    #[test]
-    fn test_map_file_cow_max_limit() {
-        use hyperlight_common::mem::MAX_FILE_MAPPINGS;
-
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        let page_size = page_size::get() as u64;
-        // Base well outside shared memory.
-        let base: u64 = 0x1_0000_0000;
-
-        // Register MAX_FILE_MAPPINGS files — each needs a distinct file
-        // and a non-overlapping GPA.
-        let mut paths = Vec::new();
-        for i in 0..MAX_FILE_MAPPINGS {
-            let name = format!("hyperlight_test_max_limit_{}.bin", i);
-            let (path, _) = create_test_file(&name, &[0xAA; 4096]);
-            let guest_base = base + (i as u64) * page_size;
-            u_sbox.map_file_cow(&path, guest_base, None).unwrap();
-            paths.push(path);
-        }
-
-        // The (MAX_FILE_MAPPINGS + 1)th should fail.
-        let name = format!("hyperlight_test_max_limit_{}.bin", MAX_FILE_MAPPINGS);
-        let (path, _) = create_test_file(&name, &[0xBB; 4096]);
-        let guest_base = base + (MAX_FILE_MAPPINGS as u64) * page_size;
-        let result = u_sbox.map_file_cow(&path, guest_base, None);
-        assert!(
-            result.is_err(),
-            "map_file_cow should reject after MAX_FILE_MAPPINGS registrations"
-        );
-
-        // Clean up.
-        for p in &paths {
-            let _ = std::fs::remove_file(p);
-        }
         let _ = std::fs::remove_file(&path);
     }
 

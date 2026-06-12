@@ -14,14 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
-use hyperlight_common::vmem::{
-    BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId, TableOps,
-};
+use hyperlight_common::vmem::{BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE};
 use tracing::{Span, instrument};
 
 use crate::Result;
@@ -213,14 +211,11 @@ fn skip_virt(virt_base: u64, scratch_gva: u64) -> bool {
     if virt_base >= scratch_gva {
         return true;
     }
-    #[cfg(not(feature = "i686-guest"))]
     if virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
         && virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
     {
         return true;
     }
-    #[cfg(feature = "i686-guest")]
-    let _ = virt_base;
     false
 }
 
@@ -296,7 +291,6 @@ impl Snapshot {
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 
-        #[cfg_attr(feature = "i686-guest", allow(unused_mut))]
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
@@ -390,7 +384,7 @@ impl Snapshot {
         mut layout: SandboxMemoryLayout,
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
-        root_pt_gpas: &[u64],
+        root_pt_gpa: u64,
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
@@ -401,128 +395,62 @@ impl Snapshot {
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
-                // Phase 1: walk every PT root together. This detects
-                // aliased intermediate tables (e.g. Nanvix's kernel-
-                // half PTs, which multiple process PDs share by
-                // pointing at the same PT page). The walker emits
-                // `ThisSpace(leaf)` for private leaves and
-                // `AnotherSpace(ref)` for sub-trees that were already
-                // seen via an earlier root. Results are returned in
-                // `root_pt_gpas` order — which is also the topological
-                // order of the `AnotherSpace` references — so
-                // processing in iteration order is safe.
-                let op = SharedMemoryPageTableBuffer::new(
-                    snap_c,
-                    scratch_c,
-                    layout,
-                    root_pt_gpas.first().copied().unwrap_or(0),
-                );
+                let op = SharedMemoryPageTableBuffer::new(snap_c, scratch_c, layout, root_pt_gpa);
                 let walk = unsafe {
-                    vmem::walk_va_spaces(
-                        &op,
-                        root_pt_gpas,
-                        0,
-                        hyperlight_common::layout::MAX_GVA as u64,
-                    )
+                    vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
                 };
 
-                // Phase 2: rebuild each space's page tables, compacting
-                // `ThisSpace` leaves into a dense snapshot blob and
-                // linking `AnotherSpace` entries to already-built
-                // spaces' tables.
+                // Phase 2: rebuild page tables for the current root,
+                // compacting leaves into a dense snapshot blob.
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
-                // Allocate one root table per space and remember the
-                // addresses returned by `alloc_table` instead of
-                // assuming the buffer's physical layout.
-                let mut root_addrs: Vec<u64> = Vec::with_capacity(root_pt_gpas.len());
-                root_addrs.push(pt_buf.initial_root());
-                for _ in 1..root_pt_gpas.len() {
-                    root_addrs.push(unsafe { pt_buf.alloc_table() });
-                }
-
-                let mut built_roots: BTreeMap<SpaceId, u64> = BTreeMap::new();
-                for (root_idx, (space_id, mappings)) in walk.into_iter().enumerate() {
-                    pt_buf.set_root(root_addrs[root_idx]);
-                    built_roots.insert(space_id, root_addrs[root_idx]);
-
-                    for sam in mappings {
-                        match sam {
-                            SpaceAwareMapping::ThisSpace(mapping) => {
-                                // Drop the scratch region and (on
-                                // amd64) the snapshot's own PT
-                                // self-map; both are re-mapped
-                                // freshly by `map_specials`.
-                                if skip_virt(mapping.virt_base, scratch_gva) {
-                                    continue;
-                                }
-                                let Some(contents) = (unsafe {
-                                    guest_page(
-                                        snap_c,
-                                        scratch_c,
-                                        &regions,
-                                        layout,
-                                        mapping.phys_base,
-                                    )
-                                }) else {
-                                    continue;
-                                };
-
-                                // Writable pages become CoW in the
-                                // rebuilt snapshot; read-only pages
-                                // stay read-only.
-                                let kind = match mapping.kind {
-                                    MappingKind::Cow(cm) => MappingKind::Cow(cm),
-                                    MappingKind::Basic(bm) if bm.writable => {
-                                        MappingKind::Cow(CowMapping {
-                                            readable: bm.readable,
-                                            executable: bm.executable,
-                                        })
-                                    }
-                                    MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
-                                        readable: bm.readable,
-                                        writable: false,
-                                        executable: bm.executable,
-                                    }),
-                                    MappingKind::Unmapped => continue,
-                                };
-                                let new_gpa =
-                                    phys_seen.entry(mapping.phys_base).or_insert_with(|| {
-                                        let new_offset = snapshot_memory.len();
-                                        snapshot_memory.extend(contents);
-                                        new_offset + SandboxMemoryLayout::BASE_ADDRESS
-                                    });
-
-                                let compacted = Mapping {
-                                    phys_base: *new_gpa as u64,
-                                    virt_base: mapping.virt_base,
-                                    len: PAGE_SIZE as u64,
-                                    kind,
-                                    user_accessible: mapping.user_accessible,
-                                };
-                                unsafe { vmem::map(&pt_buf, compacted) };
-                            }
-                            SpaceAwareMapping::AnotherSpace(ref_map) => {
-                                // Link to the owning space's already-
-                                // rebuilt intermediate table — this
-                                // is what preserves Nanvix's
-                                // kernel-half-shared invariant across
-                                // process PDs after relocation.
-                                unsafe {
-                                    vmem::space_aware_map(&pt_buf, ref_map, &built_roots);
-                                }
-                            }
-                        }
+                for mapping in walk {
+                    // Drop the scratch region and (on amd64) the
+                    // snapshot's own PT self-map; both are re-mapped
+                    // freshly by `map_specials`.
+                    if skip_virt(mapping.virt_base, scratch_gva) {
+                        continue;
                     }
+                    let Some(contents) = (unsafe {
+                        guest_page(snap_c, scratch_c, &regions, layout, mapping.phys_base)
+                    }) else {
+                        continue;
+                    };
+
+                    // Writable pages become CoW in the rebuilt
+                    // snapshot; read-only pages stay read-only.
+                    let kind = match mapping.kind {
+                        MappingKind::Cow(cm) => MappingKind::Cow(cm),
+                        MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
+                            readable: bm.readable,
+                            executable: bm.executable,
+                        }),
+                        MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
+                            readable: bm.readable,
+                            writable: false,
+                            executable: bm.executable,
+                        }),
+                        MappingKind::Unmapped => continue,
+                    };
+                    let new_gpa = phys_seen.entry(mapping.phys_base).or_insert_with(|| {
+                        let new_offset = snapshot_memory.len();
+                        snapshot_memory.extend(contents);
+                        new_offset + SandboxMemoryLayout::BASE_ADDRESS
+                    });
+
+                    let compacted = Mapping {
+                        phys_base: *new_gpa as u64,
+                        virt_base: mapping.virt_base,
+                        len: PAGE_SIZE as u64,
+                        kind,
+                        user_accessible: mapping.user_accessible,
+                    };
+                    unsafe { vmem::map(&pt_buf, compacted) };
                 }
 
-                // Phase 3: Map the scratch region into each root.
-                for &root_addr in &root_addrs {
-                    pt_buf.set_root(root_addr);
-                    map_specials(&pt_buf, layout.get_scratch_size());
-                }
-                pt_buf.set_root(pt_buf.initial_root());
+                // Phase 3: map the scratch region.
+                map_specials(&pt_buf, layout.get_scratch_size());
 
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
@@ -677,7 +605,6 @@ impl Snapshot {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "i686-guest"))]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
@@ -747,7 +674,7 @@ mod tests {
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),
-            &[pt_base],
+            pt_base,
             0,
             default_sregs(),
             super::NextAction::None,
@@ -764,7 +691,7 @@ mod tests {
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),
-            &[pt_base],
+            pt_base,
             0,
             default_sregs(),
             super::NextAction::None,
@@ -784,147 +711,5 @@ mod tests {
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "i686-guest")]
-mod i686_tests {
-    use hyperlight_common::vmem::{
-        self, BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE,
-    };
-
-    use crate::mem::mgr::GuestPageTableBuffer;
-
-    const PT_BASE: usize = 0x10_0000;
-
-    #[test]
-    fn map_single_page() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let mapping = Mapping {
-            phys_base: 0x2000,
-            virt_base: 0x1000,
-            len: PAGE_SIZE as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: true,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].phys_base, 0x2000);
-        assert_eq!(results[0].virt_base, 0x1000);
-        assert!(matches!(
-            results[0].kind,
-            MappingKind::Basic(BasicMapping { writable: true, .. })
-        ));
-    }
-
-    #[test]
-    fn map_cow_page() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let mapping = Mapping {
-            phys_base: 0x3000,
-            virt_base: 0x2000,
-            len: PAGE_SIZE as u64,
-            kind: MappingKind::Cow(CowMapping {
-                readable: true,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x2000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].phys_base, 0x3000);
-        assert!(matches!(results[0].kind, MappingKind::Cow(_)));
-    }
-
-    #[test]
-    fn map_multiple_pages_across_pd_boundary() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        // Map pages spanning a 4MB PD boundary (PD[0] -> PD[1])
-        let va_start = 0x003F_F000u64; // last page of PD[0]
-        let pa_start = 0x5000u64;
-        let mapping = Mapping {
-            phys_base: pa_start,
-            virt_base: va_start,
-            len: 2 * PAGE_SIZE as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: false,
-                executable: true,
-            }),
-            user_accessible: false,
-        };
-        unsafe { vmem::map(&pt, mapping) };
-
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, va_start, 2 * PAGE_SIZE as u64) }.collect();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].phys_base, pa_start);
-        assert_eq!(results[0].virt_base, va_start);
-        assert_eq!(results[1].phys_base, pa_start + PAGE_SIZE as u64);
-        assert_eq!(results[1].virt_base, va_start + PAGE_SIZE as u64);
-    }
-
-    #[test]
-    fn virt_to_phys_unmapped_returns_empty() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        let results: Vec<_> =
-            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn map_reuses_existing_page_table() {
-        let pt = GuestPageTableBuffer::new(PT_BASE);
-        // Map two pages in the same 4MB region (same PD entry)
-        unsafe {
-            vmem::map(
-                &pt,
-                Mapping {
-                    phys_base: 0x1000,
-                    virt_base: 0x1000,
-                    len: PAGE_SIZE as u64,
-                    kind: MappingKind::Basic(BasicMapping {
-                        readable: true,
-                        writable: true,
-                        executable: true,
-                    }),
-                    user_accessible: false,
-                },
-            );
-            vmem::map(
-                &pt,
-                Mapping {
-                    phys_base: 0x5000,
-                    virt_base: 0x5000,
-                    len: PAGE_SIZE as u64,
-                    kind: MappingKind::Basic(BasicMapping {
-                        readable: true,
-                        writable: true,
-                        executable: true,
-                    }),
-                    user_accessible: false,
-                },
-            );
-        }
-        // Both should be visible
-        let r1: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        let r2: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x5000, PAGE_SIZE as u64) }.collect();
-        assert_eq!(r1.len(), 1);
-        assert_eq!(r2.len(), 1);
-        assert_eq!(r1[0].phys_base, 0x1000);
-        assert_eq!(r2[0].phys_base, 0x5000);
-        // Should have allocated: 1 PD (pre-existing) + 1 PT = 2 pages total
-        assert_eq!(pt.size(), 2 * PAGE_SIZE);
     }
 }

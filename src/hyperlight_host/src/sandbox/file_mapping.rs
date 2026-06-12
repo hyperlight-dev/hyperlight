@@ -57,9 +57,6 @@ pub(crate) struct PreparedFileMapping {
     pub(crate) guest_base: u64,
     /// The page-aligned size of the mapping in bytes.
     pub(crate) size: usize,
-    /// Null-terminated C-style label for this mapping (max 63 chars + null).
-    #[cfg_attr(not(feature = "nanvix-unstable"), allow(unused))]
-    pub(crate) label: [u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1],
     /// Host-side OS resources. `None` after successful consumption
     /// by the apply step (ownership transferred to the VM layer).
     pub(crate) host_resources: Option<HostFileResources>,
@@ -202,84 +199,18 @@ impl PreparedFileMapping {
     }
 }
 
-/// Build a null-terminated C-style label from the provided string.
-///
-/// When `truncate_ok` is true (used for auto-derived labels from
-/// filenames), labels longer than [`FILE_MAPPING_LABEL_MAX_LEN`] are
-/// silently truncated with a warning. When false (explicit user
-/// labels), overlength labels are rejected with an error.
-///
-/// # Errors
-///
-/// Returns an error if the label exceeds the max length (and truncation
-/// is not allowed) or contains null bytes.
-fn build_label(
-    label: &str,
-    truncate_ok: bool,
-) -> Result<[u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1]> {
-    use hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN;
-    let bytes = label.as_bytes();
-    if bytes.contains(&0) {
-        log_then_return!("map_file_cow: label must not contain null bytes");
-    }
-    let effective = if bytes.len() > FILE_MAPPING_LABEL_MAX_LEN {
-        if truncate_ok {
-            tracing::warn!(
-                "map_file_cow: auto-derived label truncated from {} to {} bytes: {:?}",
-                bytes.len(),
-                FILE_MAPPING_LABEL_MAX_LEN,
-                label,
-            );
-            &bytes[..FILE_MAPPING_LABEL_MAX_LEN]
-        } else {
-            log_then_return!(
-                "map_file_cow: label length {} exceeds maximum of {} bytes",
-                bytes.len(),
-                FILE_MAPPING_LABEL_MAX_LEN
-            );
-        }
-    } else {
-        bytes
-    };
-    let mut buf = [0u8; FILE_MAPPING_LABEL_MAX_LEN + 1];
-    buf[..effective.len()].copy_from_slice(effective);
-    // Remaining bytes are already zero (null terminator).
-    Ok(buf)
-}
-
 /// Perform host-side file mapping preparation without requiring a VM.
 ///
 /// Opens the file, creates a read-only mapping in the host process,
 /// and returns a [`PreparedFileMapping`] that can be applied to the
-/// VM later. An optional `label` identifies this mapping in the PEB
-/// (defaults to the file name if `None`).
+/// VM later.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be opened, is empty, the label
-/// is too long, or the OS mapping calls fail.
-#[instrument(err(Debug), skip(file_path, guest_base, label), parent = Span::current())]
-pub(crate) fn prepare_file_cow(
-    file_path: &Path,
-    guest_base: u64,
-    label: Option<&str>,
-) -> Result<PreparedFileMapping> {
-    // Build the label — default to the file name if not provided.
-    // Long default labels (from filenames) are truncated with a warning;
-    // explicitly provided labels that are too long are rejected.
-    let default_label;
-    let (label_str, truncate_ok) = match label {
-        Some(l) => (l, false),
-        None => {
-            default_label = file_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            (default_label as &str, true)
-        }
-    };
-    let label_bytes = build_label(label_str, truncate_ok)?;
-
+/// Returns an error if the file cannot be opened, is empty, or the OS
+/// mapping calls fail.
+#[instrument(err(Debug), skip(file_path, guest_base), parent = Span::current())]
+pub(crate) fn prepare_file_cow(file_path: &Path, guest_base: u64) -> Result<PreparedFileMapping> {
     // Validate alignment eagerly to fail fast before allocating OS resources.
     let page_size = page_size::get();
     if !(guest_base as usize).is_multiple_of(page_size) {
@@ -369,7 +300,6 @@ pub(crate) fn prepare_file_cow(
         Ok(PreparedFileMapping {
             guest_base,
             size,
-            label: label_bytes,
             host_resources: Some(HostFileResources::Windows {
                 mapping_handle: HandleWrapper::from(mapping_handle),
                 view_base: view.Value,
@@ -418,7 +348,6 @@ pub(crate) fn prepare_file_cow(
         Ok(PreparedFileMapping {
             guest_base,
             size,
-            label: label_bytes,
             host_resources: Some(HostFileResources::Linux {
                 mmap_base: base,
                 mmap_size: size,
