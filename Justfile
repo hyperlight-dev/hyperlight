@@ -48,7 +48,10 @@ build target=default-target:
 guests: build-and-move-rust-guests build-and-move-c-guests
 
 ensure-cargo-hyperlight:
-    cargo install --locked cargo-hyperlight
+    # Force reinstall so self-hosted runners don't keep a preinstalled binary with the same semver.
+    cargo install --locked --version 0.1.11 --force cargo-hyperlight
+    cargo hyperlight --version
+    {{ if os() == "windows" { "Get-Command cargo-hyperlight" } else { "command -v cargo-hyperlight" } }}
 
 witguest-wit:
     cargo install --locked wasm-tools
