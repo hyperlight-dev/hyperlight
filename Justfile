@@ -401,12 +401,10 @@ bench-download os hypervisor cpu tag="":
 
 # Warning: compares to and then OVERWRITES the given baseline
 bench-ci baseline features="":
-    @# Benchmarks are always run with release builds for meaningful results
-    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
+    cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --verbose --save-baseline {{ baseline }}
 
 bench features="":
-    @# Benchmarks are always run with release builds for meaningful results
-    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose
+    cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --verbose
 
 ###############
 ### FUZZING ###

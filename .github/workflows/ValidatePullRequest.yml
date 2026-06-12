@@ -140,6 +140,89 @@ jobs:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
     secrets: inherit
 
+  # Run benchmarks and post results as PR comment
+  benchmarks:
+    needs:
+      - docs-pr
+      - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
+        cpu: [amd, intel]
+    uses: ./.github/workflows/dep_benchmarks.yml
+    secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
+
+  # Combine benchmark reports into a single artifact for the hyperlight-gh-bot
+  # to post as a PR comment. Only runs for PRs (not merge groups) with code changes.
+  benchmark-comment:
+    name: post-benchmark-comment
+    needs:
+      - docs-pr
+      - benchmarks
+    if: ${{ !cancelled() && !failure() && needs.docs-pr.outputs.docs-only == 'false' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download benchmark reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: benchmark-report_*
+          path: reports/
+
+      - name: Combine benchmark reports
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const reportsDir = 'reports';
+            if (!fs.existsSync(reportsDir)) {
+              console.log('No benchmark reports found, skipping.');
+              return;
+            }
+
+            const sections = [];
+            const dirs = fs.readdirSync(reportsDir).sort();
+            for (const dir of dirs) {
+              const mdPath = path.join(reportsDir, dir, 'benchmark.md');
+              if (!fs.existsSync(mdPath)) continue;
+
+              // Extract hypervisor/cpu from artifact name: benchmark-report_OS_hypervisor_cpu
+              const parts = dir.replace('benchmark-report_', '').split('_');
+              const os = parts[0];
+              const hypervisor = parts.slice(1, -1).join('_');
+              const cpu = parts[parts.length - 1];
+              const label = `${hypervisor} / ${cpu} (${os})`;
+
+              const content = fs.readFileSync(mdPath, 'utf8').trim();
+              sections.push(`<details>\n<summary><b>${label}</b></summary>\n\n${content}\n\n</details>`);
+            }
+
+            if (sections.length === 0) {
+              console.log('No benchmark report content found, skipping.');
+              return;
+            }
+
+            const body = `## Benchmark Results\n\n${sections.join('\n\n')}`;
+            fs.writeFileSync('pr-comment.md', body);
+
+      - name: Upload PR comment artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-comment
+          path: pr-comment.md
+          if-no-files-found: warn
+          retention-days: 1
+
   spelling:
     name: spell check with typos
     runs-on: ubuntu-latest
@@ -167,6 +250,7 @@ jobs:
       - build-test
       - run-examples
       - fuzzing
+      - benchmarks
       - spelling
       - license-headers
     if: always()
