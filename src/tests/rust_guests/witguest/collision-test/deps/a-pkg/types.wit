@@ -1,0 +1,9 @@
+package a:pkg;
+
+interface types {
+    record info {
+        name: string,
+        value: u32,
+    }
+    get-info: func() -> info;
+}

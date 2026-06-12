@@ -54,6 +54,7 @@ witguest-wit:
     cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
     cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
+    cd src/tests/rust_guests/witguest && wasm-tools component wit collision-test/ -w -o collision.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit) (ensure-cargo-hyperlight)
     @# --workspace unifies feature resolution so shared deps build once. Needed because witguest

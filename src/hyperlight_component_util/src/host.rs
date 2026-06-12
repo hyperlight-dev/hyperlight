@@ -18,8 +18,9 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
-    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
+    kebab_to_exports_name, kebab_to_fn, kebab_to_getter, kebab_to_imports_name, kebab_to_namespace,
+    kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{Component, ExternDecl, ExternDesc, Instance, Tyvar};
 use crate::hl::{
@@ -135,8 +136,13 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
     let (root_ns, root_base_name) = s.root_component_name.unwrap();
     let wrapper_name = kebab_to_wrapper_name(root_base_name);
     let imports_name = kebab_to_imports_name(root_base_name);
+    let trait_path = if ns.is_empty() {
+        quote! { #trait_name }
+    } else {
+        quote! { #ns::#trait_name }
+    };
     s.root_mod.items.extend(quote! {
-        impl<I: #root_ns::#imports_name, S: ::hyperlight_host::sandbox::Callable> #ns::#trait_name <#(#tvs),*> for #wrapper_name<I, S> {
+        impl<I: #root_ns::#imports_name, S: ::hyperlight_host::sandbox::Callable> #trait_path <#(#tvs),*> for #wrapper_name<I, S> {
             #(#exports)*
         }
     });
@@ -259,10 +265,9 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::Instance(it) => {
             let mut s = s.clone();
             let wn = split_wit_name(ed.kebab_name);
-            let type_name = kebab_to_type(wn.name);
-            let getter = kebab_to_getter(wn.name);
+            let (type_name, getter) = import_member_names(&wn, &s.colliding_import_names);
             let tp = s.cur_trait_path();
-            let get_self = get_self.with_getter(tp, type_name, getter); //quote! { #get_self let mut slf = &mut #tp::#getter(&mut *slf); };
+            let get_self = get_self.with_getter(tp, type_name, getter);
             emit_import_instance(&mut s, get_self, wn.clone(), it)
         }
         ExternDesc::Component(_) => {
@@ -321,6 +326,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
 
     let rtsid = format_ident!("{}Resources", r#trait);
     s.import_param_var = Some(format_ident!("I"));
+    s.colliding_import_names = find_colliding_import_names(&ct.imports);
     resource::emit_tables(
         &mut s,
         rtsid.clone(),
