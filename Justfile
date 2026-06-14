@@ -45,7 +45,7 @@ build target=default-target:
     {{ cargo-cmd }} build --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
 # build testing guest binaries
-guests: build-and-move-rust-guests build-and-move-c-guests
+guests: build-and-move-rust-guests-non-pie build-and-move-rust-guests build-and-move-c-guests
 
 ensure-cargo-hyperlight:
     cargo install --locked cargo-hyperlight
@@ -68,6 +68,16 @@ build-rust-guests target=default-target features="": (witguest-wit) (ensure-carg
 
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
+
+# Build non-PIE variants of rust guests for testing ELF VA mapping
+build-rust-guests-non-pie target=default-target: (ensure-cargo-hyperlight)
+    {{ if os() == "windows" { "$env:RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x200000';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x200000'" } }} cargo hyperlight build --profile={{ if target == "debug" { "dev" } else { target } }}
+
+@move-rust-guests-non-pie target=default-target:
+    {{ if os() == "windows" { "New-Item -ItemType Directory -Path " + rust_guests_bin_dir + "/" + target + "/non_pie -Force | Out-Null" } else { "mkdir -p " + rust_guests_bin_dir + "/" + target + "/non_pie" } }}
+    cp {{ simpleguest_source }}/{{ target }}/simpleguest {{ rust_guests_bin_dir }}/{{ target }}/non_pie/
+
+build-and-move-rust-guests-non-pie: (build-rust-guests-non-pie "debug") (move-rust-guests-non-pie "debug") (build-rust-guests-non-pie "release") (move-rust-guests-non-pie "release")
 
 clean: clean-rust
 

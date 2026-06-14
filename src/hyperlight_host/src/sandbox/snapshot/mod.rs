@@ -28,7 +28,7 @@ use crate::Result;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -308,6 +308,16 @@ impl Snapshot {
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
 
+        // Determine the virtual base address for the code region.
+        // For non-PIE binaries (base_va > 0), the code should appear at the
+        // ELF's declared virtual address. For PIE binaries (base_va == 0),
+        // we use the physical load address (identity mapping).
+        let code_virt_base = if base_va > 0 {
+            base_va
+        } else {
+            load_addr
+        };
+
         let mut memory = vec![0; layout.get_memory_size()?];
 
         let load_info = exe_info.load(
@@ -340,9 +350,26 @@ impl Snapshot {
                     executable,
                 })
             };
+
+            // For the code region, use code_virt_base as the GVA.
+            // For non-PIE this is the ELF's declared base VA (non-identity mapping).
+            // For PIE this should equal the GPA (identity mapping).
+            let virt_base = if rgn.region_type == MemoryRegionType::Code {
+                if base_va == 0 {
+                    assert_eq!(
+                        code_virt_base,
+                        rgn.guest_region.start as u64,
+                        "PIE code region should be identity-mapped"
+                    );
+                }
+                code_virt_base
+            } else {
+                rgn.guest_region.start as u64
+            };
+
             let mapping = Mapping {
                 phys_base: rgn.guest_region.start as u64,
-                virt_base: rgn.guest_region.start as u64,
+                virt_base,
                 len: rgn.guest_region.len() as u64,
                 kind,
                 user_accessible: false,
@@ -361,13 +388,21 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
+        let entrypoint_offset = entrypoint_va.checked_sub(base_va).ok_or_else(|| {
+            crate::new_error!(
+                "ELF entrypoint VA ({:#x}) is below base VA ({:#x})",
+                entrypoint_va,
+                base_va
+            )
+        })?;
+
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size)?,
             layout,
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
+            entrypoint: NextAction::Initialise(code_virt_base + entrypoint_offset),
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
                 host_functions: None,
