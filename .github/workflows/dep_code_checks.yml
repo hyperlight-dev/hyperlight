@@ -95,6 +95,9 @@ jobs:
           just test-compilation-no-default-features debug
           just test-compilation-no-default-features release
 
+      - name: Run loom concurrency tests
+        run: just test-loom
+
   windows-checks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 30

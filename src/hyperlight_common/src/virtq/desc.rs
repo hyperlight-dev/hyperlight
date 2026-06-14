@@ -46,6 +46,26 @@ bitflags! {
     }
 }
 
+impl DescFlags {
+    /// Was a descriptor carrying these flags made available by the driver in
+    /// the round identified by `wrap`?
+    #[inline]
+    pub fn is_avail(self, wrap: bool) -> bool {
+        let avail = self.contains(DescFlags::AVAIL);
+        let used = self.contains(DescFlags::USED);
+        avail == wrap && used != wrap
+    }
+
+    /// Was a descriptor carrying these flags marked used by the device in the
+    /// round identified by `wrap`?
+    #[inline]
+    pub fn is_used(self, wrap: bool) -> bool {
+        let avail = self.contains(DescFlags::AVAIL);
+        let used = self.contains(DescFlags::USED);
+        avail == wrap && used == wrap
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq, Eq, Hash)]
 pub struct Descriptor {
@@ -96,19 +116,13 @@ impl Descriptor {
     /// Did the driver make this descriptor available in the current driver round?
     #[inline]
     pub fn is_avail(&self, wrap: bool) -> bool {
-        let f = self.flags();
-        let avail = f.contains(DescFlags::AVAIL);
-        let used = f.contains(DescFlags::USED);
-        avail == wrap && used != wrap
+        self.flags().is_avail(wrap)
     }
 
     /// Did the device mark this descriptor used in the current device round?
     #[inline]
     pub fn is_used(&self, wrap: bool) -> bool {
-        let f = self.flags();
-        let avail = f.contains(DescFlags::AVAIL);
-        let used = f.contains(DescFlags::USED);
-        avail == wrap && used == wrap
+        self.flags().is_used(wrap)
     }
 
     /// Is this descriptor writable by the device?
@@ -151,26 +165,6 @@ impl Descriptor {
         }
     }
 
-    /// Read a descriptor from memory with acquire semantics for flags
-    /// This is the primary synchronization point for consuming descriptors.
-    ///
-    /// # Invariant
-    ///
-    /// The caller must ensure that `base` is valid for reads of Descriptor
-    pub fn read_acquire<M: MemOps>(mem: &M, addr: u64) -> Result<Self, M::Error> {
-        let flags = mem.load_acquire(addr + Self::FLAGS_OFFSET as u64)?;
-        let addr_val: u64 = mem.read_val(addr + Self::ADDR_OFFSET as u64)?;
-        let len: u32 = mem.read_val(addr + Self::LEN_OFFSET as u64)?;
-        let id: u16 = mem.read_val(addr + Self::ID_OFFSET as u64)?;
-
-        Ok(Self {
-            addr: addr_val,
-            len,
-            id,
-            flags,
-        })
-    }
-
     /// Write a descriptor to memory with release semantics for flags at the given base pointer
     ///
     /// This is the primary synchronization point for publishing descriptors.
@@ -185,6 +179,28 @@ impl Descriptor {
         // Flags written last with release semantics
         mem.store_release(addr + Self::FLAGS_OFFSET as u64, self.flags)?;
         Ok(())
+    }
+
+    /// Acquire-load only the flags word - the packed-ring publish point -
+    /// without reading the descriptor body.
+    pub fn read_flags_acquire<M: MemOps>(mem: &M, addr: u64) -> Result<DescFlags, M::Error> {
+        let flags = mem.load_acquire(addr + Self::FLAGS_OFFSET as u64)?;
+        Ok(DescFlags::from_bits_truncate(flags))
+    }
+
+    /// Read the descriptor body (`addr`/`len`/`id`) and combine it with flags
+    /// already obtained from [`load_flags_acquire`](Self::load_flags_acquire).
+    pub fn read_body<M: MemOps>(mem: &M, addr: u64, flags: DescFlags) -> Result<Self, M::Error> {
+        let addr_val: u64 = mem.read_val(addr + Self::ADDR_OFFSET as u64)?;
+        let len: u32 = mem.read_val(addr + Self::LEN_OFFSET as u64)?;
+        let id: u16 = mem.read_val(addr + Self::ID_OFFSET as u64)?;
+
+        Ok(Self {
+            addr: addr_val,
+            len,
+            id,
+            flags: flags.bits(),
+        })
     }
 }
 
