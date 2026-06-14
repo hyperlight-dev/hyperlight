@@ -88,6 +88,37 @@ pub fn dummy_guest_as_string() -> Result<String> {
         .ok_or_else(|| anyhow!("couldn't convert dummy guest PathBuf to string"))
 }
 
+/// Get a fully qualified OS-specific path to the non-PIE simpleguest elf binary
+pub fn simple_guest_non_pie_as_string() -> Result<String> {
+    let buf = rust_guest_non_pie_as_pathbuf("simpleguest");
+    buf.to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("couldn't convert non-PIE simple guest PathBuf to string"))
+}
+
+/// Get a new `PathBuf` to a specified non-PIE Rust guest
+/// $REPO_ROOT/src/tests/rust_guests/bin/${profile}/non_pie/
+fn rust_guest_non_pie_as_pathbuf(guest: &str) -> PathBuf {
+    let build_dir_selector = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+
+    join_to_path(
+        MANIFEST_DIR,
+        vec![
+            "..",
+            "tests",
+            "rust_guests",
+            "bin",
+            build_dir_selector,
+            "non_pie",
+            guest,
+        ],
+    )
+}
+
 pub fn c_guest_as_pathbuf(guest: &str) -> PathBuf {
     let build_dir_selector = if cfg!(debug_assertions) {
         "debug"
