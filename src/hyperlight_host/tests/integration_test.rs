@@ -1878,11 +1878,8 @@ fn hw_timer_interrupts() {
 fn non_pie_guest_hello_world() {
     let path =
         hyperlight_testing::simple_guest_non_pie_as_string().expect("non-PIE guest not found");
-    let sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(path),
-        None,
-    )
-    .unwrap();
+    let sandbox =
+        UninitializedSandbox::new(hyperlight_host::GuestBinary::FilePath(path), None).unwrap();
     let mut multi_use_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
     let result: i32 = multi_use_sandbox
         .call("PrintOutput", "Hello from non-PIE guest!\n".to_string())

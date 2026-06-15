@@ -28,7 +28,9 @@ use crate::Result;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+use crate::mem::memory_region::{
+    GuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionType,
+};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -312,11 +314,7 @@ impl Snapshot {
         // For non-PIE binaries (base_va > 0), the code should appear at the
         // ELF's declared virtual address. For PIE binaries (base_va == 0),
         // we use the physical load address (identity mapping).
-        let code_virt_base = if base_va > 0 {
-            base_va
-        } else {
-            load_addr
-        };
+        let code_virt_base = if base_va > 0 { base_va } else { load_addr };
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
@@ -357,8 +355,7 @@ impl Snapshot {
             let virt_base = if rgn.region_type == MemoryRegionType::Code {
                 if base_va == 0 {
                     assert_eq!(
-                        code_virt_base,
-                        rgn.guest_region.start as u64,
+                        code_virt_base, rgn.guest_region.start as u64,
                         "PIE code region should be identity-mapped"
                     );
                 }
