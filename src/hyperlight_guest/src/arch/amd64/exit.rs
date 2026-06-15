@@ -38,7 +38,7 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
                     in("r8") OutBAction::TraceBatch as u64,
                     in("r9") ptr,
                     in("r10") len,
-                    options(preserves_flags, nomem, nostack)
+                    options(preserves_flags, nostack)
                 )
             };
 
@@ -49,12 +49,12 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
         } else {
             // If tracing is not enabled, just send the value
             unsafe {
-                asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack))
+                asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nostack))
             };
         }
     }
     #[cfg(not(feature = "trace_guest"))]
     unsafe {
-        asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack));
+        asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nostack));
     }
 }
