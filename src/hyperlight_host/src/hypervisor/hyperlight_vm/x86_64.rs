@@ -1703,9 +1703,42 @@ mod tests {
         if reset_xsave.len() >= 576 {
             expected_xsave[512..576].copy_from_slice(&reset_xsave[512..576]);
         }
+
+        // Compute the end of valid XSAVE component data. In compacted format (MSHV/WHP),
+        // components are packed contiguously starting at offset 576. Bytes beyond the last
+        // component are undefined
+        let xcomp_bv = u64::from_le_bytes(reset_xsave[520..528].try_into().unwrap_or([0u8; 8]));
+        let compacted = (xcomp_bv & (1u64 << 63)) != 0;
+        let valid_end = if compacted {
+            // Compacted format: compute end from CPUID component sizes
+            let supported = xsave_supported_components();
+            let mut offset = 576usize;
+            for comp_id in 2..63u32 {
+                if (supported & (1u64 << comp_id)) == 0 {
+                    continue;
+                }
+                if (xcomp_bv & (1u64 << comp_id)) == 0 {
+                    continue;
+                }
+                let (size, _, align_64) = xsave_component_info(comp_id);
+                if align_64 {
+                    offset = offset.next_multiple_of(64);
+                }
+                offset += size;
+            }
+            offset
+        } else {
+            // Standard format (KVM): full buffer is valid
+            reset_xsave.len()
+        };
+
+        // Only compare bytes within the valid region
         assert_eq!(
-            reset_xsave, expected_xsave,
-            "xsave should be zeroed except for hypervisor-specific fields"
+            &reset_xsave[..valid_end],
+            &expected_xsave[..valid_end],
+            "xsave should be zeroed except for hypervisor-specific fields \
+             (comparing bytes 0..{valid_end} of {} total)",
+            reset_xsave.len()
         );
 
         // Verify sregs are reset to defaults (CR3 is 0 as passed to reset_vcpu)
