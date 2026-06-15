@@ -1256,6 +1256,10 @@ mod tests {
     /// - size: CPUID.0DH.n:EAX - size in bytes
     /// - offset: CPUID.0DH.n:EBX - offset from XSAVE base (standard format only)
     /// - align_64: CPUID.0DH.n:ECX bit 1 - true if 64-byte aligned (compacted format)
+    // TODO: Remove this when MSRV is raised above 1.89.
+    // On Rust 1.89, __cpuid_count requires `unsafe`; on newer compilers it is safe and
+    // clippy flags these blocks as unnecessary.
+    #[allow(unused_unsafe)]
     fn xsave_component_info(comp_id: u32) -> (usize, usize, bool) {
         let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, comp_id) };
         let size = result.eax as usize;
@@ -1266,6 +1270,10 @@ mod tests {
 
     /// Query CPUID.0DH.00H for the bitmap of supported user state components.
     /// EDX:EAX forms a 64-bit bitmap where bit i indicates support for component i.
+    // TODO: Remove this when MSRV is raised above 1.89.
+    // On Rust 1.89, __cpuid_count requires `unsafe`; on newer compilers it is safe and
+    // clippy flags these blocks as unnecessary.
+    #[allow(unused_unsafe)]
     fn xsave_supported_components() -> u64 {
         let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, 0) };
         (result.edx as u64) << 32 | (result.eax as u64)
@@ -1695,9 +1703,42 @@ mod tests {
         if reset_xsave.len() >= 576 {
             expected_xsave[512..576].copy_from_slice(&reset_xsave[512..576]);
         }
+
+        // Compute the end of valid XSAVE component data. In compacted format (MSHV/WHP),
+        // components are packed contiguously starting at offset 576. Bytes beyond the last
+        // component are undefined
+        let xcomp_bv = u64::from_le_bytes(reset_xsave[520..528].try_into().unwrap_or([0u8; 8]));
+        let compacted = (xcomp_bv & (1u64 << 63)) != 0;
+        let valid_end = if compacted {
+            // Compacted format: compute end from CPUID component sizes
+            let supported = xsave_supported_components();
+            let mut offset = 576usize;
+            for comp_id in 2..63u32 {
+                if (supported & (1u64 << comp_id)) == 0 {
+                    continue;
+                }
+                if (xcomp_bv & (1u64 << comp_id)) == 0 {
+                    continue;
+                }
+                let (size, _, align_64) = xsave_component_info(comp_id);
+                if align_64 {
+                    offset = offset.next_multiple_of(64);
+                }
+                offset += size;
+            }
+            offset
+        } else {
+            // Standard format (KVM): full buffer is valid
+            reset_xsave.len()
+        };
+
+        // Only compare bytes within the valid region
         assert_eq!(
-            reset_xsave, expected_xsave,
-            "xsave should be zeroed except for hypervisor-specific fields"
+            &reset_xsave[..valid_end],
+            &expected_xsave[..valid_end],
+            "xsave should be zeroed except for hypervisor-specific fields \
+             (comparing bytes 0..{valid_end} of {} total)",
+            reset_xsave.len()
         );
 
         // Verify sregs are reset to defaults (CR3 is 0 as passed to reset_vcpu)
