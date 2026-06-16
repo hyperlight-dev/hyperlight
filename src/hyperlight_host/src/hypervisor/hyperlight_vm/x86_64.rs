@@ -1465,7 +1465,6 @@ mod tests {
                     writable,
                     executable,
                 }),
-                user_accessible: false,
             };
             unsafe { vmem::map(&pt_buf, mapping) };
         }
@@ -1483,7 +1482,6 @@ mod tests {
                 writable: true,
                 executable: true, // Match regular codepath (map_specials)
             }),
-            user_accessible: false,
         };
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 

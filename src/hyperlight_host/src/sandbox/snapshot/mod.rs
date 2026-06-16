@@ -255,7 +255,6 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
             // it actually needs to execute from them
             executable: false,
         }),
-        user_accessible: false,
     };
     unsafe { vmem::map(pt_buf, mapping) };
 }
@@ -339,7 +338,6 @@ impl Snapshot {
                 virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
                 kind,
-                user_accessible: false,
             };
             unsafe { vmem::map(&pt_buf, mapping) };
         }
@@ -444,7 +442,6 @@ impl Snapshot {
                         virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
                         kind,
-                        user_accessible: mapping.user_accessible,
                     };
                     unsafe { vmem::map(&pt_buf, compacted) };
                 }
@@ -634,7 +631,6 @@ mod tests {
                 writable: true,
                 executable: true,
             }),
-            user_accessible: false,
         };
         unsafe { vmem::map(&pt_buf, mapping) };
         super::map_specials(&pt_buf, PAGE_SIZE);

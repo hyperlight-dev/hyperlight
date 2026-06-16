@@ -239,13 +239,6 @@ impl GuestPageTableBuffer {
             root: std::cell::Cell::new(phys_base as u64),
         }
     }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn size(&self) -> usize {
-        self.buffer.borrow().len()
-    }
-
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
         self.buffer.into_inner().into_boxed_slice()
     }

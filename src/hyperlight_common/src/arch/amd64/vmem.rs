@@ -416,7 +416,6 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
             virt_base: virt_addr,
             len: PAGE_SIZE as u64,
             kind,
-            user_accessible: false,
         })
     })
 }
@@ -598,7 +597,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -632,7 +630,6 @@ mod tests {
                 writable: false,
                 executable: true,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -656,7 +653,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -690,7 +686,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
         unsafe { map(&ops, mapping1) };
         let tables_after_first = ops.table_count();
@@ -705,7 +700,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
         unsafe { map(&ops, mapping2) };
 
@@ -731,7 +725,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -754,7 +747,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -777,7 +769,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -800,7 +791,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -822,7 +812,6 @@ mod tests {
                 virt_base: 0x1000,
                 len: PAGE_SIZE as u64,
                 kind,
-                user_accessible: false,
             };
             unsafe { map(&ops, mapping) };
             let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
@@ -880,7 +869,6 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
-            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };

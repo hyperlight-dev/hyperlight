@@ -403,11 +403,6 @@ pub struct Mapping {
     pub virt_base: u64,
     pub len: u64,
     pub kind: MappingKind,
-    /// On architectures that support multiple privilege levels inside
-    /// the guest, whether the mapping is accessible to the
-    /// lower-privileged level (with the same permissions/behaviour as
-    /// the upper-privileged level, for now).
-    pub user_accessible: bool,
 }
 
 /// Assumption: all are page-aligned
