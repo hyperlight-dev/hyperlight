@@ -79,10 +79,13 @@ pub struct HyperlightPEB {
     /// PEB struct).
     #[cfg(feature = "nanvix-unstable")]
     pub file_mappings: GuestMemoryRegion,
+    pub user_data: GuestMemoryRegion,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem::{offset_of, size_of};
+
     use super::*;
 
     #[test]
@@ -109,11 +112,29 @@ mod tests {
                 size: 0x9999,
                 ptr: 0xaaaa,
             },
+            user_data: GuestMemoryRegion {
+                size: 0xbbbb,
+                ptr: 0xcccc,
+            },
         };
         let bytes = bytemuck::bytes_of(&peb);
         let peb2 = *bytemuck::from_bytes::<HyperlightPEB>(bytes);
         let peb2_bytes = bytemuck::bytes_of(&peb2);
         assert_eq!(peb, peb2);
         assert_eq!(bytes, peb2_bytes);
+    }
+
+    #[test]
+    fn user_data_is_appended_to_peb() {
+        #[cfg(feature = "nanvix-unstable")]
+        assert_eq!(
+            offset_of!(HyperlightPEB, user_data),
+            size_of::<GuestMemoryRegion>() * 5
+        );
+        #[cfg(not(feature = "nanvix-unstable"))]
+        assert_eq!(
+            offset_of!(HyperlightPEB, user_data),
+            size_of::<GuestMemoryRegion>() * 4
+        );
     }
 }

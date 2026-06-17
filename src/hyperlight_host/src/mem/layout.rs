@@ -55,6 +55,8 @@ limitations under the License.
 //! +-------------------------------------------+ (1 page below)
 //! |              Scratch Memory               |
 //! +-------------------------------------------+
+//! |                User Data                  |
+//! +-------------------------------------------+
 //! |                Output Data                |
 //! +-------------------------------------------+
 //! |                Input Data                 |
@@ -221,6 +223,8 @@ pub(crate) struct SandboxMemoryLayout {
     pub(crate) input_data_size: usize,
     /// Output data buffer size (from SandboxConfiguration).
     pub(crate) output_data_size: usize,
+    /// User data buffer size (from SandboxConfiguration).
+    pub(crate) user_data_size: usize,
     /// The heap size of this sandbox.
     pub(crate) heap_size: usize,
     /// The size of the guest code section.
@@ -264,6 +268,10 @@ impl Debug for SandboxMemoryLayout {
         .field(
             "Output Data Size",
             &format_args!("{:#x}", self.output_data_size),
+        )
+        .field(
+            "User Data Size",
+            &format_args!("{:#x}", self.user_data_size),
         )
         .field("Scratch Size", &format_args!("{:#x}", self.scratch_size))
         .field("Snapshot Size", &format_args!("{:#x}", self.snapshot_size))
@@ -313,6 +321,7 @@ impl SandboxMemoryLayout {
         let Self {
             input_data_size,
             output_data_size,
+            user_data_size,
             heap_size,
             code_size,
             init_data_size,
@@ -323,6 +332,7 @@ impl SandboxMemoryLayout {
         } = self;
         *input_data_size == other.input_data_size
             && *output_data_size == other.output_data_size
+            && *user_data_size == other.user_data_size
             && *heap_size == other.heap_size
             && *code_size == other.code_size
             && *init_data_size == other.init_data_size
@@ -359,8 +369,12 @@ impl SandboxMemoryLayout {
         }
         let input_data_size = cfg.get_input_data_size();
         let output_data_size = cfg.get_output_data_size();
-        let min_scratch_size =
-            hyperlight_common::layout::min_scratch_size(input_data_size, output_data_size);
+        let user_data_size = cfg.get_user_data_size();
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            input_data_size,
+            output_data_size,
+            user_data_size,
+        );
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
@@ -368,6 +382,7 @@ impl SandboxMemoryLayout {
         let mut ret = Self {
             input_data_size,
             output_data_size,
+            user_data_size,
             heap_size,
             code_size,
             init_data_size,
@@ -440,6 +455,26 @@ impl SandboxMemoryLayout {
         self.input_data_size
     }
 
+    /// Get the guest virtual address of the start of user data.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_user_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+            + self.get_user_data_buffer_scratch_host_offset() as u64
+    }
+
+    /// Get the offset into the host scratch buffer of the start of
+    /// the user data.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_user_data_buffer_scratch_host_offset(&self) -> usize {
+        self.input_data_size + self.output_data_size
+    }
+
+    /// Get the size of the user data buffer.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn user_data_size(&self) -> usize {
+        self.user_data_size
+    }
+
     /// Get the guest virtual address of the start of input data
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_input_data_buffer_gva(&self) -> u64 {
@@ -457,7 +492,7 @@ impl SandboxMemoryLayout {
     /// location where page tables will be eagerly copied on restore
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.input_data_size + self.output_data_size)
+        (self.input_data_size + self.output_data_size + self.user_data_size)
             .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
     }
 
@@ -548,6 +583,7 @@ impl SandboxMemoryLayout {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.input_data_size,
             self.output_data_size,
+            self.user_data_size,
         );
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
@@ -696,6 +732,10 @@ impl SandboxMemoryLayout {
                 size: self.output_data_size as u64,
                 ptr: self.get_output_data_buffer_gva(),
             },
+            user_data: GuestMemoryRegion {
+                size: self.user_data_size() as u64,
+                ptr: self.get_user_data_buffer_gva(),
+            },
             init_data: GuestMemoryRegion {
                 size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
                 ptr: guest_base + self.init_data_offset() as u64,
@@ -818,6 +858,80 @@ mod tests {
     }
 
     #[test]
+    fn user_data_defaults_to_zero_without_moving_pt_base() {
+        let cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        assert_eq!(0, layout.user_data_size());
+        assert_eq!(
+            cfg.get_input_data_size() + cfg.get_output_data_size(),
+            layout.get_pt_base_scratch_offset()
+        );
+        assert_eq!(
+            cfg.get_input_data_size() + cfg.get_output_data_size(),
+            layout.get_user_data_buffer_scratch_host_offset()
+        );
+    }
+
+    #[test]
+    fn user_data_offset_gva_and_pt_base_follow_input_and_output() {
+        for user_data_size in [4097, 64 * 1024, 1024 * 1024] {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_user_data_size(user_data_size);
+            let min_scratch = hyperlight_common::layout::min_scratch_size(
+                cfg.get_input_data_size(),
+                cfg.get_output_data_size(),
+                cfg.get_user_data_size(),
+            );
+            cfg.set_scratch_size(min_scratch);
+
+            let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+            let expected_user_data_offset = cfg.get_input_data_size() + cfg.get_output_data_size();
+            assert_eq!(
+                expected_user_data_offset,
+                layout.get_user_data_buffer_scratch_host_offset()
+            );
+            assert_eq!(
+                hyperlight_common::layout::scratch_base_gva(layout.get_scratch_size())
+                    + expected_user_data_offset as u64,
+                layout.get_user_data_buffer_gva()
+            );
+            assert_eq!(
+                (expected_user_data_offset + cfg.get_user_data_size())
+                    .next_multiple_of(PAGE_SIZE_USIZE),
+                layout.get_pt_base_scratch_offset()
+            );
+        }
+    }
+
+    #[test]
+    fn user_data_size_participates_in_min_scratch_size() {
+        let mut cfg = SandboxConfiguration::default();
+        let min_without_user_data = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+            0,
+        );
+        cfg.set_user_data_size(4097);
+        cfg.set_scratch_size(min_without_user_data);
+
+        assert!(matches!(
+            SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap_err(),
+            MemoryRequestTooSmall(..)
+        ));
+    }
+
+    #[test]
+    fn large_user_data_requires_sufficient_scratch_size() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_user_data_size(1024 * 1024);
+
+        assert!(matches!(
+            SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap_err(),
+            MemoryRequestTooSmall(..)
+        ));
+    }
+
+    #[test]
     fn is_compatible_with_identical_layouts() {
         let cfg = SandboxConfiguration::default();
         let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
@@ -849,6 +963,7 @@ mod tests {
         let mutators: &[fn(&mut SandboxMemoryLayout)] = &[
             |l| l.input_data_size += PAGE_SIZE_USIZE,
             |l| l.output_data_size += PAGE_SIZE_USIZE,
+            |l| l.user_data_size += PAGE_SIZE_USIZE,
             |l| l.heap_size += PAGE_SIZE_USIZE,
             |l| l.code_size += PAGE_SIZE_USIZE,
             |l| l.init_data_size += PAGE_SIZE_USIZE,

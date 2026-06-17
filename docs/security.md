@@ -14,6 +14,8 @@ Hyperlight runs all guest code inside a Virtual Machine, Each VM only has access
 
 All communication between the host and the guest is done through a shared memory buffer. Messages are serialized and deserialized using [FlatBuffers](https://flatbuffers.dev/). To minimize attack surface area, we rely on FlatBuffers to formally specify the data structures passed to/from the host and guest, and to generate serialization/deserialization code. Of course, a compromised guest can write arbitrary data to the shared memory buffer, but the host will not accept anything that does not match our strongly typed FlatBuffer [schemas](../src/schema).
 
+The optional user data region is an explicit exception to the FlatBuffers-mediated call protocol. It exposes raw bytes in shared scratch memory so embedders can define their own payload format. Hosts must treat bytes read from user data as guest-controlled, validate any application-level format before use, and clear or restore the region between security boundaries when stale bytes would be sensitive.
+
 ### Accessing host functionality from the guest
 
 Hyperlight provides a mechanism for the host to register functions that may be called from the guest. This mechanism is useful to allow developers to provide guests with strictly controlled access to functionality we don't make available by default inside the VM. This mechanism likely represents the largest attack surface area of this project.

@@ -139,6 +139,65 @@ impl MultiUseSandbox {
         self.pt_root_finder = Some(finder);
     }
 
+    /// Return the configured size, in bytes, of this sandbox's user data region.
+    ///
+    /// The default is `0`, which means the region has no writable or readable
+    /// capacity. The user data region is transient scratch memory: it is not
+    /// captured in snapshots and is cleared by restore.
+    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+    pub fn user_data_size(&self) -> usize {
+        self.mem_mgr.user_data_size()
+    }
+
+    /// Copy `data` into the sandbox's user data region from the beginning of the
+    /// region.
+    ///
+    /// The full slice must fit within [`user_data_size`](Self::user_data_size);
+    /// oversized writes return an error before modifying the region. Guest code
+    /// can observe these bytes during a mutating call, but convenience call paths
+    /// that restore the sandbox before the host reads will clear the region.
+    /// Successful writes do not clear bytes after `data.len()`; callers that use
+    /// variable-length payloads should track their logical length or clear the
+    /// remaining region explicitly.
+    ///
+    /// This is distinct from init-data/user-memory helpers: user data lives in
+    /// transient scratch memory and is not part of snapshot state.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method returns [`crate::HyperlightError::PoisonedSandbox`] if the
+    /// sandbox is currently poisoned. Use [`restore`](Self::restore) to recover.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub fn write_user_data(&mut self, data: &[u8]) -> Result<()> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
+        self.mem_mgr.write_user_data(data)
+    }
+
+    /// Copy bytes from the sandbox's user data region into `out` from the
+    /// beginning of the region.
+    ///
+    /// The full output buffer must fit within
+    /// [`user_data_size`](Self::user_data_size). Reads larger than the configured
+    /// capacity return an error rather than exposing adjacent scratch memory.
+    /// Guest mutations are observable only until a restore clears scratch memory.
+    ///
+    /// This is distinct from init-data/user-memory helpers: user data lives in
+    /// transient scratch memory and is not part of snapshot state.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method returns [`crate::HyperlightError::PoisonedSandbox`] if the
+    /// sandbox is currently poisoned. Use [`restore`](Self::restore) to recover.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub fn read_user_data(&mut self, out: &mut [u8]) -> Result<()> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
+        self.mem_mgr.read_user_data(out)
+    }
+
     /// Create a `MultiUseSandbox` directly from a [`Snapshot`],
     /// bypassing [`UninitializedSandbox`](crate::UninitializedSandbox)
     /// and [`evolve()`](crate::UninitializedSandbox::evolve).
@@ -157,9 +216,10 @@ impl MultiUseSandbox {
     /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
     /// can be supplied to override runtime settings such as timeouts and
     /// interrupt behavior. Memory layout fields
-    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
-    /// are always taken from the snapshot. Any values supplied in
-    /// `config` for those fields are ignored.
+    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`) are
+    /// always taken from the snapshot. Any values supplied in `config` for those
+    /// fields are ignored. If `config` supplies a `user_data_size`, it must match
+    /// the snapshot layout.
     ///
     /// # Examples
     ///
@@ -212,10 +272,14 @@ impl MultiUseSandbox {
         let caller_supplied_config = config.is_some();
         let mut config = config.unwrap_or_default();
         if caller_supplied_config {
+            if config.get_user_data_size() != snapshot.layout().user_data_size {
+                return Err(HyperlightError::SnapshotLayoutMismatch);
+            }
             warn_on_layout_override(&config, snapshot.layout());
         }
         config.set_input_data_size(snapshot.layout().input_data_size);
         config.set_output_data_size(snapshot.layout().output_data_size);
+        config.set_user_data_size(snapshot.layout().user_data_size);
         config.set_heap_size(snapshot.layout().heap_size as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         let load_info = snapshot.load_info();
@@ -1120,6 +1184,11 @@ fn warn_on_layout_override(
             snapshot.output_data_size as u64,
         ),
         (
+            "user_data_size",
+            caller.get_user_data_size() as u64,
+            snapshot.user_data_size as u64,
+        ),
+        (
             "heap_size",
             caller.get_heap_size(),
             snapshot.heap_size as u64,
@@ -1155,6 +1224,36 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    fn user_data_test_config(user_data_size: usize) -> SandboxConfiguration {
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            SandboxConfiguration::DEFAULT_INPUT_SIZE,
+            SandboxConfiguration::DEFAULT_OUTPUT_SIZE,
+            user_data_size,
+        );
+        user_data_test_config_with_scratch_size(user_data_size, min_scratch_size + 0x20000)
+    }
+
+    fn user_data_test_config_with_scratch_size(
+        user_data_size: usize,
+        scratch_size: usize,
+    ) -> SandboxConfiguration {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_user_data_size(user_data_size);
+        cfg.set_scratch_size(scratch_size);
+        cfg
+    }
+
+    fn user_data_test_sandbox(user_data_size: usize) -> MultiUseSandbox {
+        let path = simple_guest_as_string().unwrap();
+        UninitializedSandbox::new(
+            GuestBinary::FilePath(path),
+            Some(user_data_test_config(user_data_size)),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap()
+    }
 
     #[test]
     fn poison() {
@@ -1343,6 +1442,7 @@ mod tests {
         let min_scratch = hyperlight_common::layout::min_scratch_size(
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
+            cfg.get_user_data_size(),
         );
         cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 
@@ -1773,6 +1873,119 @@ mod tests {
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 108);
         target.restore(good_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 8);
+    }
+
+    #[test]
+    fn restore_user_data_clears_region_and_leaves_sandbox_usable() {
+        const USER_DATA_SIZE: usize = 4097;
+        let mut sandbox = user_data_test_sandbox(USER_DATA_SIZE);
+        sandbox
+            .write_user_data(&vec![0xaa; USER_DATA_SIZE])
+            .unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+
+        sandbox
+            .write_user_data(&vec![0xbb; USER_DATA_SIZE])
+            .unwrap();
+        sandbox.restore(snapshot).unwrap();
+
+        let mut out = vec![0xff; USER_DATA_SIZE];
+        sandbox.read_user_data(&mut out).unwrap();
+        assert!(out.iter().all(|byte| *byte == 0));
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+    }
+
+    #[test]
+    fn restore_user_data_cleared_by_deprecated_restoring_call_path() {
+        const USER_DATA_SIZE: usize = 4097;
+        let mut sandbox = user_data_test_sandbox(USER_DATA_SIZE);
+        sandbox
+            .write_user_data(&vec![0xaa; USER_DATA_SIZE])
+            .unwrap();
+
+        #[allow(deprecated)]
+        let _: i32 = sandbox
+            .call_guest_function_by_name("GetStatic", ())
+            .unwrap();
+
+        let mut out = vec![0xff; USER_DATA_SIZE];
+        sandbox.read_user_data(&mut out).unwrap();
+        assert!(out.iter().all(|byte| *byte == 0));
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+    }
+
+    #[test]
+    fn restore_user_data_rejects_capacity_mismatch() {
+        let shared_scratch_size = hyperlight_common::layout::min_scratch_size(
+            SandboxConfiguration::DEFAULT_INPUT_SIZE,
+            SandboxConfiguration::DEFAULT_OUTPUT_SIZE,
+            64 * 1024,
+        ) + 0x20000;
+        let path = simple_guest_as_string().unwrap();
+        let mut source = UninitializedSandbox::new(
+            GuestBinary::FilePath(path),
+            Some(user_data_test_config_with_scratch_size(
+                4097,
+                shared_scratch_size,
+            )),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+        let path = simple_guest_as_string().unwrap();
+        let mut target = UninitializedSandbox::new(
+            GuestBinary::FilePath(path),
+            Some(user_data_test_config_with_scratch_size(
+                64 * 1024,
+                shared_scratch_size,
+            )),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let snapshot = source.snapshot().unwrap();
+        let err = target.restore(snapshot);
+        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 0);
+    }
+
+    #[test]
+    fn restore_user_data_from_snapshot_rejects_capacity_mismatch() {
+        let mut source = user_data_test_sandbox(4097);
+        let snapshot = source.snapshot().unwrap();
+        let err = MultiUseSandbox::from_snapshot(
+            snapshot,
+            crate::HostFunctions::default(),
+            Some(user_data_test_config(64 * 1024)),
+        );
+
+        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+    }
+
+    #[test]
+    fn restore_user_data_from_snapshot_starts_zeroed_and_guest_visible() {
+        const USER_DATA_SIZE: usize = 4097;
+        let mut source = user_data_test_sandbox(USER_DATA_SIZE);
+        source.write_user_data(&vec![0xaa; USER_DATA_SIZE]).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut sandbox =
+            MultiUseSandbox::from_snapshot(snapshot, crate::HostFunctions::default(), None)
+                .unwrap();
+
+        assert_eq!(USER_DATA_SIZE, sandbox.user_data_size());
+        let mut out = vec![0xff; USER_DATA_SIZE];
+        sandbox.read_user_data(&mut out).unwrap();
+        assert!(out.iter().all(|byte| *byte == 0));
+
+        let guest_size: u64 = sandbox.call("UserDataSize", ()).unwrap();
+        assert_eq!(USER_DATA_SIZE, guest_size as usize);
+        let guest_sees_zeroes: bool = sandbox
+            .call("VerifyUserDataZeros", USER_DATA_SIZE as u64)
+            .unwrap();
+        assert!(guest_sees_zeroes);
     }
 
     /// `snapshot.regions()` is empty post-compaction, so restore
