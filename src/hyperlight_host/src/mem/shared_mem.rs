@@ -22,6 +22,7 @@ use std::mem::{align_of, size_of};
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
+use bytemuck::Pod;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 #[cfg(target_os = "windows")]
@@ -386,25 +387,6 @@ impl Drop for Placeholder {
         }
     }
 }
-
-/// An unsafe marker trait for types for which all bit patterns are valid.
-/// This is required in order for it to be safe to read a value of a particular
-/// type out of the sandbox from the HostSharedMemory.
-///
-/// # Safety
-/// This must only be implemented for types for which all bit patterns
-/// are valid. It requires that any (non-undef/poison) value of the
-/// correct size can be transmuted to the type.
-pub unsafe trait AllValid {}
-unsafe impl AllValid for u8 {}
-unsafe impl AllValid for u16 {}
-unsafe impl AllValid for u32 {}
-unsafe impl AllValid for u64 {}
-unsafe impl AllValid for i8 {}
-unsafe impl AllValid for i16 {}
-unsafe impl AllValid for i32 {}
-unsafe impl AllValid for i64 {}
-unsafe impl AllValid for [u8; 16] {}
 
 /// A trait that abstracts over the particular kind of SharedMemory,
 /// used when invoking operations from Rust that absolutely must have
@@ -1162,37 +1144,20 @@ pub struct HostSharedMemory {
 unsafe impl Send for HostSharedMemory {}
 
 impl HostSharedMemory {
-    /// Read a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn read<T: AllValid>(&self, offset: usize) -> Result<T> {
+    /// Read a [`Pod`] value of type `T`, whose representation is the same
+    /// between the sandbox and the host.
+    pub fn read<T: Pod>(&self, offset: usize) -> Result<T> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let mut ret: core::mem::MaybeUninit<T> = core::mem::MaybeUninit::uninit();
-            {
-                let slice: &mut [u8] = core::slice::from_raw_parts_mut(
-                    ret.as_mut_ptr() as *mut u8,
-                    std::mem::size_of::<T>(),
-                );
-                self.copy_to_slice(slice, offset)?;
-            }
-            Ok(ret.assume_init())
-        }
+        let mut ret = T::zeroed();
+        self.copy_to_slice(bytemuck::bytes_of_mut(&mut ret), offset)?;
+        Ok(ret)
     }
 
-    /// Write a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn write<T: AllValid>(&self, offset: usize, data: T) -> Result<()> {
+    /// Write a [`Pod`] value of type `T`, whose representation is the same
+    /// between the sandbox and the host.
+    pub fn write<T: Pod>(&self, offset: usize, data: T) -> Result<()> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let slice: &[u8] = core::slice::from_raw_parts(
-                core::ptr::addr_of!(data) as *const u8,
-                std::mem::size_of::<T>(),
-            );
-            self.copy_from_slice(slice, offset)?;
-        }
-        Ok(())
+        self.copy_from_slice(bytemuck::bytes_of(&data), offset)
     }
 
     /// Copy the contents of the slice into the sandbox at the
