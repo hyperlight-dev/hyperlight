@@ -100,13 +100,7 @@ impl HyperlightVm {
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
-        #[cfg(not(feature = "i686-guest"))]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
-            _root_pt_addr,
-        ))
-        .map_err(VmError::Register)?;
-        #[cfg(feature = "i686-guest")]
-        vm.set_sregs(&CommonSpecialRegisters::standard_32bit_paging_defaults(
             _root_pt_addr,
         ))
         .map_err(VmError::Register)?;
@@ -877,7 +871,6 @@ pub(super) mod debug {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "i686-guest"))]
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1472,7 +1465,6 @@ mod tests {
                     writable,
                     executable,
                 }),
-                user_accessible: false,
             };
             unsafe { vmem::map(&pt_buf, mapping) };
         }
@@ -1490,7 +1482,6 @@ mod tests {
                 writable: true,
                 executable: true, // Match regular codepath (map_specials)
             }),
-            user_accessible: false,
         };
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 

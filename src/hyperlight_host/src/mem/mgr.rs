@@ -13,8 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
  */
-#[cfg(feature = "nanvix-unstable")]
-use std::mem::offset_of;
 
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
@@ -24,7 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
-#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
+#[cfg(crashdump)]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
@@ -39,7 +37,7 @@ use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegion
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
-#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
+#[cfg(crashdump)]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
     match kind {
         MappingKind::Basic(BasicMapping {
@@ -77,7 +75,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
 /// in both guest and host address space and has the same flags.
 ///
 /// Returns `true` if the region was coalesced, `false` if a new region is needed.
-#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
+#[cfg(crashdump)]
 fn try_coalesce_region(
     regions: &mut [CrashDumpRegion],
     virt_base: usize,
@@ -101,10 +99,9 @@ fn try_coalesce_region(
 // `SnapshotSharedMemory<S: SharedMemory>` that abstracts over the
 // fact that the snapshot shared memory is `ReadonlySharedMemory`
 // normally, but there is (temporary) support for writable
-// `GuestSharedMemory` with `#[cfg(feature =
-// "i686-guest")]`. Unfortunately, rustc gets annoyed about an
-// unused type parameter, unless one goes to a little bit of effort to
-// trick it...
+// `GuestSharedMemory` with `#[cfg(gdb)]`. Unfortunately, rustc gets
+// annoyed about an unused type parameter, unless one goes to a little
+// bit of effort to trick it...
 mod unused_hack {
     #[cfg(not(unshared_snapshot_mem))]
     use crate::mem::shared_mem::ReadonlySharedMemory;
@@ -161,11 +158,6 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
-    /// Absolute GPA of the currently-active root table. For
-    /// multi-root guests, `set_root` switches which root subsequent
-    /// `vmem::map` / `vmem::space_aware_map` calls target — typically
-    /// to an address previously returned by `alloc_table`.
-    root: std::cell::Cell<u64>,
 }
 
 impl vmem::TableReadOps for GuestPageTableBuffer {
@@ -199,7 +191,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
     }
 
     fn root_table(&self) -> u64 {
-        self.root.get()
+        self.phys_base as u64
     }
 }
 
@@ -236,33 +228,13 @@ impl core::convert::AsRef<GuestPageTableBuffer> for GuestPageTableBuffer {
 
 impl GuestPageTableBuffer {
     /// Create a new buffer with an initial zeroed root table at
-    /// `phys_base`. The returned buffer's current root is `phys_base`;
-    /// additional roots can be obtained by calling `alloc_table`.
+    /// `phys_base`.
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
-            root: std::cell::Cell::new(phys_base as u64),
         }
     }
-
-    /// Switch the active root. `addr` must have been obtained either
-    /// as the initial root GPA (`phys_base`) or via `alloc_table`.
-    pub(crate) fn set_root(&self, addr: u64) {
-        self.root.set(addr);
-    }
-
-    /// GPA of the initial root allocated by `new`.
-    pub(crate) fn initial_root(&self) -> u64 {
-        self.phys_base as u64
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn size(&self) -> usize {
-        self.buffer.borrow().len()
-    }
-
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
         self.buffer.into_inner().into_boxed_slice()
     }
@@ -300,7 +272,7 @@ where
     pub(crate) fn snapshot(
         &mut self,
         mapped_regions: Vec<MemoryRegion>,
-        root_pt_gpas: &[u64],
+        root_pt_gpa: u64,
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
@@ -313,7 +285,7 @@ where
             self.layout,
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
-            root_pt_gpas,
+            root_pt_gpa,
             rsp_gva,
             sregs,
             entrypoint,
@@ -378,67 +350,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Write a [`FileMappingInfo`] entry into the PEB's preallocated array.
-    ///
-    /// Reads the current entry count from the PEB, validates that the
-    /// array isn't full ([`MAX_FILE_MAPPINGS`]), writes the entry at the
-    /// next available slot, and increments the count.
-    ///
-    /// This is the **only** place that writes to the PEB file mappings
-    /// array — both `MultiUseSandbox::map_file_cow` and the evolve loop
-    /// call through here so the logic is not duplicated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if [`MAX_FILE_MAPPINGS`] has been reached.
-    ///
-    /// [`FileMappingInfo`]: hyperlight_common::mem::FileMappingInfo
-    /// [`MAX_FILE_MAPPINGS`]: hyperlight_common::mem::MAX_FILE_MAPPINGS
-    #[cfg(feature = "nanvix-unstable")]
-    pub(crate) fn write_file_mapping_entry(
-        &mut self,
-        guest_addr: u64,
-        size: u64,
-        label: &[u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1],
-    ) -> Result<()> {
-        use hyperlight_common::mem::{FileMappingInfo, MAX_FILE_MAPPINGS};
-
-        // Read the current entry count from the PEB. This is the source
-        // of truth — it survives snapshot/restore because the PEB is
-        // part of shared memory that gets snapshotted.
-        let current_count =
-            self.shared_mem
-                .read::<u64>(self.layout.get_file_mappings_size_offset())? as usize;
-
-        if current_count >= MAX_FILE_MAPPINGS {
-            return Err(crate::new_error!(
-                "file mapping limit reached ({} of {})",
-                current_count,
-                MAX_FILE_MAPPINGS,
-            ));
-        }
-
-        // Write the entry into the next available slot.
-        let entry_offset = self.layout.get_file_mappings_array_offset()
-            + current_count * std::mem::size_of::<FileMappingInfo>();
-        let guest_addr_offset = offset_of!(FileMappingInfo, guest_addr);
-        let size_offset = offset_of!(FileMappingInfo, size);
-        let label_offset = offset_of!(FileMappingInfo, label);
-        self.shared_mem
-            .write::<u64>(entry_offset + guest_addr_offset, guest_addr)?;
-        self.shared_mem
-            .write::<u64>(entry_offset + size_offset, size)?;
-        self.shared_mem
-            .copy_from_slice(label, entry_offset + label_offset)?;
-
-        // Increment the entry count.
-        let new_count = (current_count + 1) as u64;
-        self.shared_mem
-            .write::<u64>(self.layout.get_file_mappings_size_offset(), new_count)?;
-
-        Ok(())
-    }
-
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -645,7 +556,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ///
     /// By default, walks the guest page tables to discover
     /// GVA→GPA mappings and translates them to host-backed regions.
-    #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
+    #[cfg(crashdump)]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         root_pt: u64,
@@ -698,56 +609,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 Ok(regions)
             })
         })???;
-
-        Ok(regions)
-    }
-
-    /// Build the list of guest memory regions for a crash dump (non-paging).
-    ///
-    /// Without paging, GVA == GPA (identity mapped), so we return the
-    /// snapshot and scratch regions directly at their known addresses
-    /// alongside any dynamic mmap regions.
-    #[cfg(all(feature = "crashdump", feature = "i686-guest"))]
-    pub(crate) fn get_guest_memory_regions(
-        &mut self,
-        _root_pt: u64,
-        mmap_regions: &[MemoryRegion],
-    ) -> Result<Vec<CrashDumpRegion>> {
-        use crate::mem::memory_region::HostGuestMemoryRegion;
-
-        let snapshot_base = SandboxMemoryLayout::BASE_ADDRESS;
-        let snapshot_size = self.layout.snapshot_size;
-        let snapshot_host = self.shared_mem.base_addr();
-
-        let scratch_size = self.scratch_mem.mem_size();
-        let scratch_gva = hyperlight_common::layout::scratch_base_gva(scratch_size) as usize;
-        let scratch_host = self.scratch_mem.base_addr();
-
-        let mut regions = vec![
-            CrashDumpRegion {
-                guest_region: snapshot_base..snapshot_base + snapshot_size,
-                host_region: snapshot_host..snapshot_host + snapshot_size,
-                flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
-                region_type: MemoryRegionType::Snapshot,
-            },
-            CrashDumpRegion {
-                guest_region: scratch_gva..scratch_gva + scratch_size,
-                host_region: scratch_host..scratch_host + scratch_size,
-                flags: MemoryRegionFlags::READ
-                    | MemoryRegionFlags::WRITE
-                    | MemoryRegionFlags::EXECUTE,
-                region_type: MemoryRegionType::Scratch,
-            },
-        ];
-        for rgn in mmap_regions {
-            regions.push(CrashDumpRegion {
-                guest_region: rgn.guest_region.clone(),
-                host_region: HostGuestMemoryRegion::to_addr(rgn.host_region.start)
-                    ..HostGuestMemoryRegion::to_addr(rgn.host_region.end),
-                flags: rgn.flags,
-                region_type: rgn.region_type,
-            });
-        }
 
         Ok(regions)
     }
@@ -862,7 +723,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-#[cfg(all(not(feature = "i686-guest"), target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;

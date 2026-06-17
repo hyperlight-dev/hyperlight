@@ -46,7 +46,7 @@ fn run_once(test_file: &Path, label: &str) -> hyperlight_host::Result<()> {
     )?;
     eprintln!("[{label}] UninitializedSandbox::new OK");
 
-    usbox.map_file_cow(test_file, 0xC000_0000, Some(label))?;
+    usbox.map_file_cow(test_file, 0xC000_0000)?;
     eprintln!(
         "[{label}] map_file_cow OK ({} bytes)",
         std::fs::metadata(test_file)?.len()

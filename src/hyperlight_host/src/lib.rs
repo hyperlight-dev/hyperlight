@@ -96,9 +96,6 @@ pub use sandbox::UninitializedSandbox;
 pub use sandbox::host_funcs::HostFunctions;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
-/// The re-export for the `GuestCounter` type
-#[cfg(feature = "guest-counter")]
-pub use sandbox::uninitialized::GuestCounter;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;

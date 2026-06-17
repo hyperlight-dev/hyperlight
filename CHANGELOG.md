@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Changed
+* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)`.
+
+### Removed
+* Removed the experimental `i686-guest`, `nanvix-unstable`, and `guest-counter` feature flags, along with 32-bit (i686) guest support and its page-table/snapshot code paths. Hyperlight guests are now 64-bit only (x86_64 and aarch64).
+
 ## [v0.15.0] - 2026-05-06
 
 ### Added

@@ -14,26 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-#[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
-#[cfg_attr(
-    all(target_arch = "x86_64", not(feature = "i686-guest")),
-    path = "arch/amd64/vmem.rs"
-)]
-#[cfg_attr(
-    all(target_arch = "x86_64", feature = "i686-guest"),
-    path = "arch/i686/vmem.rs"
-)]
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
-
-#[cfg(all(
-    feature = "i686-guest",
-    not(any(target_arch = "x86", target_arch = "x86_64"))
-))]
-compile_error!(
-    "the `i686-guest` feature is only supported on `target_arch = \"x86\"` (guest) or \
-     `target_arch = \"x86_64\"` (host) targets"
-);
 
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
@@ -145,10 +128,6 @@ pub(in crate::vmem) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
 /// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
 /// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
 /// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
-///
-/// On i686:
-/// - PD:   HIGH_BIT=31, LOW_BIT=22 (10 bits = 1024 entries, each covering 4MB)
-/// - PT:   HIGH_BIT=21, LOW_BIT=12 (10 bits = 1024 entries, each covering 4KB)
 pub(in crate::vmem) struct ModifyPteIterator<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
@@ -424,11 +403,6 @@ pub struct Mapping {
     pub virt_base: u64,
     pub len: u64,
     pub kind: MappingKind,
-    /// On architectures that support multiple privilege levels inside
-    /// the guest, whether the mapping is accessible to the
-    /// lower-privileged level (with the same permissions/behaviour as
-    /// the upper-privileged level, for now).
-    pub user_accessible: bool,
 }
 
 /// Assumption: all are page-aligned
@@ -452,94 +426,3 @@ pub use arch::map;
 /// be called concurrently with any other operations that modify the
 /// page table.
 pub use arch::virt_to_phys;
-
-//==================================================================================================
-// Multi-space (aliased page-table) walking
-//==================================================================================================
-
-/// Identifier for a virtual address space, used by the multi-space
-/// walker to describe which space "owns" a shared intermediate table.
-/// Implementations typically use the physical address of the root
-/// page table (which is unique per space).
-pub type SpaceId = u64;
-
-/// A reference from one address space to an intermediate page table
-/// that lives in a different space. Produced by [`walk_va_spaces`] when
-/// the walker encounters an intermediate table (at some `depth` below
-/// the root) whose physical address was already seen via an earlier
-/// root — i.e. the two spaces alias that sub-tree.
-///
-/// Semantics: the level-`depth` block in **our** space that contains
-/// VAs starting at `our_va` is aliased to the level-`depth` block in
-/// `space` that contains VAs starting at `their_va`. Everything below
-/// that sub-tree — PDEs, PTEs, leaf mappings — is shared wholesale.
-///
-/// `depth` is counted from the root:
-/// - `depth = 1` on i686: the shared thing is a leaf PT (the thing a
-///   PDE points to).
-/// - `depth = 1, 2, 3` on amd64: PDPT, PD, or PT respectively.
-#[derive(Debug, Clone, Copy)]
-pub struct SpaceReferenceMapping {
-    /// Depth from the root at which the alias starts (1-based).
-    pub depth: usize,
-    /// The "owning" space — the first root that visited this
-    /// intermediate PA during [`walk_va_spaces`].
-    pub space: SpaceId,
-    /// Start VA of the aliased sub-tree in OUR space.
-    pub our_va: u64,
-    /// Start VA of the aliased sub-tree in the owning space. Usually
-    /// equal to `our_va` (kernel mappings at the same VA across
-    /// processes) but the design permits different VAs.
-    pub their_va: u64,
-}
-
-/// Either a normal leaf mapping in the current space, or a reference
-/// to an intermediate table in another space. The compaction loop in
-/// the host snapshotting code treats these two cases differently:
-///
-/// - `ThisSpace(m)` is rebuilt like any other leaf mapping: the
-///   backing page is compacted into the new snapshot blob, the PTE is
-///   written, and intermediate tables are allocated on demand.
-/// - `AnotherSpace(r)` is rebuilt by *linking*: the entry in our
-///   rebuilt root at depth `r.depth - 1` for `r.our_va` is made to
-///   point at whatever table the owning space ended up with at
-///   `r.their_va`. See [`space_aware_map`].
-#[derive(Debug)]
-pub enum SpaceAwareMapping {
-    ThisSpace(Mapping),
-    AnotherSpace(SpaceReferenceMapping),
-}
-
-/// Counterpart of [`walk_va_spaces`]'s `AnotherSpace` entries on the
-/// write side: installs a link in `op`'s root PT tree at `ref_map.our_va`
-/// that points at whatever intermediate table the owning space ended
-/// up with at `ref_map.their_va` (in `built_roots[ref_map.space]`).
-///
-/// Callers must ensure that `built_roots` contains populated page
-/// tables for any other space referenced by the mapping.
-///
-/// # Safety
-/// Same invariants as [`map`]: the caller owns the concurrency story
-/// around the page tables being written, and must invalidate TLBs
-/// afterwards if they were live.
-pub use arch::space_aware_map;
-/// Walk multiple page-table roots together, emitting either a normal
-/// leaf mapping (`ThisSpace`) or a reference to an alias that was
-/// already seen via an earlier root (`AnotherSpace`).
-///
-/// The caller passes `roots` in their preferred order of primacy. The
-/// first root to visit a particular intermediate PA becomes the
-/// "owner" of that sub-table — subsequent roots that alias it receive
-/// `AnotherSpace` entries referencing the owner.
-///
-/// The returned `Vec` is ordered the same way `roots` was passed — so
-/// by construction the result is topologically sorted: every
-/// `AnotherSpace` reference points to a space that appears earlier in
-/// the list. This lets a rebuilder process roots in iteration order
-/// without a separate sort pass, and guarantees that the
-/// [`space_aware_map`] invariant is met.
-///
-/// # Safety
-/// Same invariants as [`virt_to_phys`]. Callers must ensure the page
-/// tables are not being mutated concurrently.
-pub use arch::walk_va_spaces;
