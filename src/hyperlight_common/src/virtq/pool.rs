@@ -102,7 +102,7 @@ impl<const N: usize> Slab<N> {
         let used_slots = FixedBitSet::with_capacity(num_slots);
         let run_starts = FixedBitSet::with_capacity(num_slots);
 
-        if base_addr % (N as u64) != 0 {
+        if !base_addr.is_multiple_of(N as u64) {
             return Err(AllocError::InvalidAlign(base_addr));
         }
         if num_slots == 0 {
@@ -133,7 +133,7 @@ impl<const N: usize> Slab<N> {
         }
 
         let off = (addr - self.base_addr) as usize;
-        if off % N != 0 {
+        if !off.is_multiple_of(N) {
             return Err(AllocError::InvalidFree(addr, len));
         }
 
@@ -505,7 +505,7 @@ impl RecycleList {
         }
 
         let off = addr - self.base_addr;
-        if off % self.slot_size as u64 != 0 {
+        if !off.is_multiple_of(self.slot_size as u64) {
             return Err(AllocError::InvalidFree(addr, 0));
         }
 
