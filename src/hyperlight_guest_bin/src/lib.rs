@@ -304,7 +304,7 @@ pub(crate) extern "C" fn generic_init(
         hyperlight_guest_tracing::flush();
     }
 
-    dispatch_function as usize as u64
+    dispatch_function as *const () as usize as u64
 }
 
 #[cfg(feature = "macros")]

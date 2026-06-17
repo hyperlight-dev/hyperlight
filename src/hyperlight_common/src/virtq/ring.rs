@@ -416,7 +416,7 @@ impl RingCursor {
         let new = self.head + n;
         let wraps = new / self.size;
         self.head = new % self.size;
-        if wraps % 2 != 0 {
+        if !wraps.is_multiple_of(2) {
             self.wrap = !self.wrap;
         }
     }

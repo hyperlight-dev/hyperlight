@@ -6,6 +6,9 @@ set dotenv-load := true
 set-env-command := if os() == "windows" { "$env:" } else { "export " }
 bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
 nightly-toolchain := "nightly-2026-02-27"
+# Pinned cargo-hyperlight version used to build the guest sysroot. Keep this in
+# lockstep with the version pinned in flake.nix.
+cargo-hyperlight-version := "0.1.11"
 
 ################
 ### cross-rs ###
@@ -47,8 +50,14 @@ build target=default-target:
 # build testing guest binaries
 guests: build-and-move-rust-guests build-and-move-c-guests
 
+# Ensure the pinned cargo-hyperlight is installed. We compare the *actual*
+# installed binary's reported version instead of relying on `cargo install`
+# alone: on persistent/self-hosted CI runners a stale binary can survive while
+# cargo's metadata still claims the pinned version is present, silently skipping
+# the upgrade (this is how the broken 0.1.5 `--build-plan` binary kept running).
+# When the version doesn't match we force a reinstall to the pinned version.
 ensure-cargo-hyperlight:
-    cargo install --locked cargo-hyperlight
+    {{ if os() == "windows" { "if (-not ((cargo hyperlight --version 2>$null) -like '*" + cargo-hyperlight-version + "*')) { cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight }" } else { "cargo hyperlight --version 2>/dev/null | grep -qF '" + cargo-hyperlight-version + "' || cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight" } }}
 
 witguest-wit:
     cargo install --locked wasm-tools
