@@ -158,9 +158,6 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
-    /// Absolute GPA of the root table used while rebuilding snapshot
-    /// mappings.
-    root: std::cell::Cell<u64>,
 }
 
 impl vmem::TableReadOps for GuestPageTableBuffer {
@@ -194,7 +191,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
     }
 
     fn root_table(&self) -> u64 {
-        self.root.get()
+        self.phys_base as u64
     }
 }
 
@@ -236,7 +233,6 @@ impl GuestPageTableBuffer {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
-            root: std::cell::Cell::new(phys_base as u64),
         }
     }
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
