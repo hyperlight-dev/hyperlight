@@ -17,6 +17,7 @@ limitations under the License.
 #[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 
+use goblin::elf::header::ET_DYN;
 #[cfg(target_arch = "aarch64")]
 use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
@@ -45,6 +46,8 @@ pub(crate) struct ElfInfo {
     shdrs: Vec<ResolvedSectionHeader>,
     entry: u64,
     relocs: Vec<Reloc>,
+    /// Whether this is a position-independent executable (ET_DYN).
+    is_pie: bool,
     /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     guest_bin_version: Option<String>,
@@ -146,6 +149,7 @@ impl ElfInfo {
                 .collect(),
             entry: elf.entry,
             relocs,
+            is_pie: elf.header.e_type == ET_DYN,
             guest_bin_version,
         })
     }
@@ -169,6 +173,11 @@ impl ElfInfo {
 
     pub(crate) fn entrypoint_va(&self) -> u64 {
         self.entry
+    }
+
+    /// Returns whether this is a position-independent executable (ET_DYN).
+    pub(crate) fn is_pie(&self) -> bool {
+        self.is_pie
     }
 
     /// Returns the hyperlight version string embedded in the guest binary, if

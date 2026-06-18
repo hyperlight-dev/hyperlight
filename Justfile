@@ -73,7 +73,7 @@ build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build
 # Uses cargo hyperlight with non-PIE link flags and a separate target-dir
 # to avoid clobbering the normal PIE guest artifacts.
 build-rust-guests-non-pie target=default-target: (ensure-cargo-hyperlight)
-    {{ if os() == "windows" { "$env:RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x200000';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x200000'" } }} cargo hyperlight build --target-dir ../target-non-pie --profile={{ if target == "debug" { "dev" } else { target } }}
+    {{ if os() == "windows" { "$env:RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTFLAGS='-C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000'" } }} cargo hyperlight build --target-dir ../target-non-pie --profile={{ if target == "debug" { "dev" } else { target } }}
 
 non_pie_guests_target := "src/tests/rust_guests/target-non-pie/x86_64-hyperlight-none"
 

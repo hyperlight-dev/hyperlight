@@ -88,6 +88,12 @@ impl ExeInfo {
             ExeInfo::Elf(elf) => Offset::from(elf.entrypoint_va()),
         }
     }
+    /// Returns whether this is a position-independent executable (ET_DYN).
+    pub fn is_pie(&self) -> bool {
+        match self {
+            ExeInfo::Elf(elf) => elf.is_pie(),
+        }
+    }
     /// Returns the base virtual address of the loaded binary (lowest PT_LOAD p_vaddr).
     pub fn base_va(&self) -> u64 {
         match self {
