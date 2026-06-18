@@ -109,8 +109,10 @@ The guest advances it atomically.
 ## The guest exception stack
 
 Similarly, the guest needs a stack that is always writable, in order
-to be able to take exceptions to it. The exception stack begins below
-the metadata at the top of the scratch region and grows downward.
+to be able to take exceptions to it. The exception stack occupies two
+dedicated pages within the reserved region at the top of the scratch
+region — directly below the metadata page and the paravirtualized clock
+page — and grows downward from there.
 
 ## Taking a snapshot
 

@@ -31,14 +31,16 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
             x = inout(reg) x
         );
     }
-    // Set aside three pages at the top of the scratch region:
-    //  - top page: size/allocator/snapshot-PT/exn-stack bookkeeping
-    //  - next page down: the reserved guest-counter / shared-state page
-    //  - third page down: the paravirtualized guest clock page
+    // Set aside the reserved region at the top of the scratch region
+    // (`SCRATCH_TOP_RESERVED_SIZE`), from the top down:
+    //  - metadata page: size/allocator/snapshot-PT/clock bookkeeping
+    //  - clock page: the paravirtualized guest clock page
+    //  - two pages for the exception (IST1) stack
     // The clock page is always reserved even when the host is built
     // without the `enable_guest_clock` feature, so that the physical
     // allocator's footprint is independent of host-side features.
-    let max_avail = hyperlight_common::layout::MAX_GPA - hyperlight_common::vmem::PAGE_SIZE * 3;
+    let max_avail = hyperlight_common::layout::MAX_GPA
+        - hyperlight_common::layout::SCRATCH_TOP_RESERVED_SIZE as usize;
     if x.checked_add(nbytes)
         .is_none_or(|xx| xx >= max_avail as u64)
     {

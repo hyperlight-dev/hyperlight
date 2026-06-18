@@ -108,20 +108,21 @@ It is also a good stopgap for many other things that expect `gettimeofday` /
 
 ## Layout details
 
-The clock page sits 3 pages below the very top of the scratch region:
+The clock page is the second page from the very top of the scratch region.
+The top of scratch holds a fixed four-page reserved region:
 
 | Offset from top | Size  | Contents                                       |
 |-----------------|-------|------------------------------------------------|
-| `-0x1000`       | 4 KiB | Bookkeeping (size, allocator counter, ...)     |
-| `-0x2000`       | 4 KiB | Reserved for shared-state counter              |
-| `-0x3000`       | 4 KiB | Paravirtualized clock page                     |
+| `-0x1000`       | 4 KiB | Metadata / bookkeeping (size, allocator, ...)  |
+| `-0x2000`       | 4 KiB | Paravirtualized clock page                     |
+| `-0x4000`       | 8 KiB | Exception (IST1) stack (2 pages)               |
 
-Because the clock page is at the top of scratch, both the guest's main stack
-and its IST1 (exception) stack are configured to start one page below the
-clock page (at `MAX_GVA + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET`) so stack writes
-— including page-fault handlers running on IST1 — cannot clobber the trailer.
-The allocator reserves the top three pages unconditionally so the memory map
-stays identical whether or not the feature is enabled.
+The guest's IST1 (exception) stack starts at the clock-page base
+(`MAX_GVA + 1 - SCRATCH_TOP_EXN_STACK_OFFSET`) and grows downward through its
+two dedicated pages, so stack writes — including page-fault handlers running
+on IST1 — cannot clobber the clock page or the metadata page above. The
+allocator reserves the whole four-page region unconditionally so the memory
+map stays identical whether or not the feature is enabled.
 
 ## Non-goals
 

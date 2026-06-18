@@ -26,7 +26,7 @@ limitations under the License.
 //! The clock page (4 KiB) is 100% hypervisor-owned:
 //!
 //! ```text
-//! clock page (offset -0x3000 from scratch top):
+//! clock page (offset -0x2000 from scratch top):
 //!   0x0000 ..        : hypervisor calibration data
 //!                       - KVM:     KvmPvclockVcpuTimeInfo (32 bytes)
 //!                       - Hyper-V: HvReferenceTscPage     (4096 bytes)

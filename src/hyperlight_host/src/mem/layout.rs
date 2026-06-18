@@ -51,8 +51,12 @@ limitations under the License.
 //! privileges the statically allocated input and output data regions:
 //!
 //! +-------------------------------------------+ (top of physical memory)
-//! |         Exception Stack, Metadata         |
+//! |        Metadata / Bookkeeping page        |
 //! +-------------------------------------------+ (1 page below)
+//! |                Clock page                 |
+//! +-------------------------------------------+ (2 pages below)
+//! |          Exception Stack (2 pages)        |
+//! +-------------------------------------------+ (4 pages below)
 //! |              Scratch Memory               |
 //! +-------------------------------------------+
 //! |                Output Data                |
@@ -380,13 +384,11 @@ impl SandboxMemoryLayout {
         }
         let input_data_size = cfg.get_input_data_size();
         let output_data_size = cfg.get_output_data_size();
+        // `min_scratch_size` already accounts for the reserved region at the
+        // top of scratch (metadata + clock + exception stack), so it is the
+        // complete minimum on its own.
         let min_scratch_size =
             hyperlight_common::layout::min_scratch_size(input_data_size, output_data_size);
-        // The guest allocator unconditionally reserves the clock page at
-        // the top of scratch (so its footprint is feature-independent),
-        // so the host minimum must always account for it.
-        let min_scratch_size =
-            min_scratch_size + hyperlight_common::layout::CLOCK_PAGE_SIZE as usize;
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
@@ -534,13 +536,12 @@ impl SandboxMemoryLayout {
     /// independent field and must be set separately.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
+        // `min_scratch_size` already accounts for the reserved region at the
+        // top of scratch; the page-table tail is the only thing on top of it.
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.input_data_size,
             self.output_data_size,
         );
-        // Must match the unconditional clock page reservation in the guest allocator.
-        let min_fixed_scratch =
-            min_fixed_scratch + hyperlight_common::layout::CLOCK_PAGE_SIZE as usize;
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));

@@ -54,32 +54,59 @@ pub const SCRATCH_TOP_BOOT_TIME_NS_OFFSET: u64 = 0x30;
 // little-endian, host-written and guest-read, and are excluded from
 // snapshots because they live in scratch memory.
 
-/// Offset from the top of scratch memory for the start of the paravirtualized
-/// clock page.
+/// Offset from the top of scratch memory to the clock page's **high edge**
+/// (its top, exclusive).
 ///
-/// The clock page is a single 4 KiB page occupying the scratch offsets
-/// `[0x3000, 0x2000)` from the top — i.e. one page lower than the
-/// guest-counter page, to avoid the i686 frame-number issue that forces the
-/// counter off the very last page (see [`SCRATCH_TOP_GUEST_COUNTER_OFFSET`]).
+/// The reserved region at the very top of scratch is, from the top down:
 ///
-/// The constant is the *high* (exclusive) offset; the page base is one page
-/// below, at `top - SCRATCH_TOP_CLOCK_PAGE_OFFSET` + 1 byte — in other words,
-/// subtract this value from `MAX_GPA`/`MAX_GVA` + 1 to get the page base.
+/// ```text
+///   [MAX_GPA + 1 - 0x1000, MAX_GPA + 1)            metadata / bookkeeping page
+///   [MAX_GPA + 1 - 0x2000, MAX_GPA + 1 - 0x1000)   clock page
+///   [MAX_GPA + 1 - 0x4000, MAX_GPA + 1 - 0x2000)   exception (IST1) stack (2 pages)
+/// ```
+///
+/// The clock page is therefore the **second page from the top**, one 4 KiB
+/// page below the metadata page, so this offset to its high edge is exactly
+/// one page. The clock page *base* is one page lower again — see
+/// [`SCRATCH_TOP_EXN_STACK_OFFSET`] and [`clock_page_gpa`].
+///
+/// Keeping the clock page on its own page — separate from the bookkeeping
+/// fields above it — guarantees the hypervisor, which owns the whole page
+/// (KVM pvclock or Hyper-V Reference TSC), cannot clobber Hyperlight's
+/// `clock_type` / `boot_time_ns` metadata even if a future TLFS extension
+/// grows the reserved region.
 ///
 /// The page is always reserved regardless of the `enable_guest_clock`
 /// feature so that the memory layout (and therefore stack positions)
 /// is stable across feature-flag builds. The host only populates it
 /// when the feature is enabled; otherwise it stays zero-filled and
 /// the guest sees `ClockType::None`.
-pub const SCRATCH_TOP_CLOCK_PAGE_OFFSET: u64 = 0x3000;
+pub const SCRATCH_TOP_CLOCK_PAGE_OFFSET: u64 = crate::mem::PAGE_SIZE;
 
-/// Size of the paravirtualized clock page in bytes (one 4 KiB page).
-/// The entire page is owned by the hypervisor (KVM pvclock or Hyper-V
-/// Reference TSC). Hyperlight's own metadata (`clock_type`,
-/// `boot_time_ns`) lives in the bookkeeping page at offsets
-/// `SCRATCH_TOP_CLOCK_TYPE_OFFSET` / `SCRATCH_TOP_BOOT_TIME_NS_OFFSET`,
-/// NOT in the clock page, so a future TLFS extension cannot clobber it.
-pub const CLOCK_PAGE_SIZE: u64 = 0x1000;
+/// Offset from the top of scratch to the top of the exception (IST1) stack,
+/// which is also the **base** of the clock page (the boundary between the
+/// clock page and the exception stack below it).
+///
+/// Derived as one page below [`SCRATCH_TOP_CLOCK_PAGE_OFFSET`] so it can
+/// never drift from the clock page above it. The exception stack grows
+/// *downward* from here for `EXN_STACK_PAGES` pages; placing its top here
+/// means neither it nor any page-fault / COW handler running on it can
+/// clobber the clock page or the metadata page above.
+pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = SCRATCH_TOP_CLOCK_PAGE_OFFSET + crate::mem::PAGE_SIZE;
+
+/// Number of 4 KiB pages reserved for the IST1 exception stack at the top
+/// of scratch.
+const EXN_STACK_PAGES: u64 = 2;
+
+/// Total size of the reserved region at the very top of scratch: the
+/// metadata page, the clock page, and the `EXN_STACK_PAGES`-page exception
+/// stack. Everything below this is general scratch (heap, I/O buffers, …).
+///
+/// Both the guest physical allocator and the host minimum-size check use
+/// this single value, so the reservation and the size requirement can never
+/// disagree.
+pub const SCRATCH_TOP_RESERVED_SIZE: u64 =
+    SCRATCH_TOP_EXN_STACK_OFFSET + EXN_STACK_PAGES * crate::mem::PAGE_SIZE;
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (MAX_GPA - size + 1) as u64
@@ -91,13 +118,15 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 /// Guest physical address of the base of the paravirtualized clock page.
 ///
 /// The clock page sits at a fixed offset from the top of the guest physical
-/// address space, independent of `scratch_size`: it is always
-/// `MAX_GPA + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET`.
+/// address space, independent of `scratch_size`: its base is always
+/// `MAX_GPA + 1 - SCRATCH_TOP_EXN_STACK_OFFSET` (the clock page is the second
+/// page from the top, and its base is the boundary with the exception stack
+/// below it).
 ///
 /// Only meaningful when the host is built with the `enable_guest_clock`
 /// feature; otherwise the page is not populated.
 pub const fn clock_page_gpa() -> u64 {
-    (MAX_GPA as u64) + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET
+    (MAX_GPA as u64) + 1 - SCRATCH_TOP_EXN_STACK_OFFSET
 }
 
 /// Guest virtual address of the base of the paravirtualized clock page.
@@ -106,7 +135,7 @@ pub const fn clock_page_gpa() -> u64 {
 /// `scratch_base_gva` to `scratch_base_gpa`, so the clock page sits at the
 /// equivalent offset in the guest virtual address space.
 pub const fn clock_page_gva() -> u64 {
-    (MAX_GVA as u64) + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET
+    (MAX_GVA as u64) + 1 - SCRATCH_TOP_EXN_STACK_OFFSET
 }
 
 /// Compute the minimum scratch region size needed for a sandbox.

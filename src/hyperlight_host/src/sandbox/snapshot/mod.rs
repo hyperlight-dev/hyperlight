@@ -353,13 +353,14 @@ impl Snapshot {
         layout.set_pt_size(pt_bytes.len())?;
         memory.extend(&pt_bytes);
 
-        // The main/init stack top must live below the reserved clock page
-        // at the top of scratch; otherwise the guest's first stack writes
-        // clobber the paravirtualized clock page. The clock page is
-        // always reserved independent of the host's `enable_guest_clock`
-        // feature.
+        // The guest's initial (exception) stack top sits at the clock-page
+        // base — immediately below the metadata and clock pages — and grows
+        // down through the two reserved exception-stack pages, so the guest's
+        // first stack writes can't clobber the clock page or the bookkeeping
+        // data above. The reserved region exists independent of the host's
+        // `enable_guest_clock` feature.
         let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
-            - hyperlight_common::layout::SCRATCH_TOP_CLOCK_PAGE_OFFSET
+            - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
         Ok(Self {

@@ -36,15 +36,20 @@ pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 /// - (up to) 4 pages for the PTEs for mapping that (including CoW'ing the root PT)
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for mapping that
-/// - Two pages for the exception stack and metadata
 /// - A page-aligned amount of memory for I/O buffers (for now)
+/// - The reserved region at the very top of scratch
+///   ([`super::SCRATCH_TOP_RESERVED_SIZE`], 4 pages):
+///     - One page for the metadata / bookkeeping page (size, allocator,
+///       `clock_type`, `boot_time_ns`, …; only partially populated)
+///     - One page for the paravirtualized clock page
+///     - Two pages for the exception (IST1) stack
 ///
-/// Note: the 12 pages do NOT include the 3 reserved pages at the top of
-/// scratch (bookkeeping, shared-state counter, clock page) — those are
-/// accounted for separately by the host layout via
-/// [`super::CLOCK_PAGE_SIZE`]. The guest allocator skips the top 3 pages
-/// unconditionally so the memory map is stable regardless of feature flags.
+/// The reserved region is included here so `min_scratch_size` is the single,
+/// complete minimum — every caller uses it directly, without adding anything
+/// back. The guest allocator skips the same top pages unconditionally, so the
+/// memory map is stable regardless of feature flags.
 pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
     (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
-        + 12 * crate::vmem::PAGE_SIZE
+        + 10 * crate::vmem::PAGE_SIZE
+        + super::SCRATCH_TOP_RESERVED_SIZE as usize
 }
