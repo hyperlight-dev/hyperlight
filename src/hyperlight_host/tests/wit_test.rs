@@ -471,3 +471,20 @@ mod pick_world_binding_test2 {
         assert_eq!(first_import.r#value, "dummyValue");
     }
 }
+
+mod bindgen_test_case_bindings {
+    hyperlight_component_macro::host_bindgen!(
+        "../tests/rust_guests/witguest/bindgen-test-cases.wasm"
+    );
+}
+mod bindgen_test_cases {
+    use crate::bindgen_test_case_bindings::*;
+
+    #[test]
+    fn plain_export_interface_types_are_generated() {
+        let result = test::bindgen_test_cases::executor::ExecutionResult {
+            message: String::from("executed"),
+        };
+        assert_eq!(result.message, "executed");
+    }
+}

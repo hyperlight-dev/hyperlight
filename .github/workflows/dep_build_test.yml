@@ -94,6 +94,12 @@ jobs:
           name: twoworlds-wasm
           path: src/tests/rust_guests/witguest/
 
+      - name: Download bindgen-test-cases.wasm
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: bindgen-test-cases-wasm
+          path: src/tests/rust_guests/witguest/
+
       - name: Build
         run: just build ${{ inputs.config }}
 
