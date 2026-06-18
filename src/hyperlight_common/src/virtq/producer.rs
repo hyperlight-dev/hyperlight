@@ -102,7 +102,7 @@ pub(crate) struct Inflight {
 ///
 /// The producer is intended for single-threaded, guest-side use. Reply payloads
 /// are exposed as zero-copy [`Bytes`] via [`Bytes::from_owner`](bytes::Bytes::from_owner),
-/// which requires the owning pool to be `Send + Sync`. Do not move the producer
+/// which requires the owning pool to be `Send`. Do not move the producer
 /// or its replies across threads, and do not instantiate it on the multi-threaded
 /// host with those pools.
 ///

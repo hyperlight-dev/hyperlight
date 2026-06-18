@@ -386,7 +386,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     pub fn complete(&mut self, reply: impl Into<ReplyChain<M>>) -> Result<(), VirtqError> {
         let reply = reply.into();
         let id = reply.token().id;
-        let written = reply.written() as u32;
+        let written = u32::try_from(reply.written()).map_err(|_| VirtqError::ReplyTooLarge)?;
 
         let id_idx = id as usize;
         let slot_set = id_idx < self.inflight.len() && self.inflight.contains(id_idx);

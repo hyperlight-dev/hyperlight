@@ -189,7 +189,7 @@ impl Descriptor {
     }
 
     /// Read the descriptor body (`addr`/`len`/`id`) and combine it with flags
-    /// already obtained from [`load_flags_acquire`](Self::load_flags_acquire).
+    /// already obtained from [`read_flags_acquire`](Self::read_flags_acquire).
     pub fn read_body<M: MemOps>(mem: &M, addr: u64, flags: DescFlags) -> Result<Self, M::Error> {
         let addr_val: u64 = mem.read_val(addr + Self::ADDR_OFFSET as u64)?;
         let len: u32 = mem.read_val(addr + Self::LEN_OFFSET as u64)?;

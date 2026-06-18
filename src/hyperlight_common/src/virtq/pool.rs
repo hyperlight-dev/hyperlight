@@ -47,40 +47,33 @@ use smallvec::SmallVec;
 
 use super::buffer::{AllocError, Allocation, BufferProvider};
 
-/// Wrapper asserting `Send + Sync` for an inner value that is only ever
-/// accessed from a single thread.
+/// Wrapper asserting `Send` for an inner value that is only ever accessed from
+/// a single thread.
 ///
 /// [`BufferPool`] and [`RecyclePool`] hold their state in an `Rc<RefCell<..>>`,
 /// which is neither `Send` nor `Sync`. Their allocations are exposed as
 /// zero-copy reply payloads through
 /// [`Bytes::from_owner`](bytes::Bytes::from_owner), whose owner bound is
-/// `Send + Sync + 'static`; this wrapper exists solely so the pools can satisfy
-/// that bound.
+/// `Send + 'static`; this wrapper exists solely so the pools can satisfy that
+/// bound.
 ///
 /// # Safety
 ///
-/// The `Send`/`Sync` assertions are only sound while the wrapped value - and
-/// every `Bytes` handed out from it - stays on a single thread. Hyperlight
-/// guests are single-threaded, so this holds for guest-side use. It is unsound
-/// to move a pool (or a reply `Bytes`) to another thread, e.g. by using these
-/// pools with a producer/consumer on the multi-threaded host.
+/// The `Send` assertion is only sound while the wrapped value - and every
+/// `Bytes` handed out from it - stays on a single thread. Hyperlight guests are
+/// single-threaded, so this holds for guest-side use. It is unsound to move a
+/// pool (or a reply `Bytes`) to another thread, e.g. by using these pools with a
+/// producer/consumer on the multi-threaded host.
 #[derive(Debug)]
-pub(super) struct SyncWrap<T>(pub(super) T);
+struct SendWrap<T>(T);
 
-// SAFETY: only sound for single-threaded (guest-side) access; see the
-// type-level invariant on `SyncWrap`.
-unsafe impl<T> Send for SyncWrap<T> {}
-// SAFETY: only sound for single-threaded (guest-side) access; see the
-// type-level invariant on `SyncWrap`.
-unsafe impl<T> Sync for SyncWrap<T> {}
-
-impl<T: Clone> Clone for SyncWrap<T> {
+impl<T: Clone> Clone for SendWrap<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<T> Deref for SyncWrap<T> {
+impl<T> Deref for SendWrap<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0
@@ -269,12 +262,13 @@ impl<const N: usize> Slab<N> {
 }
 
 #[inline]
-fn align_up(val: usize, align: usize) -> usize {
-    assert!(align > 0);
-    if val == 0 {
-        return 0;
+fn align_up(val: usize, align: usize) -> Result<usize, AllocError> {
+    if align == 0 {
+        return Err(AllocError::InvalidArg);
     }
-    val.div_ceil(align) * align
+
+    val.checked_next_multiple_of(align)
+        .ok_or(AllocError::Overflow)
 }
 
 #[derive(Debug)]
@@ -283,10 +277,14 @@ struct Inner<const L: usize, const U: usize> {
     upper: Slab<U>,
 }
 
+// SAFETY: only sound for single-threaded (guest-side) access; see the
+// type-level invariant on `SendWrap`.
+unsafe impl<const L: usize, const U: usize> Send for SendWrap<Rc<RefCell<Inner<L, U>>>> {}
+
 /// Two tier buffer pool with small and large slabs.
 #[derive(Debug, Clone)]
 pub struct BufferPool<const L: usize = 256, const U: usize = 4096> {
-    inner: SyncWrap<Rc<RefCell<Inner<L, U>>>>,
+    inner: SendWrap<Rc<RefCell<Inner<L, U>>>>,
 }
 
 impl<const L: usize, const U: usize> BufferPool<L, U> {
@@ -294,7 +292,7 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
     pub fn new(base_addr: u64, region_len: usize) -> Result<Self, AllocError> {
         let inner = Inner::<L, U>::new(base_addr, region_len)?;
         Ok(Self {
-            inner: SyncWrap(Rc::new(RefCell::new(inner))),
+            inner: SendWrap(Rc::new(RefCell::new(inner))),
         })
     }
 }
@@ -333,28 +331,27 @@ impl<const L: usize, const U: usize> Inner<L, U> {
     pub fn new(base_addr: u64, region_len: usize) -> Result<Self, AllocError> {
         const LOWER_FRACTION: usize = 8;
 
-        let region_end = (base_addr as usize)
-            .checked_add(region_len)
-            .ok_or(AllocError::Overflow)? as u64;
+        let base = usize::try_from(base_addr).map_err(|_| AllocError::Overflow)?;
+        let region_end = base.checked_add(region_len).ok_or(AllocError::Overflow)?;
 
-        let lower_base = align_up(base_addr as usize, L) as u64;
+        let lower_base = align_up(base, L)?;
         let usable = region_end
             .checked_sub(lower_base)
-            .ok_or(AllocError::EmptyRegion)? as usize;
+            .ok_or(AllocError::EmptyRegion)?;
 
         let lower_region = usable / LOWER_FRACTION;
-        let lower = Slab::<L>::new(lower_base, lower_region)?;
+        let lower = Slab::<L>::new(lower_base as u64, lower_region)?;
 
         let upper_base = lower_base
-            .checked_add(lower.capacity() as u64)
+            .checked_add(lower.capacity())
             .ok_or(AllocError::Overflow)?;
 
-        let upper_base = align_up(upper_base as usize, U) as u64;
+        let upper_base = align_up(upper_base, U)?;
         let upper_region = region_end
             .checked_sub(upper_base)
-            .ok_or(AllocError::EmptyRegion)? as usize;
+            .ok_or(AllocError::EmptyRegion)?;
 
-        let upper = Slab::<U>::new(upper_base, upper_region)?;
+        let upper = Slab::<U>::new(upper_base as u64, upper_region)?;
         Ok(Self { lower, upper })
     }
 
@@ -464,6 +461,10 @@ struct RecycleList {
     /// One bit per slot index; set means the slot is currently handed out.
     allocated: FixedBitSet,
 }
+
+// SAFETY: only sound for single-threaded (guest-side) access; see the
+// type-level invariant on `SendWrap`.
+unsafe impl Send for SendWrap<Rc<RefCell<RecycleList>>> {}
 
 impl RecycleList {
     fn new(base_addr: u64, region_len: usize, slot_size: usize) -> Result<Self, AllocError> {
@@ -604,24 +605,29 @@ impl RecycleList {
 /// `ceil(total_len / slot_size)` fixed-size segments.
 #[derive(Clone)]
 pub struct RecyclePool {
-    inner: SyncWrap<Rc<RefCell<RecycleList>>>,
+    inner: SendWrap<Rc<RefCell<RecycleList>>>,
 }
 
 impl RecyclePool {
     /// Create a recycling pool of `slot_size`-byte slots over a fixed region.
     ///
-    /// The base address is aligned up to `slot_size`; the slot count is
-    /// `region_len / slot_size`.
+    /// The base address is aligned up to `slot_size`; the slot count is based
+    /// on the remaining usable region after alignment.
     pub fn new(base_addr: u64, region_len: usize, slot_size: usize) -> Result<Self, AllocError> {
         if slot_size == 0 {
             return Err(AllocError::InvalidArg);
         }
 
-        let aligned = align_up(base_addr as usize, slot_size) as u64;
-        let list = RecycleList::new(aligned, region_len, slot_size)?;
+        let base = usize::try_from(base_addr).map_err(|_| AllocError::Overflow)?;
+        let region_end = base.checked_add(region_len).ok_or(AllocError::Overflow)?;
+        let aligned = align_up(base, slot_size)?;
+        let usable = region_end
+            .checked_sub(aligned)
+            .ok_or(AllocError::EmptyRegion)?;
+        let list = RecycleList::new(aligned as u64, usable, slot_size)?;
 
         Ok(Self {
-            inner: SyncWrap(Rc::new(RefCell::new(list))),
+            inner: SendWrap(Rc::new(RefCell::new(list))),
         })
     }
 
@@ -692,7 +698,7 @@ mod tests {
     use super::*;
 
     fn make_pool<const L: usize, const U: usize>(size: usize) -> BufferPool<L, U> {
-        let base = align_up(0x10000, L.max(U)) as u64;
+        let base = align_up(0x10000, L.max(U)).unwrap() as u64;
         BufferPool::<L, U>::new(base, size).unwrap()
     }
 
@@ -831,12 +837,25 @@ mod tests {
 
     #[test]
     fn test_align_up_helper() {
-        assert_eq!(align_up(0, 256), 0);
-        assert_eq!(align_up(1, 256), 256);
-        assert_eq!(align_up(256, 256), 256);
-        assert_eq!(align_up(257, 256), 512);
-        assert_eq!(align_up(511, 256), 512);
-        assert_eq!(align_up(512, 256), 512);
+        assert_eq!(align_up(0, 256).unwrap(), 0);
+        assert_eq!(align_up(1, 256).unwrap(), 256);
+        assert_eq!(align_up(256, 256).unwrap(), 256);
+        assert_eq!(align_up(257, 256).unwrap(), 512);
+        assert_eq!(align_up(511, 256).unwrap(), 512);
+        assert_eq!(align_up(512, 256).unwrap(), 512);
+        assert!(matches!(align_up(1, 0), Err(AllocError::InvalidArg)));
+        assert!(matches!(
+            align_up(usize::MAX, 256),
+            Err(AllocError::Overflow)
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_alignment_subtracts_padding() {
+        let pool = RecyclePool::new(0x80001, 8192, 4096).unwrap();
+
+        assert_eq!(pool.base_addr(), 0x81000);
+        assert_eq!(pool.count(), 1);
     }
 
     // Edge case: allocation exactly at boundary
@@ -1201,7 +1220,7 @@ mod fuzz {
     }
 
     fn run_scenario(s: Scenario) -> bool {
-        let base = align_up(0x10000, 4096) as u64;
+        let base = align_up(0x10000, 4096).unwrap() as u64;
         let pool = match BufferPool::<256, 4096>::new(base, s.pool_size) {
             Ok(p) => p,
             Err(_) => return true,
