@@ -1674,6 +1674,31 @@ fn exception_handler_installation_and_validation() {
     });
 }
 
+/// A guest exception handler writes a copy-on-write page, which faults while
+/// the handler runs on the exception stack. Page faults use their own stack,
+/// so the handler frame survives and the guest resumes.
+#[test]
+fn exception_handler_nested_page_fault() {
+    with_rust_sandbox(|mut sandbox| {
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 0, "Handler should not have been called yet");
+
+        sandbox
+            .call::<()>("InstallCowFaultingHandler", 3i32)
+            .unwrap();
+
+        // The handler faults as it runs. The guest resumes from int3 and returns 0.
+        let trigger_result: i32 = sandbox.call("TriggerInt3Bare", ()).unwrap();
+        assert_eq!(
+            trigger_result, 0,
+            "Guest should resume after the nested page fault"
+        );
+
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 1, "Handler should have been called once");
+    });
+}
+
 /// Tests that an exception can be properly handled even when the heap is exhausted.
 /// The guest function fills the heap completely, then triggers a ud2 exception.
 /// This validates that the exception handling path does not require heap allocations.

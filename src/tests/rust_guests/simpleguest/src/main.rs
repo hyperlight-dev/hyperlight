@@ -187,6 +187,54 @@ fn trigger_int3() -> i32 {
     0
 }
 
+/// Page-aligned probe written from [`cow_faulting_exception_handler`].
+/// Its page stays copy-on-write after the snapshot, so the handler's
+/// first write faults while the handler runs on the exception stack.
+#[repr(align(4096))]
+struct CowFaultProbe([u64; 512]);
+static mut COW_FAULT_PROBE: CowFaultProbe = CowFaultProbe([0; 512]);
+
+/// Handler that faults while it runs by writing a copy-on-write page.
+fn cow_faulting_exception_handler(
+    exception_number: u64,
+    _exception_info: *mut ExceptionInfo,
+    _context: *mut Context,
+    _page_fault_address: u64,
+) -> bool {
+    HANDLER_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+
+    // INT3 is exception vector 3
+    assert_eq!(exception_number, 3);
+
+    // First write to this page faults, here on the exception stack.
+    unsafe {
+        let probe = &raw mut COW_FAULT_PROBE.0;
+        core::ptr::write_volatile(&mut (*probe)[0], TEST_R10_VALUE);
+    }
+
+    // Return true to resume execution.
+    true
+}
+
+/// Install [`cow_faulting_exception_handler`] for a vector.
+#[guest_function("InstallCowFaultingHandler")]
+fn install_cow_faulting_handler(vector: i32) {
+    hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize].store(
+        cow_faulting_exception_handler as *const () as usize as u64,
+        Ordering::Release,
+    );
+}
+
+/// Trigger an INT3 breakpoint (vector 3). Pairs with
+/// [`install_cow_faulting_handler`].
+#[guest_function("TriggerInt3Bare")]
+fn trigger_int3_bare() -> i32 {
+    unsafe {
+        core::arch::asm!("int3");
+    }
+    0
+}
+
 #[guest_function("EchoFloat")]
 fn echo_float(value: f32) -> f32 {
     value

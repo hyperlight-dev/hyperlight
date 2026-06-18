@@ -20,6 +20,12 @@ use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
 
 use super::layout::PROC_CONTROL_GVA;
 
+/// IDT gate IST index for general exceptions. Selects [`TSS::ist1`].
+pub(super) const IST_GENERAL_EXCEPTION: u8 = 1;
+/// IDT gate IST index for page faults. Selects [`TSS::ist2`], the
+/// page-fault stack. See the TSS setup in `init.rs` for why.
+pub(super) const IST_PAGE_FAULT: u8 = 2;
+
 /// Entry in the Global Descriptor Table (GDT)
 /// For reference, see page 3-10 Vol. 3A of Intel 64 and IA-32
 /// Architectures Software Developer's Manual, figure 3-8
@@ -117,7 +123,7 @@ pub(super) struct TSS {
     _rsp2: u64,
     _rsvd1: [u8; 8],
     pub(super) ist1: u64,
-    _ist2: u64,
+    pub(super) ist2: u64,
     _ist3: u64,
     _ist4: u64,
     _ist5: u64,
@@ -127,6 +133,7 @@ pub(super) struct TSS {
 }
 const _: () = assert!(mem::size_of::<TSS>() == 0x64);
 const _: () = assert!(mem::offset_of!(TSS, ist1) == 0x24);
+const _: () = assert!(mem::offset_of!(TSS, ist2) == 0x2c);
 
 /// An entry in the Interrupt Descriptor Table (IDT)
 /// For reference, see page 7-20 Vol. 3A of Intel 64 and IA-32
@@ -154,10 +161,16 @@ const _: () = assert!(mem::size_of::<IdtEntry>() == 0x10);
 
 impl IdtEntry {
     pub(super) fn new(handler: u64) -> Self {
+        Self::new_with_ist(handler, IST_GENERAL_EXCEPTION)
+    }
+
+    /// Build an IDT gate that switches to IST stack `ist` (1-based, one
+    /// of `TSS::ist1..ist7`) when the vector is taken.
+    pub(super) fn new_with_ist(handler: u64, ist: u8) -> Self {
         Self {
             offset_low: (handler & 0xFFFF) as u16,
             selector: 0x08, // Kernel Code Segment
-            interrupt_stack_table_offset: 1,
+            interrupt_stack_table_offset: ist,
             type_attr: 0x8E,
             // 0x8E = 10001110b
             // 1 00 0 1101

@@ -79,10 +79,19 @@ unsafe fn init_gdt(pc: *mut ProcCtrl) {
     }
 }
 
-/// Hyperlight's TSS contains only a single IST entry, which is used
-/// to set up the stack switch to the exception stack whenever we take
-/// an exception (including page faults, which are important, since
-/// the fault might be due to needing to grow the stack!)
+/// Hyperlight's TSS provides two IST stacks. The CPU switches to one
+/// when an exception is taken, so a handler always runs on a known-good
+/// stack. This matters because a fault can mean the main stack needs to
+/// grow.
+///
+/// * `ist1` is the general exception stack.
+/// * `ist2` is the page-fault stack.
+///
+/// Page faults get a separate stack because they can nest inside
+/// another exception. A handler running on `ist1` may write a
+/// copy-on-write page, which raises a page fault. The CPU delivers that
+/// fault on `ist2`, so each one has its own stack and the handler
+/// resumes once the fault is serviced.
 ///
 /// This function sets up the TSS and then points the processor at the
 /// system segment descriptor, initialized in [`init_gdt`] above,
@@ -96,6 +105,11 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         ist1_ptr.write_volatile(exn_stack.to_ne_bytes());
+        let ist2_ptr = &raw mut (*tss_ptr).ist2 as *mut [u8; 8];
+        let pf_exn_stack = hyperlight_common::layout::MAX_GVA as u64
+            - hyperlight_common::layout::SCRATCH_TOP_PF_EXN_STACK_OFFSET
+            + 1;
+        ist2_ptr.write_volatile(pf_exn_stack.to_ne_bytes());
         asm!(
             "ltr ax",
             in("ax") core::mem::offset_of!(HyperlightGDT, tss),

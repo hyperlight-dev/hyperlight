@@ -22,7 +22,9 @@ use core::arch::{asm, global_asm};
 use hyperlight_common::outb::Exception;
 
 use super::super::context;
-use super::super::machine::{IDT, IdtEntry, IdtPointer, ProcCtrl};
+use super::super::machine::{
+    IDT, IST_GENERAL_EXCEPTION, IST_PAGE_FAULT, IdtEntry, IdtPointer, ProcCtrl,
+};
 
 unsafe extern "C" {
     // Exception handlers
@@ -174,11 +176,15 @@ global_asm!(
 
 pub(in super::super) fn init_idt(pc: *mut ProcCtrl) {
     let idt = unsafe { &raw mut (*pc).idt };
-    let set_idt_entry = |idx, handler: unsafe extern "C" fn()| {
+    let set_idt_entry_ist = |idx, handler: unsafe extern "C" fn(), ist: u8| {
         let handler_addr = handler as *const () as u64;
         unsafe {
-            (&raw mut (*idt).entries[idx as usize]).write_volatile(IdtEntry::new(handler_addr));
+            (&raw mut (*idt).entries[idx as usize])
+                .write_volatile(IdtEntry::new_with_ist(handler_addr, ist));
         }
+    };
+    let set_idt_entry = |idx, handler: unsafe extern "C" fn()| {
+        set_idt_entry_ist(idx, handler, IST_GENERAL_EXCEPTION)
     };
     set_idt_entry(Exception::DivideByZero, _do_excp0); // Divide by zero
     set_idt_entry(Exception::Debug, _do_excp1); // Debug
@@ -194,7 +200,7 @@ pub(in super::super) fn init_idt(pc: *mut ProcCtrl) {
     set_idt_entry(Exception::SegmentNotPresent, _do_excp11); // Segment Not Present
     set_idt_entry(Exception::StackSegmentFault, _do_excp12); // Stack-Segment Fault
     set_idt_entry(Exception::GeneralProtectionFault, _do_excp13); // General Protection Fault
-    set_idt_entry(Exception::PageFault, _do_excp14); // Page Fault
+    set_idt_entry_ist(Exception::PageFault, _do_excp14, IST_PAGE_FAULT); // Page Fault (own IST stack)
     set_idt_entry(Exception::Reserved, _do_excp15); // Reserved
     set_idt_entry(Exception::X87FloatingPointException, _do_excp16); // x87 Floating-Point Exception
     set_idt_entry(Exception::AlignmentCheck, _do_excp17); // Alignment Check

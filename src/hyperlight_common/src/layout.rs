@@ -26,6 +26,8 @@ pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
 pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
 pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 = 0x20;
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
+/// Top of the page-fault exception stack, one page below the top of scratch memory.
+pub const SCRATCH_TOP_PF_EXN_STACK_OFFSET: u64 = 0x1000;
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (MAX_GPA - size + 1) as u64
