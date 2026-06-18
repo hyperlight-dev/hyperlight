@@ -139,11 +139,12 @@ fn wall_clock_advances_across_snapshot_restore() {
     });
 }
 
-/// Diagnostic for the `boot_time_ns` calibration formula.
+/// Test the`boot_time_ns` calibration formula.
 ///
 /// `stamp_pvclock_time_origin` stamps `boot_time_ns` and the guest computes
-/// `wall = boot_time_ns + monotonic_time_ns()`. For that to match the
-/// host's wall clock, `boot_time_ns` must be `wall_at_arm - monotonic_at_arm`
+/// `wall = boot_time_ns + raw_monotonic_ns()` — the raw counter, deliberately
+/// not the cross-partition-adjusted `monotonic_time_ns()`. For that to match
+/// the host's wall clock, `boot_time_ns` must be `wall_at_arm - raw_at_arm`
 /// — i.e. the Unix-epoch origin of the monotonic clock — not just
 /// `wall_at_arm`. If the host stamps the latter, the guest's wall clock
 /// is offset ahead of the host by exactly the value of the underlying

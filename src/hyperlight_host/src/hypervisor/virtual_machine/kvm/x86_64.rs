@@ -510,13 +510,20 @@ impl VirtualMachine for KvmVm {
         Ok(hyperlight_common::time::ClockType::KvmPvclock)
     }
 
+    /// Current kvmclock value in nanoseconds — the same time base the guest
+    /// reads through the pvclock page.
+    ///
+    /// **Only reliable after the first `KVM_RUN`.** KVM establishes its stable
+    /// "master clock" lazily on first vCPU entry; before then `KVM_GET_CLOCK`
+    /// can return an unstabilised value that won't match the guest's pvclock
+    /// reading. Callers must only calibrate `boot_time_ns` against it once the
+    /// guest has run at least once — which is why wall clock is unavailable
+    /// during `hyperlight_main`.
     #[cfg(feature = "enable_guest_clock")]
     fn current_monotonic_ns(&self) -> crate::Result<u64> {
-        // KVM_GET_CLOCK returns kvmclock nanoseconds — the same time base
-        // the guest reads through the pvclock page. We cannot use
-        // clock_gettime(CLOCK_MONOTONIC) here because kvmclock has its
-        // own epoch (which can be shifted via KVM_SET_CLOCK) and does not
-        // necessarily match host CLOCK_MONOTONIC.
+        // We cannot use clock_gettime(CLOCK_MONOTONIC) here because kvmclock
+        // has its own epoch (which can be shifted via KVM_SET_CLOCK) and does
+        // not necessarily match host CLOCK_MONOTONIC.
         let clock = self
             .vm_fd
             .get_clock()

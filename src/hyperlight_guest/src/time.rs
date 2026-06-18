@@ -293,17 +293,49 @@ fn read_hv_reference_tsc() -> Option<u64> {
     None
 }
 
-/// Highest raw pvclock value ever returned. Lives in BSS so it
-/// survives snapshot/restore. Used to detect backward jumps when a
-/// snapshot is restored into a new partition whose monotonic clock
-/// starts from a lower value.
-static RAW_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+/// The raw pvclock value from the previous [`monotonic_time_ns`] read: the
+/// baseline the next read compares against. It is updated on **every** read,
+/// so it can step *down* once on a cross-partition restore — it is not a
+/// "max ever", which is why `monotonic_time_ns` stores `raw` unconditionally.
+///
+/// This and [`MONO_OFFSET`] must live in `.bss` (the guest's snapshot
+/// region), never in scratch: on restore the host replaces the snapshot
+/// region with the snapshot's contents but *zeroes* scratch, so keeping them
+/// here means they come back at their snapshot-time values. In scratch they
+/// would be wiped to 0 and the monotonic guard would silently break.
+///
+/// Used to spot a backward jump when a snapshot is restored into a new
+/// partition whose clock starts lower: the next [`monotonic_time_ns`] sees
+/// `raw < RAW_BASELINE` and folds the old baseline into [`MONO_OFFSET`] (see
+/// [`monotonic_fixup`]). The fixup is lazy — no host→guest restore hook is
+/// required.
+static RAW_BASELINE: AtomicU64 = AtomicU64::new(0);
 
-/// Cumulative offset added to raw pvclock reads to maintain the
-/// monotonic guarantee across cross-partition restores. On each
-/// backward jump, the previous high-water mark is added so that all
-/// future returns are >= any previously returned value.
+/// Cumulative offset folded into raw pvclock reads to preserve monotonicity
+/// across cross-partition restores. Also `.bss` — see [`RAW_BASELINE`] for
+/// why. On each backward jump the previous baseline is added, so reported
+/// time never decreases.
 static MONO_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// Decide the monotonic-offset update for a freshly read `raw` clock value.
+///
+/// Given the previous `baseline` (the prior raw read) and offset, returns
+/// `(new_offset, reported)`. If `raw < baseline` the underlying clock jumped
+/// backward (a snapshot was restored into a partition whose clock starts
+/// lower), so the old baseline is folded into the offset to keep the
+/// reported value non-decreasing; otherwise the offset is unchanged. The
+/// caller stores `raw` as the new baseline.
+///
+/// Pulled out as a function so the backward-jump logic can be unit
+/// tested without a live hypervisor clock.
+fn monotonic_fixup(raw: u64, baseline: u64, offset: u64) -> (u64, u64) {
+    let offset = if raw < baseline {
+        offset.wrapping_add(baseline)
+    } else {
+        offset
+    };
+    (offset, raw.wrapping_add(offset))
+}
 
 /// Read the raw monotonic value from the hypervisor without any
 /// offset adjustment.
@@ -327,7 +359,7 @@ fn raw_monotonic_ns() -> Option<u64> {
 /// value never goes backward. Within a single partition epoch, diffs
 /// between consecutive reads reflect real elapsed time. Across a
 /// cross-partition restore the diff includes a synthetic gap (the
-/// high-water mark from the old partition) — safe for timeouts and
+/// baseline carried over from the old partition) — safe for timeouts and
 /// deadlines, but not an accurate measure of freeze duration (use
 /// wall-clock time for that).
 ///
@@ -336,18 +368,17 @@ fn raw_monotonic_ns() -> Option<u64> {
 pub fn monotonic_time_ns() -> Option<u64> {
     let raw = raw_monotonic_ns()?;
 
-    let high = RAW_HIGH_WATER.load(Ordering::Relaxed);
-    if raw < high {
-        // Raw clock went backward — snapshot was restored into a new
-        // partition. Bump the offset by the old high-water mark so all
-        // future reads are >= any previously returned value.
-        MONO_OFFSET.fetch_add(high, Ordering::Relaxed);
-        RAW_HIGH_WATER.store(raw, Ordering::Relaxed);
-    } else {
-        RAW_HIGH_WATER.store(raw, Ordering::Relaxed);
-    }
-
-    Some(raw.wrapping_add(MONO_OFFSET.load(Ordering::Relaxed)))
+    // Keep monotonicity across cross-partition snapshot restores: if the
+    // hypervisor's raw counter jumped backward, fold the old baseline into
+    // the offset. `RAW_BASELINE` / `MONO_OFFSET` live in BSS so the snapshot
+    // restores them (see their docs); the decision is computed by
+    // `monotonic_fixup` so it can be unit-tested without a live clock.
+    let baseline = RAW_BASELINE.load(Ordering::Relaxed);
+    let offset = MONO_OFFSET.load(Ordering::Relaxed);
+    let (new_offset, reported) = monotonic_fixup(raw, baseline, offset);
+    RAW_BASELINE.store(raw, Ordering::Relaxed);
+    MONO_OFFSET.store(new_offset, Ordering::Relaxed);
+    Some(reported)
 }
 
 /// Wall-clock time in nanoseconds since the Unix epoch.
@@ -365,26 +396,38 @@ pub fn monotonic_time_ns() -> Option<u64> {
 /// The host computes `boot_time_ns` as the Unix-epoch origin of the
 /// monotonic clock (`wall_now - monotonic_now`, sampled back-to-back
 /// in `arm_clock`) and stamps it into the scratch bookkeeping page. The
-/// guest simply adds its live monotonic reading to recover wall time.
+/// guest simply adds its live raw monotonic reading to recover wall time.
 ///
 /// This host-side computation is necessary because Hyper-V has no
 /// guest-accessible wall-clock register (unlike KVM's
 /// `MSR_KVM_WALL_CLOCK_NEW`). We use the same host-computed approach
 /// on all backends for uniformity.
 pub fn wall_clock_time_ns() -> Option<u64> {
-    // Use the raw monotonic value (no cross-partition offset) because
-    // boot_time_ns is calibrated by the host against the raw clock.
-    // Applying the monotonic offset here would shift wall time into
-    // the future after a cross-partition restore.
-    let monotonic = raw_monotonic_ns()?;
-    let boot_time = read_boot_time_ns();
-    // boot_time_ns == 0 means the host hasn't stamped it yet
-    // (scratch memory is zero-initialised). Return None rather
-    // than returning a nonsense value.
-    if boot_time == 0 {
+    // Use the *raw* monotonic value, never the offset-adjusted
+    // `monotonic_time_ns()`: `boot_time_ns` is calibrated by the host
+    // against the raw clock, so folding `MONO_OFFSET` in here would push
+    // wall time into the future after a cross-partition restore. The split
+    // is pinned by `wall_time_from`, whose signature can't see the offset.
+    let raw = raw_monotonic_ns()?;
+    wall_time_from(read_boot_time_ns(), raw)
+}
+
+/// Combine the host-stamped `boot_time_ns` (the Unix-epoch origin of the
+/// monotonic clock) with a **raw** monotonic reading to recover wall time.
+///
+/// Takes the raw counter by design — never the offset-adjusted
+/// [`monotonic_time_ns`] value. `boot_time_ns` is calibrated by the host
+/// against the raw clock, so feeding the offset-adjusted reading in here
+/// would shift wall time into the future by [`MONO_OFFSET`] after a
+/// cross-partition restore. This signature deliberately cannot see the offset.
+///
+/// Returns `None` when `boot_time_ns` is still 0 — the host hasn't stamped it
+/// yet (scratch is zero-initialised) — rather than a nonsense value.
+fn wall_time_from(boot_time_ns: u64, raw_ns: u64) -> Option<u64> {
+    if boot_time_ns == 0 {
         return None;
     }
-    Some(boot_time.wrapping_add(monotonic))
+    Some(boot_time_ns.wrapping_add(raw_ns))
 }
 
 /// Monotonic time in microseconds.
@@ -401,4 +444,83 @@ pub fn wall_clock_time() -> Option<(u64, u32)> {
     let secs = ns / 1_000_000_000;
     let nsecs = (ns % 1_000_000_000) as u32;
     Some((secs, nsecs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{monotonic_fixup, wall_time_from};
+
+    #[test]
+    fn forward_progress_leaves_offset_untouched() {
+        // Normal advance within one partition: offset stays put.
+        assert_eq!(monotonic_fixup(200, 100, 0), (0, 200));
+        // First-ever read (baseline == 0).
+        assert_eq!(monotonic_fixup(500, 0, 0), (0, 500));
+        // Equal is not "backward": no offset bump.
+        assert_eq!(monotonic_fixup(100, 100, 0), (0, 100));
+    }
+
+    #[test]
+    fn backward_jump_folds_old_baseline_into_offset() {
+        // Restored into a partition whose raw clock starts lower (50 < 1000):
+        // fold the old baseline (1000) into the offset.
+        assert_eq!(monotonic_fixup(50, 1000, 0), (1000, 1050));
+        // Forward reads afterward keep the accumulated offset.
+        assert_eq!(monotonic_fixup(60, 50, 1000), (1000, 1060));
+        // A second cross-partition restore stacks another mark on top.
+        assert_eq!(monotonic_fixup(20, 50, 1000), (1050, 1070));
+    }
+
+    #[test]
+    fn reported_time_never_decreases_across_a_restore() {
+        // Climb in partition 1, then "restore" into a lower-clock partition 2
+        // (snapshot/restore brings `baseline`/`offset` back to their
+        // snapshot-time values) and keep climbing. Reported time must never
+        // regress.
+        let mut baseline = 0u64;
+        let mut offset = 0u64;
+        let mut last = 0u64;
+        // P1 climb, then the drop to 5 models the cross-partition restore.
+        for raw in [10u64, 250, 1000, 5, 30, 800] {
+            let (new_offset, reported) = monotonic_fixup(raw, baseline, offset);
+            assert!(
+                reported >= last,
+                "monotonic violated: raw={raw} reported={reported} last={last}"
+            );
+            baseline = raw;
+            offset = new_offset;
+            last = reported;
+        }
+    }
+
+    #[test]
+    fn wall_time_uses_raw_not_the_monotonic_offset() {
+        // After a cross-partition restore the monotonic path carries a
+        // non-zero offset, but wall time must come from the RAW counter:
+        // `boot_time_ns` is calibrated against raw, so folding the offset in
+        // would shove wall time into the future. `wall_time_from` can't even
+        // see the offset — this pins that.
+        let boot = 1_000_000u64;
+        let raw = 500u64;
+        // A backward jump (restore into a lower-clock partition) inflates the
+        // monotonic offset; the offset-adjusted reading would be 10_500.
+        let (offset, monotonic) = monotonic_fixup(raw, 10_000, 0);
+        assert_eq!((offset, monotonic), (10_000, 10_500));
+        // Wall is computed from raw, so it ignores that offset…
+        assert_eq!(wall_time_from(boot, raw), Some(1_000_500));
+        // …and must not equal what the offset-adjusted reading would give.
+        assert_ne!(
+            wall_time_from(boot, raw),
+            Some(boot.wrapping_add(monotonic))
+        );
+    }
+
+    #[test]
+    fn wall_time_is_none_until_boot_time_is_stamped() {
+        // boot_time_ns == 0 => host hasn't calibrated yet => unavailable.
+        assert_eq!(wall_time_from(0, 12_345), None);
+        // Once stamped, it's just boot + raw.
+        assert_eq!(wall_time_from(1, 0), Some(1));
+        assert_eq!(wall_time_from(100, 25), Some(125));
+    }
 }
