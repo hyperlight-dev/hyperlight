@@ -1,0 +1,13 @@
+package test:bindgen-test-cases;
+
+world bindgen-test-cases {
+    export executor;
+}
+
+interface executor {
+    record execution-result {
+        message: string,
+    }
+
+    execute: func() -> execution-result;
+}
