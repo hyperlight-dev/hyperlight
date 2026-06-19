@@ -124,6 +124,7 @@ pub struct Mod {
     pub items: TokenStream,
     pub traits: BTreeMap<Ident, Trait>,
     pub impls: BTreeMap<(Vec<Ident>, Ident), TokenStream>,
+    pub emitted_type_names: BTreeSet<Ident>,
 }
 impl Mod {
     pub fn empty() -> Self {
@@ -132,6 +133,7 @@ impl Mod {
             items: TokenStream::new(),
             traits: BTreeMap::new(),
             impls: BTreeMap::new(),
+            emitted_type_names: BTreeSet::new(),
         }
     }
     /// Get a reference to a sub-module, creating it if necessary

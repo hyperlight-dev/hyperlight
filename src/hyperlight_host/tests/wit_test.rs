@@ -293,9 +293,12 @@ fn sb() -> TestSandbox<Host, MultiUseSandbox> {
 
 mod wit_test {
 
+    use hyperlight_host::error::HyperlightError;
     use proptest::prelude::*;
 
-    use crate::bindings::test::wit::{Roundtrip, TestExports, TestHostResource, roundtrip};
+    use crate::bindings::test::wit::{
+        FailableExports, RoundtripExports, TestExports, TestHostResourceExports, roundtrip,
+    };
     use crate::sb;
 
     prop_compose! {
@@ -347,7 +350,7 @@ mod wit_test {
             proptest! {
                 #[test]
                 fn $fn(x $($ty)*) {
-                    assert_eq!(x, sb().roundtrip().$fn(x.clone()))
+                    assert_eq!(x, sb().roundtrip().$fn(x.clone()).unwrap())
                 }
             }
         }
@@ -394,7 +397,7 @@ mod wit_test {
 
     #[test]
     fn test_roundtrip_no_result() {
-        sb().roundtrip().roundtrip_no_result(42);
+        sb().roundtrip().roundtrip_no_result(42).unwrap();
     }
 
     use std::sync::atomic::Ordering::Relaxed;
@@ -404,7 +407,7 @@ mod wit_test {
         let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
         crate::HAS_BEEN_DROPPED.store(false, Relaxed);
         {
-            sb().test_host_resource().test_uses_locally();
+            sb().test_host_resource().test_uses_locally().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
@@ -416,13 +419,23 @@ mod wit_test {
         {
             let mut sb = sb();
             let inst = sb.test_host_resource();
-            let r = inst.test_makes();
-            inst.test_accepts_borrow(&r);
-            inst.test_accepts_own(r);
-            inst.test_returns();
+            let r = inst.test_makes().unwrap();
+            inst.test_accepts_borrow(&r).unwrap();
+            inst.test_accepts_own(r).unwrap();
+            inst.test_returns().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
+    }
+
+    #[test]
+    fn test_guest_call_error_returns_error() {
+        let mut sb = sb();
+        let err = sb.failable().guest_panic().unwrap_err();
+        assert!(matches!(
+            err,
+            HyperlightError::GuestAborted(_, msg) if msg.contains("deliberate guest panic")
+        ));
     }
 }
 
