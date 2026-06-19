@@ -763,6 +763,21 @@ pub fn kebab_to_imports_name(trait_name: &str) -> Ident {
 pub fn kebab_to_exports_name(trait_name: &str) -> Ident {
     format_ident!("{}Exports", kebab_to_type(trait_name))
 }
+/// Convert a kebab name to a SCREAMING_SNAKE_CASE identifier suitable
+/// for use as a constant in a `wasmtime::component::flags!` invocation.
+pub fn kebab_to_flags_const(n: &str) -> Ident {
+    let s: String = n
+        .chars()
+        .map(|c| {
+            if c == '-' {
+                '_'
+            } else {
+                c.to_ascii_uppercase()
+            }
+        })
+        .collect();
+    format_ident!("{}", s)
+}
 
 /// The kinds of names that a function associated with a resource in
 /// WIT can have
