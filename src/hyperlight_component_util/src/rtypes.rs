@@ -24,9 +24,9 @@ use quote::{format_ident, quote};
 use syn::Ident;
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, kebab_to_cons, kebab_to_exports_name,
-    kebab_to_flags_const, kebab_to_fn, kebab_to_getter, kebab_to_imports_name, kebab_to_namespace,
-    kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
+    kebab_to_cons, kebab_to_exports_name, kebab_to_flags_const, kebab_to_fn, kebab_to_getter,
+    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{
     self, Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance,
@@ -68,9 +68,10 @@ fn emit_resource_ref(s: &mut State, n: u32, path: Vec<ImportExport>) -> TokenStr
         let id = format_ident!("HostResource{}", n);
         return quote! { #id };
     }
-    // There is always at least one element in the path, which names
-    // the thing we are referring to
-    let rtrait = kebab_to_type(path[path.len() - 1].name());
+    let Some(resource) = path.last() else {
+        panic!("resource reference path must contain the resource type");
+    };
+    let rtrait = kebab_to_type(resource.name());
 
     // Deal specially with being in the local instance, where there is
     // no instance type & so it is not easy to resolve the
@@ -92,22 +93,34 @@ fn emit_resource_ref(s: &mut State, n: u32, path: Vec<ImportExport>) -> TokenStr
     // followed by the resource type itself. We locate the resource
     // trait by using that final instance name directly; any other
     // names are just used to get to the type that implements it
-    let instance = path[path.len() - 2].name();
-    let iwn = split_wit_name(instance);
+    let instance = &path[path.len() - 2];
+    let iwn = split_wit_name(instance.name());
     let extras = path[0..path.len() - 2]
         .iter()
         .map(|p| {
             let wn = split_wit_name(p.name());
-            kebab_to_type(wn.name)
+            if p.imported() && s.colliding_import_names.contains(wn.name) {
+                let (tn, _) = import_member_names(&wn, &s.colliding_import_names);
+                tn
+            } else {
+                kebab_to_type(wn.name)
+            }
         })
         .collect::<Vec<_>>();
     let extras = quote! { #(#extras::)* };
     let rp = s.root_path();
     let tns = iwn.namespace_path();
     let instance_mod = kebab_to_namespace(iwn.name);
-    let instance_type = kebab_to_type(iwn.name);
+    // Use the disambiguated trait member only for imported instances. Exported
+    // instances must keep their public WIT member names.
+    let instance_type = if instance.imported() {
+        let (tn, _) = import_member_names(&iwn, &s.colliding_import_names);
+        tn
+    } else {
+        kebab_to_type(iwn.name)
+    };
     let mut sv = quote! { Self };
-    if path[path.len() - 2].imported() {
+    if instance.imported() {
         if let Some(iv) = &s.import_param_var {
             sv = quote! { #iv }
         };
@@ -760,18 +773,22 @@ fn emit_extern_decl<'a, 'b, 'c>(
                 TokenStream::new()
             };
 
-            let getter = kebab_to_getter(wn.name);
+            let (member_tn, member_getter) = if origin_was_export {
+                (kebab_to_type(wn.name), kebab_to_getter(wn.name))
+            } else {
+                import_member_names(&wn, &s.colliding_import_names)
+            };
             let rp = s.root_path();
             let tns = wn.namespace_path();
-            let tn = kebab_to_type(wn.name);
+            let trait_tn = kebab_to_type(wn.name);
             let trait_bound = if tns.is_empty() {
-                quote! { #rp #tn }
+                quote! { #rp #trait_tn }
             } else {
-                quote! { #rp #tns::#tn }
+                quote! { #rp #tns::#trait_tn }
             };
             quote! {
-                type #tn: #trait_bound #vs;
-                fn #getter(&mut self) -> impl ::core::borrow::BorrowMut<Self::#tn>;
+                type #member_tn: #trait_bound #vs;
+                fn #member_getter(&mut self) -> impl ::core::borrow::BorrowMut<Self::#member_tn>;
             }
         }
         ExternDesc::Component(_) => {
@@ -864,6 +881,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         .map(Clone::clone)
         .collect::<VecDeque<_>>();
     s.cur_trait = Some(import_name.clone());
+    s.colliding_import_names = find_colliding_import_names(&ct.imports);
     let imports = ct
         .imports
         .iter()
