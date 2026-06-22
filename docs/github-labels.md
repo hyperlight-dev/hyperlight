@@ -7,6 +7,19 @@ We use GitHub labels to categorize PRs. Before a PR can be merged, it must be as
 - **kind/enhancement** - For PRs that introduce new features or improve existing functionality. This label also applies to improvements in documentation, testing, and similar areas. Any changes must be backward-compatible.
 - **kind/refactor** - For PRs that restructure or remove code without adding new functionality. This label also applies to changes that affect user-facing APIs.
 
+## Review readiness
+
+We use the **ready-for-review** label to signal that a PR is waiting for a (re-)review:
+
+- **Add** `ready-for-review` when you open a PR that is ready for review, or when a PR is ready for re-review (for example, once you have addressed requested changes and re-requested review).
+- The label is **removed automatically** by the [`Ready-for-review label`](../.github/workflows/ready-for-review-label.yml) workflow once the PR is no longer awaiting that review, specifically when any of the following become true:
+  - the PR is closed or merged,
+  - the PR is converted to a draft,
+  - the PR has two or more approvals, or
+  - the PR has two or more change requests.
+
+You only ever need to add the label; removal is fully automated.
+
 ---
 
 # **Issues**

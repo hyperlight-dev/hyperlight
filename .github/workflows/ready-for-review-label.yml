@@ -1,0 +1,37 @@
+name: Ready-for-review label
+
+# Caller workflow that wires this repository's pull-request events up to the
+# reusable `manage-ready-for-review.yml` workflow, which removes the
+# "ready-for-review" label once a PR is no longer awaiting review.
+#
+# `pull_request_target` (rather than `pull_request`) is required so that the job
+# has a read/write token for pull requests opened from forks. This is safe here
+# because the reusable workflow never checks out or executes pull-request code.
+#
+# The label logic lives in the organisation's `.github` repository so that every
+# repository consumes the same engine. To roll this out to another repository,
+# copy this file verbatim - the `uses:` reference below already points at the
+# shared engine.
+on:
+  pull_request_target:
+    types: [closed, converted_to_draft]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Serialise runs per pull request so that concurrent events (for example, a
+# review submitted at the same moment the PR is closed) cannot race on the label.
+concurrency:
+  group: ready-for-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  manage-label:
+    # Shared engine in the org-wide `.github` repository, pinned to a commit SHA
+    # (matching this repository's action-pinning convention).
+    uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@12c76e8040b3a64d36cc8e95b129996dba6a8c54
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
