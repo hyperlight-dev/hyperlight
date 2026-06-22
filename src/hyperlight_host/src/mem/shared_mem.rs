@@ -1861,6 +1861,13 @@ impl SharedMemory for ReadonlySharedMemory {
                 handle_size: self.mem_size(),
                 offset: 0,
             },
+            #[cfg(feature = "whp-no-surrogate")]
+            WindowsMapping::DirectAlloc(_) => super::memory_region::HostRegionBase {
+                from_handle: self.region().file_mapping_handle().into(),
+                handle_base: self.region().ptr() as usize,
+                handle_size: self.region().size(),
+                offset: PAGE_SIZE_USIZE,
+            },
         }
     }
     // There's no way to get exclusive (and therefore writable) access
