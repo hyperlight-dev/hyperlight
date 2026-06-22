@@ -548,8 +548,12 @@ impl MultiUseSandbox {
     ) -> Result<()> {
         use crate::mem::memory_region::MemoryRegionType;
 
-        if self.id != snapshot.sandbox_id() {
-            return Err(SnapshotSandboxMismatch);
+        {
+            let host_funcs = self
+                .host_funcs
+                .try_lock()
+                .map_err(|e| crate::new_error!("Error locking host_funcs: {}", e))?;
+            snapshot.validate_compatibility(&self.mem_mgr.layout, &host_funcs)?;
         }
 
         let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
@@ -577,20 +581,14 @@ impl MultiUseSandbox {
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());
 
-        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
-        let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
-
-        for region in current_regions.difference(&snapshot_regions) {
+        let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
+        for region in &current_regions {
             if region.region_type == MemoryRegionType::MappedFile {
                 continue;
             }
             self.vm
                 .unmap_region(region)
                 .map_err(HyperlightVmError::UnmapRegion)?;
-        }
-
-        for region in snapshot_regions.difference(&current_regions) {
-            unsafe { self.vm.map_region(region) }.map_err(HyperlightVmError::MapRegion)?;
         }
 
         self.snapshot = Some(snapshot.clone());
