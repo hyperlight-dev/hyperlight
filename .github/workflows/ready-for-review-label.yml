@@ -26,8 +26,8 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-
+  pull-requests: read
+  issues: write
 jobs:
   manage-label:
     # Shared engine in the org-wide `.github` repository, pinned to a commit SHA
