@@ -360,6 +360,11 @@ impl BufferChain {
         &self.elems[..self.split]
     }
 
+    /// Get mutable readable buffers in chain.
+    pub(crate) fn readables_mut(&mut self) -> &mut [BufferElement] {
+        &mut self.elems[..self.split]
+    }
+
     /// Get writable buffers in chain
     pub fn writables(&self) -> &[BufferElement] {
         &self.elems[self.split..]
@@ -713,11 +718,15 @@ impl<M: MemOps> RingProducer<M> {
             .ok_or(RingError::InvalidState)?;
 
         // Acquire flags then fields (publish point)
-        let desc = Descriptor::read_acquire(&self.mem, addr)
+        let flags = Descriptor::read_flags_acquire(&self.mem, addr)
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
-        if !desc.is_used(wrap) {
+
+        if !flags.is_used(wrap) {
             return Err(RingError::WouldBlock);
         }
+
+        let desc = Descriptor::read_body(&self.mem, addr, flags)
+            .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
 
         let id = desc.id;
         let count = *self
@@ -893,10 +902,7 @@ impl<M: MemOps> RingProducer<M> {
         // Linux kernel uses virtio_mb() full barrier in virtqueue_kick_prepare_packed.
         fence(Ordering::SeqCst);
 
-        let evt = EventSuppression::read_acquire(&self.mem, self.dev_evt_addr)
-            .map_err(|_| RingError::mem_err(MemOp::ReadEvent, self.dev_evt_addr))?;
-
-        Ok(should_notify(evt, self.len() as u16, old, new))
+        should_notify_evt(&self.mem, self.dev_evt_addr, self.len() as u16, old, new)
     }
 
     /// Reset to initial state matching a freshly zeroed ring.
@@ -1022,13 +1028,16 @@ impl<M: MemOps> RingConsumer<M> {
             .ok_or(RingError::InvalidState)?;
 
         // Acquire: flags then fields (publish point)
-        let head_desc = Descriptor::read_acquire(&self.mem, head_addr)
+        let flags = Descriptor::read_flags_acquire(&self.mem, head_addr)
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, head_addr))?;
 
         // Check if head descriptor is available to consume
-        if !head_desc.is_avail(wrap) {
+        if !flags.is_avail(wrap) {
             return Err(RingError::WouldBlock);
         }
+
+        let head_desc = Descriptor::read_body(&self.mem, head_addr, flags)
+            .map_err(|_| RingError::mem_err(MemOp::ReadDesc, head_addr))?;
 
         // Build chain (head + tails), tracking readable/writable split inline.
         let mut elements = SmallVec::<[BufferElement; 16]>::new();
@@ -1167,9 +1176,10 @@ impl<M: MemOps> RingConsumer<M> {
             return Err(RingError::InvalidState);
         };
 
-        let desc = Descriptor::read_acquire(&self.mem, addr)
+        let flags = Descriptor::read_flags_acquire(&self.mem, addr)
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
-        Ok(desc.is_avail(self.avail_cursor.wrap()))
+
+        Ok(flags.is_avail(self.avail_cursor.wrap()))
     }
 
     /// Submit a used descriptor and return whether to notify the driver.
@@ -1301,10 +1311,7 @@ impl<M: MemOps> RingConsumer<M> {
         // Driver Event Suppression structure. See also should_notify_device()
         fence(Ordering::SeqCst);
 
-        let evt = EventSuppression::read_acquire(&self.mem, self.drv_evt_addr)
-            .map_err(|_| RingError::mem_err(MemOp::ReadEvent, self.drv_evt_addr))?;
-
-        Ok(should_notify(evt, self.desc_table.len() as u16, old, new))
+        should_notify_evt(&self.mem, self.drv_evt_addr, self.len() as u16, old, new)
     }
 
     /// Reset to initial state matching a freshly zeroed ring.
@@ -1316,6 +1323,27 @@ impl<M: MemOps> RingConsumer<M> {
         self.num_inflight = 0;
         self.event_flags_shadow = EventFlags::ENABLE;
     }
+}
+
+/// Read an event-suppression structure and decide whether to notify the peer.
+fn should_notify_evt<M: MemOps>(
+    mem: &M,
+    evt_addr: u64,
+    ring_len: u16,
+    old: RingCursor,
+    new: RingCursor,
+) -> Result<bool, RingError> {
+    let flags = EventSuppression::read_flags_acquire(mem, evt_addr)
+        .map_err(|_| RingError::mem_err(MemOp::ReadEvent, evt_addr))?;
+
+    let evt = if flags == EventFlags::DESC {
+        EventSuppression::read_body(mem, evt_addr, flags)
+            .map_err(|_| RingError::mem_err(MemOp::ReadEvent, evt_addr))?
+    } else {
+        EventSuppression::new(0, flags)
+    };
+
+    Ok(should_notify(evt, ring_len, old, new))
 }
 
 /// Common packed-ring notification decision:
@@ -3358,7 +3386,8 @@ pub(crate) mod tests {
 
         let reader = make_producer(&ring);
         let addr = reader.desc_table().desc_addr(0).unwrap();
-        let desc = Descriptor::read_acquire(reader.mem(), addr).unwrap();
+        let flags = Descriptor::read_flags_acquire(reader.mem(), addr).unwrap();
+        let desc = Descriptor::read_body(reader.mem(), addr, flags).unwrap();
         assert_eq!(desc.addr, 0x1000);
         assert_eq!(desc.len, 4096);
         assert!(desc.is_writable());
@@ -3385,7 +3414,8 @@ pub(crate) mod tests {
 
         let reader = make_producer(&ring);
         let addr = reader.desc_table().desc_addr(0).unwrap();
-        let desc = Descriptor::read_acquire(reader.mem(), addr).unwrap();
+        let flags = Descriptor::read_flags_acquire(reader.mem(), addr).unwrap();
+        let desc = Descriptor::read_body(reader.mem(), addr, flags).unwrap();
         assert!(desc.is_used(true));
         assert!(!desc.is_avail(true));
     }

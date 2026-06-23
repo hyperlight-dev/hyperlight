@@ -229,6 +229,10 @@ test target=default-target features="": (test-unit target features) (test-isolat
 test-unit target=default-target features="":
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
+# runs loom concurrency tests
+test-loom:
+    {{ set-env-command }}RUSTFLAGS='--cfg loom'; {{ cargo-cmd }} test --quiet -p hyperlight-common --lib {{ target-triple-flag }} virtq::concurrency::
+
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored

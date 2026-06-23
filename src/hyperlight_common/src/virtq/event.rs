@@ -96,16 +96,31 @@ impl EventSuppression {
             (off & Self::DESC_EVENT_OFF_MASK) | if wrap { Self::DESC_EVENT_WRAP } else { 0 };
     }
 
-    /// Create an `EventSuppression` from a raw pointer with acquire semantics.
+    /// Acquire-load only the flags word - the publish point - without reading
+    /// the `off_wrap` payload.
     ///
     /// # Invariant
     ///
-    /// The caller must ensure that `base` is a valid pointer to an EventSuppression.
-    pub fn read_acquire<M: MemOps>(mem: &M, addr: u64) -> Result<Self, M::Error> {
+    /// The caller must ensure that `addr` is a valid pointer to an EventSuppression.
+    pub fn read_flags_acquire<M: MemOps>(mem: &M, addr: u64) -> Result<EventFlags, M::Error> {
         // Atomic Acquire load of flags (publish point)
         let flags = mem.load_acquire(addr + Self::FLAGS_OFFSET as u64)?;
+        Ok(EventFlags::from_bits_truncate(flags))
+    }
+
+    /// Read the `off_wrap` payload and combine it with flags already obtained
+    /// from [`read_flags_acquire`](Self::read_flags_acquire).
+    ///
+    /// # Invariant
+    ///
+    /// The caller must ensure that `addr` is a valid pointer to an EventSuppression.
+    pub fn read_body<M: MemOps>(mem: &M, addr: u64, flags: EventFlags) -> Result<Self, M::Error> {
         let off_wrap: u16 = mem.read_val(addr + Self::WRAP_OFFSET as u64)?;
-        Ok(Self { off_wrap, flags })
+
+        Ok(Self {
+            off_wrap,
+            flags: flags.bits(),
+        })
     }
 
     /// Write an `EventSuppression` to a raw pointer with release semantics.
