@@ -32,6 +32,6 @@ jobs:
   manage-label:
     # Shared engine in the org-wide `.github` repository, pinned to a commit SHA
     # (matching this repository's action-pinning convention).
-    uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@12c76e8040b3a64d36cc8e95b129996dba6a8c54
+    uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@8eaae4229db908ea64fff06c31dbf5677611ce5e
     with:
       pr-number: ${{ github.event.pull_request.number }}
