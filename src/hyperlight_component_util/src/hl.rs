@@ -18,7 +18,7 @@ use itertools::Itertools;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::{ResolvedBoundVar, State, kebab_to_cons, kebab_to_var};
+use crate::emit::{ResolvedBoundVar, State, kebab_to_cons, kebab_to_flags_const, kebab_to_var};
 use crate::etypes::{self, Defined, Handleable, Tyvar, Value};
 use crate::rtypes;
 
@@ -91,16 +91,37 @@ pub fn emit_hl_unmarshal_toplevel_value(
         }
         Value::Flags(ns) => {
             let bytes = usize::div_ceil(ns.len(), 8);
+            let result_var = format_ident!("{}_flags", id);
             let fields = ns.iter().enumerate().map(|(i, n)| {
                 let byte_offset = i / 8;
                 let bit_offset = i % 8;
-                let fieldid = kebab_to_var(n.name);
-                quote! {
-                    #fieldid: (#id[#byte_offset] >> #bit_offset) & 0x1 == 1,
+                let is_set = quote! { (#id[#byte_offset] >> #bit_offset) & 0x1 == 1 };
+                if s.is_wasmtime_guest {
+                    let const_name = kebab_to_flags_const(n.name);
+                    quote! {
+                        if #is_set {
+                            #result_var |= #tname::#const_name;
+                        }
+                    }
+                } else {
+                    let fieldid = kebab_to_var(n.name);
+                    quote! {
+                        #fieldid: #is_set,
+                    }
                 }
             });
-            quote! {
-                (#tname { #(#fields)* }, #bytes)
+            if s.is_wasmtime_guest {
+                quote! {
+                    {
+                        let mut #result_var = #tname::empty();
+                        #(#fields)*
+                        (#result_var, #bytes)
+                    }
+                }
+            } else {
+                quote! {
+                    (#tname { #(#fields)* }, #bytes)
+                }
             }
         }
         Value::Variant(vcs) => {
@@ -434,9 +455,15 @@ pub fn emit_hl_marshal_toplevel_value(
                 .map(|(i, n)| {
                     let byte_offset = i / 8;
                     let bit_offset = i % 8;
-                    let fieldid = kebab_to_var(n.name);
+                    let is_set = if s.is_wasmtime_guest {
+                        let const_name = kebab_to_flags_const(n.name);
+                        quote! { #id.contains(#tname::#const_name) }
+                    } else {
+                        let fieldid = kebab_to_var(n.name);
+                        quote! { #id.#fieldid }
+                    };
                     quote! {
-                        bytes[#byte_offset] |= (if #id.#fieldid { 1 } else { 0 }) << #bit_offset;
+                        bytes[#byte_offset] |= (if #is_set { 1 } else { 0 }) << #bit_offset;
                     }
                 })
                 .collect::<Vec<_>>();

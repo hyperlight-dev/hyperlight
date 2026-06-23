@@ -238,9 +238,12 @@ test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
 
 # runs integration tests
-test-integration target=default-target features="":
+test-integration target=default-target features="": (witguest-wit)
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
+
+    @# run component-util integration tests that depend on generated WIT inputs
+    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
 
     @# run the rest of the integration tests
     {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
