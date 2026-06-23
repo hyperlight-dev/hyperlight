@@ -1874,7 +1874,6 @@ fn hw_timer_interrupts() {
 }
 
 #[test]
-#[serial]
 fn non_pie_guest_hello_world() {
     let path =
         hyperlight_testing::simple_guest_non_pie_as_string().expect("non-PIE guest not found");
