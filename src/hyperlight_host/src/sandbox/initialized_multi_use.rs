@@ -160,6 +160,21 @@ impl MultiUseSandbox {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// From a snapshot loaded from disk:
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{HostFunctions, MultiUseSandbox};
+    /// # use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tag = OciTag::new("latest")?;
+    /// let snapshot = Arc::new(Snapshot::load("./guest_snapshot", tag)?);
+    /// let mut sandbox = MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let result: String = sandbox.call("Echo", "hello".to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn from_snapshot(
         snapshot: Arc<Snapshot>,

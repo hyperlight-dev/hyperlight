@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* `Snapshot::save`, `Snapshot::load`, and `Snapshot::checked_load` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465. Note that Hyperlight is at version 0.x, so a snapshot taken on one version may not load on another version.
+
 ### Changed
 * **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)`.
 
