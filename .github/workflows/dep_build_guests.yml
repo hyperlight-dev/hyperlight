@@ -48,7 +48,7 @@ jobs:
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
       - name: Sysroot cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
         with:
           path: |
             src/tests/rust_guests/target/sysroot
