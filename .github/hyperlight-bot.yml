@@ -1,0 +1,8 @@
+# Configuration for the hyperlight-gh-bot GitHub App.
+# See: https://github.com/jprendes/hyperlight-gh-bot
+
+# Name of the artifact containing the comment body.
+artifact_name: "pr-comment"
+
+# Regex matched against the job name to filter which jobs trigger the bot.
+job_filter: "post-benchmark-comment"
