@@ -161,12 +161,22 @@ jobs:
     # and a skipped dependency transitively skips all downstream jobs.
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
+    strategy:
+      matrix:
+        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
+        arch: [X64, arm64]
+        exclude:
+        - arch: arm64
+          target: fuzz_guest_trace
+        - arch: arm64
+          target: fuzz_guest_estimate_trace_event
     uses: ./.github/workflows/dep_fuzzing.yml
-    with:
-      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
-      max_total_time: 300 # 5 minutes in seconds
-      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
     secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      max_total_time: 300 # 5 minutes in seconds
+      arch: ${{ matrix.arch }}
+      target: ${{ matrix.target }}
 
   spelling:
     name: spell check with typos
