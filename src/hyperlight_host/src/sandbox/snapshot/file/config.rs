@@ -20,7 +20,7 @@ use hyperlight_common::vmem::PAGE_SIZE;
 use serde::{Deserialize, Serialize};
 
 use super::media_types::SNAPSHOT_ABI_VERSION;
-use crate::hypervisor::regs::{CommonSegmentRegister, CommonSpecialRegisters, CommonTableRegister};
+use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::layout::SandboxMemoryLayout;
 
 // --- Arch and hypervisor identifiers --------------------------------
@@ -129,7 +129,7 @@ pub(super) struct OciSnapshotConfig {
     pub(super) entrypoint_addr: u64,
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
-    pub(super) sregs: Sregs,
+    pub(super) sregs: CommonSpecialRegisters,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -270,150 +270,6 @@ impl From<ReturnTypeRepr> for ReturnType {
             ReturnTypeRepr::Bool => Self::Bool,
             ReturnTypeRepr::Void => Self::Void,
             ReturnTypeRepr::VecBytes => Self::VecBytes,
-        }
-    }
-}
-
-/// Captured x86_64 special registers for a paused vCPU. Round-trips
-/// to/from [`CommonSpecialRegisters`] and is restored verbatim when
-/// resuming a `Call` entrypoint.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Sregs {
-    cs: SegmentRegister,
-    ds: SegmentRegister,
-    es: SegmentRegister,
-    fs: SegmentRegister,
-    gs: SegmentRegister,
-    ss: SegmentRegister,
-    tr: SegmentRegister,
-    ldt: SegmentRegister,
-    gdt: TableRegister,
-    idt: TableRegister,
-    cr0: u64,
-    cr2: u64,
-    // CR3 is recomputed at load from the reconstructed layout via
-    // `get_pt_base_gpa()`, so it is omitted to keep the config
-    // digest stable across re-snapshots of the same guest state.
-    cr4: u64,
-    cr8: u64,
-    efer: u64,
-    apic_base: u64,
-    interrupt_bitmap: [u64; 4],
-}
-
-/// Serde mirror of [`CommonSegmentRegister`].
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SegmentRegister {
-    base: u64,
-    limit: u32,
-    selector: u16,
-    type_: u8,
-    present: u8,
-    dpl: u8,
-    db: u8,
-    s: u8,
-    l: u8,
-    g: u8,
-    avl: u8,
-    unusable: u8,
-    padding: u8,
-}
-
-/// Serde mirror of [`CommonTableRegister`].
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TableRegister {
-    base: u64,
-    limit: u16,
-}
-
-// --- Conversions between repr and runtime types ---------------------
-
-impl From<&CommonSpecialRegisters> for Sregs {
-    fn from(s: &CommonSpecialRegisters) -> Self {
-        let seg = |r: &CommonSegmentRegister| SegmentRegister {
-            base: r.base,
-            limit: r.limit,
-            selector: r.selector,
-            type_: r.type_,
-            present: r.present,
-            dpl: r.dpl,
-            db: r.db,
-            s: r.s,
-            l: r.l,
-            g: r.g,
-            avl: r.avl,
-            unusable: r.unusable,
-            padding: r.padding,
-        };
-        let tab = |r: &CommonTableRegister| TableRegister {
-            base: r.base,
-            limit: r.limit,
-        };
-        Self {
-            cs: seg(&s.cs),
-            ds: seg(&s.ds),
-            es: seg(&s.es),
-            fs: seg(&s.fs),
-            gs: seg(&s.gs),
-            ss: seg(&s.ss),
-            tr: seg(&s.tr),
-            ldt: seg(&s.ldt),
-            gdt: tab(&s.gdt),
-            idt: tab(&s.idt),
-            cr0: s.cr0,
-            cr2: s.cr2,
-            cr4: s.cr4,
-            cr8: s.cr8,
-            efer: s.efer,
-            apic_base: s.apic_base,
-            interrupt_bitmap: s.interrupt_bitmap,
-        }
-    }
-}
-
-impl From<Sregs> for CommonSpecialRegisters {
-    fn from(r: Sregs) -> Self {
-        let seg = |s: SegmentRegister| CommonSegmentRegister {
-            base: s.base,
-            limit: s.limit,
-            selector: s.selector,
-            type_: s.type_,
-            present: s.present,
-            dpl: s.dpl,
-            db: s.db,
-            s: s.s,
-            l: s.l,
-            g: s.g,
-            avl: s.avl,
-            unusable: s.unusable,
-            padding: s.padding,
-        };
-        let tab = |t: TableRegister| CommonTableRegister {
-            base: t.base,
-            limit: t.limit,
-        };
-        Self {
-            cs: seg(r.cs),
-            ds: seg(r.ds),
-            es: seg(r.es),
-            fs: seg(r.fs),
-            gs: seg(r.gs),
-            ss: seg(r.ss),
-            tr: seg(r.tr),
-            ldt: seg(r.ldt),
-            gdt: tab(r.gdt),
-            idt: tab(r.idt),
-            cr0: r.cr0,
-            cr2: r.cr2,
-            cr3: 0,
-            cr4: r.cr4,
-            cr8: r.cr8,
-            efer: r.efer,
-            apic_base: r.apic_base,
-            interrupt_bitmap: r.interrupt_bitmap,
         }
     }
 }
@@ -585,10 +441,13 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 
     use super::*;
+    #[cfg(target_arch = "x86_64")]
+    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister};
 
     /// Build a `CommonSegmentRegister` whose every field holds a
     /// distinct value, so a transposed field in the `Sregs`
     /// conversion produces an inequality.
+    #[cfg(target_arch = "x86_64")]
     fn distinct_segment(start: u64) -> CommonSegmentRegister {
         CommonSegmentRegister {
             base: start,
@@ -607,6 +466,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn distinct_table(start: u64) -> CommonTableRegister {
         CommonTableRegister {
             base: start,
@@ -617,7 +477,8 @@ mod tests {
     /// Special registers with a unique value in every field, including
     /// a nonzero `cr3`.
     fn distinct_sregs() -> CommonSpecialRegisters {
-        CommonSpecialRegisters {
+        #[cfg(target_arch = "x86_64")]
+        let sr = CommonSpecialRegisters {
             cs: distinct_segment(10),
             ds: distinct_segment(30),
             es: distinct_segment(50),
@@ -636,20 +497,38 @@ mod tests {
             efer: 205,
             apic_base: 206,
             interrupt_bitmap: [207, 208, 209, 210],
-        }
+        };
+        #[cfg(target_arch = "aarch64")]
+        let sr = CommonSpecialRegisters {
+            ttbr0_el1: 10,
+            tcr_el1: 20,
+            mair_el1: 30,
+            sctlr_el1: 40,
+            cpacr_el1: 50,
+            vbar_el1: 60,
+            sp_el1: 60,
+        };
+        sr
     }
 
-    /// Round-tripping special registers through the serde mirror
-    /// preserves every field. `cr3` is the sole exception: it is
-    /// omitted from the config and recomputed at load, so it returns
-    /// as zero.
+    /// Round-tripping special registers through serde preserves every
+    /// field. `cr3` is the sole exception: it is omitted from the
+    /// config and recomputed at load, so it returns as zero.
     #[test]
     fn sregs_round_trip_preserves_all_fields_except_cr3() {
         let original = distinct_sregs();
-        let restored: CommonSpecialRegisters = Sregs::from(&original).into();
+        let serialized = serde_json::to_vec(&original).unwrap();
+        let restored: CommonSpecialRegisters = serde_json::from_slice(&serialized).unwrap();
 
         let mut expected = original;
-        expected.cr3 = 0;
+        #[cfg(target_arch = "x86_64")]
+        {
+            expected.cr3 = 0;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            expected.ttbr0_el1 = 0;
+        }
         assert_eq!(restored, expected);
     }
 

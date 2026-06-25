@@ -14,8 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonSpecialRegisters {
+    // When serializing for a snapshot, skip TTBRs which will be
+    // recomputed from the snapshot layout
+    #[serde(skip)]
     pub(crate) ttbr0_el1: u64,
     // todo: handle ttbr1 as well
     pub(crate) tcr_el1: u64,

@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
 #[cfg(mshv3)]
 use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::*;
 
@@ -47,7 +48,8 @@ mod amd64_consts {
 }
 use amd64_consts::*;
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonSpecialRegisters {
     pub cs: CommonSegmentRegister,
     pub ds: CommonSegmentRegister,
@@ -61,6 +63,11 @@ pub(crate) struct CommonSpecialRegisters {
     pub idt: CommonTableRegister,
     pub cr0: u64,
     pub cr2: u64,
+    // CR3 should not be serialised into a snapshot, because it is
+    // reconstructed from the snapshot's layout via
+    // `get_pt_base_gpa()`. Omitting it keeps the config digest stable
+    // across re-snapshots of the same state.
+    #[serde(skip)]
     pub cr3: u64,
     pub cr4: u64,
     pub cr8: u64,
@@ -373,7 +380,8 @@ impl TryFrom<&[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)]> for CommonSpec
 
 // --- Segment Register ---
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonSegmentRegister {
     pub base: u64,
     pub limit: u32,
@@ -537,7 +545,8 @@ impl From<CommonSegmentRegister> for WHV_REGISTER_VALUE {
 
 // --- Table Register ---
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonTableRegister {
     pub base: u64,
     pub limit: u16,

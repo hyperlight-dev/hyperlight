@@ -32,7 +32,7 @@ use oci_spec::image::{
     ImageManifestBuilder, MediaType, SCHEMA_VERSION,
 };
 
-use self::config::{Arch, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig, Sregs};
+use self::config::{Arch, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
@@ -41,7 +41,6 @@ use self::media_types::{
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
-use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
@@ -535,7 +534,7 @@ impl Snapshot {
 
     fn build_config(&self) -> crate::Result<OciSnapshotConfig> {
         let (entrypoint_addr, sregs) = match (self.entrypoint, self.sregs.as_ref()) {
-            (NextAction::Call(addr), Some(sregs)) => (addr, Sregs::from(sregs)),
+            (NextAction::Call(addr), Some(sregs)) => (addr, sregs),
             (NextAction::Call(_), None) => {
                 return Err(crate::new_error!(
                     "snapshot inconsistent: Call entrypoint must have sregs"
@@ -568,7 +567,7 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
-            sregs,
+            sregs: *sregs,
             layout: MemoryLayout {
                 input_data_size: l.input_data_size,
                 output_data_size: l.output_data_size,
@@ -831,7 +830,6 @@ impl Snapshot {
 
         // 8. Build entrypoint + sregs back from the config.
         let entrypoint = NextAction::Call(cfg.entrypoint_addr);
-        let sregs = Some(CommonSpecialRegisters::from(cfg.sregs));
 
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
@@ -853,7 +851,7 @@ impl Snapshot {
             memory,
             load_info: crate::mem::exe::LoadInfo::dummy(),
             stack_top_gva: cfg.stack_top_gva,
-            sregs,
+            sregs: Some(cfg.sregs),
             entrypoint,
             snapshot_generation,
             host_functions,
