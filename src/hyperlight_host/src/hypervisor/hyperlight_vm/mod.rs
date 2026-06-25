@@ -412,6 +412,13 @@ pub(crate) struct HyperlightVm {
     pub(super) trace_info: MemTraceInfo,
     #[cfg(crashdump)]
     pub(super) rt_cfg: SandboxRuntimeConfig,
+    /// Whether the paravirtualized guest clock should be armed for this
+    /// VM. Mirrors [`SandboxConfiguration::get_guest_clock`]; when `false`
+    /// the clock setup/stamp methods are no-ops so the guest sees
+    /// `ClockType::None` even though the `enable_guest_clock` feature is
+    /// compiled in.
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    pub(super) guest_clock_enabled: bool,
 }
 
 impl HyperlightVm {
@@ -577,6 +584,13 @@ impl HyperlightVm {
 
         use crate::mem::shared_mem::SharedMemory;
 
+        // If the sandbox config did not enable
+        // the guest clock, leave the bookkeeping page zero-filled so the
+        // guest decodes `ClockType::None`.
+        if !self.guest_clock_enabled {
+            return Ok(());
+        }
+
         let gpa = clock_page_gpa();
         let clock_type = self.vm.setup_pvclock(gpa)?;
 
@@ -633,6 +647,13 @@ impl HyperlightVm {
         };
 
         use crate::mem::shared_mem::SharedMemory;
+
+        // If the sandbox config did not enable
+        // the guest clock, leave the bookkeeping page zero-filled so the
+        // guest decodes `ClockType::None`.
+        if !self.guest_clock_enabled {
+            return Ok(());
+        }
 
         let gpa = clock_page_gpa();
         let clock_type = self.vm.setup_pvclock(gpa)?;

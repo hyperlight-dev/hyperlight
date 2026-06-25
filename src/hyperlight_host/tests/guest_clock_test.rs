@@ -21,8 +21,21 @@ limitations under the License.
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use hyperlight_host::sandbox::SandboxConfiguration;
+
 pub mod common;
-use crate::common::with_rust_sandbox;
+use crate::common::{with_rust_sandbox, with_rust_sandbox_cfg};
+
+/// Build a sandbox configuration with the paravirtualized guest clock
+/// enabled. The clock is opt-in even when the `enable_guest_clock`
+/// feature is compiled in, so every test that needs a live clock must
+/// flip this flag.
+fn clock_enabled_cfg() -> SandboxConfiguration {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_guest_clock(true);
+    cfg
+}
+
 /// Minimum real wait used by the monotonic advance test. Chosen large
 /// enough to dwarf any plausible CI scheduling jitter but small enough
 /// not to slow the test suite down noticeably.
@@ -58,15 +71,29 @@ const WALL_CLOCK_TIGHT_TOLERANCE: Duration = Duration::from_millis(20);
 
 #[test]
 fn clock_is_available_under_enable_guest_clock() {
-    with_rust_sandbox(|mut sbox| {
+    with_rust_sandbox_cfg(clock_enabled_cfg(), |mut sbox| {
         let available: i32 = sbox.call("ClockIsAvailable", ()).unwrap();
         assert_eq!(available, 1, "guest clock should be armed by the host");
     });
 }
 
+/// The guest clock is opt-in: with the `enable_guest_clock` feature
+/// compiled in but the config flag left at its default (`false`), the
+/// host must NOT arm the clock and the guest must see `ClockType::None`.
+#[test]
+fn clock_unavailable_when_flag_disabled() {
+    with_rust_sandbox(|mut sbox| {
+        let available: i32 = sbox.call("ClockIsAvailable", ()).unwrap();
+        assert_eq!(
+            available, 0,
+            "guest clock should be disabled when the config flag is not set"
+        );
+    });
+}
+
 #[test]
 fn monotonic_time_advances_across_calls() {
-    with_rust_sandbox(|mut sbox| {
+    with_rust_sandbox_cfg(clock_enabled_cfg(), |mut sbox| {
         let first: i64 = sbox.call("GetMonotonicTimeNs", ()).unwrap();
         assert!(first >= 0, "guest reported clock unavailable: {first}");
 
@@ -86,7 +113,7 @@ fn monotonic_time_advances_across_calls() {
 
 #[test]
 fn wall_clock_tracks_host_wall_clock() {
-    with_rust_sandbox(|mut sbox| {
+    with_rust_sandbox_cfg(clock_enabled_cfg(), |mut sbox| {
         let guest_ns: i64 = sbox.call("GetWallClockTimeNs", ()).unwrap();
         assert!(
             guest_ns >= 0,
@@ -112,7 +139,7 @@ fn wall_clock_tracks_host_wall_clock() {
 /// frozen instant from when the snapshot was taken.
 #[test]
 fn wall_clock_advances_across_snapshot_restore() {
-    with_rust_sandbox(|mut sbox| {
+    with_rust_sandbox_cfg(clock_enabled_cfg(), |mut sbox| {
         let snapshot = sbox.snapshot().unwrap();
 
         let before: i64 = sbox.call("GetWallClockTimeNs", ()).unwrap();
@@ -160,7 +187,7 @@ fn wall_clock_advances_across_snapshot_restore() {
 /// offset. This one will not.
 #[test]
 fn wall_clock_does_not_drift_after_idle() {
-    with_rust_sandbox(|mut sbox| {
+    with_rust_sandbox_cfg(clock_enabled_cfg(), |mut sbox| {
         thread::sleep(IDLE_BEFORE_FIRST_CALL);
 
         let guest_ns: i64 = sbox.call("GetWallClockTimeNs", ()).unwrap();

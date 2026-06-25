@@ -168,6 +168,8 @@ impl HyperlightVm {
             trace_info,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+            guest_clock_enabled: config.get_guest_clock(),
         };
 
         ret.update_snapshot_mapping(snapshot_mem)?;

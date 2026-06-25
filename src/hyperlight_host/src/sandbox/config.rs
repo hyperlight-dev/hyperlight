@@ -74,6 +74,9 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// Should the guest be provided with a paravirtualized clock?
+    #[cfg(feature = "enable_guest_clock")]
+    guest_clock_enabled: bool,
 }
 
 impl SandboxConfiguration {
@@ -106,6 +109,7 @@ impl SandboxConfiguration {
         interrupt_vcpu_sigrtmin_offset: u8,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
         #[cfg(crashdump)] guest_core_dump: bool,
+        #[cfg(feature = "enable_guest_clock")] guest_clock_enabled: bool,
     ) -> Self {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
@@ -118,6 +122,8 @@ impl SandboxConfiguration {
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
+            #[cfg(feature = "enable_guest_clock")]
+            guest_clock_enabled,
         }
     }
 
@@ -239,6 +245,18 @@ impl SandboxConfiguration {
         self.heap_size_override_opt()
             .unwrap_or(Self::DEFAULT_HEAP_SIZE)
     }
+    /// Enable or disable the paravirtualized clock for the guest.
+    #[cfg(feature = "enable_guest_clock")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_guest_clock(&mut self, enable: bool) {
+        self.guest_clock_enabled = enable;
+    }
+    /// Get whether the paravirtualized clock is enabled for the guest.
+    #[cfg(feature = "enable_guest_clock")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_clock(&self) -> bool {
+        self.guest_clock_enabled
+    }
 }
 
 impl Default for SandboxConfiguration {
@@ -255,6 +273,8 @@ impl Default for SandboxConfiguration {
             None,
             #[cfg(crashdump)]
             true,
+            #[cfg(feature = "enable_guest_clock")]
+            false,
         )
     }
 }
@@ -280,6 +300,8 @@ mod tests {
             None,
             #[cfg(crashdump)]
             true,
+            #[cfg(feature = "enable_guest_clock")]
+            false,
         );
 
         let heap_size = cfg.get_heap_size();
@@ -308,6 +330,8 @@ mod tests {
             None,
             #[cfg(crashdump)]
             true,
+            #[cfg(feature = "enable_guest_clock")]
+            false,
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
