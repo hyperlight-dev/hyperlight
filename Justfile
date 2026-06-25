@@ -8,7 +8,7 @@ bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
 nightly-toolchain := "nightly-2026-02-27"
 # Pinned cargo-hyperlight version used to build the guest sysroot. Keep this in
 # lockstep with the version pinned in flake.nix.
-cargo-hyperlight-version := "0.1.11"
+cargo-hyperlight-version := "0.1.12"
 
 ################
 ### cross-rs ###
