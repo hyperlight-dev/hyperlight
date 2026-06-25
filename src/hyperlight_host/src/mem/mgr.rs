@@ -158,6 +158,11 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
+    /// Absolute GPA of the currently-active root table. For
+    /// multi-root guests, `set_root` switches which root subsequent
+    /// `vmem::map` / `vmem::space_aware_map` calls target — typically
+    /// to an address previously returned by `alloc_table`.
+    root: std::cell::Cell<u64>,
 }
 
 impl vmem::TableReadOps for GuestPageTableBuffer {
@@ -191,7 +196,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
     }
 
     fn root_table(&self) -> u64 {
-        self.phys_base as u64
+        self.root.get()
     }
 }
 
@@ -228,13 +233,33 @@ impl core::convert::AsRef<GuestPageTableBuffer> for GuestPageTableBuffer {
 
 impl GuestPageTableBuffer {
     /// Create a new buffer with an initial zeroed root table at
-    /// `phys_base`.
+    /// `phys_base`. The returned buffer's current root is `phys_base`;
+    /// additional roots can be obtained by calling `alloc_table`.
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
+            root: std::cell::Cell::new(phys_base as u64),
         }
     }
+
+    /// Switch the active root. `addr` must have been obtained either
+    /// as the initial root GPA (`phys_base`) or via `alloc_table`.
+    pub(crate) fn set_root(&self, addr: u64) {
+        self.root.set(addr);
+    }
+
+    /// GPA of the initial root allocated by `new`.
+    pub(crate) fn initial_root(&self) -> u64 {
+        self.phys_base as u64
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn size(&self) -> usize {
+        self.buffer.borrow().len()
+    }
+
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
         self.buffer.into_inner().into_boxed_slice()
     }
@@ -272,7 +297,7 @@ where
     pub(crate) fn snapshot(
         &mut self,
         mapped_regions: Vec<MemoryRegion>,
-        root_pt_gpa: u64,
+        root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
@@ -285,7 +310,7 @@ where
             self.layout,
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
-            root_pt_gpa,
+            root_pt_gpas,
             rsp_gva,
             sregs,
             entrypoint,

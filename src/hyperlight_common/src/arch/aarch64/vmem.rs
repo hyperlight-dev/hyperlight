@@ -46,6 +46,29 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     core::iter::empty()
 }
 
+/// Stub — see [`crate::vmem::walk_va_spaces`].
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn walk_va_spaces<Op: TableReadOps>(
+    _op: &Op,
+    _roots: &[Op::TableAddr],
+    _address: u64,
+    _len: u64,
+) -> ::alloc::vec::Vec<(
+    crate::vmem::SpaceId,
+    ::alloc::vec::Vec<crate::vmem::SpaceAwareMapping>,
+)> {
+    ::alloc::vec::Vec::new()
+}
+
+/// Stub — see [`crate::vmem::space_aware_map`].
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn space_aware_map<Op: TableOps>(
+    _op: &Op,
+    _ref_map: crate::vmem::SpaceReferenceMapping,
+    _built_roots: &::alloc::collections::BTreeMap<crate::vmem::SpaceId, Op::TableAddr>,
+) {
+}
+
 pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {}
 impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
     for crate::vmem::MayMoveTable

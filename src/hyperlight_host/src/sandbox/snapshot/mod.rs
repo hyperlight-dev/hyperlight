@@ -17,13 +17,15 @@ limitations under the License.
 mod file;
 mod file_tests;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub use file::reference::{OciDigest, OciReference, OciTag};
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
-use hyperlight_common::vmem::{BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE};
+use hyperlight_common::vmem::{
+    BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId, TableOps,
+};
 use tracing::{Span, instrument};
 
 use crate::Result;
@@ -386,7 +388,7 @@ impl Snapshot {
         mut layout: SandboxMemoryLayout,
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
-        root_pt_gpa: u64,
+        root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
@@ -397,61 +399,127 @@ impl Snapshot {
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
-                let op = SharedMemoryPageTableBuffer::new(snap_c, scratch_c, layout, root_pt_gpa);
+                // Phase 1: walk every PT root together. This detects
+                // aliased intermediate tables (e.g. Nanvix's kernel-
+                // half PTs, which multiple process PDs share by
+                // pointing at the same PT page). The walker emits
+                // `ThisSpace(leaf)` for private leaves and
+                // `AnotherSpace(ref)` for sub-trees that were already
+                // seen via an earlier root. Results are returned in
+                // `root_pt_gpas` order — which is also the topological
+                // order of the `AnotherSpace` references — so
+                // processing in iteration order is safe.
+                let op = SharedMemoryPageTableBuffer::new(
+                    snap_c,
+                    scratch_c,
+                    layout,
+                    root_pt_gpas.first().copied().unwrap_or(0),
+                );
                 let walk = unsafe {
-                    vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
+                    vmem::walk_va_spaces(
+                        &op,
+                        root_pt_gpas,
+                        0,
+                        hyperlight_common::layout::MAX_GVA as u64,
+                    )
                 };
 
-                // Phase 2: rebuild page tables for the current root,
-                // compacting leaves into a dense snapshot blob.
+                // Phase 2: rebuild each space's page tables, compacting
+                // `ThisSpace` leaves into a dense snapshot blob and
+                // linking `AnotherSpace` entries to already-built
+                // spaces' tables.
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
-                for mapping in walk {
-                    // Drop the scratch region and (on amd64) the
-                    // snapshot's own PT self-map; both are re-mapped
-                    // freshly by `map_specials`.
-                    if skip_virt(mapping.virt_base, scratch_gva) {
-                        continue;
-                    }
-                    let Some(contents) = (unsafe {
-                        guest_page(snap_c, scratch_c, &regions, layout, mapping.phys_base)
-                    }) else {
-                        continue;
-                    };
-
-                    // Writable pages become CoW in the rebuilt
-                    // snapshot; read-only pages stay read-only.
-                    let kind = match mapping.kind {
-                        MappingKind::Cow(cm) => MappingKind::Cow(cm),
-                        MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
-                            readable: bm.readable,
-                            executable: bm.executable,
-                        }),
-                        MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
-                            readable: bm.readable,
-                            writable: false,
-                            executable: bm.executable,
-                        }),
-                        MappingKind::Unmapped => continue,
-                    };
-                    let new_gpa = phys_seen.entry(mapping.phys_base).or_insert_with(|| {
-                        let new_offset = snapshot_memory.len();
-                        snapshot_memory.extend(contents);
-                        new_offset + SandboxMemoryLayout::BASE_ADDRESS
-                    });
-
-                    let compacted = Mapping {
-                        phys_base: *new_gpa as u64,
-                        virt_base: mapping.virt_base,
-                        len: PAGE_SIZE as u64,
-                        kind,
-                    };
-                    unsafe { vmem::map(&pt_buf, compacted) };
+                // Allocate one root table per space and remember the
+                // addresses returned by `alloc_table` instead of
+                // assuming the buffer's physical layout.
+                let mut root_addrs: Vec<u64> = Vec::with_capacity(root_pt_gpas.len());
+                root_addrs.push(pt_buf.initial_root());
+                for _ in 1..root_pt_gpas.len() {
+                    root_addrs.push(unsafe { pt_buf.alloc_table() });
                 }
 
-                // Phase 3: map the scratch region.
-                map_specials(&pt_buf, layout.get_scratch_size());
+                let mut built_roots: BTreeMap<SpaceId, u64> = BTreeMap::new();
+                for (root_idx, (space_id, mappings)) in walk.into_iter().enumerate() {
+                    pt_buf.set_root(root_addrs[root_idx]);
+                    built_roots.insert(space_id, root_addrs[root_idx]);
+
+                    for sam in mappings {
+                        match sam {
+                            SpaceAwareMapping::ThisSpace(mapping) => {
+                                // Drop the scratch region and (on
+                                // amd64) the snapshot's own PT
+                                // self-map; both are re-mapped
+                                // freshly by `map_specials`.
+                                if skip_virt(mapping.virt_base, scratch_gva) {
+                                    continue;
+                                }
+                                let Some(contents) = (unsafe {
+                                    guest_page(
+                                        snap_c,
+                                        scratch_c,
+                                        &regions,
+                                        layout,
+                                        mapping.phys_base,
+                                    )
+                                }) else {
+                                    continue;
+                                };
+
+                                // Writable pages become CoW in the
+                                // rebuilt snapshot; read-only pages
+                                // stay read-only.
+                                let kind = match mapping.kind {
+                                    MappingKind::Cow(cm) => MappingKind::Cow(cm),
+                                    MappingKind::Basic(bm) if bm.writable => {
+                                        MappingKind::Cow(CowMapping {
+                                            readable: bm.readable,
+                                            executable: bm.executable,
+                                        })
+                                    }
+                                    MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
+                                        readable: bm.readable,
+                                        writable: false,
+                                        executable: bm.executable,
+                                    }),
+                                    MappingKind::Unmapped => continue,
+                                };
+                                let new_gpa =
+                                    phys_seen.entry(mapping.phys_base).or_insert_with(|| {
+                                        let new_offset = snapshot_memory.len();
+                                        snapshot_memory.extend(contents);
+                                        new_offset + SandboxMemoryLayout::BASE_ADDRESS
+                                    });
+
+                                let compacted = Mapping {
+                                    phys_base: *new_gpa as u64,
+                                    virt_base: mapping.virt_base,
+                                    len: PAGE_SIZE as u64,
+                                    kind,
+                                };
+                                unsafe { vmem::map(&pt_buf, compacted) };
+                            }
+                            SpaceAwareMapping::AnotherSpace(ref_map) => {
+                                // Link to the owning space's already-
+                                // rebuilt intermediate table — this
+                                // is what preserves Nanvix's
+                                // kernel-half-shared invariant across
+                                // process PDs after relocation.
+                                unsafe {
+                                    vmem::space_aware_map(&pt_buf, ref_map, &built_roots);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Phase 3: Map the scratch region into each root.
+                for &root_addr in &root_addrs {
+                    pt_buf.set_root(root_addr);
+                    map_specials(&pt_buf, layout.get_scratch_size());
+                }
+                pt_buf.set_root(pt_buf.initial_root());
 
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
@@ -674,7 +742,7 @@ mod tests {
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),
-            pt_base,
+            &[pt_base],
             0,
             default_sregs(),
             super::NextAction::None,
@@ -691,7 +759,7 @@ mod tests {
             mgr.layout,
             LoadInfo::dummy(),
             Vec::new(),
-            pt_base,
+            &[pt_base],
             0,
             default_sregs(),
             super::NextAction::None,
