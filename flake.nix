@@ -112,14 +112,21 @@
             rustc = toolchains.stable.rust;
           };
 
-          manifests = [
-            "Cargo.toml"
-            "src/tests/rust_guests/Cargo.toml"
-          ];
-          manifestDeps = builtins.map (manifest:
+          manifests = {
+            "Cargo.toml" = {
+              outputHashes = {
+                "piet-0.8.0" = "sha256-yHF0axor+uaGC0RYhw1JmjvFLVTYZkTx1XzDtuN2KIk=";
+              };
+            };
+            "src/tests/rust_guests/Cargo.toml" = {
+            };
+          };
+          manifestDeps = lib.mapAttrsToList (manifest: importArguments:
             let lockPath = builtins.replaceStrings [ "toml" ] [ "lock" ] manifest; in
             let lockFile = ./${lockPath}; in
-            rust-platform.importCargoLock { inherit lockFile; }) manifests;
+            rust-platform.importCargoLock ({
+              inherit lockFile;
+            } // importArguments)) manifests;
           # when building a guest with cargo-hyperlight, or when
           # building a miri sysroot for the main workspace, we need to
           # include any crates.io dependencies of the standard library
@@ -144,7 +151,7 @@
           # like `cargo clippy` and `cargo hyperlight` (see
           # https://github.com/rust-lang/cargo/issues/11031).
           materialiseDeps = let
-            sortedManifests = lib.lists.sort (p: q: p > q) manifests;
+            sortedManifests = lib.lists.sort (p: q: p > q) (lib.attrNames manifests);
             matchClause = path: ''  */${path}) root="''${manifest%${path}}" ;;'';
             matchClauses = lib.strings.concatStringsSep "\n"
               (builtins.map matchClause sortedManifests);
