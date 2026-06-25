@@ -53,6 +53,9 @@ jobs:
           shared-key: "${{ runner.os }}-debug"
           cache-on-failure: "true"
 
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
       - name: Build guest binaries
         run: just guests
 

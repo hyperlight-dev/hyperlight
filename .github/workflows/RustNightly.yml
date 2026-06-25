@@ -73,6 +73,9 @@ jobs:
             . -> target
             src/tests/rust_guests -> target
 
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
       - name: Install cargo-hyperlight
         run: just ensure-cargo-hyperlight
 
@@ -90,7 +93,7 @@ jobs:
         run: just build ${{ matrix.config }}
 
       - name: Run Miri tests
-        run: just miri-tests
+        run: env -u RUSTC_WRAPPER just miri-tests
 
       - name: Run Rust tests
         run: |

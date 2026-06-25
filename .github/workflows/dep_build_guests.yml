@@ -66,6 +66,9 @@ jobs:
             . -> target
             src/tests/rust_guests -> target
 
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
       - name: Install cargo-hyperlight
         run: just ensure-cargo-hyperlight
 

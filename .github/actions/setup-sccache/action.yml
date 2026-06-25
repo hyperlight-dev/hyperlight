@@ -1,0 +1,14 @@
+name: Set up sccache
+description: Install sccache and enable the GitHub Actions cache backend for Rust builds.
+
+runs:
+  using: composite
+  steps:
+    - name: sccache
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+
+    - name: Configure sccache for Rust
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
