@@ -413,7 +413,11 @@ fn arch_mismatch_rejected() {
         .unwrap();
 
     rewrite_config(&path, |cfg| {
-        cfg["arch"] = Value::from("aarch64");
+        cfg["arch"] = Value::from(if cfg!(target_arch = "x86_64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        });
     });
 
     let err = unwrap_err_snapshot(Snapshot::checked_load(
@@ -1759,7 +1763,11 @@ fn load_round_trips() {
 fn load_still_validates_config_fields() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
-        cfg["arch"] = Value::from("aarch64");
+        cfg["arch"] = Value::from(if cfg!(target_arch = "x86_64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        });
     });
     let err = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
     let msg = format!("{}", err);
