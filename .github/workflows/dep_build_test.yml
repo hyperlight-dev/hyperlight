@@ -118,6 +118,38 @@ jobs:
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
+      - name: Run no-surrogate VM tests (WHP only)
+        if: runner.os == 'Windows'
+        env:
+          HYPERLIGHT_MAX_SURROGATES: "0"
+          HYPERLIGHT_INITIAL_SURROGATES: "0"
+        run: |
+          PROFILE=${{ inputs.config == 'debug' && 'dev' || inputs.config }}
+          # Verify each expected test actually ran (guards against silent
+          # renames where cargo test exits 0 with 0 matches).
+          # NOTE: keep in sync with `just test-no-surrogate`.
+          assert_ran() {
+            local output="$1"; shift
+            for name in "$@"; do
+              if ! echo "$output" | grep -q "$name \.\.\. ok"; then
+                echo "::error::Expected test '$name' did not run — may have been renamed"
+                return 1
+              fi
+            done
+          }
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- no_surrogate_tests --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" single_vm_lifecycle
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test integration_test -- guest_malloc guest_panic corrupt_output_size_prefix_rejected --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" guest_malloc guest_panic corrupt_output_size_prefix_rejected
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test sandbox_host_tests -- --exact callback_test float_roundtrip --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" callback_test float_roundtrip
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot
+
       - name: Run Rust tests with hw-interrupts
         run: |
           # with hw-interrupts feature enabled (+ explicit driver on Linux)

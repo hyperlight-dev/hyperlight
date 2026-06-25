@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use std::os::raw::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyperlight_common::outb::VmAction;
 #[cfg(feature = "trace_guest")]
@@ -37,7 +38,9 @@ use crate::hypervisor::regs::{
     WHP_SREGS_NAMES_LEN,
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
-use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+use crate::hypervisor::surrogate_process_manager::{
+    get_surrogate_process_manager, surrogates_disabled,
+};
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
@@ -87,25 +90,62 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
     }
 }
 
+/// When surrogates are disabled (`HYPERLIGHT_MAX_SURROGATES=0`), only one WHP
+/// partition can exist per process. This flag enforces that constraint and is
+/// cleared when the `NoSurrogateGuard` stored on the `WhpVm` is dropped.
+static NO_SURROGATE_VM_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that sets `NO_SURROGATE_VM_ACTIVE` on creation and clears
+/// it on drop. Stored as a field on `WhpVm` so the flag stays set for
+/// exactly the lifetime of the VM.
+#[derive(Debug)]
+struct NoSurrogateGuard;
+
+impl NoSurrogateGuard {
+    fn acquire() -> Result<Self, CreateVmError> {
+        if NO_SURROGATE_VM_ACTIVE.swap(true, Ordering::SeqCst) {
+            return Err(CreateVmError::SurrogateProcess(
+                "HYPERLIGHT_MAX_SURROGATES=0 limits the process to a single VM; \
+                 a VM is already active"
+                    .into(),
+            ));
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for NoSurrogateGuard {
+    fn drop(&mut self) {
+        NO_SURROGATE_VM_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
-    // Surrogate process for memory mapping
-    surrogate_process: SurrogateProcess,
+    // Surrogate process for memory mapping. `None` when surrogates are
+    // disabled (`HYPERLIGHT_MAX_SURROGATES=0`), in which case
+    // `WHvMapGpaRange` is used instead of `WHvMapGpaRange2`.
+    surrogate_process: Option<SurrogateProcess>,
     /// Tracks host-side file mappings (view_base, mapping_handle) for
     /// cleanup on unmap or drop. Only populated for MappedFile regions.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
+    /// RAII guard that clears `NO_SURROGATE_VM_ACTIVE` when this VM is
+    /// dropped. `None` when surrogates are enabled.
+    _no_surrogate_guard: Option<NoSurrogateGuard>,
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
 }
 
-// Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
-// `allocated_address` (*mut c_void). This pointer represents a memory mapped view address
-// in the surrogate process. It is never dereferenced, only used for address arithmetic and
-// resource management (unmapping). This is a system resource that is not bound to the creating
-// thread and can be safely transferred between threads.
+// Safety: `WhpVm` is !Send because it holds `Option<SurrogateProcess>` which
+// contains a raw pointer `allocated_address` (*mut c_void). This pointer
+// represents a memory mapped view address in the surrogate process. It is
+// never dereferenced, only used for address arithmetic and resource management
+// (unmapping). This is a system resource that is not bound to the creating
+// thread and can be safely transferred between threads. When the `Option` is
+// `None` (surrogates disabled), no such pointer exists.
 // `file_mappings` contains raw pointers that are also kernel resource handles,
 // safe to use from any thread.
 unsafe impl Send for WhpVm {}
@@ -113,6 +153,13 @@ unsafe impl Send for WhpVm {}
 impl WhpVm {
     pub(crate) fn new() -> Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
+
+        let no_surrogate = surrogates_disabled();
+        let no_surrogate_guard = if no_surrogate {
+            Some(NoSurrogateGuard::acquire()?)
+        } else {
+            None
+        };
 
         let partition = unsafe {
             #[cfg(feature = "hw-interrupts")]
@@ -134,25 +181,28 @@ impl WhpVm {
             WHvCreateVirtualProcessor(p, 0, 0)
                 .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
 
-            // Initialize the LAPIC via the bulk interrupt-controller
-            // state API (individual APIC register writes via
-            // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
             #[cfg(feature = "hw-interrupts")]
             Self::init_lapic_bulk(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
 
             p
         };
 
-        let mgr = get_surrogate_process_manager()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-        let surrogate_process = mgr
-            .get_surrogate_process()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+        let surrogate_process = if no_surrogate {
+            None
+        } else {
+            let mgr = get_surrogate_process_manager()
+                .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+            Some(
+                mgr.get_surrogate_process()
+                    .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?,
+            )
+        };
 
         Ok(WhpVm {
             partition,
             surrogate_process,
             file_mappings: Vec::new(),
+            _no_surrogate_guard: no_surrogate_guard,
             #[cfg(feature = "hw-interrupts")]
             timer: None,
         })
@@ -183,18 +233,6 @@ impl VirtualMachine for WhpVm {
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
     ) -> Result<(), MapMemoryError> {
-        // Calculate the surrogate process address for this region
-        let surrogate_base = self
-            .surrogate_process
-            .map(
-                region.host_region.start.from_handle,
-                region.host_region.start.handle_base,
-                region.host_region.start.handle_size,
-                &region.region_type.surrogate_mapping(),
-            )
-            .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
-        let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
-
         let flags = region
             .flags
             .iter()
@@ -212,32 +250,71 @@ impl VirtualMachine for WhpVm {
             .iter()
             .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
 
-        let whvmapgparange2_func = unsafe {
-            match try_load_whv_map_gpa_range2() {
-                Ok(func) => func,
-                Err(e) => {
-                    return Err(MapMemoryError::LoadApi {
-                        api_name: "WHvMapGpaRange2",
-                        source: e,
-                    });
+        match &mut self.surrogate_process {
+            None => {
+                let host_addr = (region.host_region.start.handle_base
+                    + region.host_region.start.offset)
+                    as *const c_void;
+                let res = unsafe {
+                    WHvMapGpaRange(
+                        self.partition,
+                        host_addr,
+                        region.guest_region.start as u64,
+                        region.guest_region.len() as u64,
+                        flags,
+                    )
+                };
+                if let Err(e) = res {
+                    return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(e)));
                 }
             }
-        };
+            Some(surrogate) => {
+                // Calculate the surrogate process address for this region
+                let surrogate_base = surrogate
+                    .map(
+                        region.host_region.start.from_handle,
+                        region.host_region.start.handle_base,
+                        region.host_region.start.handle_size,
+                        &region.region_type.surrogate_mapping(),
+                    )
+                    .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
+                let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
 
-        let res = unsafe {
-            whvmapgparange2_func(
-                self.partition,
-                self.surrogate_process.process_handle.into(),
-                surrogate_addr,
-                region.guest_region.start as u64,
-                region.guest_region.len() as u64,
-                flags,
-            )
-        };
-        if res.is_err() {
-            return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(
-                windows_result::Error::from_hresult(res),
-            )));
+                // This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll
+                // WHvMapGpaRange2 only available on Windows 11 or Windows Server 2022 and later
+                // we do things this way to allow a user trying to load hyperlight on an older version of windows to
+                // get an error message saying that hyperlight requires a newer version of windows, rather than just failing
+                // with an error about a missing entrypoint
+                // This function should always succeed since before we get here we have already checked that the hypervisor is present and
+                // that we are on a supported version of windows.
+                let whvmapgparange2_func = unsafe {
+                    match try_load_whv_map_gpa_range2() {
+                        Ok(func) => func,
+                        Err(e) => {
+                            return Err(MapMemoryError::LoadApi {
+                                api_name: "WHvMapGpaRange2",
+                                source: e,
+                            });
+                        }
+                    }
+                };
+
+                let res = unsafe {
+                    whvmapgparange2_func(
+                        self.partition,
+                        surrogate.process_handle.into(),
+                        surrogate_addr,
+                        region.guest_region.start as u64,
+                        region.guest_region.len() as u64,
+                        flags,
+                    )
+                };
+                if res.is_err() {
+                    return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(
+                        windows_result::Error::from_hresult(res),
+                    )));
+                }
+            }
         }
 
         // Track host-side file mappings for cleanup on unmap or drop.
@@ -263,8 +340,9 @@ impl VirtualMachine for WhpVm {
             )
             .map_err(|e| UnmapMemoryError::Hypervisor(HypervisorError::WindowsError(e)))?;
         }
-        self.surrogate_process
-            .unmap(region.host_region.start.handle_base);
+        if let Some(surrogate) = &mut self.surrogate_process {
+            surrogate.unmap(region.host_region.start.handle_base);
+        }
 
         // Clean up host-side file mapping resources for MappedFile regions.
         if region.region_type == MemoryRegionType::MappedFile {
@@ -1162,6 +1240,51 @@ unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange
     }
 
     unsafe { Ok(std::mem::transmute_copy(&address)) }
+}
+
+#[cfg(test)]
+mod no_surrogate_tests {
+    use super::*;
+
+    /// Requires `HYPERLIGHT_MAX_SURROGATES=0` to exercise the no-surrogate
+    /// path. Skips automatically when surrogates are enabled.
+    /// Run via: `HYPERLIGHT_MAX_SURROGATES=0 HYPERLIGHT_INITIAL_SURROGATES=0 \
+    ///           cargo test -p hyperlight-host --release --lib no_surrogate_tests \
+    ///           -- --test-threads=1`
+    #[test]
+    fn single_vm_lifecycle() {
+        if !surrogates_disabled() {
+            eprintln!("SKIP: HYPERLIGHT_MAX_SURROGATES != 0");
+            return;
+        }
+
+        // Reset the flag in case a prior test in this process already set it.
+        NO_SURROGATE_VM_ACTIVE.store(false, Ordering::SeqCst);
+
+        // 1. First VM should succeed.
+        let vm1 = WhpVm::new();
+        assert!(vm1.is_ok(), "first VM should succeed: {:?}", vm1.err());
+
+        // 2. Second concurrent VM should fail with a clear error.
+        let vm2 = WhpVm::new();
+        assert!(vm2.is_err(), "second concurrent VM should be rejected");
+        let err_msg = format!("{:?}", vm2.unwrap_err());
+        assert!(
+            err_msg.contains("single VM"),
+            "error should mention single-VM constraint, got: {err_msg}"
+        );
+
+        // 3. Drop the first VM…
+        drop(vm1);
+
+        // 4. …then creating a new one should succeed (sequential reuse).
+        let vm3 = WhpVm::new();
+        assert!(
+            vm3.is_ok(),
+            "sequential VM after drop should succeed: {:?}",
+            vm3.err()
+        );
+    }
 }
 
 #[cfg(test)]
