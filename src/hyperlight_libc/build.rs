@@ -287,6 +287,7 @@ fn cargo_main() -> Result<()> {
 
     build.compile("hyperlight_libc");
     copy_includes(&include_dir, picolibc_dir.join("libc/include"))?;
+    copy_includes(&include_dir, picolibc_dir.join("libc/stdio"))?;
     copy_includes(&include_dir, manifest_dir.join("include"))?;
 
     // Generate bindings using bindgen
