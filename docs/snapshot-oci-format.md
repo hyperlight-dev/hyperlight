@@ -32,9 +32,10 @@ Three blob kinds per tag:
   pointer record selected via `index.json`. References one config and
   one layer by digest.
 * **config** (`application/vnd.hyperlight.snapshot.config.v1+json`). The
-  snapshot descriptor: arch, hypervisor, ABI version, resume address
-  and captured registers, memory layout, registered host functions,
-  snapshot generation counter. Loaded eagerly and fully parsed.
+  snapshot descriptor: arch, hypervisor, CPU vendor, ABI version,
+  resume address and captured registers, memory layout, registered
+  host functions, snapshot generation counter. Loaded eagerly and
+  fully parsed.
 * **layer / memory** (`application/vnd.hyperlight.snapshot.memory.v1`).
   The raw guest memory image, exactly `memory_size` bytes. mmap'd on
   restore.
@@ -48,8 +49,9 @@ A single saved `Snapshot` consists of exactly:
 
 * one entry in `index.json`, carrying the `tag` as
   `org.opencontainers.image.ref.name`, plus advisory
-  `dev.hyperlight.snapshot.arch` and
-  `dev.hyperlight.snapshot.hypervisor` annotations that mirror the
+  `dev.hyperlight.snapshot.arch`,
+  `dev.hyperlight.snapshot.hypervisor`, and
+  `dev.hyperlight.snapshot.cpu.vendor` annotations that mirror the
   config blob for tooling visibility,
 * one **manifest** blob (referenced by that index entry),
 * one **config** blob (referenced by the manifest's `config` field),
@@ -103,8 +105,8 @@ the manifest, config, or snapshot blobs against their sha256 digests.
 digest returned by `save`. `Snapshot::checked_load` adds the digest
 check on those three blobs, catching accidental corruption on disk.
 Both run every other check (OCI structure, descriptor sizes, schema
-versions, arch / hypervisor / ABI tags, layout bounds, entrypoint
-bounds). The caller is responsible for trusting the source.
+versions, arch / hypervisor / CPU vendor / ABI tags, layout bounds,
+entrypoint bounds). The caller is responsible for trusting the source.
 
 A reference that matches no manifest, or a tag that matches more than
 one manifest in `index.json`, is rejected.
@@ -113,7 +115,12 @@ one manifest in `index.json`, is rejected.
 
 ## Portability
 
-Snapshot images are bound to a specific CPU architecture and
-hypervisor. Both are recorded in the config blob and checked at load
-time, with mismatches rejected with a clear error. The hypervisor
-tag (`kvm`, `mshv`, `whp`) constrains the host OS.
+Snapshot images are bound to a specific CPU architecture, hypervisor,
+and CPU vendor. All three are recorded in the config blob and checked
+at load time, with mismatches rejected with a clear error. The
+hypervisor tag (`kvm`, `mshv`, `whp`) constrains the host OS. The CPU
+vendor is the x86_64 CPUID leaf-0 vendor string (e.g. `GenuineIntel`)
+or the aarch64 `MIDR_EL1` implementer byte. A load on a different
+vendor is rejected because the resumed CPU state can be incompatible.
+A future version may relax this binding once a wider compatibility set
+is proven safe.
