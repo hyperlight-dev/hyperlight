@@ -420,6 +420,16 @@ impl MultiUseSandbox {
             .vm
             .get_root_pt()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let root_pt_gpas = if let Some(finder) = &self.pt_root_finder {
+            let roots = self.mem_mgr.shared_mem.with_contents(|snap| {
+                self.mem_mgr
+                    .scratch_mem
+                    .with_contents(|scratch| finder(snap, scratch, cr3))
+            })??;
+            if roots.is_empty() { vec![cr3] } else { roots }
+        } else {
+            vec![cr3]
+        };
 
         let stack_top_gpa = self.vm.get_stack_top();
         let sregs = self
@@ -442,7 +452,7 @@ impl MultiUseSandbox {
 
         let memory_snapshot = self.mem_mgr.snapshot(
             mapped_regions_vec,
-            cr3,
+            &root_pt_gpas,
             stack_top_gpa,
             sregs,
             Some(regs),
@@ -609,13 +619,13 @@ impl MultiUseSandbox {
         if let Some(regs) = snapshot.regs() {
             self.vm.restore_regs(regs).map_err(|e| {
                 self.poisoned = true;
-                HyperlightVmError::Restore(e)
+                crate::new_error!("failed to restore registers: {}", e)
             })?;
         }
         if let Some(fpu) = snapshot.fpu() {
             self.vm.restore_fpu(fpu).map_err(|e| {
                 self.poisoned = true;
-                HyperlightVmError::Restore(e)
+                crate::new_error!("failed to restore FPU state: {}", e)
             })?;
         }
 

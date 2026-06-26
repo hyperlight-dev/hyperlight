@@ -18,8 +18,10 @@ limitations under the License.
 use kvm_bindings::kvm_regs;
 #[cfg(mshv3)]
 use mshv_bindings::StandardRegisters;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonRegisters {
     pub rax: u64,
     pub rbx: u64,

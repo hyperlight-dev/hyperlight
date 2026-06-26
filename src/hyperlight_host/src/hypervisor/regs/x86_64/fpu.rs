@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use kvm_bindings::kvm_fpu;
 #[cfg(mshv3)]
 use mshv_bindings::FloatingPointUnit;
+use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
 use super::Align16;
@@ -30,8 +31,13 @@ use crate::hypervisor::regs::FromWhpRegisterError;
 pub(crate) const FP_CONTROL_WORD_DEFAULT: u16 = 0x37f; // mask all fp-exception, set rounding to nearest, set precision to 64-bit
 pub(crate) const MXCSR_DEFAULT: u32 = 0x1f80; // mask simd fp-exceptions, clear exception flags, set rounding to nearest, disable flush-to-zero mode, disable denormals-are-zero mode
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CommonFpu {
+    #[serde(
+        serialize_with = "serialize_fpr",
+        deserialize_with = "deserialize_fpr"
+    )]
     pub fpr: [[u8; 16]; 8],
     pub fcw: u16,
     pub fsw: u16,
@@ -39,8 +45,72 @@ pub(crate) struct CommonFpu {
     pub last_opcode: u16,
     pub last_ip: u64,
     pub last_dp: u64,
+    #[serde(
+        serialize_with = "serialize_xmm",
+        deserialize_with = "deserialize_xmm"
+    )]
     pub xmm: [[u8; 16]; 16],
     pub mxcsr: u32,
+}
+
+fn serialize_fpr<S: serde::Serializer>(
+    fpr: &[[u8; 16]; 8],
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(8))?;
+    for reg in fpr {
+        seq.serialize_element(&hex::encode(reg))?;
+    }
+    seq.end()
+}
+
+fn deserialize_fpr<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<[[u8; 16]; 8], D::Error> {
+    let strs: Vec<String> = serde::Deserialize::deserialize(d)?;
+    if strs.len() != 8 {
+        return Err(serde::de::Error::custom("expected 8 fpr entries"));
+    }
+    let mut result = [[0u8; 16]; 8];
+    for (i, s) in strs.iter().enumerate() {
+        let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 16 {
+            return Err(serde::de::Error::custom("fpr entry must be 16 bytes"));
+        }
+        result[i].copy_from_slice(&bytes);
+    }
+    Ok(result)
+}
+
+fn serialize_xmm<S: serde::Serializer>(
+    xmm: &[[u8; 16]; 16],
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(16))?;
+    for reg in xmm {
+        seq.serialize_element(&hex::encode(reg))?;
+    }
+    seq.end()
+}
+
+fn deserialize_xmm<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<[[u8; 16]; 16], D::Error> {
+    let strs: Vec<String> = serde::Deserialize::deserialize(d)?;
+    if strs.len() != 16 {
+        return Err(serde::de::Error::custom("expected 16 xmm entries"));
+    }
+    let mut result = [[0u8; 16]; 16];
+    for (i, s) in strs.iter().enumerate() {
+        let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 16 {
+            return Err(serde::de::Error::custom("xmm entry must be 16 bytes"));
+        }
+        result[i].copy_from_slice(&bytes);
+    }
+    Ok(result)
 }
 
 impl Default for CommonFpu {

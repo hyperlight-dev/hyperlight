@@ -2792,3 +2792,82 @@ fn read_blob_dir(
         })
         .collect()
 }
+
+/// A paused snapshot (with regs/fpu) survives a round-trip through the
+/// OCI file format and can be used with `from_paused_snapshot` to resume.
+#[test]
+fn paused_snapshot_round_trips_through_file() {
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::sandbox::pending_call::{CallProgress, PendingCallOwned};
+
+    let mut sbox = create_test_sandbox();
+
+    // Start a long-running call and pause it
+    let mut call = sbox.call_async::<u64>("SpinForMs", 2000u32);
+
+    let handle = call.sandbox().interrupt_handle();
+    let t = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        handle.pause();
+    });
+
+    let progress = call.poll().unwrap();
+    assert!(matches!(progress, CallProgress::Paused));
+    t.join().unwrap();
+
+    // Snapshot while paused — this captures regs/fpu
+    let snapshot = call.snapshot().unwrap();
+    assert!(snapshot.regs().is_some());
+    assert!(snapshot.fpu().is_some());
+
+    // Save to disk
+    let dir = tempfile::tempdir().unwrap();
+    let oci = dir.path().join("paused_snap");
+    snapshot
+        .save(&oci, &OciTag::new("paused").unwrap())
+        .unwrap();
+
+    // Load from disk
+    let loaded = Snapshot::checked_load(&oci, OciTag::new("paused").unwrap()).unwrap();
+    assert!(loaded.regs().is_some(), "regs must survive round-trip");
+    assert!(loaded.fpu().is_some(), "fpu must survive round-trip");
+
+    // Drop the call (poisons sandbox) and discard it
+    drop(call);
+    drop(sbox);
+
+    // Create a fresh sandbox from the loaded snapshot and resume
+    let loaded = Arc::new(loaded);
+    let sbox2 =
+        MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None).unwrap();
+
+    let mut owned_call =
+        PendingCallOwned::<u64>::from_paused_snapshot(sbox2, loaded).unwrap();
+
+    // Resume to completion
+    loop {
+        let handle = owned_call.sandbox().interrupt_handle();
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(3000));
+            handle.pause();
+        });
+
+        match owned_call.poll().unwrap() {
+            CallProgress::Completed(_) => {
+                t.join().unwrap();
+                break;
+            }
+            CallProgress::Paused => {
+                t.join().unwrap();
+            }
+        }
+    }
+
+    // Recover sandbox and verify it's usable
+    let mut sbox2 = owned_call.into_sandbox();
+    assert!(!sbox2.poisoned());
+    let echo: String = sbox2.call("Echo", "disk-roundtrip".to_string()).unwrap();
+    assert_eq!(echo, "disk-roundtrip");
+}

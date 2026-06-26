@@ -568,6 +568,8 @@ impl Snapshot {
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
             sregs: *sregs,
+            regs: self.regs,
+            fpu: self.fpu,
             layout: MemoryLayout {
                 input_data_size: l.input_data_size,
                 output_data_size: l.output_data_size,
@@ -852,6 +854,8 @@ impl Snapshot {
             load_info: crate::mem::exe::LoadInfo::dummy(),
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
+            regs: cfg.regs,
+            fpu: cfg.fpu,
             entrypoint,
             snapshot_generation,
             host_functions,

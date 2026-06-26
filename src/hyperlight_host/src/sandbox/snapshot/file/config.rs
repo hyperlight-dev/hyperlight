@@ -20,7 +20,7 @@ use hyperlight_common::vmem::PAGE_SIZE;
 use serde::{Deserialize, Serialize};
 
 use super::media_types::SNAPSHOT_ABI_VERSION;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::layout::SandboxMemoryLayout;
 
 // --- Arch and hypervisor identifiers --------------------------------
@@ -130,6 +130,14 @@ pub(super) struct OciSnapshotConfig {
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
+    /// General-purpose registers captured from a paused vCPU.
+    /// Present only for mid-execution (paused) snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) regs: Option<CommonRegisters>,
+    /// FPU/SSE state captured from a paused vCPU.
+    /// Present only for mid-execution (paused) snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) fpu: Option<CommonFpu>,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.

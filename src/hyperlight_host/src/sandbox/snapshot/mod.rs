@@ -625,6 +625,12 @@ impl Snapshot {
         self.regs.as_ref()
     }
 
+    /// Returns `true` if this snapshot was captured mid-execution
+    /// (i.e. has saved register state for resume).
+    pub fn is_paused_snapshot(&self) -> bool {
+        self.regs.is_some()
+    }
+
     /// FPU/SSE registers saved when the snapshot was taken mid-execution.
     /// None for snapshots of quiescent sandboxes.
     pub(crate) fn fpu(&self) -> Option<&CommonFpu> {
