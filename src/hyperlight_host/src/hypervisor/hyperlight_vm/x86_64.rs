@@ -270,6 +270,20 @@ impl HyperlightVm {
         Ok(self.vm.sregs()?)
     }
 
+    /// Get the general-purpose registers for a snapshot.
+    pub(crate) fn get_snapshot_regs(
+        &self,
+    ) -> Result<CommonRegisters, AccessPageTableError> {
+        Ok(self.vm.regs()?)
+    }
+
+    /// Get the FPU/SSE state for a snapshot.
+    pub(crate) fn get_snapshot_fpu(
+        &self,
+    ) -> Result<CommonFpu, AccessPageTableError> {
+        Ok(self.vm.fpu()?)
+    }
+
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///
@@ -392,6 +406,22 @@ impl HyperlightVm {
         self.vm.set_sregs(&sregs)?;
 
         Ok(())
+    }
+
+    /// Restore general-purpose registers from a snapshot.
+    pub(crate) fn restore_regs(
+        &self,
+        regs: &CommonRegisters,
+    ) -> std::result::Result<(), RegisterError> {
+        self.vm.set_regs(regs)
+    }
+
+    /// Restore FPU/SSE state from a snapshot.
+    pub(crate) fn restore_fpu(
+        &self,
+        fpu: &CommonFpu,
+    ) -> std::result::Result<(), RegisterError> {
+        self.vm.set_fpu(fpu)
     }
 
     // Handle a debug exit

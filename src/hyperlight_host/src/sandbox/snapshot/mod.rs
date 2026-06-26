@@ -29,7 +29,7 @@ use hyperlight_common::vmem::{
 use tracing::{Span, instrument};
 
 use crate::Result;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
@@ -89,6 +89,18 @@ pub struct Snapshot {
     /// Note: CR3 in this struct is NOT used on restore, since page
     /// tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
+
+    /// General-purpose register state captured from the vCPU during snapshot.
+    /// None for snapshots created directly from a binary or when the guest
+    /// was not mid-execution. Some for snapshots taken while the guest was
+    /// paused mid-execution (enables resume after restore).
+    regs: Option<CommonRegisters>,
+
+    /// FPU/SSE register state captured from the vCPU during snapshot.
+    /// None for snapshots created directly from a binary or when the guest
+    /// was not mid-execution. Some for snapshots taken while the guest was
+    /// paused mid-execution (enables resume after restore).
+    fpu: Option<CommonFpu>,
 
     /// The next action that should be performed on this snapshot
     entrypoint: NextAction,
@@ -379,6 +391,8 @@ impl Snapshot {
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
+            regs: None,
+            fpu: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
@@ -405,6 +419,8 @@ impl Snapshot {
         root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
+        regs: Option<CommonRegisters>,
+        fpu: Option<CommonFpu>,
         entrypoint: NextAction,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
@@ -558,6 +574,8 @@ impl Snapshot {
             load_info,
             stack_top_gva,
             sregs: Some(sregs),
+            regs,
+            fpu,
             entrypoint,
             snapshot_generation,
             host_functions,
@@ -599,6 +617,18 @@ impl Snapshot {
     /// use `root_pt_gpa()` instead since page tables are relocated during snapshot.
     pub(crate) fn sregs(&self) -> Option<&CommonSpecialRegisters> {
         self.sregs.as_ref()
+    }
+
+    /// General-purpose registers saved when the snapshot was taken mid-execution.
+    /// None for snapshots of quiescent sandboxes.
+    pub(crate) fn regs(&self) -> Option<&CommonRegisters> {
+        self.regs.as_ref()
+    }
+
+    /// FPU/SSE registers saved when the snapshot was taken mid-execution.
+    /// None for snapshots of quiescent sandboxes.
+    pub(crate) fn fpu(&self) -> Option<&CommonFpu> {
+        self.fpu.as_ref()
     }
 
     pub(crate) fn entrypoint(&self) -> NextAction {
@@ -759,6 +789,8 @@ mod tests {
             &[pt_base],
             0,
             default_sregs(),
+            None,
+            None,
             super::NextAction::None,
             1,
             HostFunctionDetails::default(),
@@ -776,6 +808,8 @@ mod tests {
             &[pt_base],
             0,
             default_sregs(),
+            None,
+            None,
             super::NextAction::None,
             2,
             HostFunctionDetails::default(),

@@ -30,7 +30,7 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
@@ -300,6 +300,8 @@ where
         root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
+        regs: Option<CommonRegisters>,
+        fpu: Option<CommonFpu>,
         entrypoint: NextAction,
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
@@ -313,6 +315,8 @@ where
             root_pt_gpas,
             rsp_gva,
             sregs,
+            regs,
+            fpu,
             entrypoint,
             self.snapshot_count,
             host_functions,
