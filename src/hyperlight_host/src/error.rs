@@ -76,6 +76,10 @@ pub enum HyperlightError {
     #[error("Execution was cancelled by the host.")]
     ExecutionCanceledByHost(),
 
+    /// Guest execution was paused by the host
+    #[error("Execution was paused by the host.")]
+    ExecutionPaused(),
+
     /// Accessing the value of a flatbuffer parameter failed
     #[error("Failed to get a value from flat buffer parameter")]
     FailedToGetValueFromParameter(),
@@ -369,6 +373,7 @@ impl HyperlightError {
             | HyperlightError::CheckedAddOverflow(_, _)
             | HyperlightError::CStringConversionError(_)
             | HyperlightError::Error(_)
+            | HyperlightError::ExecutionPaused()
             | HyperlightError::FailedToGetValueFromParameter()
             | HyperlightError::FieldIsMissingInGuestLogData(_)
             | HyperlightError::GuestBinVersionMismatch { .. }

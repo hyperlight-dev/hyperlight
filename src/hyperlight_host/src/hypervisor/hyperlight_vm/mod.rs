@@ -136,6 +136,7 @@ impl DispatchGuestCallError {
         match self {
             // These errors poison the sandbox because they can leave it in an inconsistent state
             // by returning before the guest can unwind properly
+            DispatchGuestCallError::Run(RunVmError::ExecutionPaused) => false,
             DispatchGuestCallError::Run(_) => true,
             DispatchGuestCallError::SetupRegs(_) | DispatchGuestCallError::Uninitialized => false,
         }
@@ -151,6 +152,10 @@ impl DispatchGuestCallError {
         let promoted_error = match self {
             DispatchGuestCallError::Run(RunVmError::ExecutionCancelledByHost) => {
                 HyperlightError::ExecutionCanceledByHost()
+            }
+
+            DispatchGuestCallError::Run(RunVmError::ExecutionPaused) => {
+                HyperlightError::ExecutionPaused()
             }
 
             DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
@@ -194,6 +199,8 @@ pub enum RunVmError {
     DebugHandler(#[from] HandleDebugError),
     #[error("Execution was cancelled by the host")]
     ExecutionCancelledByHost,
+    #[error("Execution was paused by the host")]
+    ExecutionPaused,
     #[error("Failed to access page: {0}")]
     PageTableAccess(AccessPageTableError),
     #[cfg(feature = "trace_guest")]
@@ -583,6 +590,10 @@ impl HyperlightVm {
         self.interrupt_handle.clear_cancel();
     }
 
+    pub(crate) fn clear_pause(&self) {
+        self.interrupt_handle.clear_pause();
+    }
+
     pub(super) fn run(
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
@@ -606,6 +617,7 @@ impl HyperlightVm {
 
             let exit_reason = if self.interrupt_handle.is_cancelled()
                 || self.interrupt_handle.is_debug_interrupted()
+                || self.interrupt_handle.is_paused()
             {
                 Ok(VmExit::Cancelled())
             } else {
@@ -653,6 +665,7 @@ impl HyperlightVm {
             //    - Signals will not be sent
             let cancel_requested = self.interrupt_handle.is_cancelled();
             let debug_interrupted = self.interrupt_handle.is_debug_interrupted();
+            let pause_requested = self.interrupt_handle.is_paused();
 
             // ===== KILL() TIMING POINT 6: Before checking exit_reason =====
             // If kill() is called and ran to completion BEFORE this line executes:
@@ -733,11 +746,11 @@ impl HyperlightVm {
                     }
                 }
                 Ok(VmExit::Cancelled()) => {
-                    // If cancellation was not requested for this specific guest function call,
+                    // If no interrupt was actually requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation. This can occur when:
                     // - Linux: A signal from a previous call arrives late
                     // - Windows: WHvCancelRunVirtualProcessor called right after vcpu exits but RUNNING_BIT is still true
-                    if !cancel_requested && !debug_interrupted {
+                    if !cancel_requested && !debug_interrupted && !pause_requested {
                         // Track that an erroneous vCPU kick occurred
                         metrics::counter!(METRIC_ERRONEOUS_VCPU_KICKS).increment(1);
                         // treat this the same as a VmExit::Retry, the cancel was not meant for this call
@@ -755,8 +768,16 @@ impl HyperlightVm {
                         }
                     }
 
-                    metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
-                    break Err(RunVmError::ExecutionCancelledByHost);
+                    // Cancel takes priority over pause
+                    if cancel_requested {
+                        metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
+                        break Err(RunVmError::ExecutionCancelledByHost);
+                    }
+
+                    // Pause was requested — break without poisoning
+                    if pause_requested {
+                        break Err(RunVmError::ExecutionPaused);
+                    }
                 }
                 Ok(VmExit::Unknown(reason)) => {
                     break Err(RunVmError::UnexpectedVmExit(reason));
@@ -773,6 +794,10 @@ impl HyperlightVm {
             Err(RunVmError::ExecutionCancelledByHost) => {
                 // no need to crashdump this
                 Err(RunVmError::ExecutionCancelledByHost)
+            }
+            Err(RunVmError::ExecutionPaused) => {
+                // no need to crashdump this — the VM is paused, not crashed
+                Err(RunVmError::ExecutionPaused)
             }
             Err(e) => {
                 #[cfg(crashdump)]

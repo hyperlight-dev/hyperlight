@@ -16,6 +16,8 @@ limitations under the License.
 
 /// Configuration needed to establish a sandbox.
 pub mod config;
+/// A handle to an in-progress guest function call that supports pausing and resuming.
+pub mod pending_call;
 /// Host-side file mapping preparation for `map_file_cow`.
 pub(crate) mod file_mapping;
 /// Functionality for reading, but not modifying host functions

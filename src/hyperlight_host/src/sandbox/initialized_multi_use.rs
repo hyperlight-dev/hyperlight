@@ -726,6 +726,196 @@ impl MultiUseSandbox {
         })
     }
 
+    /// Calls a guest function by name, returning a [`PendingCall`] that can be
+    /// paused and resumed.
+    ///
+    /// The returned handle holds an exclusive borrow of this sandbox, preventing
+    /// other operations while the call is in flight. Drive the call forward by
+    /// calling [`PendingCall::poll()`].
+    ///
+    /// ## Pausing
+    ///
+    /// Obtain an [`InterruptHandle`] via [`PendingCall::sandbox().interrupt_handle()`]
+    /// and call [`pause()`](InterruptHandle::pause) from any thread to pause the VM.
+    /// The next call to [`PendingCall::poll()`] will return
+    /// [`CallProgress::Paused`](super::pending_call::CallProgress::Paused).
+    /// Calling `poll()` again resumes execution.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return a `PendingCall` that immediately errors if the sandbox
+    /// is poisoned. Use [`restore()`](Self::restore) to recover first.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::sandbox::pending_call::CallProgress;
+    /// # use std::thread;
+    /// # use std::time::Duration;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// let mut call = sandbox.call_async::<i32>("LongRunning", (42,));
+    ///
+    /// // Pause from another thread after 1 second
+    /// let handle = call.sandbox().interrupt_handle();
+    /// thread::spawn(move || {
+    ///     thread::sleep(Duration::from_secs(1));
+    ///     handle.pause();
+    /// });
+    ///
+    /// loop {
+    ///     match call.poll()? {
+    ///         CallProgress::Completed(result) => {
+    ///             println!("Got: {result}");
+    ///             break;
+    ///         }
+    ///         CallProgress::Paused => {
+    ///             println!("Paused! Snapshotting...");
+    ///             let _snap = call.snapshot()?;
+    ///             // poll() again resumes
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn call_async<'a, Output: SupportedReturnType>(
+        &'a mut self,
+        func_name: &str,
+        args: impl ParameterTuple,
+    ) -> super::pending_call::PendingCall<'a, Output> {
+        super::pending_call::PendingCall::new(
+            self,
+            func_name,
+            Output::TYPE,
+            args.into_value(),
+        )
+    }
+
+    /// Internal: dispatch a guest call that may be paused instead of completed.
+    /// Returns the guest return value on success, or `ExecutionPaused` if paused.
+    pub(crate) fn call_guest_function_pausable(
+        &mut self,
+        function_name: &str,
+        return_type: ReturnType,
+        args: Vec<ParameterValue>,
+    ) -> Result<ReturnValue> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
+        self.vm.clear_cancel();
+        self.vm.clear_pause();
+
+        let res = self.dispatch_and_read_result(function_name, return_type, args);
+
+        // Clear partial abort bytes so they don't leak across calls.
+        self.mem_mgr.abort_buffer.clear();
+
+        if let Err(e) = &res {
+            if !matches!(e, HyperlightError::ExecutionPaused()) {
+                self.mem_mgr.clear_io_buffers();
+            }
+            self.poisoned |= e.is_poison_error();
+        }
+
+        res
+    }
+
+    /// Internal: resume a paused VM call and read the result.
+    pub(crate) fn resume_paused_call(&mut self) -> Result<ReturnValue> {
+        // Clear the pause bit so the run loop doesn't immediately re-pause
+        self.vm.clear_pause();
+
+        let dispatch_res = self.vm.dispatch_resume(
+            &mut self.mem_mgr,
+            &self.host_funcs,
+            #[cfg(gdb)]
+            self.dbg_mem_access_fn.clone(),
+        );
+
+        if let Err(e) = dispatch_res {
+            let (error, should_poison) = e.promote();
+            self.poisoned |= should_poison;
+            return Err(error);
+        }
+
+        let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+
+        match guest_result {
+            Ok(val) => Ok(val),
+            Err(guest_error) => {
+                metrics::counter!(
+                    METRIC_GUEST_ERROR,
+                    METRIC_GUEST_ERROR_LABEL_CODE => (guest_error.code as u64).to_string()
+                )
+                .increment(1);
+
+                Err(HyperlightError::GuestError(
+                    guest_error.code,
+                    guest_error.message,
+                ))
+            }
+        }
+    }
+
+    /// Internal helper: dispatch a guest call and read the result.
+    fn dispatch_and_read_result(
+        &mut self,
+        function_name: &str,
+        return_type: ReturnType,
+        args: Vec<ParameterValue>,
+    ) -> Result<ReturnValue> {
+        let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
+
+        let fc = FunctionCall::new(
+            function_name.to_string(),
+            Some(args),
+            FunctionCallType::Guest,
+            return_type,
+        );
+
+        let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+        let buffer = fc.encode(&mut builder);
+
+        self.mem_mgr.write_guest_function_call(buffer)?;
+
+        let dispatch_res = self.vm.dispatch_call_from_host(
+            &mut self.mem_mgr,
+            &self.host_funcs,
+            #[cfg(gdb)]
+            self.dbg_mem_access_fn.clone(),
+        );
+
+        if let Err(e) = dispatch_res {
+            let (error, should_poison) = e.promote();
+            self.poisoned |= should_poison;
+            return Err(error);
+        }
+
+        let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+
+        match guest_result {
+            Ok(val) => Ok(val),
+            Err(guest_error) => {
+                metrics::counter!(
+                    METRIC_GUEST_ERROR,
+                    METRIC_GUEST_ERROR_LABEL_CODE => (guest_error.code as u64).to_string()
+                )
+                .increment(1);
+
+                Err(HyperlightError::GuestError(
+                    guest_error.code,
+                    guest_error.message,
+                ))
+            }
+        }
+    }
+
     /// Maps a region of host memory into the sandbox address space.
     ///
     /// The base address and length must meet platform alignment requirements
@@ -860,6 +1050,7 @@ impl MultiUseSandbox {
         // Clear any stale cancellation from a previous guest function call or if kill() was called too early.
         // Any kill() that completed (even partially) BEFORE this line has NO effect on this call.
         self.vm.clear_cancel();
+        self.vm.clear_pause();
 
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
@@ -923,6 +1114,10 @@ impl MultiUseSandbox {
 
             // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
+
+            // ExecutionPaused through the normal call() path is unrecoverable —
+            // there's no CallFuture to resume from, so the sandbox is inconsistent.
+            self.poisoned |= matches!(e, HyperlightError::ExecutionPaused());
         }
 
         // Note: clear_call_active() is automatically called when _guard is dropped here
@@ -961,6 +1156,19 @@ impl MultiUseSandbox {
     /// ```
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
+    }
+
+    /// Mark this sandbox as poisoned.
+    ///
+    /// Used when the guest was interrupted mid-execution and there is no way
+    /// to resume (e.g., dropping a paused `CallFuture`).
+    pub(crate) fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Clear any pending pause request on the interrupt handle.
+    pub(crate) fn clear_pause(&self) {
+        self.vm.clear_pause();
     }
 
     /// Generate a crash dump of the current state of the VM underlying this sandbox.

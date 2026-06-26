@@ -332,6 +332,29 @@ impl HyperlightVm {
         result
     }
 
+    /// Resume a paused guest call without resetting registers.
+    ///
+    /// Unlike [`dispatch_call_from_host`], this does NOT set RIP/RSP/FPU.
+    /// The vCPU registers are exactly as they were when the VM was paused,
+    /// so `run()` picks up execution at the exact interrupted instruction.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub(crate) fn dispatch_resume(
+        &mut self,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+    ) -> std::result::Result<(), DispatchGuestCallError> {
+        // Do NOT reset registers — they contain the paused state
+        // Do NOT clear pending_tlb_flush — it was already handled or will be on resume
+        self.run(
+            mem_mgr,
+            host_funcs,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
+        )
+        .map_err(DispatchGuestCallError::Run)
+    }
+
     /// Resets the following vCPU state:
     /// - General purpose registers
     /// - Debug registers

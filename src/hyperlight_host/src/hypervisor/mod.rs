@@ -67,6 +67,12 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
     /// Clear the cancellation request flag
     fn clear_cancel(&self);
 
+    /// Check if pause was requested
+    fn is_paused(&self) -> bool;
+
+    /// Clear the pause request flag
+    fn clear_pause(&self);
+
     /// Check if debug interrupt was requested (always returns false when gdb feature is disabled)
     fn is_debug_interrupted(&self) -> bool;
 
@@ -85,6 +91,20 @@ pub trait InterruptHandle: Send + Sync + Debug {
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
     fn kill(&self) -> bool;
+
+    /// Pause the corresponding sandbox.
+    ///
+    /// Unlike [`kill()`](Self::kill), pausing preserves the full VM state (registers,
+    /// instruction pointer, etc.) so that execution can be resumed from exactly where
+    /// it was interrupted.
+    ///
+    /// - If this is called while the sandbox is executing a guest function call, it will
+    ///   interrupt the sandbox and return `true`.
+    /// - If this is called while the sandbox is not running, it will do nothing and return `false`.
+    ///
+    /// # Note
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    fn pause(&self) -> bool;
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
     ///
@@ -136,6 +156,7 @@ pub(super) struct LinuxInterruptHandle {
 impl LinuxInterruptHandle {
     const RUNNING_BIT: u8 = 1 << 1;
     const CANCEL_BIT: u8 = 1 << 0;
+    const PAUSE_BIT: u8 = 1 << 3;
     #[cfg(gdb)]
     const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 
@@ -155,16 +176,22 @@ impl LinuxInterruptHandle {
         (running, cancel, debug)
     }
 
+    fn get_pause(&self) -> bool {
+        let state = self.state.load(Ordering::Acquire);
+        state & Self::PAUSE_BIT != 0
+    }
+
     fn send_signal(&self) -> bool {
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
 
         loop {
             let (running, cancel, debug) = self.get_running_cancel_debug();
+            let paused = self.get_pause();
 
             // Check if we should continue sending signals
-            // Exit if not running OR if neither cancel nor debug_interrupt is set
-            let should_continue = running && (cancel || debug);
+            // Exit if not running OR if neither cancel, debug_interrupt, nor pause is set
+            let should_continue = running && (cancel || debug || paused);
 
             if !should_continue {
                 break;
@@ -214,6 +241,14 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
         self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
     }
 
+    fn is_paused(&self) -> bool {
+        self.state.load(Ordering::Acquire) & Self::PAUSE_BIT != 0
+    }
+
+    fn clear_pause(&self) {
+        self.state.fetch_and(!Self::PAUSE_BIT, Ordering::Release);
+    }
+
     fn clear_running(&self) {
         // Release ordering to ensure all vcpu operations are visible before clearing running
         self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
@@ -249,6 +284,15 @@ impl InterruptHandle for LinuxInterruptHandle {
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
         // when it checks is_cancelled() with Acquire ordering
         self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+
+        // Send signals to interrupt the vcpu if it's currently running
+        self.send_signal()
+    }
+
+    fn pause(&self) -> bool {
+        // Release ordering ensures that any writes before pause() are visible to the vcpu thread
+        // when it checks is_paused() with Acquire ordering
+        self.state.fetch_or(Self::PAUSE_BIT, Ordering::Release);
 
         // Send signals to interrupt the vcpu if it's currently running
         self.send_signal()
@@ -318,6 +362,7 @@ pub(super) struct PartitionState {
 impl WindowsInterruptHandle {
     const RUNNING_BIT: u8 = 1 << 1;
     const CANCEL_BIT: u8 = 1 << 0;
+    const PAUSE_BIT: u8 = 1 << 3;
     #[cfg(gdb)]
     const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 }
@@ -340,6 +385,14 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
         // are visible to other threads. While this is typically called by the vcpu thread
         // at the start of run(), the VM itself can move between threads across guest calls.
         self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state.load(Ordering::Acquire) & Self::PAUSE_BIT != 0
+    }
+
+    fn clear_pause(&self) {
+        self.state.fetch_and(!Self::PAUSE_BIT, Ordering::Release);
     }
 
     fn clear_running(&self) {
@@ -401,6 +454,30 @@ impl InterruptHandle for WindowsInterruptHandle {
         // Take read lock to prevent race with WHvDeletePartition in set_dropped().
         // Multiple kill() calls can proceed concurrently (read locks don't block each other),
         // but set_dropped() will wait for all kill() calls to complete before proceeding.
+        let guard = match self.partition_state.read() {
+            Ok(guard) => guard,
+            Err(e) => {
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
+                return false;
+            }
+        };
+
+        if guard.dropped {
+            return false;
+        }
+
+        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
+    }
+    fn pause(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+
+        self.state.fetch_or(Self::PAUSE_BIT, Ordering::Release);
+
+        let state = self.state.load(Ordering::Acquire);
+        if state & Self::RUNNING_BIT == 0 {
+            return false;
+        }
+
         let guard = match self.partition_state.read() {
             Ok(guard) => guard,
             Err(e) => {
