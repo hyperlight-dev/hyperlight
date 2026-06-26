@@ -39,10 +39,12 @@ pub(super) const SNAPSHOT_ABI_VERSION: u32 = 1;
 /// the Image Layout spec.
 pub(super) const ANNOTATION_REF_NAME: &str = "org.opencontainers.image.ref.name";
 
-/// Advisory annotation keys recording the guest arch and hypervisor
-/// backend on the manifest descriptor in `index.json`. These mirror
-/// the authoritative `arch` and `hypervisor` fields in the config
-/// blob so registry UIs and tools like `oras` and `skopeo` can show
-/// them. The loader validates against the config blob.
+/// Advisory annotation keys recording the guest arch, hypervisor
+/// backend, and CPU vendor on the manifest descriptor in
+/// `index.json`. These mirror the authoritative `arch`, `hypervisor`,
+/// and `cpu_vendor` fields in the config blob so registry UIs and
+/// tools like `oras` and `skopeo` can show them. The loader validates
+/// against the config blob.
 pub(super) const ANNOTATION_ARCH: &str = "dev.hyperlight.snapshot.arch";
 pub(super) const ANNOTATION_HYPERVISOR: &str = "dev.hyperlight.snapshot.hypervisor";
+pub(super) const ANNOTATION_CPU: &str = "dev.hyperlight.snapshot.cpu.vendor";

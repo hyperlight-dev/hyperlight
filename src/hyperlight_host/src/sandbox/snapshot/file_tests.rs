@@ -502,6 +502,31 @@ fn cfg_current_hypervisor() -> &'static str {
     }
 }
 
+#[test]
+fn cpu_vendor_mismatch_rejected() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+
+    rewrite_config(&path, |cfg| {
+        cfg["cpu_vendor"] = Value::from("not-this-cpu-vendor");
+    });
+
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("vendor"),
+        "expected CPU vendor mismatch, got: {}",
+        msg
+    );
+}
+
 // A call snapshot must carry sregs. serde rejects a config that
 // omits the field.
 

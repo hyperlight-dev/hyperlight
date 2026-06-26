@@ -32,12 +32,12 @@ use oci_spec::image::{
     ImageManifestBuilder, MediaType, SCHEMA_VERSION,
 };
 
-use self::config::{Arch, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
+use self::config::{Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
-    ANNOTATION_ARCH, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME, MT_CONFIG_CURRENT, MT_CONFIG_V1,
-    MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
+    ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME, MT_CONFIG_CURRENT,
+    MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
@@ -282,10 +282,12 @@ impl Snapshot {
     ///
     /// # Portability
     ///
-    /// Snapshot images are bound to the specific CPU architecture and
-    /// hypervisor that the snapshot was created on. For example, a
-    /// snapshot taken on x86_64 with KVM can only be loaded on an
-    /// x86_64 host running KVM. Loading on any other host is rejected.
+    /// Snapshot images are bound to the specific CPU architecture,
+    /// hypervisor, and CPU vendor that the snapshot was created on.
+    /// For example, a snapshot taken on an Intel x86_64 host with KVM
+    /// can only be loaded on an Intel x86_64 host running KVM. Loading
+    /// on any other host is rejected. A future version may relax this
+    /// binding once a wider compatibility set is proven safe.
     ///
     /// # Compatibility
     ///
@@ -523,6 +525,10 @@ impl Snapshot {
             ANNOTATION_HYPERVISOR.to_string(),
             cfg.hypervisor.as_str().to_string(),
         );
+        anns.insert(
+            ANNOTATION_CPU.to_string(),
+            cfg.cpu_vendor.as_str().to_string(),
+        );
         DescriptorBuilder::default()
             .media_type(MediaType::ImageManifest)
             .digest(oci_digest(&manifest_digest)?)
@@ -565,6 +571,7 @@ impl Snapshot {
             abi_version: SNAPSHOT_ABI_VERSION,
             hypervisor: Hypervisor::current()
                 .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
+            cpu_vendor: CpuVendor::current(),
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
             sregs: *sregs,
@@ -602,10 +609,12 @@ impl Snapshot {
     ///
     /// # Portability
     ///
-    /// Snapshot images are bound to the specific CPU architecture and
-    /// hypervisor that the snapshot was created on. For example, a
-    /// snapshot taken on x86_64 with KVM can only be loaded on an
-    /// x86_64 host running KVM. Loading on any other host is rejected.
+    /// Snapshot images are bound to the specific CPU architecture,
+    /// hypervisor, and CPU vendor that the snapshot was created on.
+    /// For example, a snapshot taken on an Intel x86_64 host with KVM
+    /// can only be loaded on an Intel x86_64 host running KVM. Loading
+    /// on any other host is rejected. A future version may relax this
+    /// binding once a wider compatibility set is proven safe.
     ///
     /// # Compatibility
     ///

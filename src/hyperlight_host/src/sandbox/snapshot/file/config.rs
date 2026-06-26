@@ -103,6 +103,42 @@ impl Hypervisor {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct CpuVendor(String);
+
+impl CpuVendor {
+    /// The vendor identifier of the running host.
+    pub(super) fn current() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: CPUID leaf 0 is always available on x86_64.
+            // TODO: Remove the `unsafe`/allow when MSRV is raised above
+            // 1.89. On Rust 1.89 `__cpuid` requires `unsafe`; on newer
+            // compilers it is safe and clippy flags it as unnecessary.
+            #[allow(unused_unsafe)]
+            let r = unsafe { core::arch::x86_64::__cpuid(0) };
+            let mut bytes = [0u8; 12];
+            bytes[0..4].copy_from_slice(&r.ebx.to_le_bytes());
+            bytes[4..8].copy_from_slice(&r.edx.to_le_bytes());
+            bytes[8..12].copy_from_slice(&r.ecx.to_le_bytes());
+            Self(String::from_utf8_lossy(&bytes).into_owned())
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        {
+            let midr: u64;
+            // SAFETY: Linux emulates MIDR_EL1 reads from EL0.
+            unsafe { core::arch::asm!("mrs {}, MIDR_EL1", out(reg) midr) };
+            let implementer = (midr >> 24) & 0xff;
+            // `0x` prefix padded to width 4, e.g. Apple `0x61`, Arm `0x41`.
+            Self(format!("{implementer:#04x}"))
+        }
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 // --- Config JSON shape ----------------------------------------------
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
@@ -123,6 +159,8 @@ pub(super) struct OciSnapshotConfig {
     /// Memory blob ABI version. See `SNAPSHOT_ABI_VERSION`.
     pub(super) abi_version: u32,
     pub(super) hypervisor: Hypervisor,
+    /// CPU vendor captured at snapshot time. Checked on load.
+    pub(super) cpu_vendor: CpuVendor,
     /// Top of the guest stack, in guest virtual address space.
     pub(super) stack_top_gva: u64,
     /// Guest virtual address the loader resumes the paused call at.
@@ -328,6 +366,16 @@ impl OciSnapshotConfig {
                  (snapshot produced by hyperlight {})",
                 self.hypervisor.name(),
                 current_hv.name(),
+                self.hyperlight_version
+            ));
+        }
+        let current_vendor = CpuVendor::current();
+        if self.cpu_vendor != current_vendor {
+            return Err(crate::new_error!(
+                "snapshot CPU vendor mismatch: file was created on {} but the current CPU is {} \
+                 (snapshot produced by hyperlight {})",
+                self.cpu_vendor.as_str(),
+                current_vendor.as_str(),
                 self.hyperlight_version
             ));
         }
@@ -573,5 +621,24 @@ mod tests {
             let back: ReturnType = ReturnTypeRepr::from(&r).into();
             assert_eq!(back, r, "return type {:?} did not round-trip", r);
         }
+    }
+
+    /// `CpuVendor::current` returns the expected host vendor. Ignored
+    /// by default and run explicitly in CI, where the runner hardware
+    /// is known. Extend the allowlist when new runner hardware is
+    /// added.
+    #[test]
+    #[ignore = "hardware-specific; run explicitly in CI"]
+    fn cpu_vendor_current_is_recognized() {
+        let vendor = CpuVendor::current();
+        let v = vendor.as_str();
+        #[cfg(target_arch = "x86_64")]
+        assert!(
+            matches!(v, "GenuineIntel" | "AuthenticAMD"),
+            "unrecognized x86_64 CPU vendor: {v:?}"
+        );
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        // MIDR_EL1 implementer byte for Apple silicon.
+        assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
     }
 }
