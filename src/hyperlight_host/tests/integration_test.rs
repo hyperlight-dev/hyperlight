@@ -21,6 +21,7 @@ use std::time::Duration;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::sandbox::pending_call::CallProgress;
 use hyperlight_host::{HyperlightError, MultiUseSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
@@ -1888,5 +1889,214 @@ fn hw_timer_interrupts() {
             count > 0,
             "Expected at least one timer interrupt, got {count}"
         );
+    });
+}
+
+// ===== Pause/Resume (call_async) tests =====
+
+/// Pauses a spinning guest mid-execution and then resumes it to completion.
+#[test]
+fn pause_and_resume_guest_call() {
+    with_rust_sandbox(|mut sbox| {
+        let mut future = sbox.call_async::<u64>("Spin", ());
+
+        let handle = future.sandbox().interrupt_handle();
+
+        // Pause the VM from another thread after it's had time to enter the spin loop
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            assert!(handle.pause(), "pause() should return true while vcpu is running");
+        });
+
+        // First wait should yield Paused
+        let progress = future.poll().unwrap();
+        assert!(matches!(progress, CallProgress::Paused));
+        assert!(future.is_paused());
+
+        thread.join().unwrap();
+
+        // Now kill the VM so it doesn't spin forever after resume
+        let handle = future.sandbox().interrupt_handle();
+        handle.kill();
+
+        // Resuming after kill should yield ExecutionCanceledByHost
+        match future.poll() {
+            Err(HyperlightError::ExecutionCanceledByHost()) => {} // expected
+            other => panic!("expected ExecutionCanceledByHost, got: {other:?}"),
+        }
+    });
+}
+
+/// Pauses and resumes a bounded guest call (SpinForMs) multiple times.
+#[test]
+fn pause_and_resume_multiple_times() {
+    with_rust_sandbox(|mut sbox| {
+        let mut pause_count = 0;
+
+        {
+            let mut future = sbox.call_async::<u64>("SpinForMs", 2000u32);
+
+            loop {
+                let handle = future.sandbox().interrupt_handle();
+                // Schedule a pause 100ms from now
+                let t = thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(100));
+                    handle.pause();
+                });
+
+                match future.poll().unwrap() {
+                    CallProgress::Completed(_result) => {
+                        t.join().unwrap();
+                        break;
+                    }
+                    CallProgress::Paused => {
+                        pause_count += 1;
+                        t.join().unwrap();
+                        // Continue — next wait() will resume
+                    }
+                }
+            }
+        }
+
+        assert!(
+            pause_count >= 1,
+            "Expected at least 1 pause, got {pause_count}"
+        );
+
+        // Sandbox should not be poisoned after successful completion
+        assert!(!sbox.poisoned());
+
+        // Confirm the sandbox is still usable
+        let echo: String = sbox.call("Echo", "after-pause".to_string()).unwrap();
+        assert_eq!(echo, "after-pause");
+    });
+}
+
+/// Dropping a paused PendingCall poisons the sandbox.
+#[test]
+fn drop_paused_future_poisons_sandbox() {
+    with_rust_sandbox(|mut sbox| {
+        let snapshot = sbox.snapshot().unwrap();
+
+        {
+            let mut future = sbox.call_async::<u64>("Spin", ());
+
+            let handle = future.sandbox().interrupt_handle();
+            let thread = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(200));
+                handle.pause();
+            });
+
+            let progress = future.poll().unwrap();
+            assert!(matches!(progress, CallProgress::Paused));
+            thread.join().unwrap();
+
+            // Drop future while paused — should poison
+        }
+
+        assert!(sbox.poisoned(), "sandbox should be poisoned after dropping paused future");
+
+        // Restore clears the poison
+        sbox.restore(snapshot).unwrap();
+        assert!(!sbox.poisoned());
+
+        // Sandbox works again
+        let echo: String = sbox.call("Echo", "recovered".to_string()).unwrap();
+        assert_eq!(echo, "recovered");
+    });
+}
+
+/// call_async completes without pause when no pause signal is sent.
+#[test]
+fn call_async_completes_without_pause() {
+    with_rust_sandbox(|mut sbox| {
+        {
+            let mut future = sbox.call_async::<String>("Echo", "hello".to_string());
+
+            match future.poll().unwrap() {
+                CallProgress::Completed(val) => {
+                    assert_eq!(val, "hello");
+                }
+                CallProgress::Paused => {
+                    panic!("unexpected pause when no pause signal was sent");
+                }
+            }
+        }
+
+        // Sandbox should not be poisoned
+        assert!(!sbox.poisoned());
+    });
+}
+
+/// Calling wait() on a completed future returns an error.
+#[test]
+fn call_async_wait_after_completion_errors() {
+    with_rust_sandbox(|mut sbox| {
+        let mut future = sbox.call_async::<String>("Echo", "test".to_string());
+
+        // First wait completes
+        let result = future.poll().unwrap();
+        assert!(matches!(result, CallProgress::Completed(_)));
+
+        // Second wait should error
+        match future.poll() {
+            Err(HyperlightError::Error(msg)) if msg.contains("already completed") => {} // expected
+            other => panic!("expected 'already completed' error, got: {other:?}"),
+        }
+    });
+}
+
+/// Pause through the normal call() path poisons the sandbox.
+#[test]
+fn pause_through_call_poisons_sandbox() {
+    with_rust_sandbox(|mut sbox| {
+        let snapshot = sbox.snapshot().unwrap();
+        let handle = sbox.interrupt_handle();
+
+        // Pause from another thread during a normal call()
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            handle.pause();
+        });
+
+        let err = sbox.call::<u64>("Spin", ()).unwrap_err();
+        assert!(
+            matches!(&err, HyperlightError::ExecutionPaused()),
+            "unexpected error: {err:?}"
+        );
+        assert!(sbox.poisoned(), "sandbox should be poisoned when paused through call()");
+
+        thread.join().unwrap();
+
+        // Restore recovers
+        sbox.restore(snapshot).unwrap();
+        assert!(!sbox.poisoned());
+
+        let echo: String = sbox.call("Echo", "ok".to_string()).unwrap();
+        assert_eq!(echo, "ok");
+    });
+}
+
+/// Snapshot can be taken while paused via PendingCall.
+#[test]
+fn snapshot_while_paused() {
+    with_rust_sandbox(|mut sbox| {
+        let mut future = sbox.call_async::<u64>("Spin", ());
+
+        let handle = future.sandbox().interrupt_handle();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            handle.pause();
+        });
+
+        let progress = future.poll().unwrap();
+        assert!(matches!(progress, CallProgress::Paused));
+        thread.join().unwrap();
+
+        // Taking a snapshot while paused should succeed
+        let _snapshot = future.snapshot().unwrap();
+
+        // Clean up: kill and let Drop handle it
+        future.kill();
     });
 }
