@@ -71,7 +71,7 @@ defaults:
 jobs:
   run-benchmarks:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-benchmarks-{3}-{4}-{5}"]', 
           inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 
