@@ -24,12 +24,12 @@ use super::snapshot::Snapshot;
 use crate::func::SupportedReturnType;
 use crate::{HyperlightError, Result};
 
-/// The result of driving a [`PendingCall`] forward via [`poll()`](PendingCall::poll).
+/// The result of driving a [`PendingCall`] or [`PendingCallOwned`] forward.
 #[derive(Debug)]
 pub enum CallProgress<T> {
     /// The guest function completed and returned this value.
     Completed(T),
-    /// The VM was paused mid-execution. The [`PendingCall`] can be used to
+    /// The VM was paused mid-execution. The call handle can be used to
     /// inspect, snapshot, or resume the paused VM.
     Paused,
 }
@@ -129,8 +129,17 @@ impl<'a, Output: SupportedReturnType> PendingCall<'a, Output> {
                 function_name,
                 return_type,
                 args,
-            } => self.dispatch_and_wait(&function_name, return_type, args),
-            CallState::Paused => self.resume_and_wait(),
+            } => {
+                let (result, new_state) =
+                    dispatch_and_wait::<Output>(self.sandbox, &function_name, return_type, args);
+                self.state = new_state;
+                result
+            }
+            CallState::Paused => {
+                let (result, new_state) = resume_and_wait::<Output>(self.sandbox);
+                self.state = new_state;
+                result
+            }
             CallState::Done => Err(HyperlightError::Error(
                 "PendingCall has already completed or been killed".to_string(),
             )),
@@ -145,10 +154,15 @@ impl<'a, Output: SupportedReturnType> PendingCall<'a, Output> {
     /// Take a snapshot of the VM in its current state.
     ///
     /// If the VM is paused, this captures a mid-execution snapshot
-    /// (memory only — full register state snapshot is not yet implemented).
+    /// including full register state (GPRs + FPU), enabling resume
+    /// after restore via [`MultiUseSandbox::restore_paused()`].
     /// If the VM has not started, this captures the current quiescent state.
     pub fn snapshot(&mut self) -> Result<Arc<Snapshot>> {
-        self.sandbox.snapshot()
+        if self.is_paused() {
+            self.sandbox.snapshot_with_regs()
+        } else {
+            self.sandbox.snapshot()
+        }
     }
 
     /// Cancel the in-progress call. This poisons the sandbox.
@@ -161,58 +175,6 @@ impl<'a, Output: SupportedReturnType> PendingCall<'a, Output> {
     pub fn sandbox(&self) -> &MultiUseSandbox {
         self.sandbox
     }
-
-    /// Dispatch the initial guest function call and wait for completion or pause.
-    fn dispatch_and_wait(
-        &mut self,
-        function_name: &str,
-        return_type: ReturnType,
-        args: Vec<hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue>,
-    ) -> Result<CallProgress<Output>> {
-        // Reset snapshot since we are mutating the sandbox state
-        self.sandbox.snapshot = None;
-
-        let res = self
-            .sandbox
-            .call_guest_function_pausable(function_name, return_type, args);
-
-        match res {
-            Ok(val) => {
-                self.state = CallState::Done;
-                let output = Output::from_value(val)?;
-                Ok(CallProgress::Completed(output))
-            }
-            Err(HyperlightError::ExecutionPaused()) => {
-                self.state = CallState::Paused;
-                Ok(CallProgress::Paused)
-            }
-            Err(e) => {
-                self.state = CallState::Done;
-                Err(e)
-            }
-        }
-    }
-
-    /// Resume a paused VM and wait for completion or another pause.
-    fn resume_and_wait(&mut self) -> Result<CallProgress<Output>> {
-        let res = self.sandbox.resume_paused_call();
-
-        match res {
-            Ok(val) => {
-                self.state = CallState::Done;
-                let output = Output::from_value(val)?;
-                Ok(CallProgress::Completed(output))
-            }
-            Err(HyperlightError::ExecutionPaused()) => {
-                self.state = CallState::Paused;
-                Ok(CallProgress::Paused)
-            }
-            Err(e) => {
-                self.state = CallState::Done;
-                Err(e)
-            }
-        }
-    }
 }
 
 impl<Output> Drop for PendingCall<'_, Output> {
@@ -222,6 +184,246 @@ impl<Output> Drop for PendingCall<'_, Output> {
             // This is equivalent to kill() during execution — poison the sandbox.
             self.sandbox.poison();
             self.sandbox.clear_pause();
+        }
+    }
+}
+
+// ─── Shared dispatch/resume logic ───────────────────────────────────────────
+
+fn dispatch_and_wait<Output: SupportedReturnType>(
+    sandbox: &mut MultiUseSandbox,
+    function_name: &str,
+    return_type: ReturnType,
+    args: Vec<hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue>,
+) -> (Result<CallProgress<Output>>, CallState) {
+    // Reset snapshot since we are mutating the sandbox state
+    sandbox.snapshot = None;
+
+    let res = sandbox.call_guest_function_pausable(function_name, return_type, args);
+
+    match res {
+        Ok(val) => match Output::from_value(val) {
+            Ok(output) => (Ok(CallProgress::Completed(output)), CallState::Done),
+            Err(e) => (Err(e.into()), CallState::Done),
+        },
+        Err(HyperlightError::ExecutionPaused()) => (Ok(CallProgress::Paused), CallState::Paused),
+        Err(e) => (Err(e), CallState::Done),
+    }
+}
+
+fn resume_and_wait<Output: SupportedReturnType>(
+    sandbox: &mut MultiUseSandbox,
+) -> (Result<CallProgress<Output>>, CallState) {
+    let res = sandbox.resume_paused_call();
+
+    match res {
+        Ok(val) => match Output::from_value(val) {
+            Ok(output) => (Ok(CallProgress::Completed(output)), CallState::Done),
+            Err(e) => (Err(e.into()), CallState::Done),
+        },
+        Err(HyperlightError::ExecutionPaused()) => (Ok(CallProgress::Paused), CallState::Paused),
+        Err(e) => (Err(e), CallState::Done),
+    }
+}
+
+// ─── PendingCallOwned ───────────────────────────────────────────────────────
+
+/// An owned handle to an in-progress guest function call that can be paused
+/// and resumed.
+///
+/// Unlike [`PendingCall`], this takes ownership of the [`MultiUseSandbox`],
+/// eliminating lifetime parameters. The sandbox can be recovered via
+/// [`into_sandbox()`](Self::into_sandbox) after the call completes or is
+/// cancelled.
+///
+/// Created by [`MultiUseSandbox::call_async_owned()`] or
+/// [`MultiUseSandbox::restore_paused()`].
+///
+/// # Usage
+///
+/// ```no_run
+/// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+/// # use hyperlight_host::sandbox::pending_call::CallProgress;
+/// # use std::thread;
+/// # use std::time::Duration;
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let sandbox: MultiUseSandbox = UninitializedSandbox::new(
+///     GuestBinary::FilePath("guest.bin".into()),
+///     None
+/// )?.evolve()?;
+///
+/// let mut call = sandbox.call_async_owned::<i32>("LongRunning", (42,));
+///
+/// // Pause from another thread
+/// let handle = call.sandbox().interrupt_handle();
+/// thread::spawn(move || {
+///     thread::sleep(Duration::from_secs(1));
+///     handle.pause();
+/// });
+///
+/// let sandbox = loop {
+///     match call.poll()? {
+///         CallProgress::Completed(result) => {
+///             println!("result: {result}");
+///             break call.into_sandbox();
+///         }
+///         CallProgress::Paused => {
+///             println!("VM paused, resuming...");
+///         }
+///     }
+/// };
+/// # Ok(())
+/// # }
+/// ```
+pub struct PendingCallOwned<Output> {
+    sandbox: Option<MultiUseSandbox>,
+    state: CallState,
+    _phantom: PhantomData<Output>,
+}
+
+impl<Output: SupportedReturnType> PendingCallOwned<Output> {
+    /// Create a new `PendingCallOwned` for the given guest function call.
+    pub(crate) fn new(
+        sandbox: MultiUseSandbox,
+        function_name: &str,
+        return_type: ReturnType,
+        args: Vec<hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue>,
+    ) -> Self {
+        Self {
+            sandbox: Some(sandbox),
+            state: CallState::NotStarted {
+                function_name: function_name.to_string(),
+                return_type,
+                args,
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a `PendingCallOwned` in the paused state, for resuming from
+    /// a restored snapshot that was taken mid-execution.
+    pub(crate) fn new_paused(sandbox: MultiUseSandbox) -> Self {
+        Self {
+            sandbox: Some(sandbox),
+            state: CallState::Paused,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Restore a sandbox from a mid-execution (paused) snapshot and return
+    /// a `PendingCallOwned` ready to resume.
+    ///
+    /// The snapshot must contain register state (i.e., it must have been
+    /// taken while the VM was paused). Use [`MultiUseSandbox::restore()`]
+    /// for quiescent snapshots instead.
+    ///
+    /// This is equivalent to [`MultiUseSandbox::restore_paused()`] but
+    /// expressed as an associated function on `PendingCallOwned`.
+    pub fn from_paused_snapshot(
+        mut sandbox: MultiUseSandbox,
+        snapshot: Arc<Snapshot>,
+    ) -> Result<Self> {
+        if snapshot.regs().is_none() {
+            return Err(HyperlightError::Error(
+                "snapshot does not contain register state; use restore() for quiescent snapshots"
+                    .to_string(),
+            ));
+        }
+        sandbox.restore_impl(snapshot)?;
+        Ok(Self::new_paused(sandbox))
+    }
+
+    /// Drive execution until completion or pause.
+    ///
+    /// - On the first call, dispatches the guest function.
+    /// - On subsequent calls after a pause, resumes execution from
+    ///   exactly where it was interrupted.
+    ///
+    /// Returns [`CallProgress::Completed`] when the guest function finishes,
+    /// or [`CallProgress::Paused`] if the VM was paused mid-execution.
+    pub fn poll(&mut self) -> Result<CallProgress<Output>> {
+        let sandbox = self.sandbox.as_mut().expect("sandbox taken after Done");
+        match std::mem::replace(&mut self.state, CallState::Done) {
+            CallState::NotStarted {
+                function_name,
+                return_type,
+                args,
+            } => {
+                let (result, new_state) =
+                    dispatch_and_wait::<Output>(sandbox, &function_name, return_type, args);
+                self.state = new_state;
+                result
+            }
+            CallState::Paused => {
+                let (result, new_state) = resume_and_wait::<Output>(sandbox);
+                self.state = new_state;
+                result
+            }
+            CallState::Done => Err(HyperlightError::Error(
+                "PendingCallOwned has already completed or been killed".to_string(),
+            )),
+        }
+    }
+
+    /// Returns `true` if the VM is currently paused mid-execution.
+    pub fn is_paused(&self) -> bool {
+        matches!(self.state, CallState::Paused)
+    }
+
+    /// Take a snapshot of the VM in its current state.
+    ///
+    /// If the VM is paused, this captures a mid-execution snapshot
+    /// including full register state, enabling resume after restore.
+    pub fn snapshot(&mut self) -> Result<Arc<Snapshot>> {
+        let paused = self.is_paused();
+        let sandbox = self.sandbox.as_mut().expect("sandbox taken after Done");
+        if paused {
+            sandbox.snapshot_with_regs()
+        } else {
+            sandbox.snapshot()
+        }
+    }
+
+    /// Cancel the in-progress call. This poisons the sandbox.
+    ///
+    /// Returns the (poisoned) sandbox so you can restore it from a snapshot.
+    pub fn kill(mut self) -> MultiUseSandbox {
+        let sandbox = self.sandbox.as_mut().expect("sandbox taken after Done");
+        sandbox.interrupt_handle().kill();
+        self.state = CallState::Done;
+        self.sandbox.take().unwrap()
+    }
+
+    /// Consume this handle and return the underlying sandbox.
+    ///
+    /// - If the call has completed (state is `Done`), returns the sandbox
+    ///   in a non-poisoned, usable state.
+    /// - If the call is still paused, this poisons the sandbox before
+    ///   returning it (since the mid-execution state cannot be resumed
+    ///   without the `PendingCallOwned`).
+    pub fn into_sandbox(mut self) -> MultiUseSandbox {
+        if matches!(self.state, CallState::Paused) {
+            let sandbox = self.sandbox.as_mut().unwrap();
+            sandbox.poison();
+            sandbox.clear_pause();
+        }
+        self.state = CallState::Done;
+        self.sandbox.take().unwrap()
+    }
+
+    /// Read-only access to the underlying sandbox.
+    pub fn sandbox(&self) -> &MultiUseSandbox {
+        self.sandbox.as_ref().expect("sandbox taken after Done")
+    }
+}
+
+impl<Output> Drop for PendingCallOwned<Output> {
+    fn drop(&mut self) {
+        if matches!(self.state, CallState::Paused) {
+            if let Some(sandbox) = self.sandbox.as_mut() {
+                sandbox.poison();
+                sandbox.clear_pause();
+            }
         }
     }
 }

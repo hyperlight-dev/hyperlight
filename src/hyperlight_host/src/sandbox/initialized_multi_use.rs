@@ -396,12 +396,61 @@ impl MultiUseSandbox {
             &root_pt_gpas,
             stack_top_gpa,
             sregs,
+            None,
+            None,
             entrypoint,
             host_functions,
         )?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// Take a snapshot that includes full vCPU register state (GPRs + FPU).
+    ///
+    /// This is used when snapshotting a paused VM so that execution can be
+    /// resumed after restore.
+    pub(crate) fn snapshot_with_regs(&mut self) -> Result<Arc<Snapshot>> {
+        // Invalidate any cached snapshot since we want a fresh one with regs
+        self.snapshot = None;
+
+        let mapped_regions_iter = self.vm.get_mapped_regions();
+        let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
+        let cr3 = self
+            .vm
+            .get_root_pt()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+
+        let stack_top_gpa = self.vm.get_stack_top();
+        let sregs = self
+            .vm
+            .get_snapshot_sregs()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let regs = self
+            .vm
+            .get_snapshot_regs()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let fpu = self
+            .vm
+            .get_snapshot_fpu()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let entrypoint = self.vm.get_entrypoint();
+        let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
+            crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
+        })?)
+            .into();
+
+        let memory_snapshot = self.mem_mgr.snapshot(
+            mapped_regions_vec,
+            cr3,
+            stack_top_gpa,
+            sregs,
+            Some(regs),
+            Some(fpu),
+            entrypoint,
+            host_functions,
+        )?;
+        Ok(Arc::new(memory_snapshot))
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -488,6 +537,17 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
+        if snapshot.regs().is_some() {
+            return Err(HyperlightError::Error(
+                "cannot restore a paused snapshot with restore(); use restore_paused() to resume mid-execution state".to_string(),
+            ));
+        }
+
+        self.restore_impl(snapshot)
+    }
+
+    /// Internal restore implementation shared by `restore()` and `restore_paused()`.
+    pub(crate) fn restore_impl(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
         // Currently, we do not try to optimise restore to the
         // most-current snapshot. This is because the most-current
         // snapshot, while it must have identical virtual memory
@@ -542,6 +602,22 @@ impl MultiUseSandbox {
                 self.poisoned = true;
                 HyperlightVmError::Restore(e)
             })?;
+
+        // Restore general-purpose registers and FPU/SSE state if the snapshot
+        // captured them (i.e. if it was taken mid-execution). This enables
+        // resuming paused execution after a restore.
+        if let Some(regs) = snapshot.regs() {
+            self.vm.restore_regs(regs).map_err(|e| {
+                self.poisoned = true;
+                HyperlightVmError::Restore(e)
+            })?;
+        }
+        if let Some(fpu) = snapshot.fpu() {
+            self.vm.restore_fpu(fpu).map_err(|e| {
+                self.poisoned = true;
+                HyperlightVmError::Restore(e)
+            })?;
+        }
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());
@@ -795,6 +871,102 @@ impl MultiUseSandbox {
             Output::TYPE,
             args.into_value(),
         )
+    }
+
+    /// Calls a guest function by name, taking ownership of the sandbox.
+    ///
+    /// Similar to [`call_async`](Self::call_async), but consumes the sandbox.
+    /// The sandbox can be recovered via
+    /// [`PendingCallOwned::into_sandbox()`](super::pending_call::PendingCallOwned::into_sandbox).
+    ///
+    /// This is useful when you need to store the pending call in a struct,
+    /// move it across threads, or avoid lifetime annotations.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::sandbox::pending_call::CallProgress;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// let mut call = sandbox.call_async_owned::<i32>("Compute", (42,));
+    /// loop {
+    ///     match call.poll()? {
+    ///         CallProgress::Completed(result) => {
+    ///             let sandbox = call.into_sandbox();
+    ///             break;
+    ///         }
+    ///         CallProgress::Paused => { /* resume on next poll() */ }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn call_async_owned<Output: SupportedReturnType>(
+        self,
+        func_name: &str,
+        args: impl ParameterTuple,
+    ) -> super::pending_call::PendingCallOwned<Output> {
+        super::pending_call::PendingCallOwned::new(
+            self,
+            func_name,
+            Output::TYPE,
+            args.into_value(),
+        )
+    }
+
+    /// Restore a paused snapshot and return a handle to resume execution.
+    ///
+    /// This consumes the sandbox, restores the snapshot (including register
+    /// state), and returns a [`PendingCallOwned`](super::pending_call::PendingCallOwned)
+    /// ready to resume. The first call to
+    /// [`poll()`](super::pending_call::PendingCallOwned::poll) will continue
+    /// execution from exactly where the snapshot was taken.
+    ///
+    /// The snapshot must have been taken while the guest was paused
+    /// (i.e. it must contain register state). Returns an error if the
+    /// snapshot does not contain register state.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::sandbox::pending_call::CallProgress;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// #     GuestBinary::FilePath("guest.bin".into()), None
+    /// # )?.evolve()?;
+    /// # let snapshot = sandbox.snapshot()?;
+    /// // Restore and resume a paused snapshot:
+    /// let mut call = sandbox.restore_paused::<i32>(snapshot)?;
+    /// let sandbox = loop {
+    ///     match call.poll()? {
+    ///         CallProgress::Completed(result) => {
+    ///             println!("Done: {result}");
+    ///             break call.into_sandbox();
+    ///         }
+    ///         CallProgress::Paused => println!("Paused again, resuming..."),
+    ///     }
+    /// };
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn restore_paused<Output: SupportedReturnType>(
+        mut self,
+        snapshot: Arc<Snapshot>,
+    ) -> Result<super::pending_call::PendingCallOwned<Output>> {
+        if snapshot.regs().is_none() {
+            return Err(HyperlightError::Error(
+                "snapshot does not contain register state; use restore() for quiescent snapshots"
+                    .to_string(),
+            ));
+        }
+        self.restore_impl(snapshot)?;
+        Ok(super::pending_call::PendingCallOwned::new_paused(self))
     }
 
     /// Internal: dispatch a guest call that may be paused instead of completed.

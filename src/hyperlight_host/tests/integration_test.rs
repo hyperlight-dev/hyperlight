@@ -2100,3 +2100,62 @@ fn snapshot_while_paused() {
         future.kill();
     });
 }
+
+/// Snapshot a paused VM, restore it, and resume execution to completion.
+#[test]
+fn snapshot_restore_and_resume() {
+    with_rust_sandbox(|mut sbox| {
+        // Start a bounded call (2 seconds)
+        let mut future = sbox.call_async::<u64>("SpinForMs", 2000u32);
+
+        // Pause it
+        let handle = future.sandbox().interrupt_handle();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            handle.pause();
+        });
+
+        let progress = future.poll().unwrap();
+        assert!(matches!(progress, CallProgress::Paused));
+        thread.join().unwrap();
+
+        // Take a snapshot while paused (captures registers)
+        let snapshot = future.snapshot().unwrap();
+
+        // Drop the future — this poisons the sandbox
+        drop(future);
+        assert!(sbox.poisoned());
+
+        // restore_paused takes the sandbox by value, recovering it into PendingCallOwned
+        let mut call = sbox.restore_paused::<u64>(snapshot).unwrap();
+
+        // Resume execution to completion
+        loop {
+            let handle = call.sandbox().interrupt_handle();
+            let t = thread::spawn(move || {
+                // Set a generous timeout so the call can complete
+                thread::sleep(Duration::from_millis(3000));
+                handle.pause();
+            });
+
+            match call.poll().unwrap() {
+                CallProgress::Completed(_result) => {
+                    t.join().unwrap();
+                    break;
+                }
+                CallProgress::Paused => {
+                    t.join().unwrap();
+                    // If paused, resume on next poll()
+                }
+            }
+        }
+
+        // Recover the sandbox from the completed call
+        let mut sbox = call.into_sandbox();
+
+        // Sandbox should be usable after resume completed
+        assert!(!sbox.poisoned());
+        let echo: String = sbox.call("Echo", "after-restore-resume".to_string()).unwrap();
+        assert_eq!(echo, "after-restore-resume");
+    });
+}
