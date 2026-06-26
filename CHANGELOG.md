@@ -19,14 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `Snapshot::save`, `Snapshot::load`, and `Snapshot::checked_load` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465. Note that Hyperlight is at version 0.x, so a snapshot taken on one version may not load on another version.
 * Create sandboxes directly from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1459
 * Cross-sandbox snapshot restore (snapshots are no longer tied to the sandbox that created them) by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1499
-* CPU vendor field in snapshots, with cross-vendor snapshot loading rejected by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1587
-* File-backed `ReadonlySharedMemory` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1498
-* High-level packed virtqueue producer/consumer API by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1514 and https://github.com/hyperlight-dev/hyperlight/pull/1382
 * Support for WHP no-surrogate mode via `HYPERLIGHT_MAX_SURROGATES=0` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1578
 * Wasmtime `flags!` macro support for WIT flags types by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1327
 
 ### Changed
-* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)`.
+* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)` by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1525.
 * Updated Rust toolchain to 1.94 by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1527
 * Updated surrogate process to `no_std`, reducing overhead of loading unnecessary libraries by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1533
 * Replaced `tracing-log` with native `tracing` macros for guest log forwarding by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1500
@@ -334,7 +331,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...HEAD>
 [v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
 [v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>
 [v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
