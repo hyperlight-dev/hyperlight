@@ -1,7 +1,61 @@
 package test:bindgen-test-cases;
 
 world bindgen-test-cases {
+    import types: interface {
+        get-status: func() -> string;
+    }
+    import a:pkg/types;
+    import b:pkg/types;
+    import c:pkg/types@1.0.0;
+    import c:pkg/types@2.0.0;
+    import a:bc/types;
+    import a:b-c/types;
+    import a-b:c/types;
+    import uses-a-pkg-resource;
+    import uses-b-pkg-resource;
+    import uses-c-pkg-v1-resource;
+    import uses-c-pkg-v2-resource;
+    import uses-a-bc-plain-resource;
+    import uses-a-bc-resource;
+    import uses-ab-c-resource;
     export executor;
+    export types;
+    export uses-exported-types;
+}
+
+interface uses-a-pkg-resource {
+    use a:pkg/types.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-b-pkg-resource {
+    use b:pkg/types.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-c-pkg-v1-resource {
+    use c:pkg/types@1.0.0.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-c-pkg-v2-resource {
+    use c:pkg/types@2.0.0.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-a-bc-plain-resource {
+    use a:bc/types.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-a-bc-resource {
+    use a:b-c/types.{thing};
+    use-thing: func(x: borrow<thing>);
+}
+
+interface uses-ab-c-resource {
+    use a-b:c/types.{thing};
+    use-thing: func(x: borrow<thing>);
 }
 
 interface executor {
@@ -10,4 +64,17 @@ interface executor {
     }
 
     execute: func() -> execution-result;
+}
+
+interface types {
+    record status {
+        message: string,
+    }
+
+    get-status: func() -> status;
+}
+
+interface uses-exported-types {
+    use types.{status};
+    get-status: func() -> status;
 }

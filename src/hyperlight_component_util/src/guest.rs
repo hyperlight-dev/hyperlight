@@ -18,9 +18,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::emit::{
-    FnName, ResolvedBoundVar, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn,
-    kebab_to_getter, kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var,
-    split_wit_name,
+    FnName, ResolvedBoundVar, ResourceItemName, State, WitName, find_colliding_import_names,
+    import_member_names, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
+    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{Component, Defined, ExternDecl, ExternDesc, Handleable, Instance, Tyvar};
 use crate::hl::{
@@ -117,8 +117,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
             let wn = split_wit_name(ed.kebab_name);
             emit_import_instance(s, wn.clone(), it);
 
-            let getter = kebab_to_getter(wn.name);
-            let tn = kebab_to_type(wn.name);
+            let (tn, getter) = import_member_names(&wn, &s.colliding_import_names);
             quote! {
                 type #tn = Self;
                 #[allow(refining_impl_trait)]
@@ -287,6 +286,7 @@ fn emit_component<'a, 'b, 'c>(
     let export_trait = kebab_to_exports_name(wn.name);
     s.import_param_var = Some(format_ident!("I"));
     s.self_param_var = Some(format_ident!("S"));
+    s.colliding_import_names = find_colliding_import_names(&ct.imports);
 
     let rtsid = format_ident!("{}Resources", r#trait);
     resource::emit_tables(

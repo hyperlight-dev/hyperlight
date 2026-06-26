@@ -1,0 +1,10 @@
+package a:b-c;
+
+interface types {
+    resource thing;
+
+    record bc-info {
+        label: string,
+    }
+    get-bc-info: func() -> bc-info;
+}

@@ -487,4 +487,53 @@ mod bindgen_test_cases {
         };
         assert_eq!(result.message, "executed");
     }
+
+    #[allow(dead_code)]
+    struct ExportHost;
+
+    impl test::bindgen_test_cases::Executor for ExportHost {
+        fn execute(&mut self) -> test::bindgen_test_cases::executor::ExecutionResult {
+            test::bindgen_test_cases::executor::ExecutionResult {
+                message: String::from("executed"),
+            }
+        }
+    }
+
+    impl test::bindgen_test_cases::Types for ExportHost {
+        fn get_status(&mut self) -> test::bindgen_test_cases::types::Status {
+            test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            }
+        }
+    }
+
+    impl test::bindgen_test_cases::UsesExportedTypes<test::bindgen_test_cases::types::Status>
+        for ExportHost
+    {
+        fn get_status(&mut self) -> test::bindgen_test_cases::types::Status {
+            test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            }
+        }
+    }
+
+    #[allow(refining_impl_trait)]
+    impl<I: test::bindgen_test_cases::BindgenTestCasesImports + Send>
+        test::bindgen_test_cases::BindgenTestCasesExports<I> for ExportHost
+    {
+        type Executor = Self;
+        fn executor(&mut self) -> &mut Self {
+            self
+        }
+
+        type Types = Self;
+        fn types(&mut self) -> &mut Self {
+            self
+        }
+
+        type UsesExportedTypes = Self;
+        fn uses_exported_types(&mut self) -> &mut Self {
+            self
+        }
+    }
 }

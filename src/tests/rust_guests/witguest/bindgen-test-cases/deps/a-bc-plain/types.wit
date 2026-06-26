@@ -1,0 +1,10 @@
+package a:bc;
+
+interface types {
+    resource thing;
+
+    record plain-bc-info {
+        label: string,
+    }
+    get-plain-bc-info: func() -> plain-bc-info;
+}

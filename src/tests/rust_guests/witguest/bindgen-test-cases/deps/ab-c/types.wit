@@ -1,0 +1,10 @@
+package a-b:c;
+
+interface types {
+    resource thing;
+
+    record ab-c-info {
+        tag: string,
+    }
+    get-ab-c-info: func() -> ab-c-info;
+}
