@@ -164,12 +164,15 @@ jobs:
     strategy:
       matrix:
         target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
-        arch: [X64, arm64]
-        exclude:
-        - arch: arm64
-          target: fuzz_guest_trace
-        - arch: arm64
-          target: fuzz_guest_estimate_trace_event
+        arch:
+          - X64
+        # arm64 disabled to conserve the limited self-hosted Apple runners.
+        # - arm64
+        # exclude:
+        # - arch: arm64
+        #   target: fuzz_guest_trace
+        # - arch: arm64
+        #   target: fuzz_guest_estimate_trace_event
     uses: ./.github/workflows/dep_fuzzing.yml
     secrets: inherit
     with:
