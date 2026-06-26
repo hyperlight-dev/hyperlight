@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::Write;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
@@ -86,17 +87,20 @@ fn surrogate_binary_name() -> Result<String> {
 /// (or `None` when the variable is unset or unparsable).
 ///
 /// Resolution order:
-/// 1. `max` is clamped to `1..=HARD_MAX_SURROGATE_PROCESSES`, defaulting
+/// 1. `max` is clamped to `0..=HARD_MAX_SURROGATE_PROCESSES`, defaulting
 ///    to `HARD_MAX_SURROGATE_PROCESSES` when `None`.
-/// 2. `initial` is clamped to `1..=max`, defaulting to `max` when `None`.
+/// 2. `initial` is clamped to `0..=max`, defaulting to `max` when `None`.
 ///    This guarantees `initial <= max` without an extra conditional.
+///
+/// When `max == 0`, surrogates are disabled entirely and the system
+/// falls back to `WHvMapGpaRange` (single-VM-per-process mode).
 fn compute_surrogate_counts(raw_initial: Option<usize>, raw_max: Option<usize>) -> (usize, usize) {
     let max = raw_max
-        .map(|n| n.clamp(1, HARD_MAX_SURROGATE_PROCESSES))
+        .map(|n| n.clamp(0, HARD_MAX_SURROGATE_PROCESSES))
         .unwrap_or(HARD_MAX_SURROGATE_PROCESSES);
 
-    // Clamp initial to 1..=max so it can never exceed the authoritative limit.
-    let initial = raw_initial.map(|n| n.clamp(1, max)).unwrap_or(max);
+    // Clamp initial to 0..=max so it can never exceed the authoritative limit.
+    let initial = raw_initial.map(|n| n.clamp(0, max)).unwrap_or(max);
 
     (initial, max)
 }
@@ -104,8 +108,8 @@ fn compute_surrogate_counts(raw_initial: Option<usize>, raw_max: Option<usize>) 
 /// Returns the (initial, max) surrogate process counts from environment
 /// variables, applying validation and clamping.
 ///
-/// - `HYPERLIGHT_INITIAL_SURROGATES`: clamped to `1..=max`, default `max`.
-/// - `HYPERLIGHT_MAX_SURROGATES`: clamped to `1..=512`, default 512.
+/// - `HYPERLIGHT_INITIAL_SURROGATES`: clamped to `0..=max`, default `max`.
+/// - `HYPERLIGHT_MAX_SURROGATES`: clamped to `0..=512`, default 512.
 fn surrogate_process_counts() -> (usize, usize) {
     let raw_initial = std::env::var(INITIAL_SURROGATES_ENV_VAR)
         .ok()
@@ -351,6 +355,21 @@ pub(crate) fn get_surrogate_process_manager() -> Result<&'static SurrogateProces
             Err(new_error!("Failed to get SurrogateProcessManager {}", e))
         }
     }
+}
+
+/// Returns `true` when `HYPERLIGHT_MAX_SURROGATES=0`, meaning surrogate
+/// processes are disabled and the system should use `WHvMapGpaRange`
+/// (single-VM-per-process mode) instead of `WHvMapGpaRange2`.
+///
+/// The result is cached on first call — the env var is read only once.
+pub(crate) fn surrogates_disabled() -> bool {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var(MAX_SURROGATES_ENV_VAR)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .is_some_and(|n| n == 0)
+    })
 }
 
 // Creates a job object that will terminate all the surrogate processes when the struct instance is dropped.
@@ -885,9 +904,9 @@ mod tests {
             "initial should be clamped down to max when it exceeds it"
         );
 
-        // --- initial below minimum → clamped to 1 ---
+        // --- initial at zero → allowed (surrogates disabled when max is also 0) ---
         let (initial, max) = compute_surrogate_counts(Some(0), None);
-        assert_eq!(initial, 1, "initial should be clamped to minimum of 1");
+        assert_eq!(initial, 0, "initial of 0 should be allowed");
         assert_eq!(
             max, HARD_MAX_SURROGATE_PROCESSES,
             "max should default when unset"
@@ -909,10 +928,10 @@ mod tests {
             "initial should be clamped down to max when it defaults above it"
         );
 
-        // --- max below minimum → clamped to 1, initial follows ---
+        // --- max at zero → allowed (surrogates disabled), initial follows ---
         let (initial, max) = compute_surrogate_counts(None, Some(0));
-        assert_eq!(max, 1, "max should be clamped to minimum of 1");
-        assert_eq!(initial, 1, "initial should be clamped down to max");
+        assert_eq!(max, 0, "max of 0 should be allowed");
+        assert_eq!(initial, 0, "initial should be clamped down to max");
 
         // --- max above hard limit → clamped to 512 ---
         let (initial, max) = compute_surrogate_counts(None, Some(9999));
@@ -947,12 +966,12 @@ mod tests {
         // gracefully adapts: it only asserts the invariant initial <= max <= 512.
         let (initial, max) = surrogate_process_counts();
         assert!(
-            (1..=HARD_MAX_SURROGATE_PROCESSES).contains(&initial),
-            "initial {initial} should be in 1..={HARD_MAX_SURROGATE_PROCESSES}"
+            (0..=HARD_MAX_SURROGATE_PROCESSES).contains(&initial),
+            "initial {initial} should be in 0..={HARD_MAX_SURROGATE_PROCESSES}"
         );
         assert!(
-            (1..=HARD_MAX_SURROGATE_PROCESSES).contains(&max),
-            "max {max} should be in 1..={HARD_MAX_SURROGATE_PROCESSES}"
+            (0..=HARD_MAX_SURROGATE_PROCESSES).contains(&max),
+            "max {max} should be in 0..={HARD_MAX_SURROGATE_PROCESSES}"
         );
         assert!(initial <= max, "initial ({initial}) must be <= max ({max})");
     }
