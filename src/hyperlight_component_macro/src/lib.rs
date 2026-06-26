@@ -20,19 +20,19 @@ limitations under the License.
 //! (e.g. those described by WIT) to describe the interface between a
 //! Hyperlight host and guest.
 //!
-//! For both host and guest bindings, bindings generation takes in a
-//! binary-encoded wasm component, which should have roughly the
+//! For both host and guest bindings, bindings generation takes in WIT
+//! source input (`*.wit` files or WIT package directories) or a
+//! wasm-encoded WIT package. Wasm input should have roughly the
 //! structure of a binary-encoded WIT (in particular, component
 //! import/export kebab-names should have `wit:package/name` namespace
 //! structure, and the same two-level convention for wrapping a
-//! component type into an actual component should be adhered to). If
-//! you are using WIT as the input, it is easy to build such a file
-//! via `wasm-tools component wit -w -o file.wasm file.wit`.
+//! component type into an actual component should be adhered to).
 //!
-//! Both macros can take the path to such a file as a parameter, or,
-//! if one is not provided, will fall back to using the path in the
-//! environment variable `$WIT_WORLD`. A relative path provided either way
-//! will be resolved relative to `$CARGO_MANIFEST_DIR`.
+//! Both macros can take explicit `wit:`, `wasm:`, or `inline:` inputs. WIT file
+//! paths may also be WIT package directories with `deps/`; inline WIT does not
+//! resolve external dependencies. For compatibility, a bare string literal,
+//! `path:` option, or `$WIT_WORLD` is treated as wasm-encoded WIT. Relative paths
+//! are resolved relative to `$CARGO_MANIFEST_DIR`.
 //!
 //! ## Debugging
 //!
@@ -53,7 +53,7 @@ use hyperlight_component_util::*;
 use syn::parse::{Parse, ParseStream};
 use syn::{Ident, LitStr, Result, Token};
 
-/// Create host bindings for the wasm component type in the file
+/// Create host bindings for the WIT world or wasm component type in the file
 /// passed in (or `$WIT_WORLD`, if nothing is passed in). This will
 /// produce all relevant types and trait implementations for the
 /// component type, as well as functions allowing the component to be
@@ -69,13 +69,10 @@ use syn::{Ident, LitStr, Result, Token};
 pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let _ = env_logger::try_init();
     let parsed_bindgen_input = syn::parse_macro_input!(input as BindgenInputParams);
-    let path = match parsed_bindgen_input.path {
-        Some(path_env) => path_env.into_os_string(),
-        None => std::env::var_os("WIT_WORLD").unwrap(),
-    };
-    let world_name = parsed_bindgen_input.world_name;
+    let BindgenInputParams { world_name, source } = parsed_bindgen_input;
+    let source = source_or_env(source);
 
-    util::read_wit_type_from_file(path, world_name, |kebab_name, ct| {
+    util::read_wit_type(source, world_name, |kebab_name, ct| {
         let decls = emit::run_state(false, false, |s| {
             rtypes::emit_toplevel(s, &kebab_name, ct);
             host::emit_toplevel(s, &kebab_name, ct);
@@ -85,7 +82,7 @@ pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// Create the hyperlight_guest_init() function (which should be
-/// called in hyperlight_main()) for the wasm component type in the
+/// called in hyperlight_main()) for the WIT world or wasm component type in the
 /// file passed in (or `$WIT_WORLD`, if nothing is passed in). This
 /// function registers Hyperlight functions for component exports
 /// (which are implemented by calling into the trait provided) and
@@ -95,13 +92,10 @@ pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let _ = env_logger::try_init();
     let parsed_bindgen_input = syn::parse_macro_input!(input as BindgenInputParams);
-    let path = match parsed_bindgen_input.path {
-        Some(path_env) => path_env.into_os_string(),
-        None => std::env::var_os("WIT_WORLD").unwrap(),
-    };
-    let world_name = parsed_bindgen_input.world_name;
+    let BindgenInputParams { world_name, source } = parsed_bindgen_input;
+    let source = source_or_env(source);
 
-    util::read_wit_type_from_file(path, world_name, |kebab_name, ct| {
+    util::read_wit_type(source, world_name, |kebab_name, ct| {
         let decls = emit::run_state(true, false, |s| {
             // Emit type/trait definitions for all instances in the world
             rtypes::emit_toplevel(s, &kebab_name, ct);
@@ -119,12 +113,46 @@ pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
 #[derive(Debug)]
 struct BindgenInputParams {
     world_name: Option<String>,
-    path: Option<std::path::PathBuf>,
+    source: Option<util::WitSource>,
+}
+
+fn source_or_env(source: Option<util::WitSource>) -> util::WitSource {
+    source.unwrap_or_else(|| {
+        util::WitSource::Wasm(std::path::PathBuf::from(
+            std::env::var_os("WIT_WORLD").unwrap(),
+        ))
+    })
+}
+
+fn unknown_key_error(key: &Ident) -> syn::Error {
+    syn::Error::new(
+        key.span(),
+        format!(
+            "unknown parameter '{}'; expected 'path', 'wit', 'wasm', 'inline', 'world', or 'world_name'",
+            key
+        ),
+    )
+}
+
+fn source_from_key(key: &Ident, value: LitStr) -> Result<util::WitSource> {
+    match key.to_string().as_str() {
+        "path" => Ok(util::WitSource::Wasm(std::path::PathBuf::from(
+            value.value(),
+        ))),
+        "wit" => Ok(util::WitSource::Wit(std::path::PathBuf::from(
+            value.value(),
+        ))),
+        "wasm" => Ok(util::WitSource::Wasm(std::path::PathBuf::from(
+            value.value(),
+        ))),
+        "inline" => Ok(util::WitSource::Inline(value.value())),
+        _ => Err(unknown_key_error(key)),
+    }
 }
 
 impl Parse for BindgenInputParams {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut path = None;
+        let mut source = None;
         let mut world_name = None;
 
         if input.peek(syn::token::Brace) {
@@ -137,35 +165,40 @@ impl Parse for BindgenInputParams {
                 content.parse::<Token![:]>()?;
 
                 match key.to_string().as_str() {
-                    "world_name" => {
+                    "world" | "world_name" => {
                         let value: LitStr = content.parse()?;
                         world_name = Some(value.value());
                     }
-                    "path" => {
+                    "path" | "wit" | "wasm" | "inline" => {
                         let value: LitStr = content.parse()?;
-                        path = Some(std::path::PathBuf::from(value.value()));
+                        if source.is_some() {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "only one input source may be specified",
+                            ));
+                        }
+                        source = Some(source_from_key(&key, value)?);
                     }
-                    _ => {
-                        return Err(syn::Error::new(
-                            key.span(),
-                            format!(
-                                "unknown parameter '{}'; expected 'path' or 'world_name'",
-                                key
-                            ),
-                        ));
-                    }
+                    _ => return Err(unknown_key_error(&key)),
                 }
                 // Parse optional comma
                 if content.peek(Token![,]) {
                     content.parse::<Token![,]>()?;
                 }
             }
+        } else if input.peek(Ident) {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![:]>()?;
+            let value: LitStr = input.parse()?;
+            source = Some(source_from_key(&key, value)?);
         } else {
             let option_path_litstr = input.parse::<Option<syn::LitStr>>()?;
             if let Some(concrete_path) = option_path_litstr {
-                path = Some(std::path::PathBuf::from(concrete_path.value()));
+                source = Some(util::WitSource::Wasm(std::path::PathBuf::from(
+                    concrete_path.value(),
+                )));
             }
         }
-        Ok(Self { world_name, path })
+        Ok(Self { world_name, source })
     }
 }

@@ -17,19 +17,73 @@ limitations under the License.
 //! General utilities for bindgen macros
 use crate::etypes;
 
-/// Read and parse a WIT type encapsulated in a wasm file from the
-/// given filename, relative to the cargo manifest directory.
-pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
-    filename: impl AsRef<std::ffi::OsStr>,
+/// Input accepted by component bindgen.
+#[derive(Debug)]
+pub enum WitSource {
+    Wasm(std::path::PathBuf),
+    Wit(std::path::PathBuf),
+    Inline(String),
+}
+
+impl WitSource {
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::Wasm(path) => {
+                let path = manifest_path(&path);
+                let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+                    panic!(
+                        "failed to read wasm-encoded WIT input '{}': {err}",
+                        path.display()
+                    )
+                });
+                if !wasmparser::Parser::is_component(&bytes) {
+                    panic!(
+                        "wasm-encoded WIT input '{}' is not a wasm component",
+                        path.display()
+                    );
+                }
+                bytes
+            }
+            Self::Wit(path) => {
+                let path = manifest_path(&path);
+                let mut resolve = wit_parser::Resolve::default();
+                let (package, _) = resolve.push_path(&path).unwrap_or_else(|err| {
+                    panic!("failed to parse WIT input '{}': {err:#}", path.display())
+                });
+
+                wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                    panic!(
+                        "failed to encode WIT input '{}' as a wasm component type: {err:#}",
+                        path.display()
+                    )
+                })
+            }
+            Self::Inline(contents) => {
+                let mut resolve = wit_parser::Resolve::default();
+                let package = resolve
+                    .push_str("inline.wit", &contents)
+                    .unwrap_or_else(|err| panic!("failed to parse inline WIT input: {err:#}"));
+
+                wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                    panic!("failed to encode inline WIT input as a wasm component type: {err:#}")
+                })
+            }
+        }
+    }
+}
+
+fn manifest_path(path: &std::path::Path) -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    std::path::Path::new(&manifest_dir).join(path)
+}
+
+/// Read and parse a WIT type from a supported bindgen input.
+pub fn read_wit_type<R, F: FnMut(String, &etypes::Component) -> R>(
+    source: WitSource,
     world_name: Option<String>,
     mut cb: F,
 ) -> R {
-    let path = std::path::Path::new(&filename);
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let manifest_dir = std::path::Path::new(&manifest_dir);
-    let path = manifest_dir.join(path);
-
-    let bytes = std::fs::read(path).unwrap();
+    let bytes = source.encode();
     let i = wasmparser::Parser::new(0).parse_all(&bytes);
     let ct = crate::component::read_component_single_exported_type(i, world_name);
 
@@ -49,6 +103,17 @@ pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
     };
     tracing::debug!("hcm: considering component type {:?}", ct);
     cb(export.kebab_name.to_string(), ct)
+}
+
+/// Read and parse a wasm-encoded WIT file, relative to the cargo manifest
+/// directory.
+pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
+    filename: impl AsRef<std::ffi::OsStr>,
+    world_name: Option<String>,
+    cb: F,
+) -> R {
+    let src = WitSource::Wasm(std::path::PathBuf::from(filename.as_ref()));
+    read_wit_type(src, world_name, cb)
 }
 
 /// Deal with `$HYPERLIGHT_COMPONENT_MACRO_DEBUG`: if it is present,

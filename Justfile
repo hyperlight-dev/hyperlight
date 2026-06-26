@@ -61,13 +61,7 @@ guests: build-and-move-rust-guests build-and-move-c-guests
 ensure-cargo-hyperlight:
     {{ if os() == "windows" { "if (-not ((cargo hyperlight --version 2>$null) -like '*" + cargo-hyperlight-version + "*')) { cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight }" } else { "cargo hyperlight --version 2>/dev/null | grep -qF '" + cargo-hyperlight-version + "' || cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight" } }}
 
-witguest-wit:
-    cargo install --locked wasm-tools
-    cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
-    cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
-    cd src/tests/rust_guests/witguest && wasm-tools component wit bindgen-test-cases/ -w -o bindgen-test-cases.wasm
-
-build-rust-guests target=default-target features="": (witguest-wit) (ensure-cargo-hyperlight)
+build-rust-guests target=default-target features="": (ensure-cargo-hyperlight)
     @# --workspace unifies feature resolution so shared deps build once. Needed because witguest
     @# pulls bindgen via hyperlight-component-macro, which would otherwise turn on extra features
     @# on libc's build.rs host deps and force a libc rebuild. simple/dummyguest don't hit this.
@@ -86,7 +80,7 @@ clean: clean-rust
 clean-rust: 
     cargo clean
     cd src/tests/rust_guests && cargo clean
-    {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
+    {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/*.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/*.wasm" } }}
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
 
 ################
@@ -249,11 +243,11 @@ test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
 
 # runs integration tests
-test-integration target=default-target features="": (witguest-wit)
+test-integration target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
-    @# run component-util integration tests that depend on generated WIT inputs
+    @# run component-util integration tests that exercise WIT input codegen
     {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
 
     @# run the rest of the integration tests
@@ -336,14 +330,14 @@ fmt-apply: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/Cargo.toml --all
     cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
-clippy target=default-target: (witguest-wit)
+clippy target=default-target:
     {{ cargo-cmd }} clippy --all-targets {{ if hyperlight-target-arch == "x86_64" { "--all-features" } else { "" } }} --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
 # for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
-clippyw target=default-target: (witguest-wit)
+clippyw target=default-target:
     {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
-clippy-guests target=default-target: (witguest-wit) (ensure-cargo-hyperlight)
+clippy-guests target=default-target: (ensure-cargo-hyperlight)
     cd src/tests/rust_guests && cargo hyperlight clippy --workspace --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:
@@ -353,7 +347,7 @@ clippy-apply-fix-windows:
     cargo clippy --target x86_64-pc-windows-msvc --fix --all 
 
 # Run clippy with feature combinations for all packages
-clippy-exhaustive target=default-target: (witguest-wit)
+clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-host {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-guest {{ target }} 
     ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
@@ -366,7 +360,7 @@ clippy-exhaustive target=default-target: (witguest-wit)
     just clippy-guests {{ target }}
 
 # Test a specific package with all feature combinations
-clippy-package package target=default-target: (witguest-wit)
+clippy-package package target=default-target:
     ./hack/clippy-package-features.sh {{ package }} {{ target }}
 
 # Verify Minimum Supported Rust Version
