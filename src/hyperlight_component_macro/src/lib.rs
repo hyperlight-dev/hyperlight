@@ -190,7 +190,13 @@ impl Parse for BindgenInputParams {
             let key: Ident = input.parse()?;
             input.parse::<Token![:]>()?;
             let value: LitStr = input.parse()?;
-            source = Some(source_from_key(&key, value)?);
+            match key.to_string().as_str() {
+                "world" | "world_name" => world_name = Some(value.value()),
+                "path" | "wit" | "wasm" | "inline" => {
+                    source = Some(source_from_key(&key, value)?);
+                }
+                _ => return Err(unknown_key_error(&key)),
+            }
         } else {
             let option_path_litstr = input.parse::<Option<syn::LitStr>>()?;
             if let Some(concrete_path) = option_path_litstr {

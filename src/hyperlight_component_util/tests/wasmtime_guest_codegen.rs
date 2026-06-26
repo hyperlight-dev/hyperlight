@@ -15,11 +15,14 @@ limitations under the License.
 */
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_component_util::etypes::{
     Defined, ExternDesc, Handleable, ImportExport, TypeBound, Tyvar, Value,
 };
 use hyperlight_component_util::{emit, guest, rtypes, util};
+
+static TEMP_WASM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn fixture_path(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
@@ -32,8 +35,9 @@ fn encode_wit_fixture_to_wasm(path: &Path) -> PathBuf {
         .expect("WIT fixture should parse successfully");
     let wasm = wit_component::encode(&resolve, package).expect("WIT fixture should encode");
     let wasm_path = std::env::temp_dir().join(format!(
-        "hyperlight-component-util-{}-wit-fixture.wasm",
-        std::process::id()
+        "hyperlight-component-util-{}-{}-wit-fixture.wasm",
+        std::process::id(),
+        TEMP_WASM_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::write(&wasm_path, wasm).expect("temporary wasm fixture should be written");
     wasm_path
