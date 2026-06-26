@@ -94,26 +94,26 @@ jobs:
       fail-fast: true
       matrix:
         hypervisor: ['hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel, apple]
+        cpu_vendor: [amd, intel, apple]
         arch: [X64, arm64]
         config: [debug, release]
         exclude:
-        - cpu: apple
+        - cpu_vendor: apple
           hypervisor: hyperv-ws2025
-        - cpu: apple
+        - cpu_vendor: apple
           hypervisor: mshv3
-        - cpu: amd
+        - cpu_vendor: amd
           arch: arm64
-        - cpu: intel
+        - cpu_vendor: intel
           arch: arm64
-        - cpu: apple
+        - cpu_vendor: apple
           arch: X64
     uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
       hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
 
@@ -130,26 +130,26 @@ jobs:
       fail-fast: true
       matrix:
         hypervisor: ['hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel, apple]
+        cpu_vendor: [amd, intel, apple]
         arch: [X64, arm64]
         config: [debug, release]
         exclude:
-        - cpu: apple
+        - cpu_vendor: apple
           hypervisor: hyperv-ws2025
-        - cpu: apple
+        - cpu_vendor: apple
           hypervisor: mshv3
-        - cpu: amd
+        - cpu_vendor: amd
           arch: arm64
-        - cpu: intel
+        - cpu_vendor: intel
           arch: arm64
-        - cpu: apple
+        - cpu_vendor: apple
           arch: X64
     uses: ./.github/workflows/dep_run_examples.yml
     secrets: inherit
     with: 
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
       hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
 

@@ -29,12 +29,12 @@ jobs:
       fail-fast: true
       matrix:
         hypervisor: [kvm, mshv3]
-        cpu: [amd, intel]
+        cpu_vendor: [amd, intel]
         config: [debug, release]
     runs-on: ${{ fromJson(
         format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}", "JobId=musl-{2}-{3}-{4}-{5}"]', 
           matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu,
+          matrix.cpu_vendor,
           matrix.config,
           github.run_id,
           github.run_number,

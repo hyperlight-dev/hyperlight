@@ -18,7 +18,7 @@ on:
         description: Build configuration for this run (passed from caller matrix)
         required: true
         type: string
-      cpu:
+      cpu_vendor:
         description: CPU vendor for the build (passed from caller matrix)
         required: true
         type: string
@@ -42,12 +42,16 @@ jobs:
   run-examples:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: ${{ fromJSON(vars.RUN_EXAMPLES_JOB_TIMEOUT || '15') }}
-    runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "{1}", {2} {3}]',
-          inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
-          inputs.arch,
-          inputs.arch == 'X64' && format('"1ES.Pool=hld-{0}-{1}"', inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, inputs.cpu) || inputs.hypervisor == 'kvm' && '"kvm", "ubuntu-24.04"' || '',
-          inputs.arch == 'X64' && format(', "JobId=run-examples-{0}-{1}-{2}-{3}"', inputs.config, github.run_id, github.run_number, github.run_attempt) || '')) }}
+    runs-on: ${{ fromJson(inputs.arch == 'X64'
+        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-examples-{3}-{4}-{5}-{6}"]',
+            inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+            inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor,
+            inputs.cpu_vendor,
+            inputs.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || '["self-hosted", "Linux", "arm64", "kvm", "ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
