@@ -5,13 +5,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
-* `Snapshot::save`, `Snapshot::load`, and `Snapshot::checked_load` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465. Note that Hyperlight is at version 0.x, so a snapshot taken on one version may not load on another version.
 
 ### Changed
-* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)`.
 
 ### Removed
-* Removed the experimental `i686-guest`, `nanvix-unstable`, and `guest-counter` feature flags, along with 32-bit (i686) guest support and its page-table/snapshot code paths. Hyperlight guests are now 64-bit only (x86_64 and aarch64).
+
+### Fixed
+
+## [v0.16.0] - 2026-06-26
+
+### Added
+* Initial aarch64/KVM guest and host support, including memory layout, virtual memory operations, exception handlers, MMIO exits, register handling, and CI workflows by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1474
+* `Snapshot::save`, `Snapshot::load`, and `Snapshot::checked_load` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465. Note that Hyperlight is at version 0.x, so a snapshot taken on one version may not load on another version.
+* Create sandboxes directly from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1459
+* Cross-sandbox snapshot restore (snapshots are no longer tied to the sandbox that created them) by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1499
+* Support for WHP no-surrogate mode via `HYPERLIGHT_MAX_SURROGATES=0` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1578
+* Wasmtime `flags!` macro support for WIT flags types by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1327
+
+### Changed
+* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)` by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1525.
+* Updated Rust toolchain to 1.94 by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1527
+* Updated surrogate process to `no_std`, reducing overhead of loading unnecessary libraries by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1533
+* Replaced `tracing-log` with native `tracing` macros for guest log forwarding by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1500
+* MSHV: use VP register page for RIP/RAX writes in `run_vcpu` for improved performance by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1366
+* MSHV: skip RIP advance on `VmAction::Halt` fast path by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1476
+* Faster `memcpy`/`memset` implementations by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1473
+
+### Removed
+* Removed the experimental `i686-guest`, `nanvix-unstable`, and `guest-counter` feature flags, along with 32-bit (i686) guest support and its page-table/snapshot code paths. Hyperlight guests are now 64-bit only (x86_64 and aarch64) by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1525.
+
+### Fixed
+* Fix colliding WIT import names by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1562
+* Fix empty namespace paths in component codegen by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1331
+* Fix `nomem` constraint on `out32` OUT-trap asm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1534
+* Validate guest address ranges for overlapping regions in `map_region` by @Richard-Durkee in https://github.com/hyperlight-dev/hyperlight/pull/1464
 
 ## [v0.15.0] - 2026-05-06
 
@@ -304,7 +331,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...HEAD>
+[v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
 [v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>
 [v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
 [v0.13.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0...v0.13.1>
