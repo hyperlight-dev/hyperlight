@@ -14,6 +14,7 @@ jobs:
     uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
     with:
+      arch: X64
       config: release
 
   fuzzing:

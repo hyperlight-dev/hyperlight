@@ -68,6 +68,7 @@ jobs:
     secrets: inherit
     needs: [release-blocker-check]
     with:
+      arch: X64
       config: release
 
   benchmarks:
