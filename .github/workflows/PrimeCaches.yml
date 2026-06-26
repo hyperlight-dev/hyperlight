@@ -37,6 +37,7 @@ jobs:
     uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
     with:
+      arch: X64
       config: ${{ matrix.config }}
 
   # Populate v0-rust-code-checks-{linux,windows} caches.

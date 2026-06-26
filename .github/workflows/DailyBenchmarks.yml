@@ -35,6 +35,7 @@ jobs:
     uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
     with:
+      arch: X64
       config: release
 
   # Run benchmarks across all hypervisor/cpu combos, comparing against
