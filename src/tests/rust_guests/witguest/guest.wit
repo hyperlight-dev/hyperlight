@@ -5,6 +5,7 @@ world test {
   import host-resource;
   export roundtrip;
   export test-host-resource;
+  export failable;
 }
 
 interface roundtrip {
@@ -89,4 +90,8 @@ interface test-host-resource {
   test-accepts-borrow: func(x: borrow<testresource>);
   test-accepts-own: func(x: own<testresource>);
   test-returns: func() -> own<testresource>;
+}
+
+interface failable {
+  guest-panic: func() -> string;
 }

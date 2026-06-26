@@ -99,7 +99,7 @@ pub fn emit_tables<'a, 'b, 'c>(
             #sphantom
         }
         impl<I: #bound #sv> #rtsid<I #svs> {
-            fn new() -> Self {
+            pub(crate) fn new() -> Self {
                 #rtsid {
                     #(#inits,)*
                     _phantomI: ::core::marker::PhantomData,

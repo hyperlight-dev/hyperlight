@@ -46,6 +46,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         .map(|p| rtypes::emit_func_param(s, p))
                         .collect::<Vec<_>>();
                     let result_decl = rtypes::emit_func_result(s, &ft.result);
+                    let result_decl = quote! { ::std::result::Result<#result_decl, ::hyperlight_host::error::HyperlightError> };
                     let hln = emit_fn_hl_name(s, ed.kebab_name);
                     let ret = format_ident!("ret");
                     let marshal = ft
@@ -66,11 +67,11 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                                 #hln,
                                 marshalled,
                             );
-                            let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            let #ret = #ret?;
                             #[allow(clippy::unused_unit)]
                             let mut rts = self.rt.lock().unwrap();
                             #[allow(clippy::unused_unit)]
-                            #unmarshal
+                            Ok(#unmarshal)
                         }
                     }
                 }
@@ -121,7 +122,7 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
 
     let ns = wn.namespace_path();
     let nsi = wn.namespace_idents();
-    let trait_name = kebab_to_type(wn.name);
+    let trait_name = kebab_to_exports_name(wn.name);
     let r#trait = s.r#trait(&nsi, trait_name.clone());
     let tvs = r#trait
         .tvs

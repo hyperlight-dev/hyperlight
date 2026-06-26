@@ -166,6 +166,12 @@ impl test::wit::Roundtrip for Guest {
     }
 }
 
+impl test::wit::Failable for Guest {
+    fn guest_panic(&mut self) -> alloc::string::String {
+        panic!("deliberate guest panic")
+    }
+}
+
 use alloc::string::ToString;
 
 use test::wit::host_resource::Testresource;
@@ -212,6 +218,10 @@ impl test::wit::TestExports<Host> for Guest {
     }
     type TestHostResource = Self;
     fn test_host_resource(&mut self) -> &mut Self {
+        self
+    }
+    type Failable = Self;
+    fn failable(&mut self) -> &mut Self {
         self
     }
 }

@@ -661,6 +661,11 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .map(|p| emit_func_param(&mut s, p))
                         .collect::<Vec<_>>();
                     let result = emit_func_result(&mut s, &ft.result);
+                    let result = if !s.is_guest && s.is_export {
+                        quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                    } else {
+                        result
+                    };
                     quote! {
                         fn #n(&mut self, #(#params),*) -> #result;
                     }
@@ -683,12 +688,22 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         }
                         ResourceItemName::Method(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = if !sv.is_guest && sv.is_export {
+                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                            } else {
+                                result
+                            };
                             sv.cur_trait().items.extend(quote! {
                                 fn #n(&mut self, #(#params),*) -> #result;
                             });
                         }
                         ResourceItemName::Static(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = if !sv.is_guest && sv.is_export {
+                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
+                            } else {
+                                result
+                            };
                             sv.cur_trait().items.extend(quote! {
                                 fn #n(&mut self, #(#params),*) -> #result;
                             });
@@ -711,6 +726,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
             ) -> TokenStream {
                 let id = kebab_to_type(ed.kebab_name);
                 let mut s = s.helper();
+                if !s.cur_mod().emitted_type_names.insert(id.clone()) {
+                    return TokenStream::new();
+                }
 
                 let t = emit_defined(&mut s, v, id, t);
                 s.cur_mod().items.extend(t);
@@ -732,6 +750,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         let rn = kebab_to_type(ed.kebab_name);
                         s.add_helper_supertrait(rn.clone());
                         let mut s = s.helper();
+                        if !s.cur_mod().emitted_type_names.insert(rn.clone()) {
+                            return quote! {};
+                        }
                         s.cur_trait = Some(rn.clone());
                         s.cur_trait().items.extend(quote! {
                             type T: ::core::marker::Send;
@@ -749,7 +770,12 @@ fn emit_extern_decl<'a, 'b, 'c>(
             emit_instance(&mut s, wn.clone(), it);
 
             let nsids = wn.namespace_idents();
-            let repr = s.r#trait(&nsids, kebab_to_type(wn.name));
+            let trait_name = if !s.is_guest && s.is_export {
+                kebab_to_exports_name(wn.name)
+            } else {
+                kebab_to_type(wn.name)
+            };
+            let repr = s.r#trait(&nsids, trait_name.clone());
             let vs = if !repr.tvs.is_empty() {
                 let vs = repr.tvs.clone();
                 let tvs = vs
@@ -765,9 +791,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
             let tns = wn.namespace_path();
             let tn = kebab_to_type(wn.name);
             let trait_bound = if tns.is_empty() {
-                quote! { #rp #tn }
+                quote! { #rp #trait_name }
             } else {
-                quote! { #rp #tns::#tn }
+                quote! { #rp #tns::#trait_name }
             };
             quote! {
                 type #tn: #trait_bound #vs;
@@ -786,7 +812,11 @@ fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Inst
     tracing::debug!("emitting instance {:?}", wn);
     let mut s = s.with_cursor(wn.namespace_idents());
 
-    let name = kebab_to_type(wn.name);
+    let name = if !s.is_guest && s.is_export {
+        kebab_to_exports_name(wn.name)
+    } else {
+        kebab_to_type(wn.name)
+    };
 
     s.cur_helper_mod = Some(kebab_to_namespace(wn.name));
     s.cur_trait = Some(name.clone());
