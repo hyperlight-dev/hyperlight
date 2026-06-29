@@ -106,6 +106,27 @@ pub trait InterruptHandle: Send + Sync + Debug {
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
     fn pause(&self) -> bool;
 
+    /// Request that the sandbox pause at the next *safe boundary* without
+    /// interrupting any guest instruction that is currently executing.
+    ///
+    /// Unlike [`pause()`](Self::pause), this never signals/cancels the running
+    /// vcpu. It only sets the pause flag, so the VM keeps running guest code
+    /// until the next time the vcpu exits to the host (e.g. for a host function
+    /// call), at which point the run loop observes the flag and stops.
+    ///
+    /// This matters for snapshotting: a signal-based pause can stop the guest
+    /// midway through a host-call sequence — for example after it has staged a
+    /// request into the shared output buffer but before it has executed the
+    /// `OUT` that delivers it. Resuming such a snapshot re-executes the `OUT`
+    /// against a buffer that was reset on restore, crashing the guest. Pausing
+    /// only at vcpu-exit boundaries guarantees the in/out data buffers are in a
+    /// consistent state that can be snapshotted and resumed.
+    ///
+    /// To make the pause prompt for a guest that is idling inside a blocking
+    /// host call, wake that call (e.g. cancel its sleep) after requesting the
+    /// pause so the vcpu loop reaches its next boundary quickly.
+    fn pause_at_safepoint(&self);
+
     /// Used by a debugger to interrupt the corresponding sandbox from running.
     ///
     /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
@@ -296,6 +317,13 @@ impl InterruptHandle for LinuxInterruptHandle {
 
         // Send signals to interrupt the vcpu if it's currently running
         self.send_signal()
+    }
+
+    fn pause_at_safepoint(&self) {
+        // Set the pause flag but deliberately do NOT signal the vcpu, so the
+        // guest is never stopped midway through an instruction sequence. The
+        // run loop will observe the flag at its next vcpu-exit boundary.
+        self.state.fetch_or(Self::PAUSE_BIT, Ordering::Release);
     }
 
     #[cfg(gdb)]
@@ -491,6 +519,12 @@ impl InterruptHandle for WindowsInterruptHandle {
         }
 
         unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
+    }
+    fn pause_at_safepoint(&self) {
+        // Set the pause flag but deliberately do NOT cancel the running vcpu,
+        // so the guest is never stopped midway through an instruction sequence.
+        // The run loop will observe the flag at its next vcpu-exit boundary.
+        self.state.fetch_or(Self::PAUSE_BIT, Ordering::Release);
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
