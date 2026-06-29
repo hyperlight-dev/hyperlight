@@ -2395,10 +2395,12 @@ fn stress_resume_host_call_loop_in_place_preserves_host_call() {
 }
 
 /// Requests a pause while the guest is blocked inside a host function call.
-/// A host call cannot be interrupted, so the pause is honored at the next host-call
-/// boundary: `HostCallLoop` repeatedly calls the host function, so once the in-flight
-/// host call returns the next iteration's `IoOut` exit observes the sticky pause flag
-/// and breaks cleanly with `CallProgress::Paused` (no crash, no poison).
+/// A host call cannot be interrupted, but as soon as it returns the run loop
+/// completes the in-flight `OUT` and stops immediately — so the pause is
+/// honored right after the triggering host call, without needing a further
+/// host call. `HostCallLoop` would keep calling the host function forever, yet
+/// the very first call's return is enough to land on `CallProgress::Paused`
+/// (no crash, no poison).
 #[test]
 fn pause_during_host_call() {
     with_rust_uninit_sandbox(|mut usbox| {
@@ -2455,11 +2457,11 @@ fn pause_during_host_call() {
 /// the pause, and again on resume? It does not. When `pause()` is called from
 /// inside a host function the vcpu is not in its run ioctl, so only the sticky
 /// pause flag is set (no signal is delivered). The triggering host call runs to
-/// completion exactly once; the run loop observes the flag at the *next* `IoOut`
-/// boundary and breaks there (deferring that next call, which is serviced once
-/// on resume). `CallHostNTimes` calls the host function exactly `n` times, so if
-/// any call were serviced twice the host-side counter would read `n + 1`. We
-/// assert it reads exactly `n`, both for the triggering call and overall.
+/// completion exactly once; the run loop then completes the in-flight `OUT` and
+/// pauses immediately after it, leaving nothing deferred to re-run on resume.
+/// `CallHostNTimes` calls the host function exactly `n` times, so if any call
+/// were serviced twice the host-side counter would read `n + 1`. We assert it
+/// reads exactly `n`, both for the triggering call and overall.
 ///
 /// This variant resumes the call **in place** (same process / same vcpu).
 #[test]
@@ -2516,9 +2518,10 @@ fn yield_host_call_runs_exactly_once_in_place_resume() {
 /// Same guarantee as `yield_host_call_runs_exactly_once_in_place_resume`, but the
 /// yield-paused state is snapshotted, the original sandbox discarded, and the
 /// call resumed in a **fresh sandbox** (the snapshot/restore path, e.g. resuming
-/// in another process). The deferred host call is re-issued by re-executing the
-/// `OUT` on the fresh vcpu, so it must still run exactly once: the shared
-/// host-side counter must end at exactly `n`, never `n + 1`.
+/// in another process). The pause lands right after the triggering call with RIP
+/// already past the `OUT`, so the fresh vcpu simply continues from there — the
+/// triggering call is not re-run. The shared host-side counter must therefore
+/// end at exactly `n`, never `n + 1`.
 #[test]
 fn yield_host_call_runs_exactly_once_across_snapshot_restore() {
     const N: i32 = 4;
@@ -2584,7 +2587,72 @@ fn yield_host_call_runs_exactly_once_across_snapshot_restore() {
         calls.load(Ordering::SeqCst),
         N as u64,
         "across snapshot/restore the host function must run exactly once per \
-         guest-side call (N total) — the deferred yielding call must not be \
-         dropped nor executed twice"
+         guest-side call (N total) — the yielding call must not be dropped nor \
+         executed twice"
     );
+}
+
+/// Regression test for the key property of the immediate pause-after-host-call
+/// behavior: a pause requested from inside a host call is honored even when the
+/// guest makes **no further host call** before it would otherwise return.
+///
+/// With the older "pause at the next host-call boundary" behavior this case was
+/// a silent drop: `CallHostNTimes(.., 1)` makes a single host call, and the only
+/// remaining `OUT` is the guest's own halt/return, which is not a pausable
+/// boundary — so the guest ran to completion and the pause was lost. Now the run
+/// loop completes the in-flight `OUT` and stops immediately after the call, so a
+/// single yielding host call is enough to pause.
+#[test]
+fn pause_during_single_host_call_pauses_immediately() {
+    const N: i32 = 1;
+    with_rust_uninit_sandbox(|mut usbox| {
+        let calls = Arc::new(AtomicU64::new(0));
+        let handle_slot: Arc<OnceLock<Arc<dyn InterruptHandle>>> = Arc::new(OnceLock::new());
+
+        let calls2 = calls.clone();
+        let slot2 = handle_slot.clone();
+        let yield_fn = move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+            if let Some(h) = slot2.get() {
+                h.pause();
+            }
+            Ok(())
+        };
+        usbox.register("Yield", yield_fn).unwrap();
+
+        let sbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let mut call = sbox.call_async_owned::<i32>("CallHostNTimes", ("Yield".to_string(), N));
+        handle_slot.set(call.sandbox().interrupt_handle()).unwrap();
+
+        // The single host call requests a pause. Even though the guest would
+        // immediately return afterwards (no further host call), the pause must
+        // be honored right after that call returns.
+        match call.poll().unwrap() {
+            CallProgress::Paused => {}
+            CallProgress::Completed(_) => {
+                panic!(
+                    "pause requested during the only host call was dropped: the guest ran to completion"
+                )
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the single host call should have run exactly once before pausing"
+        );
+
+        // Resuming runs the guest to completion; the call is not re-run.
+        let result = loop {
+            match call.poll().unwrap() {
+                CallProgress::Completed(r) => break r,
+                CallProgress::Paused => {}
+            }
+        };
+        assert_eq!(result, N, "guest should report it made N host calls");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the host call must not be re-run on resume"
+        );
+    });
 }
