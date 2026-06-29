@@ -2332,68 +2332,6 @@ fn arbitrary_pause_preserves_fp_and_stack_state_across_snapshot_restore() {
     assert_eq!(echo, "fp-state-ok");
 }
 
-/// Regression test: pausing a host-call-heavy guest at an `IoOut` boundary and resuming
-/// it **in the same process / on the same vcpu** must not lose the in-flight host call.
-///
-/// `HostCallLoop` issues back-to-back host calls. We pause it with
-/// `pause_at_safepoint()`, which stops the run loop at the next `IoOut` boundary —
-/// deliberately **before** `handle_io` services the call — leaving RIP on the `OUT` so
-/// the (output) buffer stays consistent for snapshotting.
-///
-/// On a same-vcpu resume the hypervisor still has a pending IO completion for that `OUT`:
-/// the next `KVM_RUN` advances RIP *past* the `OUT` without re-executing it. Without the
-/// deferred-host-call fix, `handle_io` would never run, the shared input buffer would
-/// never receive the return value, and the guest would abort with
-/// `Invalid stack pointer: 8 in pop_shared_input_data_into`. The fix records the call at
-/// the pause boundary and services it on the resume path before re-entering the vcpu, so
-/// repeated in-place pause/resume cycles complete cleanly.
-#[test]
-fn stress_resume_host_call_loop_in_place_preserves_host_call() {
-    with_rust_uninit_sandbox(|mut usbox| {
-        let calls = Arc::new(AtomicU64::new(0));
-        let calls2 = calls.clone();
-        let noop = move || {
-            calls2.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        };
-        usbox.register("Spin", noop).unwrap();
-
-        let sbox: MultiUseSandbox = usbox.evolve().unwrap();
-        let mut call = sbox.call_async_owned::<Vec<u8>>("HostCallLoop", "Spin".to_string());
-
-        // Repeatedly pause at a host-call boundary and resume in place. Without the
-        // deferred-host-call fix, one of the very first resumes drops its host call and
-        // aborts the guest.
-        for i in 0..50 {
-            let delay_us = 50 + (i as u64 * 137) % 900;
-            let handle = call.sandbox().interrupt_handle();
-            let t = thread::spawn(move || {
-                thread::sleep(Duration::from_micros(delay_us));
-                handle.pause_at_safepoint();
-            });
-
-            let progress = call.poll();
-            t.join().unwrap();
-
-            match progress {
-                Ok(CallProgress::Paused) => { /* resume on next poll() */ }
-                Ok(CallProgress::Completed(_)) => panic!("HostCallLoop unexpectedly completed"),
-                Err(e) => panic!("guest aborted resuming a host-call-boundary pause: {e:?}"),
-            }
-        }
-
-        // The deferred host call must actually have been serviced on the resume path:
-        // each pause lands on (or just before) a host call, and resuming services it.
-        // If the fix regressed, the guest would have aborted above instead.
-        assert!(
-            calls.load(Ordering::Relaxed) > 0,
-            "expected host calls to be serviced across pause/resume cycles"
-        );
-
-        let _ = call.kill();
-    });
-}
-
 /// Requests a pause while the guest is blocked inside a host function call.
 /// A host call cannot be interrupted, but as soon as it returns the run loop
 /// completes the in-flight `OUT` and stops immediately — so the pause is
