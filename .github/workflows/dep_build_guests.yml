@@ -33,17 +33,13 @@ jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: ${{ fromJSON(vars.BUILD_GUESTS_JOB_TIMEOUT || '15') }}
-    runs-on: ${{ fromJson(
-      format('["self-hosted", "Linux", "{0}", "{1}" {2}]',
-        inputs.arch,
-        inputs.arch == 'X64' && '1ES.Pool=hld-kvm-amd' || 'ubuntu-24.04',
-        inputs.arch == 'X64' && format(', "JobId=build-guests-{0}-{1}-{2}-{3}"',
-                                  inputs.config,
-                                  github.run_id,
-                                  github.run_number,
-                                  github.run_attempt)
-                             || ''
-      )) }}
+    runs-on: ${{ fromJson(inputs.arch == 'X64'
+        && format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=build-guests-{0}-{1}-{2}-{3}"]',
+            inputs.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || '["self-hosted", "Linux", "arm64", "ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
@@ -128,8 +124,9 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # The .wasm is arch-independent, so upload it once from X64 only.
       - name: Upload bindgen-test-cases.wasm
-        if: inputs.config == 'debug'
+        if: inputs.config == 'debug' && inputs.arch == 'X64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: bindgen-test-cases-wasm

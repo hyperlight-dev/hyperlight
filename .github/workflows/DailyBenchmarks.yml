@@ -45,13 +45,15 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        arch: [X64]
         hypervisor: ['hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
+        cpu_vendor: [amd, intel]
     uses: ./.github/workflows/dep_benchmarks.yml
     secrets: inherit
     with:
       hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: ${{ matrix.arch }}
       baseline_run_id: ${{ needs.find-baseline.outputs.run-id }}
       retention_days: 90
 

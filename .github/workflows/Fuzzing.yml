@@ -19,9 +19,14 @@ jobs:
 
   fuzzing:
     needs: build-guests
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
-      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
+      target: ${{ matrix.target }}
+      arch: X64
       max_total_time: 18000 # 5 hours in seconds
     secrets: inherit
 
