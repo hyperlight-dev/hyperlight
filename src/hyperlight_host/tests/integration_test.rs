@@ -13,10 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
@@ -1905,7 +1905,10 @@ fn pause_and_resume_guest_call() {
         // Pause the VM from another thread after it's had time to enter the spin loop
         let thread = thread::spawn(move || {
             thread::sleep(Duration::from_millis(200));
-            assert!(handle.pause(), "pause() should return true while vcpu is running");
+            assert!(
+                handle.pause(),
+                "pause() should return true while vcpu is running"
+            );
         });
 
         // First wait should yield Paused
@@ -1994,7 +1997,10 @@ fn drop_paused_future_poisons_sandbox() {
             // Drop future while paused — should poison
         }
 
-        assert!(sbox.poisoned(), "sandbox should be poisoned after dropping paused future");
+        assert!(
+            sbox.poisoned(),
+            "sandbox should be poisoned after dropping paused future"
+        );
 
         // Restore clears the poison
         sbox.restore(snapshot).unwrap();
@@ -2064,7 +2070,10 @@ fn pause_through_call_poisons_sandbox() {
             matches!(&err, HyperlightError::ExecutionPaused()),
             "unexpected error: {err:?}"
         );
-        assert!(sbox.poisoned(), "sandbox should be poisoned when paused through call()");
+        assert!(
+            sbox.poisoned(),
+            "sandbox should be poisoned when paused through call()"
+        );
 
         thread.join().unwrap();
 
@@ -2155,7 +2164,284 @@ fn snapshot_restore_and_resume() {
 
         // Sandbox should be usable after resume completed
         assert!(!sbox.poisoned());
-        let echo: String = sbox.call("Echo", "after-restore-resume".to_string()).unwrap();
+        let echo: String = sbox
+            .call("Echo", "after-restore-resume".to_string())
+            .unwrap();
         assert_eq!(echo, "after-restore-resume");
+    });
+}
+
+/// Arbitrary-point pause: snapshot a guest paused mid CPU-spin (not at a host-call
+/// boundary) and restore it into a *fresh* sandbox, proving the captured register
+/// state is fully self-contained. `SpinForMs` is a pure busy loop and never makes a
+/// host call, so `pause()` interrupts the vcpu at an arbitrary RIP.
+#[test]
+fn arbitrary_pause_snapshot_restores_into_fresh_sandbox() {
+    with_rust_sandbox(|mut sbox| {
+        // Start a bounded busy-loop and pause it mid-spin (arbitrary RIP).
+        let mut future = sbox.call_async::<u64>("SpinForMs", 2000u32);
+
+        let handle = future.sandbox().interrupt_handle();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            handle.pause();
+        });
+
+        let progress = future.poll().unwrap();
+        assert!(matches!(progress, CallProgress::Paused));
+        thread.join().unwrap();
+
+        // Capture register state at the arbitrary pause point.
+        // (restore_paused below errors if the snapshot lacks register state.)
+        let snapshot = future.snapshot().unwrap();
+
+        // Discard the original sandbox entirely.
+        future.kill();
+        drop(sbox);
+
+        // Restore into a brand-new sandbox and resume to completion.
+        let fresh: MultiUseSandbox = new_rust_sandbox();
+        let mut call = fresh.restore_paused::<u64>(snapshot).unwrap();
+
+        loop {
+            let handle = call.sandbox().interrupt_handle();
+            let t = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(3000));
+                handle.pause();
+            });
+
+            match call.poll().unwrap() {
+                CallProgress::Completed(_result) => {
+                    t.join().unwrap();
+                    break;
+                }
+                CallProgress::Paused => {
+                    t.join().unwrap();
+                }
+            }
+        }
+
+        // The fresh sandbox is fully usable after resuming the arbitrary-point snapshot.
+        let mut sbox = call.into_sandbox();
+        assert!(!sbox.poisoned());
+        let echo: String = sbox.call("Echo", "fresh-resume".to_string()).unwrap();
+        assert_eq!(echo, "fresh-resume");
+    });
+}
+
+/// Stronger arbitrary-pause proof: repeatedly pause a single guest computation
+/// at many different arbitrary RIPs, snapshotting and restoring into a *fresh*
+/// sandbox each time, and assert the final checksum still matches an un-paused
+/// reference run.
+///
+/// The guest runs one long, fully-deterministic computation
+/// (`DeterministicCompute`) that keeps floating-point (SSE/XMM + FPU),
+/// general-purpose register, and live-stack state busy throughout. We pause it
+/// roughly every few milliseconds of guest progress; each pause is snapshotted,
+/// the sandbox is discarded, and the snapshot is restored into a brand-new
+/// sandbox which then continues — so the computation is carried across 100+
+/// independent snapshot/restore boundaries before it completes.
+///
+/// `DeterministicCompute` interleaves a chaotic floating-point recurrence (a
+/// logistic map), an FNV-style integer hash, and periodic recursion. Because
+/// the logistic map is chaotic, losing or corrupting even a single bit of live
+/// register/stack state at *any* of those boundaries would make the final
+/// checksum diverge wildly from the reference (or abort the guest). Getting the
+/// *same* checksum back after 100+ arbitrary-RIP round-trips is therefore strong
+/// evidence that the snapshot captures the complete live CPU state at an
+/// arbitrary instruction boundary — not just at a host-call safepoint.
+#[test]
+fn arbitrary_pause_preserves_fp_and_stack_state_across_snapshot_restore() {
+    // Minimum number of mid-flight pause/snapshot/restore round-trips we require
+    // a single computation to survive.
+    const TARGET_PAUSES: u32 = 100;
+
+    // Iteration count large enough that the computation takes long enough to be
+    // paused TARGET_PAUSES+ times with a small per-pause delay.
+    const ROUNDS: u32 = 200_000_000;
+
+    // Reference value from an un-paused run, plus its wall-clock duration so we
+    // can scale the pause delay to this machine.
+    let (reference, dur) = {
+        let mut sbox = new_rust_sandbox();
+        let t0 = Instant::now();
+        let r: u64 = sbox.call("DeterministicCompute", ROUNDS).unwrap();
+        (r, t0.elapsed())
+    };
+
+    assert!(
+        dur > Duration::from_millis(500),
+        "computation too fast ({dur:?}) to pause {TARGET_PAUSES}+ times; increase ROUNDS"
+    );
+
+    // The pausing thread sleeps `delay` and then pauses, so the guest advances by
+    // roughly `delay` of compute per cycle. Aim to overshoot TARGET_PAUSES so we
+    // comfortably clear the assertion even with timing jitter. Snapshot/restore
+    // overhead is wall-clock only and does not advance the guest, so it does not
+    // reduce the pause count.
+    let delay = dur / (TARGET_PAUSES + 60);
+
+    // Start the computation in a fresh sandbox, then carry it across many
+    // snapshot/restore boundaries.
+    let fresh = new_rust_sandbox();
+    let mut call = fresh.call_async_owned::<u64>("DeterministicCompute", ROUNDS);
+
+    let mut pauses = 0u32;
+    let result = loop {
+        let handle = call.sandbox().interrupt_handle();
+        let d = delay;
+        let t = thread::spawn(move || {
+            thread::sleep(d);
+            handle.pause();
+        });
+
+        let progress = call.poll().unwrap();
+        t.join().unwrap();
+
+        match progress {
+            CallProgress::Completed(r) => break r,
+            CallProgress::Paused => {
+                pauses += 1;
+
+                // Snapshot the arbitrary-RIP paused state, discard the sandbox
+                // entirely, and restore into a brand-new one to continue.
+                let snapshot = call.snapshot().unwrap();
+                drop(call);
+                let restored = new_rust_sandbox();
+                call = restored.restore_paused::<u64>(snapshot).unwrap();
+            }
+        }
+    };
+
+    assert_eq!(
+        result, reference,
+        "checksum diverged after {pauses} arbitrary-RIP snapshot/restore round-trips \
+         — live FP/GPR/stack state was not fully preserved"
+    );
+    assert!(
+        pauses >= TARGET_PAUSES,
+        "only paused {pauses} times (wanted >= {TARGET_PAUSES}); computation finished \
+         too quickly to exercise enough arbitrary-RIP round-trips (increase ROUNDS)"
+    );
+
+    // The final restored sandbox must remain fully usable afterwards.
+    let mut sbox = call.into_sandbox();
+    assert!(!sbox.poisoned());
+    let echo: String = sbox.call("Echo", "fp-state-ok".to_string()).unwrap();
+    assert_eq!(echo, "fp-state-ok");
+}
+
+/// Regression test: pausing a host-call-heavy guest at an `IoOut` boundary and resuming
+/// it **in the same process / on the same vcpu** must not lose the in-flight host call.
+///
+/// `HostCallLoop` issues back-to-back host calls. We pause it with
+/// `pause_at_safepoint()`, which stops the run loop at the next `IoOut` boundary —
+/// deliberately **before** `handle_io` services the call — leaving RIP on the `OUT` so
+/// the (output) buffer stays consistent for snapshotting.
+///
+/// On a same-vcpu resume the hypervisor still has a pending IO completion for that `OUT`:
+/// the next `KVM_RUN` advances RIP *past* the `OUT` without re-executing it. Without the
+/// deferred-host-call fix, `handle_io` would never run, the shared input buffer would
+/// never receive the return value, and the guest would abort with
+/// `Invalid stack pointer: 8 in pop_shared_input_data_into`. The fix records the call at
+/// the pause boundary and services it on the resume path before re-entering the vcpu, so
+/// repeated in-place pause/resume cycles complete cleanly.
+#[test]
+fn stress_resume_host_call_loop_in_place_preserves_host_call() {
+    with_rust_uninit_sandbox(|mut usbox| {
+        let calls = Arc::new(AtomicU64::new(0));
+        let calls2 = calls.clone();
+        let noop = move || {
+            calls2.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        usbox.register("Spin", noop).unwrap();
+
+        let sbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let mut call = sbox.call_async_owned::<Vec<u8>>("HostCallLoop", "Spin".to_string());
+
+        // Repeatedly pause at a host-call boundary and resume in place. Without the
+        // deferred-host-call fix, one of the very first resumes drops its host call and
+        // aborts the guest.
+        for i in 0..50 {
+            let delay_us = 50 + (i as u64 * 137) % 900;
+            let handle = call.sandbox().interrupt_handle();
+            let t = thread::spawn(move || {
+                thread::sleep(Duration::from_micros(delay_us));
+                handle.pause_at_safepoint();
+            });
+
+            let progress = call.poll();
+            t.join().unwrap();
+
+            match progress {
+                Ok(CallProgress::Paused) => { /* resume on next poll() */ }
+                Ok(CallProgress::Completed(_)) => panic!("HostCallLoop unexpectedly completed"),
+                Err(e) => panic!("guest aborted resuming a host-call-boundary pause: {e:?}"),
+            }
+        }
+
+        // The deferred host call must actually have been serviced on the resume path:
+        // each pause lands on (or just before) a host call, and resuming services it.
+        // If the fix regressed, the guest would have aborted above instead.
+        assert!(
+            calls.load(Ordering::Relaxed) > 0,
+            "expected host calls to be serviced across pause/resume cycles"
+        );
+
+        let _ = call.kill();
+    });
+}
+
+/// Requests a pause while the guest is blocked inside a host function call.
+/// A host call cannot be interrupted, so the pause is honored at the next host-call
+/// boundary: `HostCallLoop` repeatedly calls the host function, so once the in-flight
+/// host call returns the next iteration's `IoOut` exit observes the sticky pause flag
+/// and breaks cleanly with `CallProgress::Paused` (no crash, no poison).
+#[test]
+fn pause_during_host_call() {
+    with_rust_uninit_sandbox(|mut usbox| {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+
+        // Host function signals (once) when it is entered, then sleeps so the pause
+        // request lands while we are still inside the host call.
+        let entered = Arc::new(AtomicBool::new(false));
+        let entered2 = entered.clone();
+        let spin = move || {
+            if !entered2.swap(true, Ordering::SeqCst) {
+                barrier2.wait();
+            }
+            thread::sleep(Duration::from_millis(300));
+            Ok(())
+        };
+        usbox.register("Spin", spin).unwrap();
+
+        let mut sbox: MultiUseSandbox = usbox.evolve().unwrap();
+
+        let mut future = sbox.call_async::<Vec<u8>>("HostCallLoop", "Spin".to_string());
+        let handle = future.sandbox().interrupt_handle();
+
+        // Pause as soon as the host call is in progress. The vcpu is not running
+        // during a host call, so pause() may return false (no signal sent) but still
+        // sets the sticky pause flag, honored at the next host-call boundary.
+        let thread = thread::spawn(move || {
+            barrier.wait();
+            handle.pause();
+        });
+
+        // Pause requested mid host-call; honored at the next host-call boundary.
+        let progress = future.poll().unwrap();
+        assert!(matches!(progress, CallProgress::Paused));
+        assert!(future.is_paused());
+        thread.join().unwrap();
+
+        // Kill so the host-call loop doesn't run forever after resume.
+        let handle = future.sandbox().interrupt_handle();
+        handle.kill();
+        match future.poll() {
+            Err(HyperlightError::ExecutionCanceledByHost()) => {}
+            other => panic!("expected ExecutionCanceledByHost, got: {other:?}"),
+        }
     });
 }
