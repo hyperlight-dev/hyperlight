@@ -397,6 +397,24 @@ pub(crate) struct HyperlightVm {
 
     pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
+    /// A host call (`OUT` to [`OutBAction::CallFunction`]) that the run loop
+    /// stopped at when a pause was observed at an `IoOut` boundary, captured as
+    /// `(port, data)`.
+    ///
+    /// At that boundary the guest has already staged its output buffer and the
+    /// hardware has taken the `OUT` exit, but we deliberately break *before*
+    /// servicing the call so the snapshot stays self-consistent (see the
+    /// `IoOut` arm of [`Self::run`]). When the *same* vCPU is later resumed,
+    /// the hypervisor has a pending IO completion: the next vCPU entry advances
+    /// RIP past the `OUT` *without* re-exiting, so the run loop would never see
+    /// the `IoOut` again and the host function would never run. To avoid losing
+    /// the call, the resume path ([`Self::dispatch_resume`]) services this
+    /// deferred call before re-entering the vCPU.
+    ///
+    /// A fresh vCPU restored from a snapshot has no pending IO completion and
+    /// simply re-executes the `OUT`, so this is left `None` on a fresh dispatch.
+    pub(super) deferred_host_call: Option<(u16, Vec<u8>)>,
+
     #[cfg(target_arch = "aarch64")]
     pub(self) vm_can_reset_vcpu: bool,
     pub(super) pending_tlb_flush: bool,
@@ -615,9 +633,14 @@ impl HyperlightVm {
             // NOTE: `set_running()`` must be called before checking `is_cancelled()`
             // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
 
+            // NOTE: a pending pause is deliberately *not* short-circuited here.
+            // Doing so could stop the vcpu right after a host call was serviced
+            // but before hardware advanced RIP past the `OUT` (see the IoOut
+            // arm below), producing an inconsistent snapshot. Instead we let the
+            // vcpu re-enter — which lets KVM complete the deferred RIP advance —
+            // and observe the pause at the next host-call (`IoOut`) boundary.
             let exit_reason = if self.interrupt_handle.is_cancelled()
                 || self.interrupt_handle.is_debug_interrupted()
-                || self.interrupt_handle.is_paused()
             {
                 Ok(VmExit::Cancelled())
             } else {
@@ -705,6 +728,32 @@ impl HyperlightVm {
                     break Ok(());
                 }
                 Ok(VmExit::IoOut(port, data)) => {
+                    // If a pause was requested, break *before* servicing the
+                    // host call. This keeps the guest's output buffer populated
+                    // and leaves RIP pointing at the `OUT` instruction, which
+                    // yields a self-consistent state to snapshot: after a
+                    // restore, a fresh vcpu simply re-executes the `OUT` and the
+                    // host services the call normally.
+                    //
+                    // Servicing the call first and breaking afterwards would be
+                    // unsafe: hardware (KVM) defers advancing RIP past an `OUT`
+                    // until the next vcpu entry, so a snapshot captured between
+                    // "host consumed the output buffer" and "vcpu re-entered"
+                    // records RIP still at the `OUT` while the output buffer has
+                    // already been emptied. Resuming such a snapshot re-runs the
+                    // `OUT` against an empty buffer and crashes the guest.
+                    //
+                    // For the *same-vcpu* resume case there is an additional
+                    // hazard: the hypervisor has a pending IO completion, so the
+                    // next vcpu entry advances RIP past the `OUT` *without*
+                    // re-exiting — the run loop would never see this `IoOut`
+                    // again and the host call would be silently dropped. We
+                    // therefore record the call so the resume path can service
+                    // it before re-entering the vcpu (see `dispatch_resume`).
+                    if pause_requested {
+                        self.deferred_host_call = Some((port, data));
+                        break Err(RunVmError::ExecutionPaused);
+                    }
                     self.handle_io(mem_mgr, host_funcs, port, data)?;
                 }
                 Ok(VmExit::MmioRead(addr)) => {

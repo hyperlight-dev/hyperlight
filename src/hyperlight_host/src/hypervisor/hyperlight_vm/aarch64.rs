@@ -99,6 +99,8 @@ impl HyperlightVm {
 
             mmap_regions: Vec::new(),
 
+            deferred_host_call: None,
+
             vm_can_reset_vcpu,
             pending_tlb_flush: false,
         };
