@@ -77,16 +77,19 @@ fn wasmtime_guest_codegen_emits_wasmtime_flags_macro() {
 fn read_wit_type_accepts_wasm_encoded_wit() {
     let wasm_path =
         encode_wit_fixture_to_wasm(&fixture_path("../tests/rust_guests/witguest/guest.wit"));
-    let kebab_name = util::read_wit_type(
+    let (kebab_name, has_import_or_export) = util::read_wit_type(
         util::WitSource::Wasm(wasm_path.clone()),
         None,
         |kebab_name, ct| {
-            assert!(!ct.imports.is_empty() || !ct.instance.unqualified.exports.is_empty());
-            kebab_name
+            (
+                kebab_name,
+                !ct.imports.is_empty() || !ct.instance.unqualified.exports.is_empty(),
+            )
         },
     );
-    std::fs::remove_file(wasm_path).expect("temporary wasm fixture should be removed");
+    std::fs::remove_file(&wasm_path).expect("temporary wasm fixture should be removed");
 
+    assert!(has_import_or_export);
     assert_eq!(kebab_name, "test:wit/test");
 }
 

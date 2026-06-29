@@ -119,7 +119,8 @@ struct BindgenInputParams {
 fn source_or_env(source: Option<util::WitSource>) -> util::WitSource {
     source.unwrap_or_else(|| {
         util::WitSource::Wasm(std::path::PathBuf::from(
-            std::env::var_os("WIT_WORLD").unwrap(),
+            std::env::var_os("WIT_WORLD")
+                .expect("WIT_WORLD must be set when bindgen input is omitted"),
         ))
     })
 }
