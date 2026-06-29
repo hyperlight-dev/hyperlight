@@ -335,6 +335,39 @@ impl VirtualMachine for KvmVm {
         self.run_vcpu_default()
     }
 
+    fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
+        // Per the KVM API docs for KVM_EXIT_IO, after an IO exit the operation
+        // is completed — and guest state (including advancing RIP past the
+        // `OUT`) made consistent — only once userspace re-enters the kernel with
+        // KVM_RUN: "The kernel side will first finish incomplete operations and
+        // then check for pending signals [...] Userspace can re-enter the guest
+        // with [...] the immediate_exit field set to complete pending operations
+        // without allowing any further instructions to be executed."
+        //
+        // That is exactly what we need to honor a pause requested during a host
+        // call: finish the in-flight `OUT` (so RIP advances past it and the
+        // guest's input buffer is the source of truth) and stop immediately,
+        // landing at a clean arbitrary-pause point rather than running on to the
+        // next host-call boundary.
+        self.vcpu_fd.set_kvm_immediate_exit(1u8);
+        let result = loop {
+            match self.vcpu_fd.run() {
+                Err(e) => match e.errno() {
+                    libc::EINTR => break Ok(true),
+                    libc::EAGAIN => continue,
+                    _ => break Err(RunVcpuError::CompletePendingIo(format!("{e:?}"))),
+                },
+                Ok(exit) => {
+                    break Err(RunVcpuError::CompletePendingIo(format!(
+                        "unexpected vcpu exit while completing pending IO: {exit:?}"
+                    )));
+                }
+            }
+        };
+        self.vcpu_fd.set_kvm_immediate_exit(0u8);
+        result
+    }
+
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         let kvm_regs = self
             .vcpu_fd

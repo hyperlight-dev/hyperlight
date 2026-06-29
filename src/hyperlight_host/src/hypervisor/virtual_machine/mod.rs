@@ -205,6 +205,8 @@ pub enum RunVcpuError {
     #[cfg(target_arch = "aarch64")]
     #[error("Flush MMIO pending state failed: {0}")]
     FlushMmioPending(String),
+    #[error("Failed to complete pending IO: {0}")]
+    CompletePendingIo(String),
     #[error("Unknown error: {0}")]
     Unknown(HypervisorError),
 }
@@ -340,6 +342,23 @@ pub(crate) trait VirtualMachine: Debug + Send {
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
     ) -> std::result::Result<VmExit, RunVcpuError>;
+
+    /// Complete a pending IO operation left by the most recent
+    /// [`VmExit::IoOut`] — advancing the instruction pointer past the `OUT` —
+    /// *without* executing any further guest instructions, leaving guest state
+    /// self-consistent for a snapshot.
+    ///
+    /// This is used to honor a pause requested *during* a host function call.
+    /// The call has already been serviced on this vCPU, so the run loop re-enters
+    /// the kernel just far enough to finish the pending `OUT` and then stops
+    /// right after it, instead of running on to the next host-call boundary.
+    ///
+    /// Returns `Ok(true)` if the pending IO was completed, or `Ok(false)` if the
+    /// backend does not support this. When it returns `Ok(false)` the caller
+    /// falls back to honoring the pause at the next host-call boundary.
+    fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
+        Ok(false)
+    }
 
     /// Get regs
     #[allow(dead_code)]

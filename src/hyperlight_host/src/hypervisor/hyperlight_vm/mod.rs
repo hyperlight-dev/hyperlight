@@ -755,6 +755,31 @@ impl HyperlightVm {
                         break Err(RunVmError::ExecutionPaused);
                     }
                     self.handle_io(mem_mgr, host_funcs, port, data)?;
+
+                    // The host function (or another thread) may have requested a
+                    // pause *while* this call was being serviced. The vcpu was
+                    // not in its run ioctl during the call, so no signal was
+                    // delivered — only the sticky pause flag was set. Honor it
+                    // immediately: re-enter the kernel just far enough to finish
+                    // this `OUT` (advancing RIP past it) without executing any
+                    // further guest instructions, then break at that clean,
+                    // self-consistent point. This stops right after the call
+                    // instead of deferring to the next host-call boundary, and —
+                    // crucially — still stops even if the guest would otherwise
+                    // halt before making another host call.
+                    //
+                    // Because the call was already serviced and RIP now points
+                    // past the `OUT`, this is an ordinary arbitrary-pause point:
+                    // we leave `deferred_host_call` unset so resume simply
+                    // continues from here without re-running the call.
+                    //
+                    // Backends that cannot complete the pending IO this way
+                    // return `false`; for them we fall through and let the pause
+                    // be honored at the next host-call boundary (the deferred
+                    // path above) on a following iteration.
+                    if self.interrupt_handle.is_paused() && self.vm.complete_pending_io()? {
+                        break Err(RunVmError::ExecutionPaused);
+                    }
                 }
                 Ok(VmExit::MmioRead(addr)) => {
                     let all_regions = self.get_mapped_regions();
