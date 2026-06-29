@@ -438,6 +438,76 @@ fn spin_for_ms(milliseconds: u32) -> u64 {
     counter / iterations_per_ms as u64
 }
 
+/// Recurse to a fixed depth, threading a value through the stack so that a
+/// meaningful amount of live stack must be captured/restored if the guest is
+/// paused while inside the recursion.
+fn checksum_recurse(depth: u32, seed: u64) -> u64 {
+    if depth == 0 {
+        return seed;
+    }
+    let local = seed
+        .wrapping_mul(depth as u64)
+        .wrapping_add(0x9e37_79b9_7f4a_7c15);
+    black_box(local);
+    let deeper = checksum_recurse(depth - 1, local);
+    black_box(deeper).wrapping_add(local)
+}
+
+/// A long, fully deterministic CPU-bound computation whose result depends on
+/// floating-point (SSE/XMM + FPU), general-purpose register, and stack state
+/// staying intact throughout.
+///
+/// It interleaves a chaotic floating-point recurrence (a logistic map, which
+/// amplifies any perturbation of the XMM/FPU state into a wildly different
+/// result), an FNV-style integer hash, and periodic recursion (live stack).
+/// Because the logistic map is chaotic, losing or corrupting even a single bit
+/// of live register/stack state across a pause → snapshot → restore would make
+/// the returned checksum diverge from the un-paused reference value — or abort
+/// the guest outright. Returning the *same* checksum as an un-paused run is
+/// therefore strong evidence that the snapshot captured the complete live state
+/// at the arbitrary pause point.
+#[guest_function("DeterministicCompute")]
+fn deterministic_compute(rounds: u32) -> u64 {
+    let mut acc: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
+    let mut x: f64 = 0.5;
+    let mut y: f64 = core::f64::consts::FRAC_1_PI;
+
+    for i in 0..rounds {
+        // Chaotic, bounded floating-point recurrence. Keeps XMM/FPU state live
+        // and sensitive: any divergence cascades.
+        x = 3.9 * x * (1.0 - x);
+        y = (y + x) * 0.5 + 0.25 * (x - y) * (x - y);
+
+        // Fold the floating-point state into a deterministic integer checksum.
+        let bits = x.to_bits() ^ y.rotate_bits();
+        acc ^= bits.wrapping_add(i as u64);
+        acc = acc.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a prime
+
+        // Periodically thread the checksum through a recursive call so that a
+        // pause has a chance to land while live stack is deep.
+        if i % 97 == 0 {
+            acc = acc.wrapping_add(checksum_recurse(16, acc));
+        }
+
+        black_box(acc);
+        black_box(x);
+        black_box(y);
+    }
+
+    acc ^ x.to_bits() ^ y.to_bits()
+}
+
+/// Helper trait to fold an `f64`'s bit pattern in a slightly non-trivial way,
+/// keeping the value flowing through a method call.
+trait RotateBits {
+    fn rotate_bits(self) -> u64;
+}
+impl RotateBits for f64 {
+    fn rotate_bits(self) -> u64 {
+        self.to_bits().rotate_left(17)
+    }
+}
+
 #[guest_function("GuestAbortWithCode")]
 fn test_abort(code: i32) {
     abort_with_code(&[code as u8]);
