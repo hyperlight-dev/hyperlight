@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_host::hypervisor::InterruptHandle;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::pending_call::CallProgress;
 use hyperlight_host::{HyperlightError, MultiUseSandbox};
@@ -2444,4 +2445,146 @@ fn pause_during_host_call() {
             other => panic!("expected ExecutionCanceledByHost, got: {other:?}"),
         }
     });
+}
+
+/// A host function may itself request a pause: the guest calls a host function,
+/// and that host function calls `interrupt_handle().pause()` so the host can
+/// checkpoint at a point the *guest* chose (a guest-initiated "yield").
+///
+/// This answers the question: does that host call run **twice** — once before
+/// the pause, and again on resume? It does not. When `pause()` is called from
+/// inside a host function the vcpu is not in its run ioctl, so only the sticky
+/// pause flag is set (no signal is delivered). The triggering host call runs to
+/// completion exactly once; the run loop observes the flag at the *next* `IoOut`
+/// boundary and breaks there (deferring that next call, which is serviced once
+/// on resume). `CallHostNTimes` calls the host function exactly `n` times, so if
+/// any call were serviced twice the host-side counter would read `n + 1`. We
+/// assert it reads exactly `n`, both for the triggering call and overall.
+///
+/// This variant resumes the call **in place** (same process / same vcpu).
+#[test]
+fn yield_host_call_runs_exactly_once_in_place_resume() {
+    const N: i32 = 4;
+    with_rust_uninit_sandbox(|mut usbox| {
+        let calls = Arc::new(AtomicU64::new(0));
+        let armed = Arc::new(AtomicBool::new(true));
+        let handle_slot: Arc<OnceLock<Arc<dyn InterruptHandle>>> = Arc::new(OnceLock::new());
+
+        let calls2 = calls.clone();
+        let armed2 = armed.clone();
+        let slot2 = handle_slot.clone();
+        let yield_fn = move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+            // On the first invocation only, request a pause from *inside* the
+            // host call — the guest-initiated "yield".
+            if armed2.swap(false, Ordering::SeqCst)
+                && let Some(h) = slot2.get()
+            {
+                h.pause();
+            }
+            Ok(())
+        };
+        usbox.register("Yield", yield_fn).unwrap();
+
+        let sbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let mut call = sbox.call_async_owned::<i32>("CallHostNTimes", ("Yield".to_string(), N));
+        handle_slot.set(call.sandbox().interrupt_handle()).unwrap();
+
+        // Drive to completion, resuming in place across the yield-triggered pause.
+        let mut pauses = 0u32;
+        let result = loop {
+            match call.poll().unwrap() {
+                CallProgress::Completed(r) => break r,
+                CallProgress::Paused => pauses += 1,
+            }
+        };
+
+        assert_eq!(result, N, "guest should report it made N host calls");
+        assert!(
+            pauses >= 1,
+            "the yield host call should have triggered at least one pause"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            N as u64,
+            "the host function must run exactly once per guest-side call (N total), \
+             not twice — a yield-triggered pause must not re-execute any host call"
+        );
+    });
+}
+
+/// Same guarantee as `yield_host_call_runs_exactly_once_in_place_resume`, but the
+/// yield-paused state is snapshotted, the original sandbox discarded, and the
+/// call resumed in a **fresh sandbox** (the snapshot/restore path, e.g. resuming
+/// in another process). The deferred host call is re-issued by re-executing the
+/// `OUT` on the fresh vcpu, so it must still run exactly once: the shared
+/// host-side counter must end at exactly `n`, never `n + 1`.
+#[test]
+fn yield_host_call_runs_exactly_once_across_snapshot_restore() {
+    const N: i32 = 4;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let armed = Arc::new(AtomicBool::new(true));
+    let handle_slot: Arc<OnceLock<Arc<dyn InterruptHandle>>> = Arc::new(OnceLock::new());
+
+    // Builds a fresh sandbox with the yield host function registered against the
+    // shared counter/armed/handle state.
+    let build = |calls: &Arc<AtomicU64>,
+                 armed: &Arc<AtomicBool>,
+                 slot: &Arc<OnceLock<Arc<dyn InterruptHandle>>>|
+     -> MultiUseSandbox {
+        let mut usbox = new_rust_uninit_sandbox();
+        let calls2 = calls.clone();
+        let armed2 = armed.clone();
+        let slot2 = slot.clone();
+        let yield_fn = move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+            if armed2.swap(false, Ordering::SeqCst)
+                && let Some(h) = slot2.get()
+            {
+                h.pause();
+            }
+            Ok(())
+        };
+        usbox.register("Yield", yield_fn).unwrap();
+        usbox.evolve().unwrap()
+    };
+
+    let sbox = build(&calls, &armed, &handle_slot);
+    let mut call = sbox.call_async_owned::<i32>("CallHostNTimes", ("Yield".to_string(), N));
+    handle_slot.set(call.sandbox().interrupt_handle()).unwrap();
+
+    // First poll: the guest's first host call yields, triggering a pause.
+    match call.poll().unwrap() {
+        CallProgress::Paused => {}
+        CallProgress::Completed(_) => panic!("expected the yield to pause before completion"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "exactly one host call (the yielding one) should have run before the pause"
+    );
+
+    // Snapshot the yield-paused state, discard the sandbox, and resume in a fresh one.
+    let snapshot = call.snapshot().unwrap();
+    drop(call);
+
+    let fresh = build(&calls, &armed, &handle_slot);
+    let mut call = fresh.restore_paused::<i32>(snapshot).unwrap();
+
+    let result = loop {
+        match call.poll().unwrap() {
+            CallProgress::Completed(r) => break r,
+            CallProgress::Paused => {}
+        }
+    };
+
+    assert_eq!(result, N, "guest should report it made N host calls");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        N as u64,
+        "across snapshot/restore the host function must run exactly once per \
+         guest-side call (N total) — the deferred yielding call must not be \
+         dropped nor executed twice"
+    );
 }
