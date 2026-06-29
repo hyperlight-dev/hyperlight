@@ -34,10 +34,7 @@ pub(crate) const MXCSR_DEFAULT: u32 = 0x1f80; // mask simd fp-exceptions, clear 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CommonFpu {
-    #[serde(
-        serialize_with = "serialize_fpr",
-        deserialize_with = "deserialize_fpr"
-    )]
+    #[serde(serialize_with = "serialize_fpr", deserialize_with = "deserialize_fpr")]
     pub fpr: [[u8; 16]; 8],
     pub fcw: u16,
     pub fsw: u16,
@@ -45,10 +42,7 @@ pub(crate) struct CommonFpu {
     pub last_opcode: u16,
     pub last_ip: u64,
     pub last_dp: u64,
-    #[serde(
-        serialize_with = "serialize_xmm",
-        deserialize_with = "deserialize_xmm"
-    )]
+    #[serde(serialize_with = "serialize_xmm", deserialize_with = "deserialize_xmm")]
     pub xmm: [[u8; 16]; 16],
     pub mxcsr: u32,
 }

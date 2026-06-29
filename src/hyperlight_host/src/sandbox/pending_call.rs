@@ -419,11 +419,11 @@ impl<Output: SupportedReturnType> PendingCallOwned<Output> {
 
 impl<Output> Drop for PendingCallOwned<Output> {
     fn drop(&mut self) {
-        if matches!(self.state, CallState::Paused) {
-            if let Some(sandbox) = self.sandbox.as_mut() {
-                sandbox.poison();
-                sandbox.clear_pause();
-            }
+        if matches!(self.state, CallState::Paused)
+            && let Some(sandbox) = self.sandbox.as_mut()
+        {
+            sandbox.poison();
+            sandbox.clear_pause();
         }
     }
 }
