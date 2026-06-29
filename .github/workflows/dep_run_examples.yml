@@ -41,7 +41,7 @@ defaults:
 jobs:
   run-examples:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ fromJSON(vars.RUN_EXAMPLES_JOB_TIMEOUT || '15') }}
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "{1}", {2} {3}]',
           inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',

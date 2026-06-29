@@ -67,7 +67,7 @@ jobs:
             config: debug
           - hypervisor: hyperv-ws2025
             config: release
-    timeout-minutes: 30
+    timeout-minutes: ${{ fromJSON(vars.PRIME_CACHES_JOB_TIMEOUT || '30') }}
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd", "JobId=prime-cache-{2}-{3}-{4}-{5}-{6}"]',
           matrix.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
