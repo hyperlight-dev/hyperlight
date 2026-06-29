@@ -6,7 +6,7 @@ edition = "2021"
 rust-version = "1.92"
 
 [dependencies]
-addr2line = "0.26.1"
+addr2line = "0.27.0"
 # Fixes #1490 through #1495 by using upstream piet commit 618083f,
 # which replaces the unmaintained unic-bidi dependency with icu_properties.
 piet-common = { git = "https://github.com/linebender/piet", rev = "618083f8a6671c7ab8c198724487348d2ccf9a8f", features = [ "png" ] }
