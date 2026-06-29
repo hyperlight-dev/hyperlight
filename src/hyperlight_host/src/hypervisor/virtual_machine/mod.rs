@@ -353,9 +353,12 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// the kernel just far enough to finish the pending `OUT` and then stops
     /// right after it, instead of running on to the next host-call boundary.
     ///
-    /// Returns `Ok(true)` if the pending IO was completed, or `Ok(false)` if the
-    /// backend does not support this. When it returns `Ok(false)` the caller
-    /// falls back to honoring the pause at the next host-call boundary.
+    /// Returns `Ok(true)` if the guest is now left at a clean, snapshot-safe
+    /// point right after the `OUT` — either because the pending IO was completed
+    /// (KVM) or because the backend already advanced past the `OUT` at exit time
+    /// so there was nothing pending to finish (mshv, WHP). Returns `Ok(false)`
+    /// if the backend does not support this, in which case the caller falls back
+    /// to honoring the pause at the next host-call boundary.
     fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
         Ok(false)
     }

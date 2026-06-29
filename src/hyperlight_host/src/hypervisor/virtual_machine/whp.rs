@@ -552,6 +552,16 @@ impl VirtualMachine for WhpVm {
         }
     }
 
+    fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
+        // Unlike KVM, WHP does not defer IO completion to the next vcpu run:
+        // `run_vcpu` advances RIP past the `OUT` synchronously, before the host
+        // call is serviced (see the X64IoPortAccess arm above). So at an
+        // `IoOut` boundary there is no pending IO and guest state is already
+        // self-consistent for a snapshot — we can honor an in-flight pause
+        // immediately with no further work.
+        Ok(true)
+    }
+
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
