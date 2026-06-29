@@ -228,6 +228,23 @@ impl WhpVm {
     }
 }
 
+/// Maps a snapshot MSR index to the corresponding WHP register name.
+/// Only the MSRs captured/restored by the snapshot machinery are supported.
+#[cfg(target_arch = "x86_64")]
+fn msr_index_to_whv_name(index: u32) -> Option<WHV_REGISTER_NAME> {
+    Some(match index {
+        0xC000_0080 => WHvX64RegisterEfer,
+        0xC000_0081 => WHvX64RegisterStar,
+        0xC000_0082 => WHvX64RegisterLstar,
+        0xC000_0083 => WHvX64RegisterCstar,
+        0xC000_0084 => WHvX64RegisterSfmask,
+        0xC000_0100 => WHvX64RegisterFsBase,
+        0xC000_0101 => WHvX64RegisterGsBase,
+        0xC000_0102 => WHvX64RegisterKernelGsBase,
+        _ => return None,
+    })
+}
+
 impl VirtualMachine for WhpVm {
     unsafe fn map_memory(
         &mut self,
@@ -665,6 +682,45 @@ impl VirtualMachine for WhpVm {
                 .map_err(|e| RegisterError::SetSregs(e.into()))?;
             Ok(())
         }
+    }
+
+    fn read_msrs(&self, indices: &[u32]) -> std::result::Result<Vec<u64>, RegisterError> {
+        let names: Vec<WHV_REGISTER_NAME> = indices
+            .iter()
+            .map(|&index| {
+                msr_index_to_whv_name(index)
+                    .ok_or_else(|| RegisterError::GetMsrs(format!("unsupported MSR {index:#x}")))
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let mut values: Vec<Align16<WHV_REGISTER_VALUE>> =
+            vec![Align16(unsafe { std::mem::zeroed() }); names.len()];
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                values.len() as u32,
+                values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )
+            .map_err(|e| RegisterError::GetMsrs(e.to_string()))?;
+        }
+
+        Ok(values.iter().map(|v| unsafe { v.0.Reg64 }).collect())
+    }
+
+    fn write_msrs(&self, entries: &[(u32, u64)]) -> std::result::Result<(), RegisterError> {
+        let regs: Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)> = entries
+            .iter()
+            .map(|&(index, data)| {
+                let name = msr_index_to_whv_name(index)
+                    .ok_or_else(|| RegisterError::SetMsrs(format!("unsupported MSR {index:#x}")))?;
+                Ok((name, Align16(WHV_REGISTER_VALUE { Reg64: data })))
+            })
+            .collect::<std::result::Result<_, RegisterError>>()?;
+        self.set_registers(&regs)
+            .map_err(|e| RegisterError::SetMsrs(e.to_string()))?;
+        Ok(())
     }
 
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {

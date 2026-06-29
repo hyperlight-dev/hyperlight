@@ -138,6 +138,11 @@ pub(super) struct OciSnapshotConfig {
     /// Present only for mid-execution (paused) snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) fpu: Option<CommonFpu>,
+    /// Model-specific registers (index, value) captured from a paused vCPU
+    /// (EFER, STAR/LSTAR/CSTAR/SFMASK, FS/GS/KERNEL_GS base). Present only
+    /// for mid-execution (paused) snapshots; required to resume correctly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) msrs: Option<Vec<(u32, u64)>>,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -150,6 +155,44 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
+    /// Live guest<->host IO data buffers captured from scratch memory.
+    /// Present only for paused (mid host-call) snapshots; scratch is
+    /// not part of the memory blob, so without this the in-flight
+    /// host-call data is lost on restore and the guest crashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) io_buffers: Option<IoBuffersRepr>,
+}
+
+/// JSON-friendly mirror of [`crate::mem::mgr::IoBuffers`]. The buffer
+/// bytes are hex-encoded so they survive a JSON round-trip.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct IoBuffersRepr {
+    /// Hex-encoded used bytes of the guest input data buffer.
+    pub(super) input: String,
+    /// Hex-encoded used bytes of the guest output data buffer.
+    pub(super) output: String,
+}
+
+impl From<&crate::mem::mgr::IoBuffers> for IoBuffersRepr {
+    fn from(b: &crate::mem::mgr::IoBuffers) -> Self {
+        Self {
+            input: hex::encode(&b.input),
+            output: hex::encode(&b.output),
+        }
+    }
+}
+
+impl TryFrom<IoBuffersRepr> for crate::mem::mgr::IoBuffers {
+    type Error = crate::HyperlightError;
+    fn try_from(r: IoBuffersRepr) -> crate::Result<Self> {
+        Ok(Self {
+            input: hex::decode(&r.input)
+                .map_err(|e| crate::new_error!("invalid io_buffers.input hex: {e}"))?,
+            output: hex::decode(&r.output)
+                .map_err(|e| crate::new_error!("invalid io_buffers.output hex: {e}"))?,
+        })
+    }
 }
 
 /// Sizes and permissions of the regions inside the snapshot blob,

@@ -2821,6 +2821,8 @@ fn paused_snapshot_round_trips_through_file() {
     let snapshot = call.snapshot().unwrap();
     assert!(snapshot.regs().is_some());
     assert!(snapshot.fpu().is_some());
+    // A paused snapshot captures the live IO data buffers from scratch.
+    assert!(snapshot.io_buffers().is_some());
 
     // Save to disk
     let dir = tempfile::tempdir().unwrap();
@@ -2833,6 +2835,11 @@ fn paused_snapshot_round_trips_through_file() {
     let loaded = Snapshot::checked_load(&oci, OciTag::new("paused").unwrap()).unwrap();
     assert!(loaded.regs().is_some(), "regs must survive round-trip");
     assert!(loaded.fpu().is_some(), "fpu must survive round-trip");
+    assert_eq!(
+        loaded.io_buffers(),
+        snapshot.io_buffers(),
+        "io buffers must survive round-trip"
+    );
 
     // Drop the call (poisons sandbox) and discard it
     drop(call);
@@ -2843,8 +2850,7 @@ fn paused_snapshot_round_trips_through_file() {
     let sbox2 =
         MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None).unwrap();
 
-    let mut owned_call =
-        PendingCallOwned::<u64>::from_paused_snapshot(sbox2, loaded).unwrap();
+    let mut owned_call = PendingCallOwned::<u64>::from_paused_snapshot(sbox2, loaded).unwrap();
 
     // Resume to completion
     loop {
@@ -2870,4 +2876,100 @@ fn paused_snapshot_round_trips_through_file() {
     assert!(!sbox2.poisoned());
     let echo: String = sbox2.call("Echo", "disk-roundtrip".to_string()).unwrap();
     assert_eq!(echo, "disk-roundtrip");
+}
+
+/// Pausing a guest that is parked *inside* a host call (so the snapshot
+/// captures a populated OUTPUT buffer and a RIP pointing at the `OUT`
+/// instruction) must resume cleanly in a fresh sandbox: the fresh vcpu
+/// re-executes the `OUT`, the host services the call, and the guest
+/// continues without faulting. This is the path exercised by the demo's
+/// suspend/resume cycle (and not covered by the SpinForMs tests, which
+/// pause mid-compute with no host call in flight).
+#[test]
+fn paused_mid_host_call_resumes_in_fresh_sandbox() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::sandbox::pending_call::{CallProgress, PendingCallOwned};
+
+    static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+    CALL_COUNT.store(0, Ordering::SeqCst);
+
+    fn make_host_funcs() -> HostFunctions {
+        let mut hf = HostFunctions::default();
+        hf.register_host_function("HostFunc1", || {
+            CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        hf
+    }
+
+    let path = simple_guest_as_string().unwrap();
+    let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+    u.register_host_function("HostFunc1", || {
+        CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
+    let mut sbox = u.evolve().unwrap();
+
+    // Start a guest call that calls HostFunc1 in a tight loop, then pause
+    // it at a safe boundary (the next vcpu exit, i.e. an `OUT`). This
+    // leaves OUTPUT populated and RIP at the `OUT`.
+    let mut call = sbox.call_async::<Vec<u8>>("HostCallLoop", "HostFunc1".to_string());
+
+    let handle = call.sandbox().interrupt_handle();
+    let t = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        handle.pause_at_safepoint();
+    });
+
+    let progress = call.poll().unwrap();
+    assert!(matches!(progress, CallProgress::Paused));
+    t.join().unwrap();
+
+    let snapshot = call.snapshot().unwrap();
+    assert!(snapshot.regs().is_some());
+    // The snapshot must have captured an in-flight host call: a populated
+    // OUTPUT buffer (stack pointer > 8).
+    let io = snapshot
+        .io_buffers()
+        .expect("paused snapshot has io buffers");
+    assert!(
+        io.output.len() > 8,
+        "expected populated OUTPUT buffer, got {} bytes",
+        io.output.len()
+    );
+
+    // Drop the paused call and source sandbox.
+    drop(call);
+    drop(sbox);
+
+    // Resume in a *fresh* sandbox built from the snapshot. The fresh vcpu
+    // must re-execute the `OUT` and continue without a triple fault.
+    let sbox2 = MultiUseSandbox::from_snapshot(snapshot.clone(), make_host_funcs(), None).unwrap();
+    let mut owned_call =
+        PendingCallOwned::<Vec<u8>>::from_paused_snapshot(sbox2, snapshot).unwrap();
+
+    // Resume; HostCallLoop never returns, so schedule a pause to stop it.
+    // A clean resume yields Paused; a triple fault would yield Err here.
+    let handle = owned_call.sandbox().interrupt_handle();
+    let t = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        handle.pause_at_safepoint();
+    });
+    let before = CALL_COUNT.load(Ordering::SeqCst);
+    let progress = owned_call
+        .poll()
+        .expect("resuming a mid-host-call snapshot must not fault the guest");
+    t.join().unwrap();
+    assert!(matches!(progress, CallProgress::Paused));
+    // The guest kept making host calls after resuming, proving it executed
+    // guest code past the restored `OUT`.
+    assert!(
+        CALL_COUNT.load(Ordering::SeqCst) > before,
+        "guest did not continue making host calls after resume"
+    );
 }

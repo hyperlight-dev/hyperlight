@@ -398,6 +398,7 @@ impl MultiUseSandbox {
             sregs,
             None,
             None,
+            None,
             entrypoint,
             host_functions,
         )?;
@@ -444,6 +445,10 @@ impl MultiUseSandbox {
             .vm
             .get_snapshot_fpu()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let msrs = self
+            .vm
+            .get_snapshot_msrs()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         let entrypoint = self.vm.get_entrypoint();
         let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
@@ -457,6 +462,7 @@ impl MultiUseSandbox {
             sregs,
             Some(regs),
             Some(fpu),
+            Some(msrs),
             entrypoint,
             host_functions,
         )?;
@@ -626,6 +632,15 @@ impl MultiUseSandbox {
             self.vm.restore_fpu(fpu).map_err(|e| {
                 self.poisoned = true;
                 crate::new_error!("failed to restore FPU state: {}", e)
+            })?;
+        }
+        // Restore model-specific registers (syscall/segment-base MSRs such as
+        // KERNEL_GS_BASE) last, so the sregs reset in reset_vcpu does not
+        // clobber them. Required for a paused guest to resume correctly.
+        if let Some(msrs) = snapshot.msrs() {
+            self.vm.restore_msrs(msrs).map_err(|e| {
+                self.poisoned = true;
+                crate::new_error!("failed to restore MSR state: {}", e)
             })?;
         }
 
@@ -875,12 +890,7 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> super::pending_call::PendingCall<'a, Output> {
-        super::pending_call::PendingCall::new(
-            self,
-            func_name,
-            Output::TYPE,
-            args.into_value(),
-        )
+        super::pending_call::PendingCall::new(self, func_name, Output::TYPE, args.into_value())
     }
 
     /// Calls a guest function by name, taking ownership of the sandbox.
@@ -921,12 +931,7 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> super::pending_call::PendingCallOwned<Output> {
-        super::pending_call::PendingCallOwned::new(
-            self,
-            func_name,
-            Output::TYPE,
-            args.into_value(),
-        )
+        super::pending_call::PendingCallOwned::new(self, func_name, Output::TYPE, args.into_value())
     }
 
     /// Restore a paused snapshot and return a handle to resume execution.

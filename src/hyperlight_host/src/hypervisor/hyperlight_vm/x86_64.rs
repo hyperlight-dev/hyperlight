@@ -69,6 +69,21 @@ use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
+/// Model-specific registers captured and restored as part of a paused snapshot.
+/// These cover the syscall entry points and segment base registers that are not
+/// part of the special registers, and must be restored for a paused guest to
+/// resume correctly (notably KERNEL_GS_BASE for swapgs-based per-CPU state).
+const SNAPSHOT_MSRS: &[u32] = &[
+    0xC000_0080, // IA32_EFER
+    0xC000_0081, // STAR
+    0xC000_0082, // LSTAR
+    0xC000_0083, // CSTAR
+    0xC000_0084, // SFMASK
+    0xC000_0100, // FS_BASE
+    0xC000_0101, // GS_BASE
+    0xC000_0102, // KERNEL_GS_BASE
+];
+
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -273,17 +288,22 @@ impl HyperlightVm {
     }
 
     /// Get the general-purpose registers for a snapshot.
-    pub(crate) fn get_snapshot_regs(
-        &self,
-    ) -> Result<CommonRegisters, AccessPageTableError> {
+    pub(crate) fn get_snapshot_regs(&self) -> Result<CommonRegisters, AccessPageTableError> {
         Ok(self.vm.regs()?)
     }
 
     /// Get the FPU/SSE state for a snapshot.
-    pub(crate) fn get_snapshot_fpu(
-        &self,
-    ) -> Result<CommonFpu, AccessPageTableError> {
+    pub(crate) fn get_snapshot_fpu(&self) -> Result<CommonFpu, AccessPageTableError> {
         Ok(self.vm.fpu()?)
+    }
+
+    /// Get the model-specific registers that need to be stored in a snapshot.
+    /// These hold the syscall/segment-base state (EFER, STAR/LSTAR/CSTAR/SFMASK,
+    /// FS/GS/KERNEL_GS base) that is not covered by the special registers and
+    /// must be restored for a paused guest to resume correctly.
+    pub(crate) fn get_snapshot_msrs(&self) -> Result<Vec<(u32, u64)>, AccessPageTableError> {
+        let values = self.vm.read_msrs(SNAPSHOT_MSRS)?;
+        Ok(SNAPSHOT_MSRS.iter().copied().zip(values).collect())
     }
 
     /// Dispatch a call from the host to the guest using the given pointer
@@ -437,11 +457,16 @@ impl HyperlightVm {
     }
 
     /// Restore FPU/SSE state from a snapshot.
-    pub(crate) fn restore_fpu(
-        &self,
-        fpu: &CommonFpu,
-    ) -> std::result::Result<(), RegisterError> {
+    pub(crate) fn restore_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         self.vm.set_fpu(fpu)
+    }
+
+    /// Restore model-specific registers from a snapshot.
+    pub(crate) fn restore_msrs(
+        &self,
+        msrs: &[(u32, u64)],
+    ) -> std::result::Result<(), RegisterError> {
+        self.vm.write_msrs(msrs)
     }
 
     // Handle a debug exit

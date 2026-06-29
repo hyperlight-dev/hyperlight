@@ -20,7 +20,8 @@ use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
-    kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
+    Msrs, kvm_debugregs, kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
+    kvm_xsave,
 };
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
@@ -224,7 +225,8 @@ impl KvmVm {
                     if (0x40..=0x43).contains(&port) {
                         continue;
                     }
-                    return Ok(VmExit::IoOut(port, data.to_vec()));
+                    let data_vec = data.to_vec();
+                    return Ok(VmExit::IoOut(port, data_vec));
                 }
                 Ok(VcpuExit::MmioRead(addr, _)) => return Ok(VmExit::MmioRead(addr)),
                 Ok(VcpuExit::MmioWrite(addr, _)) => return Ok(VmExit::MmioWrite(addr)),
@@ -241,10 +243,8 @@ impl KvmVm {
                     _ => return Err(RunVcpuError::Unknown(e.into())),
                 },
                 Ok(other) => {
-                    return Ok(VmExit::Unknown(format!(
-                        "Unknown KVM VCPU exit: {:?}",
-                        other
-                    )));
+                    let msg = format!("Unknown KVM VCPU exit: {other:?}");
+                    return Ok(VmExit::Unknown(msg));
                 }
             }
         }
@@ -384,6 +384,55 @@ impl VirtualMachine for KvmVm {
         self.vcpu_fd
             .set_sregs(&kvm_sregs)
             .map_err(|e| RegisterError::SetSregs(e.into()))?;
+        Ok(())
+    }
+
+    fn read_msrs(&self, indices: &[u32]) -> std::result::Result<Vec<u64>, RegisterError> {
+        let entries: Vec<kvm_msr_entry> = indices
+            .iter()
+            .map(|&index| kvm_msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::GetMsrs(format!("{e:?}")))?;
+        let read = self
+            .vcpu_fd
+            .get_msrs(&mut msrs)
+            .map_err(|e| RegisterError::GetMsrs(e.to_string()))?;
+        if read != indices.len() {
+            return Err(RegisterError::GetMsrs(format!(
+                "requested {} MSRs but only {} were read",
+                indices.len(),
+                read
+            )));
+        }
+        Ok(msrs.as_slice().iter().map(|e| e.data).collect())
+    }
+
+    fn write_msrs(&self, entries: &[(u32, u64)]) -> std::result::Result<(), RegisterError> {
+        let entries: Vec<kvm_msr_entry> = entries
+            .iter()
+            .map(|&(index, data)| kvm_msr_entry {
+                index,
+                data,
+                ..Default::default()
+            })
+            .collect();
+        let msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::SetMsrs(format!("{e:?}")))?;
+        let written = self
+            .vcpu_fd
+            .set_msrs(&msrs)
+            .map_err(|e| RegisterError::SetMsrs(e.to_string()))?;
+        if written != entries.len() {
+            return Err(RegisterError::SetMsrs(format!(
+                "requested {} MSRs but only {} were written",
+                entries.len(),
+                written
+            )));
+        }
         Ok(())
     }
 

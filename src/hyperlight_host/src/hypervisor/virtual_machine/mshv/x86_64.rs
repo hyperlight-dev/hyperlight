@@ -26,13 +26,13 @@ use mshv_bindings::LapicState;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, SpecialRegisters, StandardRegisters, XSave,
+    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, Msrs, SpecialRegisters, StandardRegisters, XSave,
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
-    mshv_user_mem_region,
+    mshv_user_mem_region, msr_entry,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
@@ -413,6 +413,55 @@ impl VirtualMachine for MshvVm {
         self.vcpu_fd
             .set_sregs(&mshv_sregs)
             .map_err(|e| RegisterError::SetSregs(e.into()))?;
+        Ok(())
+    }
+
+    fn read_msrs(&self, indices: &[u32]) -> std::result::Result<Vec<u64>, RegisterError> {
+        let entries: Vec<msr_entry> = indices
+            .iter()
+            .map(|&index| msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::GetMsrs(format!("{e:?}")))?;
+        let read = self
+            .vcpu_fd
+            .get_msrs(&mut msrs)
+            .map_err(|e| RegisterError::GetMsrs(e.to_string()))?;
+        if read != indices.len() {
+            return Err(RegisterError::GetMsrs(format!(
+                "requested {} MSRs but only {} were read",
+                indices.len(),
+                read
+            )));
+        }
+        Ok(msrs.as_slice().iter().map(|e| e.data).collect())
+    }
+
+    fn write_msrs(&self, entries: &[(u32, u64)]) -> std::result::Result<(), RegisterError> {
+        let entries: Vec<msr_entry> = entries
+            .iter()
+            .map(|&(index, data)| msr_entry {
+                index,
+                data,
+                ..Default::default()
+            })
+            .collect();
+        let msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::SetMsrs(format!("{e:?}")))?;
+        let written = self
+            .vcpu_fd
+            .set_msrs(&msrs)
+            .map_err(|e| RegisterError::SetMsrs(e.to_string()))?;
+        if written != entries.len() {
+            return Err(RegisterError::SetMsrs(format!(
+                "requested {} MSRs but only {} were written",
+                entries.len(),
+                written
+            )));
+        }
         Ok(())
     }
 

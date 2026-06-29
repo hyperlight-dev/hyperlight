@@ -33,7 +33,7 @@ use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
+use crate::mem::mgr::{GuestPageTableBuffer, IoBuffers, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
@@ -102,6 +102,13 @@ pub struct Snapshot {
     /// paused mid-execution (enables resume after restore).
     fpu: Option<CommonFpu>,
 
+    /// Model-specific register state (index, value pairs) captured from the
+    /// vCPU during snapshot. None for snapshots created directly from a binary
+    /// or when the guest was not mid-execution. Some for snapshots taken while
+    /// the guest was paused mid-execution; restoring these (notably
+    /// KERNEL_GS_BASE) is required for the guest to resume correctly.
+    msrs: Option<Vec<(u32, u64)>>,
+
     /// The next action that should be performed on this snapshot
     entrypoint: NextAction,
 
@@ -118,6 +125,14 @@ pub struct Snapshot {
     /// `HostFunctions` set that is missing required functions or
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
+
+    /// Live guest<->host IO data buffers captured from scratch memory.
+    /// `Some` only for paused (mid host-call) snapshots, where the
+    /// buffers hold in-flight data (e.g. the unconsumed response to
+    /// the host call the guest is parked in). Scratch is not part of
+    /// the snapshot memory image and is reset on restore, so these are
+    /// written back explicitly to keep the resumed guest from crashing.
+    io_buffers: Option<IoBuffers>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -221,6 +236,44 @@ impl<'a> core::convert::AsRef<SharedMemoryPageTableBuffer<'a>> for SharedMemoryP
         self
     }
 }
+
+/// Capture the used bytes of the input and output IO data buffers from
+/// scratch memory, for preservation across a paused snapshot/restore.
+/// See [`IoBuffers`] for why this is necessary.
+fn capture_io_buffers<S: SharedMemory>(
+    scratch_mem: &mut S,
+    layout: &SandboxMemoryLayout,
+) -> Result<IoBuffers> {
+    let in_off = layout.get_input_data_buffer_scratch_host_offset();
+    let in_size = layout.input_data_size;
+    let out_off = layout.get_output_data_buffer_scratch_host_offset();
+    let out_size = layout.output_data_size;
+    scratch_mem.with_contents(|scratch| IoBuffers {
+        input: capture_io_buffer(scratch, in_off, in_size),
+        output: capture_io_buffer(scratch, out_off, out_size),
+    })
+}
+
+/// Capture the used bytes (`[start, start + stack_pointer)`) of a single
+/// IO data buffer within the scratch slice. The first 8 bytes hold the
+/// relative stack pointer (the offset of the next free byte); an empty
+/// buffer has a stack pointer of 8.
+fn capture_io_buffer(scratch: &[u8], start: usize, size: usize) -> Vec<u8> {
+    let stack_pointer = scratch
+        .get(start..start + 8)
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map(u64::from_le_bytes)
+        .unwrap_or(SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES) as usize;
+    // Clamp defensively: a healthy buffer always has its stack pointer
+    // in `[8, size]`. If it is somehow out of range, fall back to
+    // capturing just the (empty) 8-byte header.
+    let used = stack_pointer.clamp(SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES as usize, size);
+    scratch
+        .get(start..start + used)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default()
+}
+
 /// Return true if `virt_base` is a VA we must not preserve into the
 /// rebuilt snapshot page tables: it is either part of the scratch
 /// region (re-mapped freshly by `map_specials`) or, on amd64, part of
@@ -393,11 +446,13 @@ impl Snapshot {
             sregs: None,
             regs: None,
             fpu: None,
+            msrs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
                 host_functions: None,
             },
+            io_buffers: None,
         })
     }
 
@@ -421,12 +476,22 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         regs: Option<CommonRegisters>,
         fpu: Option<CommonFpu>,
+        msrs: Option<Vec<(u32, u64)>>,
         entrypoint: NextAction,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
+        // Capture the live IO data buffers for paused snapshots only.
+        // A quiescent snapshot (no register state) has no in-flight
+        // host-call data worth preserving, and its buffers are
+        // correctly reset to empty on restore.
+        let io_buffers = if regs.is_some() {
+            Some(capture_io_buffers(scratch_mem, &layout)?)
+        } else {
+            None
+        };
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
                 // Phase 1: walk every PT root together. This detects
@@ -576,15 +641,24 @@ impl Snapshot {
             sregs: Some(sregs),
             regs,
             fpu,
+            msrs,
             entrypoint,
             snapshot_generation,
             host_functions,
+            io_buffers,
         })
     }
 
     /// Generation number assigned to this snapshot when it was taken.
     pub(crate) fn snapshot_generation(&self) -> u64 {
         self.snapshot_generation
+    }
+
+    /// Live IO data buffers captured for a paused snapshot, if any.
+    /// Used on restore to repopulate scratch memory with the in-flight
+    /// host-call data.
+    pub(crate) fn io_buffers(&self) -> Option<&IoBuffers> {
+        self.io_buffers.as_ref()
     }
 
     /// Return the main memory contents of the snapshot
@@ -635,6 +709,12 @@ impl Snapshot {
     /// None for snapshots of quiescent sandboxes.
     pub(crate) fn fpu(&self) -> Option<&CommonFpu> {
         self.fpu.as_ref()
+    }
+
+    /// Model-specific registers saved when the snapshot was taken
+    /// mid-execution. None for snapshots of quiescent sandboxes.
+    pub(crate) fn msrs(&self) -> Option<&[(u32, u64)]> {
+        self.msrs.as_deref()
     }
 
     pub(crate) fn entrypoint(&self) -> NextAction {
@@ -797,6 +877,7 @@ mod tests {
             default_sregs(),
             None,
             None,
+            None,
             super::NextAction::None,
             1,
             HostFunctionDetails::default(),
@@ -816,6 +897,7 @@ mod tests {
             default_sregs(),
             None,
             None,
+            None,
             super::NextAction::None,
             2,
             HostFunctionDetails::default(),
@@ -833,5 +915,115 @@ mod tests {
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
+    }
+
+    /// Read the used bytes (`[off, off + stack_pointer)`) of an IO data
+    /// buffer directly from scratch memory.
+    fn read_used(mem: &HostSharedMemory, off: usize) -> Vec<u8> {
+        let sp = mem.read::<u64>(off).unwrap() as usize;
+        let mut bytes = vec![0u8; sp];
+        mem.copy_to_slice(&mut bytes, off).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn capture_io_buffer_returns_used_bytes_and_clamps() {
+        let size = 64usize;
+        let start = 8usize;
+        let mut scratch = vec![0u8; start + size];
+
+        // Empty buffer: stack pointer == 8 -> just the header.
+        scratch[start..start + 8].copy_from_slice(&8u64.to_le_bytes());
+        assert_eq!(super::capture_io_buffer(&scratch, start, size).len(), 8);
+
+        // Non-empty buffer: stack pointer points past some data.
+        scratch[start..start + 8].copy_from_slice(&20u64.to_le_bytes());
+        for (i, b) in scratch[start + 8..start + 20].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let captured = super::capture_io_buffer(&scratch, start, size);
+        assert_eq!(captured.len(), 20);
+        assert_eq!(&captured[..8], &20u64.to_le_bytes());
+
+        // Out-of-range stack pointer is clamped to the buffer size.
+        scratch[start..start + 8].copy_from_slice(&9999u64.to_le_bytes());
+        assert_eq!(super::capture_io_buffer(&scratch, start, size).len(), size);
+    }
+
+    #[test]
+    fn quiescent_snapshot_has_no_io_buffers() {
+        let (mut mgr, pt_base) = make_simple_pt_mgr();
+        let snapshot = super::Snapshot::new(
+            &mut make_simple_pt_mem(&[0u8; PAGE_SIZE]).build().0,
+            &mut mgr.scratch_mem,
+            mgr.layout,
+            LoadInfo::dummy(),
+            Vec::new(),
+            &[pt_base],
+            0,
+            default_sregs(),
+            None, // no register state => quiescent
+            None,
+            None,
+            super::NextAction::None,
+            1,
+            HostFunctionDetails::default(),
+        )
+        .unwrap();
+        assert!(snapshot.io_buffers().is_none());
+    }
+
+    #[test]
+    fn paused_snapshot_captures_and_restores_io_buffers() {
+        let (mut mgr, pt_base) = make_simple_pt_mgr();
+
+        // Simulate an in-flight host-call response sitting in the input
+        // data buffer, as it would be when the guest is paused just
+        // after a host call completed.
+        let payload = b"in-flight host call response";
+        let in_off = mgr.layout.get_input_data_buffer_scratch_host_offset();
+        let in_size = mgr.layout.input_data_size;
+        mgr.scratch_mem
+            .push_buffer(in_off, in_size, payload)
+            .unwrap();
+        let expected_input = read_used(&mgr.scratch_mem, in_off);
+        assert!(expected_input.len() > 8);
+
+        // A paused snapshot carries register state.
+        let snapshot = super::Snapshot::new(
+            &mut make_simple_pt_mem(&[0u8; PAGE_SIZE]).build().0,
+            &mut mgr.scratch_mem,
+            mgr.layout,
+            LoadInfo::dummy(),
+            Vec::new(),
+            &[pt_base],
+            0,
+            default_sregs(),
+            Some(Default::default()), // register state => paused
+            Some(Default::default()),
+            None,
+            super::NextAction::None,
+            1,
+            HostFunctionDetails::default(),
+        )
+        .unwrap();
+
+        let io = snapshot
+            .io_buffers()
+            .expect("paused snapshot must capture io buffers");
+        assert_eq!(io.input, expected_input);
+
+        // Restoring into a fresh sandbox must repopulate the input
+        // buffer so the resumed guest can pop the response, even though
+        // scratch is reset by update_scratch_bookkeeping during build.
+        let (restored, _) = SandboxMemoryManager::from_snapshot(&snapshot)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(read_used(&restored.scratch_mem, in_off), expected_input);
+
+        // The same must hold for the in-memory restore path.
+        mgr.restore_snapshot(&snapshot).unwrap();
+        assert_eq!(read_used(&mgr.scratch_mem, in_off), expected_input);
     }
 }

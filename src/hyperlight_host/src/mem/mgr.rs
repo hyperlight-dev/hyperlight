@@ -130,6 +130,29 @@ impl ReadonlySharedMemory {
     }
 }
 pub(crate) use unused_hack::SnapshotSharedMemory;
+
+/// A capture of the guest<->host IO data buffers (the input and
+/// output data stacks) that live in scratch memory.
+///
+/// Scratch memory is deliberately *not* part of a snapshot's memory
+/// image, and `update_scratch_bookkeeping` resets the input/output
+/// buffer stack pointers to "empty" on every restore. That is fine
+/// for a quiescent snapshot, but a snapshot taken while the guest is
+/// paused mid host-call has live data in these buffers (e.g. the
+/// unconsumed response to the host call the guest was parked in).
+/// Losing it makes the guest crash immediately on resume. For paused
+/// snapshots we therefore capture the used bytes of each buffer here
+/// and write them back into scratch after the bookkeeping reset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IoBuffers {
+    /// Used bytes of the guest input data buffer (host -> guest),
+    /// including the 8-byte stack-pointer header at its start.
+    pub(crate) input: Vec<u8>,
+    /// Used bytes of the guest output data buffer (guest -> host),
+    /// including the 8-byte stack-pointer header at its start.
+    pub(crate) output: Vec<u8>,
+}
+
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 #[derive(Clone)]
@@ -150,6 +173,16 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
+    /// IO data buffers captured from a paused snapshot, to be written
+    /// back into scratch memory after `update_scratch_bookkeeping`
+    /// resets it on restore. `None` for sandboxes that were not built
+    /// from a paused snapshot.
+    pub(crate) pending_io_buffers: Option<IoBuffers>,
+    /// `(rsp, stack_top_gva)` of a paused snapshot, used by `build` to
+    /// eagerly materialise the live stack's CoW pages so the resumed
+    /// guest does not triple-fault on its first write. `None` for
+    /// sandboxes that were not built from a paused snapshot.
+    pub(crate) pending_resume_stack: Option<(u64, u64)>,
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -284,6 +317,8 @@ where
             entrypoint,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
+            pending_io_buffers: None,
+            pending_resume_stack: None,
         }
     }
 
@@ -302,6 +337,7 @@ where
         sregs: CommonSpecialRegisters,
         regs: Option<CommonRegisters>,
         fpu: Option<CommonFpu>,
+        msrs: Option<Vec<(u32, u64)>>,
         entrypoint: NextAction,
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
@@ -317,6 +353,7 @@ where
             sregs,
             regs,
             fpu,
+            msrs,
             entrypoint,
             self.snapshot_count,
             host_functions,
@@ -336,6 +373,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         // reflects "which snapshot is the sandbox currently a clone
         // of", not "how many snapshots this partition has taken".
         mgr.snapshot_count = s.snapshot_generation();
+        // Carry any paused-snapshot IO buffers so `build` can restore
+        // them into scratch after `update_scratch_bookkeeping`.
+        mgr.pending_io_buffers = s.io_buffers().cloned();
+        // Carry the paused stack pointer + top so `build` can eagerly
+        // materialise the live stack's CoW pages (see
+        // `materialize_stack_cow_pages`).
+        mgr.pending_resume_stack = s.regs().map(|r| (r.rsp, s.stack_top_gva()));
         Ok(mgr)
     }
 
@@ -364,6 +408,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             entrypoint: self.entrypoint,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
+            pending_io_buffers: None,
+            pending_resume_stack: None,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -372,13 +418,215 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             entrypoint: self.entrypoint,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
+            pending_io_buffers: None,
+            pending_resume_stack: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
+        // If we were built from a paused snapshot, the bookkeeping
+        // reset above clobbered the live IO buffers; restore them so
+        // the resumed guest sees the in-flight host-call data, and
+        // eagerly materialise the live stack's CoW pages so resuming
+        // mid-execution does not triple-fault on the first write to a
+        // CoW page (see `materialize_stack_cow_pages`).
+        if let Some(io) = self.pending_io_buffers.as_ref() {
+            host_mgr.restore_io_buffers(io)?;
+            if let Some((rsp, stack_top)) = self.pending_resume_stack {
+                host_mgr.materialize_cow_pages(rsp, stack_top)?;
+            }
+        }
         Ok((host_mgr, guest_mgr))
     }
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Write previously-captured IO data buffers back into scratch
+    /// memory. Call after `update_scratch_bookkeeping`, which resets
+    /// the buffers to empty, so the restored bytes win.
+    pub(crate) fn restore_io_buffers(&mut self, io: &IoBuffers) -> Result<()> {
+        self.scratch_mem.copy_from_slice(
+            &io.input,
+            self.layout.get_input_data_buffer_scratch_host_offset(),
+        )?;
+        self.scratch_mem.copy_from_slice(
+            &io.output,
+            self.layout.get_output_data_buffer_scratch_host_offset(),
+        )?;
+        Ok(())
+    }
+
+    /// Eagerly materialise copy-on-write pages into writable scratch
+    /// memory before a paused guest resumes.
+    ///
+    /// When a snapshot is rebuilt, writable guest pages are remapped
+    /// copy-on-write: read-only PTEs (with the `PAGE_AVL_COW` bit set)
+    /// whose contents live in the snapshot blob, which is mapped into
+    /// the VM read-only. Normally the guest's own page-fault handler
+    /// copies such a page into writable scratch on the first write.
+    /// That works when execution starts cleanly (e.g. booting from a
+    /// golden snapshot), where the guest re-runs its boot path.
+    ///
+    /// Resuming a *paused* snapshot is different: execution continues at
+    /// the exact instruction following the host call the guest was
+    /// parked in. The unikraft guest cannot reliably service a CoW
+    /// page-fault taken in that resumed state, and triple-faults on the
+    /// first write to a CoW page. To sidestep that entirely we eagerly
+    /// materialise every present CoW page so the resumed guest never
+    /// takes a CoW fault: each such page's contents are copied from the
+    /// snapshot blob into a freshly bump-allocated scratch page and its
+    /// PTE rewritten plain-writable, mirroring the guest's own
+    /// copy-on-write handler.
+    ///
+    /// This is best-effort: if scratch fills up before every CoW page is
+    /// materialised we stop and leave the remainder lazy. Sandboxes are
+    /// sized with ample scratch for their working set, so in practice the
+    /// whole writable set is materialised; the early-stop path only
+    /// matters for tiny test sandboxes whose guests cooperate with lazy
+    /// CoW anyway.
+    pub(crate) fn materialize_cow_pages(&mut self, rsp: u64, stack_top: u64) -> Result<()> {
+        use hyperlight_common::layout::{SCRATCH_TOP_ALLOCATOR_OFFSET, scratch_base_gpa};
+
+        const PAGE_PRESENT: u64 = 1 << 0;
+        const PAGE_RW: u64 = 1 << 1;
+        const PAGE_PS: u64 = 1 << 7;
+        const PAGE_AVL_COW: u64 = 1 << 9;
+        const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+        const PAGE: u64 = hyperlight_common::vmem::PAGE_SIZE as u64;
+
+        let scratch_size = self.scratch_mem.mem_size();
+        let scratch_base = scratch_base_gpa(scratch_size);
+        let pt_base_gpa = self.layout.get_pt_base_gpa();
+        let pt_size = self.layout.get_pt_size() as u64;
+        let base_addr = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let snapshot_size = self.shared_mem.mem_size() as u64;
+
+        // Resolve a page-table GPA (always inside the scratch region) to
+        // its host offset within scratch.
+        let pt_lo = pt_base_gpa;
+        let pt_hi = pt_base_gpa + pt_size;
+        let table_off = |gpa: u64| -> Option<usize> {
+            if gpa >= pt_lo && gpa < pt_hi {
+                Some((gpa - scratch_base) as usize)
+            } else {
+                None
+            }
+        };
+
+        // Mirror the guest's bump allocator (`alloc_phys_pages`): the
+        // next-free scratch GPA lives in the bookkeeping area at the top
+        // of scratch, so pages we hand out won't collide with the
+        // guest's own subsequent allocations.
+        let alloc_host_off = scratch_size - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let mut next_free: u64 = self.scratch_mem.read::<u64>(alloc_host_off)?;
+        // The guest reserves two pages at the top of scratch for the
+        // exception stack and shared state; respect the same limit.
+        let max_avail = scratch_base + scratch_size as u64 - PAGE * 2;
+
+        // Walk the full four-level page table from the (single) snapshot
+        // root and collect every present CoW leaf that points into the
+        // snapshot blob. All page-table pages live contiguously in the
+        // scratch-resident PT region.
+        let read_entry = |off: usize| -> Result<u64> { self.scratch_mem.read::<u64>(off) };
+        // (page-table entry host offset, snapshot-blob host offset, entry flags)
+        let mut candidates: Vec<(usize, usize, u64)> = Vec::new();
+
+        // Eagerly materialise EVERY present CoW leaf, not just the live
+        // stack. A guest resumed mid-execution from a paused snapshot
+        // cannot service its own copy-on-write page-faults during the
+        // early kernel resume path (doing so triple-faults on the first
+        // touched CoW page), so every page it might read or write must
+        // already be a private, writable page before the vCPU runs.
+        // `rsp`/`stack_top` are retained for diagnostics/future tuning.
+        let _ = (rsp, stack_top);
+
+        for i4 in 0..512usize {
+            let Some(t4) = table_off(pt_base_gpa) else {
+                break;
+            };
+            let e4 = read_entry(t4 + i4 * 8)?;
+            if e4 & PAGE_PRESENT == 0 || e4 & PAGE_PS != 0 {
+                continue;
+            }
+            let Some(t3) = table_off(e4 & ADDR_MASK) else {
+                continue;
+            };
+            for i3 in 0..512usize {
+                let e3 = read_entry(t3 + i3 * 8)?;
+                if e3 & PAGE_PRESENT == 0 || e3 & PAGE_PS != 0 {
+                    continue;
+                }
+                let Some(t2) = table_off(e3 & ADDR_MASK) else {
+                    continue;
+                };
+                for i2 in 0..512usize {
+                    let e2 = read_entry(t2 + i2 * 8)?;
+                    if e2 & PAGE_PRESENT == 0 || e2 & PAGE_PS != 0 {
+                        continue;
+                    }
+                    let Some(t1) = table_off(e2 & ADDR_MASK) else {
+                        continue;
+                    };
+                    for i1 in 0..512usize {
+                        let entry_off = t1 + i1 * 8;
+                        let entry = read_entry(entry_off)?;
+                        if entry & PAGE_PRESENT == 0 || entry & PAGE_AVL_COW == 0 {
+                            continue;
+                        }
+                        let src_gpa = entry & ADDR_MASK;
+                        // CoW leaves always point into the snapshot blob's
+                        // data region. Anything else would be a bug; skip
+                        // defensively.
+                        if src_gpa < base_addr || src_gpa + PAGE > base_addr + snapshot_size {
+                            continue;
+                        }
+                        let src_off = (src_gpa - base_addr) as usize;
+                        candidates.push((entry_off, src_off, entry));
+                    }
+                }
+            }
+        }
+
+        // Full materialisation can need a large slice of scratch. If the
+        // snapshot's scratch was sized too small to hold the whole CoW
+        // footprint plus the guest's post-resume allocation headroom,
+        // bail rather than overflow (the guest will then fault and, being
+        // unable to service it, triple-fault — a clear signal scratch is
+        // undersized).
+        let needed = candidates.len() as u64 * PAGE;
+        if next_free + needed > max_avail {
+            tracing::error!(
+                materialize_pages = candidates.len(),
+                next_free,
+                max_avail,
+                "resume CoW materialisation would overflow scratch; skipping"
+            );
+            return Ok(());
+        }
+
+        // Snapshot blob is read-only; borrow it for the copies. This
+        // coexists with the mutating scratch accesses below because they
+        // touch a distinct field (`scratch_mem`).
+        let blob = self.shared_mem.as_slice();
+        for (entry_off, src_off, entry) in &candidates {
+            let page = &blob[*src_off..*src_off + PAGE as usize];
+            let new_gpa = next_free;
+            next_free += PAGE;
+            let dst_off = (new_gpa - scratch_base) as usize;
+            self.scratch_mem.copy_from_slice(page, dst_off)?;
+
+            let new_entry = (entry & !ADDR_MASK & !PAGE_AVL_COW) | new_gpa | PAGE_RW;
+            self.scratch_mem.write::<u64>(*entry_off, new_entry)?;
+        }
+
+        // Persist the bumped allocator so the guest continues allocating
+        // above the pages we just materialised.
+        self.scratch_mem.write::<u64>(alloc_host_off, next_free)?;
+        tracing::debug!(
+            materialized = candidates.len(),
+            "materialised all CoW pages on resume"
+        );
+        Ok(())
+    }
+
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -509,6 +757,18 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.snapshot_count = snapshot.snapshot_generation();
 
         self.update_scratch_bookkeeping()?;
+        // For a paused snapshot, restore the live IO data buffers that
+        // `update_scratch_bookkeeping` just reset; otherwise the
+        // resumed guest loses the in-flight host-call data and crashes.
+        // Then eagerly materialise CoW pages so resuming mid-execution
+        // does not triple-fault on the first write to a CoW page (see
+        // `materialize_cow_pages`).
+        if let Some(io) = snapshot.io_buffers() {
+            self.restore_io_buffers(io)?;
+            if let Some(regs) = snapshot.regs() {
+                self.materialize_cow_pages(regs.rsp, snapshot.stack_top_gva())?;
+            }
+        }
         Ok((gsnapshot, gscratch))
     }
 

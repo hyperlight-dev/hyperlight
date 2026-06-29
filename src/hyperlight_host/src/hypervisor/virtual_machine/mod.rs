@@ -224,6 +224,10 @@ pub enum RegisterError {
     GetSregs(HypervisorError),
     #[error("Failed to set special registers: {0}")]
     SetSregs(HypervisorError),
+    #[error("Failed to get MSRs: {0}")]
+    GetMsrs(String),
+    #[error("Failed to set MSRs: {0}")]
+    SetMsrs(String),
     #[error("Failed to get debug registers: {0}")]
     GetDebugRegs(HypervisorError),
     #[error("Failed to set debug registers: {0}")]
@@ -352,6 +356,13 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError>;
     /// Set special regs
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError>;
+    /// Read the given MSRs by index, returning their values in the same order.
+    /// x86_64 only (other architectures do not have MSRs).
+    #[cfg(target_arch = "x86_64")]
+    fn read_msrs(&self, indices: &[u32]) -> std::result::Result<Vec<u64>, RegisterError>;
+    /// Write the given `(index, value)` MSR pairs. x86_64 only.
+    #[cfg(target_arch = "x86_64")]
+    fn write_msrs(&self, entries: &[(u32, u64)]) -> std::result::Result<(), RegisterError>;
     /// Get the debug registers of the vCPU
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;

@@ -570,6 +570,7 @@ impl Snapshot {
             sregs: *sregs,
             regs: self.regs,
             fpu: self.fpu,
+            msrs: self.msrs.clone(),
             layout: MemoryLayout {
                 input_data_size: l.input_data_size,
                 output_data_size: l.output_data_size,
@@ -584,6 +585,7 @@ impl Snapshot {
             memory_size: self.memory.mem_size() as u64,
             host_functions,
             snapshot_generation: self.snapshot_generation,
+            io_buffers: self.io_buffers.as_ref().map(Into::into),
         })
     }
 
@@ -848,6 +850,9 @@ impl Snapshot {
             }
         };
 
+        // 10. Reconstitute the paused-snapshot IO buffers, if present.
+        let io_buffers = cfg.io_buffers.map(TryInto::try_into).transpose()?;
+
         Ok(Snapshot {
             layout,
             memory,
@@ -856,9 +861,11 @@ impl Snapshot {
             sregs: Some(cfg.sregs),
             regs: cfg.regs,
             fpu: cfg.fpu,
+            msrs: cfg.msrs,
             entrypoint,
             snapshot_generation,
             host_functions,
+            io_buffers,
         })
     }
 }
