@@ -32,7 +32,7 @@ defaults:
 jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ vars.BUILD_GUESTS_JOB_TIMEOUT || 15 }}
     runs-on: ${{ fromJson(
       format('["self-hosted", "Linux", "{0}", "{1}" {2}]',
         inputs.arch,

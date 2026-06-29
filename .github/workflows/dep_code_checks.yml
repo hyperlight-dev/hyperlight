@@ -25,7 +25,7 @@ defaults:
 jobs:
   linux-checks:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ vars.CODE_CHECKS_JOB_TIMEOUT || 30 }}
     runs-on: ["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=linux-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -95,7 +95,7 @@ jobs:
 
   windows-checks:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ vars.CODE_CHECKS_JOB_TIMEOUT || 30 }}
     runs-on: ["self-hosted", "Windows", "X64", "1ES.Pool=hld-win2025-amd", "JobId=windows-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0

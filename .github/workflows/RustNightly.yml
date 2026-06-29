@@ -24,7 +24,7 @@ jobs:
   # This is a self-contained job since musl builds are a special case
   # that require TARGET_TRIPLE for cross-compilation
   musl:
-    timeout-minutes: 60
+    timeout-minutes: ${{ vars.NIGHTLY_JOB_TIMEOUT || 90 }}
     strategy:
       fail-fast: true
       matrix:

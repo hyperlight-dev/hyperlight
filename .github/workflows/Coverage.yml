@@ -24,7 +24,7 @@ defaults:
 
 jobs:
   coverage:
-    timeout-minutes: 90
+    timeout-minutes: ${{ vars.COVERAGE_JOB_TIMEOUT || 90 }}
     strategy:
       fail-fast: false
       matrix:
