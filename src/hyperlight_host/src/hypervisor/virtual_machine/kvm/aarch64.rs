@@ -272,6 +272,18 @@ impl VirtualMachine for KvmVm {
         }
     }
 
+    fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
+        // As with the Halt case in `run_vcpu`, AArch64 KVM defers advancing the
+        // program counter past an I/O instruction until the next KVM_RUN. To
+        // honor a pause requested during a host call, re-enter with
+        // immediate_exit set so the in-flight write is finished (PC advances
+        // past it) without executing any further guest instructions, landing at
+        // a clean, self-consistent point right after the host-call instruction.
+        self.run_immediate_exit()
+            .map_err(|e| RunVcpuError::CompletePendingIo(format!("{:?}", e)))?;
+        Ok(true)
+    }
+
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
         let mut x: [u64; 31] = [0; 31];

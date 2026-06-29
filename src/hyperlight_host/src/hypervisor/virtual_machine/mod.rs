@@ -348,7 +348,9 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// *without* executing any further guest instructions, leaving guest state
     /// self-consistent for a snapshot.
     ///
-    /// This is used to honor a pause requested *during* a host function call.
+    /// This is used to honor a pause requested at a host-call boundary —
+    /// whether the pause was already pending when the `OUT` exit was observed or
+    /// was requested *during* the call (e.g. a host function calling `pause()`).
     /// The call has already been serviced on this vCPU, so the run loop re-enters
     /// the kernel just far enough to finish the pending `OUT` and then stops
     /// right after it, instead of running on to the next host-call boundary.
@@ -357,8 +359,8 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// point right after the `OUT` — either because the pending IO was completed
     /// (KVM) or because the backend already advanced past the `OUT` at exit time
     /// so there was nothing pending to finish (mshv, WHP). Returns `Ok(false)`
-    /// if the backend does not support this, in which case the caller falls back
-    /// to honoring the pause at the next host-call boundary.
+    /// if the backend does not support this, in which case the pause is left to
+    /// be honored by a subsequent signal-based cancellation.
     fn complete_pending_io(&mut self) -> std::result::Result<bool, RunVcpuError> {
         Ok(false)
     }

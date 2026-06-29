@@ -171,8 +171,6 @@ impl HyperlightVm {
 
             mmap_regions: Vec::new(),
 
-            deferred_host_call: None,
-
             pending_tlb_flush: false,
 
             #[cfg(gdb)]
@@ -352,12 +350,6 @@ impl HyperlightVm {
             .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
 
-        // A fresh dispatch re-enters at the entrypoint with a fresh vcpu
-        // state; any host call deferred by a previous pause is irrelevant here
-        // and must not be serviced (it belongs to a different, now-abandoned
-        // execution). Drop it so it cannot leak into this call.
-        self.deferred_host_call = None;
-
         let result = self
             .run(
                 mem_mgr,
@@ -389,17 +381,10 @@ impl HyperlightVm {
         // Do NOT reset registers — they contain the paused state
         // Do NOT clear pending_tlb_flush — it was already handled or will be on resume
 
-        // If the pause was observed at an `IoOut` (host-call) boundary, the
-        // hypervisor has a pending IO completion: the next vcpu entry advances
-        // RIP past the `OUT` without re-exiting, so the run loop would never
-        // service the host call. Service it now — exactly as the run loop would
-        // have — so the guest's input buffer is populated with the result
-        // before we re-enter the vcpu. See `deferred_host_call`.
-        if let Some((port, data)) = self.deferred_host_call.take() {
-            self.handle_io(mem_mgr, host_funcs, port, data)
-                .map_err(|e| DispatchGuestCallError::Run(RunVmError::HandleIo(e)))?;
-        }
-
+        // The pause was taken at a clean, self-consistent point: if it happened
+        // at an `IoOut` (host-call) boundary, the call was already serviced and
+        // RIP advanced past the `OUT` (see the `IoOut` arm of `run`). There is
+        // therefore no pending host call to replay — simply re-enter the vcpu.
         self.run(
             mem_mgr,
             host_funcs,

@@ -397,24 +397,6 @@ pub(crate) struct HyperlightVm {
 
     pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
-    /// A host call (`OUT` to [`OutBAction::CallFunction`]) that the run loop
-    /// stopped at when a pause was observed at an `IoOut` boundary, captured as
-    /// `(port, data)`.
-    ///
-    /// At that boundary the guest has already staged its output buffer and the
-    /// hardware has taken the `OUT` exit, but we deliberately break *before*
-    /// servicing the call so the snapshot stays self-consistent (see the
-    /// `IoOut` arm of [`Self::run`]). When the *same* vCPU is later resumed,
-    /// the hypervisor has a pending IO completion: the next vCPU entry advances
-    /// RIP past the `OUT` *without* re-exiting, so the run loop would never see
-    /// the `IoOut` again and the host function would never run. To avoid losing
-    /// the call, the resume path ([`Self::dispatch_resume`]) services this
-    /// deferred call before re-entering the vCPU.
-    ///
-    /// A fresh vCPU restored from a snapshot has no pending IO completion and
-    /// simply re-executes the `OUT`, so this is left `None` on a fresh dispatch.
-    pub(super) deferred_host_call: Option<(u16, Vec<u8>)>,
-
     #[cfg(target_arch = "aarch64")]
     pub(self) vm_can_reset_vcpu: bool,
     pub(super) pending_tlb_flush: bool,
@@ -728,55 +710,33 @@ impl HyperlightVm {
                     break Ok(());
                 }
                 Ok(VmExit::IoOut(port, data)) => {
-                    // If a pause was requested, break *before* servicing the
-                    // host call. This keeps the guest's output buffer populated
-                    // and leaves RIP pointing at the `OUT` instruction, which
-                    // yields a self-consistent state to snapshot: after a
-                    // restore, a fresh vcpu simply re-executes the `OUT` and the
-                    // host services the call normally.
-                    //
-                    // Servicing the call first and breaking afterwards would be
-                    // unsafe: hardware (KVM) defers advancing RIP past an `OUT`
-                    // until the next vcpu entry, so a snapshot captured between
-                    // "host consumed the output buffer" and "vcpu re-entered"
-                    // records RIP still at the `OUT` while the output buffer has
-                    // already been emptied. Resuming such a snapshot re-runs the
-                    // `OUT` against an empty buffer and crashes the guest.
-                    //
-                    // For the *same-vcpu* resume case there is an additional
-                    // hazard: the hypervisor has a pending IO completion, so the
-                    // next vcpu entry advances RIP past the `OUT` *without*
-                    // re-exiting — the run loop would never see this `IoOut`
-                    // again and the host call would be silently dropped. We
-                    // therefore record the call so the resume path can service
-                    // it before re-entering the vcpu (see `dispatch_resume`).
-                    if pause_requested {
-                        self.deferred_host_call = Some((port, data));
-                        break Err(RunVmError::ExecutionPaused);
-                    }
                     self.handle_io(mem_mgr, host_funcs, port, data)?;
 
-                    // The host function (or another thread) may have requested a
-                    // pause *while* this call was being serviced. The vcpu was
-                    // not in its run ioctl during the call, so no signal was
-                    // delivered — only the sticky pause flag was set. Honor it
-                    // immediately: re-enter the kernel just far enough to finish
-                    // this `OUT` (advancing RIP past it) without executing any
-                    // further guest instructions, then break at that clean,
-                    // self-consistent point. This stops right after the call
-                    // instead of deferring to the next host-call boundary, and —
-                    // crucially — still stops even if the guest would otherwise
-                    // halt before making another host call.
+                    // A pause may have been requested either before this exit
+                    // was observed (the sticky pause flag was already set) or
+                    // *while* this call was being serviced (a host function, or
+                    // another thread, called `pause()`). In both cases the vcpu
+                    // was not in its run ioctl, so no signal was delivered —
+                    // only the sticky flag was set. Honor it the same way in
+                    // both cases: now that the call has been serviced, re-enter
+                    // the kernel just far enough to finish this `OUT` (advancing
+                    // RIP past it) without executing any further guest
+                    // instructions, then break at that clean, self-consistent
+                    // point. This stops right after the call instead of running
+                    // on to the next host-call boundary, and — crucially — still
+                    // stops even if the guest would otherwise halt before making
+                    // another host call.
                     //
-                    // Because the call was already serviced and RIP now points
-                    // past the `OUT`, this is an ordinary arbitrary-pause point:
-                    // we leave `deferred_host_call` unset so resume simply
-                    // continues from here without re-running the call.
+                    // Servicing the call before pausing means the host function
+                    // runs exactly once (at pause time): RIP ends up past the
+                    // `OUT` and the guest's input buffer holds the result, so
+                    // this is an ordinary arbitrary-pause point. Resuming it —
+                    // in place or from a restored snapshot — simply continues
+                    // from here with no host call left to replay.
                     //
                     // Backends that cannot complete the pending IO this way
-                    // return `false`; for them we fall through and let the pause
-                    // be honored at the next host-call boundary (the deferred
-                    // path above) on a following iteration.
+                    // return `false`; for them the pause is left to be honored
+                    // by a subsequent signal-based cancellation.
                     if self.interrupt_handle.is_paused() && self.vm.complete_pending_io()? {
                         break Err(RunVmError::ExecutionPaused);
                     }
