@@ -1127,6 +1127,17 @@ fn host_call_loop(host_func_name: String) -> Result<Vec<u8>> {
     }
 }
 
+// Calls the given host function (no param, no return value) exactly `n` times,
+// then returns `n`. Used to prove that a host call which itself requests a pause
+// is serviced exactly once per guest-side invocation across a pause/resume.
+#[guest_function("CallHostNTimes")]
+fn call_host_n_times(host_func_name: String, n: i32) -> Result<i32> {
+    for _ in 0..n {
+        call_host_function::<()>(&host_func_name, None, ReturnType::Void)?;
+    }
+    Ok(n)
+}
+
 // Calls the given host function (no param, no return value) and then spins indefinitely.
 #[guest_function("CallHostThenSpin")]
 fn call_host_then_spin(host_func_name: String) -> Result<()> {
