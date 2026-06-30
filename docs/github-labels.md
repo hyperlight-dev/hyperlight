@@ -48,6 +48,8 @@ In addition to lifecycle labels, we use the following labels to further categori
 In addition to **kind/*** labels, we use optional **area/*** labels to specify the focus of a PR or issue. These labels are purely for categorization, and are not mandatory.
 
 - **area/API** - Related to the API or public interface.
+- **area/ci-periodics** - Applied to issues that track failures from scheduled (periodic) CI jobs. These issues are opened automatically by the CI failure notifier (`dev/notify-ci-failure.sh`).
+- **area/ci-periodics-aarch64** - De-duplication label for failures from the daily aarch64 workflow (`.github/workflows/DailyArm64.yml`). It keeps those failures on their own dedicated, release-blocking issue instead of sharing the general `area/ci-periodics` issue.
 - **area/dependencies** - Concerns dependencies or related components. This label is different from **kind/dependencies**, which should only used for PRs.
 - **area/documentation** - Related to documentation updates or improvements.
 - **area/infrastructure** - Concerns infrastructure rather than core functionality.
