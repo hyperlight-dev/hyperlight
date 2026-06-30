@@ -129,20 +129,12 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: ['hyperv-ws2025', mshv3, kvm]
-        cpu_vendor: [amd, intel, apple]
-        arch: [X64, arm64]
-        config: [debug, release]
-        exclude:
-        - cpu_vendor: apple
-          hypervisor: hyperv-ws2025
-        - cpu_vendor: apple
-          hypervisor: mshv3
         # aarch64 examples are exercised by the daily schedule (DailyArm64.yml)
         # only, to keep the limited arm64 runners free on PRs.
-        - arch: arm64
-        - cpu_vendor: apple
-          arch: X64
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
+        cpu_vendor: [amd, intel]
+        arch: [X64]
+        config: [debug, release]
     uses: ./.github/workflows/dep_run_examples.yml
     secrets: inherit
     with: 
