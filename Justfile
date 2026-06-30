@@ -91,6 +91,10 @@ clean-rust:
 
 # convenience recipe to run all tests with the given target and features (similar to CI)
 test-like-ci config=default-target hypervisor="kvm":
+    @# verify the local platforms golden. Fill target/snapshot-goldens first with
+    @# `just snapshot-goldens-pull` or `just snapshot-goldens-generate`.
+    just snapshot-goldens-verify {{config}}
+
     @# with default features
     just test {{config}}
 
@@ -250,7 +254,10 @@ test-integration target=default-target features="":
     @# run component-util integration tests that exercise WIT input codegen
     {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
 
-    @# run the rest of the integration tests
+    @# run the rest of the integration tests. `snapshot_goldens` is in
+    @# the glob but no-ops without a mode token, so it needs no golden
+    @# cache here. It verifies in its own step (see the snapshot-goldens
+    @# recipes).
     {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
 
 # tests compilation with no default features on different platforms
@@ -585,3 +592,125 @@ install-vcpkg:
 
 install-flatbuffers-with-vcpkg: install-vcpkg
     cd ../vcpkg && ./vcpkg install flatbuffers || cd -
+
+###################################
+### SNAPSHOT GOLDEN HELPERS     ###
+###################################
+
+default-snapshot-goldens-image := "ghcr.io/hyperlight-dev/hyperlight-snapshot-goldens"
+
+# Check the local snapshots against the goldens for the current
+# GOLDENS_VERSION. Run `snapshot-goldens-pull` first to fill the
+# local directory. A missing entry fails the test. Each host checks
+# only its own (arch, hypervisor, cpu vendor, profile) golden.
+snapshot-goldens-verify target=default-target:
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens -- verify
+
+# Pull this host's goldens into the directory `snapshot-goldens-verify`
+# reads. `all` (default) fetches the current version plus every
+# `COMPAT_VERSIONS` major. `compat` fetches only the old majors, for
+# regenerate runs where the registry has no current tag.
+snapshot-goldens-pull target=default-target which="all" image=default-snapshot-goldens-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -e /dev/mshv ]]; then hv=mshv
+    elif [[ -e /dev/kvm ]]; then hv=kvm
+    elif [[ "${OS:-}" == "Windows_NT" ]]; then hv=whp
+    else echo "snapshot-goldens-pull: no hypervisor found" >&2; exit 1
+    fi
+    # Mirror of `CpuVendor::golden_tag` in file/config.rs. x86_64 reads
+    # the cpuid vendor string. aarch64 has a single Apple vendor.
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch=x86_64
+            vendor=$(awk -F': ' '/^vendor_id/{print $2; exit}' /proc/cpuinfo)
+            case "${vendor}" in
+                GenuineIntel) cpu=intel ;;
+                AuthenticAMD) cpu=amd ;;
+                *) echo "snapshot-goldens-pull: unrecognized cpu vendor '${vendor}'" >&2; exit 1 ;;
+            esac
+            ;;
+        aarch64|arm64) arch=aarch64; cpu=apple ;;
+        *) echo "snapshot-goldens-pull: unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+    version_file=src/hyperlight_host/tests/snapshot_goldens/goldens_version.rs
+    current=$(awk -F'"' '/GOLDENS_VERSION: &str =/{print $2; exit}' "${version_file}")
+    # Old majors for backwards-compat verification. Mirror of
+    # `COMPAT_VERSIONS` in goldens_version.rs.
+    compat=$(grep -E 'COMPAT_VERSIONS.*=.*&\[' "${version_file}" | grep -oE 'v[0-9]+\.[0-9]+' || true)
+    case "{{ which }}" in
+        all) versions="${current} ${compat}" ;;
+        compat) versions="${compat}" ;;
+        *) echo "snapshot-goldens-pull: unknown which '{{ which }}' (expected all or compat)" >&2; exit 1 ;;
+    esac
+    # Mirror of `Platform::tag_for` in platform.rs. Keep both in sync.
+    for version in ${versions}; do
+        tag="${version}-${arch}-${hv}-${cpu}-{{ target }}"
+        dir="target/snapshot-goldens/${tag}"
+        mkdir -p "${dir}"
+        oras cp --to-oci-layout "{{ image }}:${tag}" "${dir}:${tag}"
+    done
+
+# Build the local snapshots into the directory `snapshot-goldens-verify`
+# reads. Run this then `snapshot-goldens-verify` to test the round trip
+# on one host. Pass `out` to write the snapshots elsewhere.
+snapshot-goldens-generate target=default-target out="":
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens -- generate {{ out }}
+
+# Generate this host's golden from the branch and place it where
+# `snapshot-goldens-verify` reads. For when the registry has no
+# published tag for the current version. Pull `COMPAT_VERSIONS`
+# goldens separately to also verify backwards compat.
+snapshot-goldens-regenerate target=default-target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(mktemp -d)
+    trap 'rm -rf "${out}"' EXIT
+    just snapshot-goldens-generate {{ target }} "${out}"
+    # generate writes exactly one {tag}/ layout into the clean dir.
+    shopt -s nullglob
+    layouts=("${out}"/*/)
+    if [[ "${#layouts[@]}" -ne 1 ]]; then
+        echo "snapshot-goldens-regenerate: expected one layout in ${out}, found ${#layouts[@]}" >&2
+        exit 1
+    fi
+    layout="${layouts[0]%/}"
+    tag="$(basename "${layout}")"
+    dest="target/snapshot-goldens/${tag}"
+    rm -rf "${dest}"
+    mkdir -p target/snapshot-goldens
+    cp -r "${layout}" "${dest}"
+
+# Validate the regen-goldens label against the goldens state.
+# has_label is true when a PR carries the label. The label is set
+# when the current GOLDENS_VERSION was bumped and is not published.
+# base_ref is the git ref to diff the version against.
+snapshot-goldens-check-label has_label base_ref image=default-snapshot-goldens-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version_file=src/hyperlight_host/tests/snapshot_goldens/goldens_version.rs
+    parse_version() { awk -F'"' '/GOLDENS_VERSION: &str =/{print $2; exit}'; }
+    version=$(parse_version < "${version_file}")
+    published() { oras repo tags "{{ image }}" 2>/dev/null | grep -qxF "${1}-complete"; }
+    if [[ "{{ has_label }}" == "true" ]]; then
+        # Empty when absent on base_ref (file added or renamed here), read as a bump below.
+        base_version=""
+        git cat-file -e "{{ base_ref }}:${version_file}" 2>/dev/null && base_version=$(git show "{{ base_ref }}:${version_file}" | parse_version)
+        if [[ "${version}" == "${base_version}" ]]; then
+            echo "::error::regen-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
+            exit 1
+        fi
+        if published "${version}"; then
+            echo "::error::regen-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
+            exit 1
+        fi
+        echo "snapshot-goldens-check-label: OK. ${version} bumped from ${base_version} and not yet published."
+    else
+        if ! published "${version}"; then
+            echo "::error::goldens for ${version} are not published. Add the regen-goldens label, or run RegenSnapshotGoldens first." >&2
+            exit 1
+        fi
+        echo "snapshot-goldens-check-label: OK. ${version} is published."
+    fi

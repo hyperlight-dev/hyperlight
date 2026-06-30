@@ -171,16 +171,16 @@ fn save_self_heals_same_length_wrong_content_snapshot_blob() {
 #[test]
 fn snapshot_and_pt_size_round_trip() {
     let snap = create_snapshot();
-    let original_snapshot_size = snap.layout().snapshot_size;
-    let original_pt_size = snap.layout().pt_size;
+    let original_snapshot_size = snap.layout().snapshot_size();
+    let original_pt_size = snap.layout().pt_size();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("running");
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
 
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
-    assert_eq!(loaded.layout().snapshot_size, original_snapshot_size);
-    assert_eq!(loaded.layout().pt_size, original_pt_size);
+    assert_eq!(loaded.layout().snapshot_size(), original_snapshot_size);
+    assert_eq!(loaded.layout().pt_size(), original_pt_size);
 }
 
 #[test]
@@ -1049,6 +1049,8 @@ fn save_appends_into_existing_layout_with_new_tag() {
             "unexpected hypervisor annotation: {}",
             hv
         );
+        let cpu = anns["dev.hyperlight.snapshot.cpu.vendor"].as_str().unwrap();
+        assert!(!cpu.is_empty(), "missing cpu vendor annotation");
     }
 }
 
@@ -2816,4 +2818,147 @@ fn read_blob_dir(
             (e.file_name(), std::fs::read(e.path()).unwrap())
         })
         .collect()
+}
+
+// =============================================================================
+// `from_snapshot` config plumbing.
+// =============================================================================
+//
+// `from_snapshot` accepts a caller-supplied `SandboxConfiguration`.
+// Layout fields must be silently overridden by the snapshot (the
+// on-disk memory blob already encodes those sizes). Runtime fields
+// must take effect.
+
+/// Layout fields supplied via `SandboxConfiguration` must be silently
+/// overridden. The snapshot's own layout is authoritative.
+#[test]
+fn from_snapshot_silently_ignores_layout_overrides() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut sbox = create_test_sandbox();
+    let snapshot = sbox.snapshot().unwrap();
+    let original_input = snapshot.layout().input_data_size();
+    let original_output = snapshot.layout().output_data_size();
+    let original_heap = snapshot.layout().heap_size();
+    let original_scratch = snapshot.layout().get_scratch_size();
+
+    let mut config = SandboxConfiguration::default();
+    config.set_input_data_size(original_input * 2);
+    config.set_output_data_size(original_output * 2);
+    config.set_heap_size((original_heap as u64) * 2);
+    config.set_scratch_size(original_scratch * 2);
+
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), Some(config))
+            .unwrap();
+
+    sbox2.call::<i32>("GetStatic", ()).unwrap();
+
+    let new_snap = sbox2.snapshot().unwrap();
+    assert_eq!(new_snap.layout().input_data_size(), original_input);
+    assert_eq!(new_snap.layout().output_data_size(), original_output);
+    assert_eq!(new_snap.layout().heap_size(), original_heap);
+    assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
+}
+
+/// `from_snapshot` honors `guest_core_dump=true` so that
+/// `generate_crashdump_to_dir` writes a file.
+#[test]
+#[cfg(crashdump)]
+fn from_snapshot_honors_guest_core_dump_enabled() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut sbox = create_test_sandbox();
+    let snapshot = sbox.snapshot().unwrap();
+
+    let mut config = SandboxConfiguration::default();
+    config.set_guest_core_dump(true);
+
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    sbox2
+        .generate_crashdump_to_dir(dir.path().to_str().unwrap())
+        .unwrap();
+
+    let entries: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "expected core dump file when guest_core_dump=true"
+    );
+}
+
+/// `from_snapshot` honors `guest_core_dump=false` so that
+/// `generate_crashdump_to_dir` produces no file.
+#[test]
+#[cfg(crashdump)]
+fn from_snapshot_honors_guest_core_dump_disabled() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut sbox = create_test_sandbox();
+    let snapshot = sbox.snapshot().unwrap();
+
+    let mut config = SandboxConfiguration::default();
+    config.set_guest_core_dump(false);
+
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    sbox2
+        .generate_crashdump_to_dir(dir.path().to_str().unwrap())
+        .unwrap();
+
+    let entries: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "expected no core dump file when guest_core_dump=false, found {:?}",
+        entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}
+
+/// Non-default `init_data_permissions` survive an OCI round-trip
+/// byte-for-byte. The default code path uses `READ`, so this pins
+/// `READ | WRITE` instead. A regression in the permission
+/// serialisation would silently downgrade or upgrade access to the
+/// init_data region.
+#[test]
+fn round_trip_preserves_non_default_init_data_permissions() {
+    use crate::mem::memory_region::MemoryRegionFlags;
+    use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
+
+    let path = simple_guest_as_string().unwrap();
+    let data: &[u8] = b"perm-pinned-init-data";
+    let env = GuestEnvironment {
+        guest_binary: GuestBinary::FilePath(path),
+        init_data: Some(GuestBlob {
+            data,
+            permissions: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+        }),
+    };
+    let mut sbox = UninitializedSandbox::new(env, None)
+        .unwrap()
+        .evolve()
+        .unwrap();
+    let snap = sbox.snapshot().unwrap();
+    let expected = snap.layout().init_data_permissions();
+    assert_eq!(
+        expected,
+        Some(MemoryRegionFlags::READ | MemoryRegionFlags::WRITE),
+        "fixture must produce non-default init_data_permissions",
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let oci_dir = dir.path().join("layout");
+    snap.save(&oci_dir, &OciTag::new("latest").unwrap())
+        .unwrap();
+    let loaded = Snapshot::checked_load(&oci_dir, OciTag::new("latest").unwrap()).unwrap();
+    assert_eq!(loaded.layout().init_data_permissions(), expected);
 }

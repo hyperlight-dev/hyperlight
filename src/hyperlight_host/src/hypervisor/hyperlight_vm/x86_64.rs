@@ -1493,8 +1493,7 @@ mod tests {
         let mut snapshot_contents = vec![0u8; mem_size];
         let snapshot_pt_start = mem_size - layout.get_pt_size();
         snapshot_contents[snapshot_pt_start..].copy_from_slice(&pt_bytes);
-        snapshot_contents
-            [layout.get_guest_code_offset()..layout.get_guest_code_offset() + code.len()]
+        snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
         layout.write_peb(&mut snapshot_contents).unwrap();
         let ro_mem =

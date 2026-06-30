@@ -41,6 +41,11 @@ jobs:
   # single-driver steps that are skipped on PRs.
   build-test:
     needs: build-guests
+    permissions:
+      # checkout in the called workflow
+      contents: read
+      # pull goldens from GHCR in the called workflow
+      packages: read
     strategy:
       fail-fast: false
       matrix:

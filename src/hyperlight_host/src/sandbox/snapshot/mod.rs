@@ -16,9 +16,12 @@ limitations under the License.
 
 mod file;
 mod file_tests;
+mod tripwires;
 
 use std::collections::{BTreeMap, HashMap};
 
+#[doc(hidden)]
+pub use file::host_cpu_vendor_golden_tag;
 pub use file::reference::{OciDigest, OciReference, OciTag};
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{io_page, scratch_base_gpa, scratch_base_gva};
@@ -325,7 +328,7 @@ impl Snapshot {
 
         let load_info = exe_info.load(
             load_addr.try_into()?,
-            &mut memory[layout.get_guest_code_offset()..],
+            &mut memory[layout.guest_code_offset()..],
         )?;
 
         layout.write_peb(&mut memory)?;
@@ -374,7 +377,7 @@ impl Snapshot {
             + 1;
 
         Ok(Self {
-            memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size)?,
+            memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
             layout,
             load_info,
             stack_top_gva: exn_stack_top_gva,
