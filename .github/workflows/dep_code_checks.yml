@@ -62,6 +62,9 @@ jobs:
             . -> target
             src/tests/rust_guests -> target
 
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
       - name: Ensure up-to-date Cargo.lock
         run: |
           cargo fetch --locked
@@ -127,6 +130,9 @@ jobs:
           workspaces: |
             . -> target
             src/tests/rust_guests -> target
+
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
 
       - name: Ensure up-to-date Cargo.lock
         run: |
