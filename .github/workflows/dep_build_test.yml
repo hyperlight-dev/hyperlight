@@ -26,6 +26,16 @@ on:
         description: CPU architecture for the build (passed from caller matrix)
         required: true
         type: string
+      full_aarch64:
+        description: >-
+          When "true", run the full aarch64 test set (Miri + single-driver tests).
+          PRs leave this "false" so the aarch64 runner only
+          builds and runs the default Rust tests; the daily schedule
+          (DailyArm64.yml) sets it "true". Has no effect on X64, which always
+          runs the full set.
+        required: false
+        type: string
+        default: "false"
 
 env:
   CARGO_TERM_COLOR: always
@@ -94,7 +104,9 @@ jobs:
         run: just build ${{ inputs.config }}
 
       - name: Run Miri tests
-        if: runner.os == 'Linux'
+        # Skipped on aarch64 PRs to conserve the limited runners; the
+        # daily schedule (full_aarch64 == 'true') restores it. X64 always runs.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
         run: env -u RUSTC_WRAPPER just miri-tests
 
       - name: Run Rust tests
@@ -103,7 +115,9 @@ jobs:
           just test ${{ inputs.config }}
 
       - name: Run Rust tests with single driver
-        if: runner.os == 'Linux'
+        # Skipped on aarch64 PRs to conserve the limited runners; the
+        # daily schedule (full_aarch64 == 'true') restores it. X64 always runs.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}

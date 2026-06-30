@@ -138,10 +138,9 @@ jobs:
           hypervisor: hyperv-ws2025
         - cpu_vendor: apple
           hypervisor: mshv3
-        - cpu_vendor: amd
-          arch: arm64
-        - cpu_vendor: intel
-          arch: arm64
+        # aarch64 examples are exercised by the daily schedule (DailyArm64.yml)
+        # only, to keep the limited arm64 runners free on PRs.
+        - arch: arm64
         - cpu_vendor: apple
           arch: X64
     uses: ./.github/workflows/dep_run_examples.yml
@@ -166,13 +165,8 @@ jobs:
         target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
         arch:
           - X64
-        # arm64 disabled to conserve the limited self-hosted Apple runners.
-        # - arm64
-        # exclude:
-        # - arch: arm64
-        #   target: fuzz_guest_trace
-        # - arch: arm64
-        #   target: fuzz_guest_estimate_trace_event
+        # arm64 fuzzing runs on the daily schedule (DailyArm64.yml) instead of on
+        # PRs, to conserve the limited arm64 runners.
     uses: ./.github/workflows/dep_fuzzing.yml
     secrets: inherit
     with:
