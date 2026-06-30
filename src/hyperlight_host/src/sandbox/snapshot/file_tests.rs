@@ -25,7 +25,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::func::Registerable;
-use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
+use crate::sandbox::snapshot::{ArchiveFormat, OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 
 fn create_test_sandbox() -> MultiUseSandbox {
@@ -134,9 +134,187 @@ fn round_trip_save_load_call() {
     assert_eq!(result, "hello\n");
 }
 
-/// A pre-existing snapshot blob with the right length but wrong
-/// bytes (corruption, partial copy, foreign tool) must be detected
-/// and replaced by `save`, not silently trusted.
+// Round-trip via a single-file archive (.tar / .tar.gz).
+
+#[test]
+fn archive_format_from_path() {
+    assert_eq!(
+        ArchiveFormat::from_path("a/b.tar"),
+        Some(ArchiveFormat::Tar)
+    );
+    assert_eq!(
+        ArchiveFormat::from_path("a/b.tar.gz"),
+        Some(ArchiveFormat::TarGz)
+    );
+    assert_eq!(
+        ArchiveFormat::from_path("a/b.TGZ"),
+        Some(ArchiveFormat::TarGz)
+    );
+    assert_eq!(ArchiveFormat::from_path("a/b.zip"), None);
+    assert_eq!(ArchiveFormat::from_path("a/b"), None);
+}
+
+#[test]
+fn round_trip_save_load_archive_tar() {
+    let snapshot = create_snapshot();
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("snap.tar");
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("latest").unwrap(),
+            ArchiveFormat::Tar,
+        )
+        .unwrap();
+    assert!(archive.is_file());
+
+    let loaded = Snapshot::checked_load_archive(&archive, OciTag::new("latest").unwrap()).unwrap();
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
+    let result: String = sbox2.call("Echo", "hello\n".to_string()).unwrap();
+    assert_eq!(result, "hello\n");
+}
+
+#[test]
+fn round_trip_save_load_archive_targz() {
+    let snapshot = create_snapshot();
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("snap.tar.gz");
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("latest").unwrap(),
+            ArchiveFormat::TarGz,
+        )
+        .unwrap();
+    assert!(archive.is_file());
+
+    // The compressed archive should be far smaller than the raw memory
+    // image (mostly zero pages), confirming gzip actually ran.
+    let snap_blob = find_snapshot_blob(&{
+        let probe = dir.path().join("probe");
+        snapshot
+            .save(&probe, &OciTag::new("latest").unwrap())
+            .unwrap();
+        probe
+    });
+    let raw_len = std::fs::metadata(&snap_blob).unwrap().len();
+    let archive_len = std::fs::metadata(&archive).unwrap().len();
+    assert!(
+        archive_len < raw_len,
+        "gzip archive ({archive_len}) should be smaller than raw image ({raw_len})"
+    );
+
+    // load_archive infers the format from the extension.
+    let loaded = Snapshot::load_archive(&archive, OciTag::new("latest").unwrap()).unwrap();
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
+    let result: String = sbox2.call("Echo", "world\n".to_string()).unwrap();
+    assert_eq!(result, "world\n");
+}
+
+/// The snapshot keeps working after its source archive and any
+/// extraction directory are gone: the mmap'd image is held by the
+/// extraction guard, not the original file.
+#[test]
+fn archive_snapshot_survives_source_deletion() {
+    let snapshot = create_snapshot();
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("snap.tar.gz");
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("latest").unwrap(),
+            ArchiveFormat::TarGz,
+        )
+        .unwrap();
+
+    let loaded = Snapshot::load_archive(&archive, OciTag::new("latest").unwrap()).unwrap();
+    // Remove the archive on disk; the loaded snapshot must stay valid.
+    std::fs::remove_file(&archive).unwrap();
+
+    let mut sbox2 =
+        MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
+    let result: String = sbox2.call("Echo", "kept\n".to_string()).unwrap();
+    assert_eq!(result, "kept\n");
+}
+
+/// Saving two tags into the same archive preserves both, matching the
+/// merge behaviour of `save` on a directory.
+#[test]
+fn archive_merges_multiple_tags() {
+    let snapshot = create_snapshot();
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("multi.tar");
+    snapshot
+        .save_archive(&archive, &OciTag::new("first").unwrap(), ArchiveFormat::Tar)
+        .unwrap();
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("second").unwrap(),
+            ArchiveFormat::Tar,
+        )
+        .unwrap();
+
+    for tag in ["first", "second"] {
+        let loaded = Snapshot::checked_load_archive(&archive, OciTag::new(tag).unwrap()).unwrap();
+        let mut sbox =
+            MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None)
+                .unwrap();
+        let result: String = sbox.call("Echo", "hi\n".to_string()).unwrap();
+        assert_eq!(result, "hi\n");
+    }
+}
+
+/// Merging into (and replacing a tag within) a compressed archive
+/// streams every existing blob through the gzip decode/encode path.
+/// Both the preserved tag and the replaced tag must load and run.
+#[test]
+fn archive_merge_and_replace_tag_targz() {
+    let snapshot = create_snapshot();
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("multi.tar.gz");
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("first").unwrap(),
+            ArchiveFormat::TarGz,
+        )
+        .unwrap();
+    // Merge a second tag (copies "first"'s blobs through the gzip
+    // streams).
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("second").unwrap(),
+            ArchiveFormat::TarGz,
+        )
+        .unwrap();
+    // Replace "first" by saving it again; "second" must survive.
+    snapshot
+        .save_archive(
+            &archive,
+            &OciTag::new("first").unwrap(),
+            ArchiveFormat::TarGz,
+        )
+        .unwrap();
+
+    for tag in ["first", "second"] {
+        let loaded = Snapshot::checked_load_archive(&archive, OciTag::new(tag).unwrap()).unwrap();
+        let mut sbox =
+            MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None)
+                .unwrap();
+        let result: String = sbox.call("Echo", "hi\n".to_string()).unwrap();
+        assert_eq!(result, "hi\n");
+    }
+}
+
 #[test]
 fn save_self_heals_same_length_wrong_content_snapshot_blob() {
     let snapshot = create_snapshot();
@@ -2876,4 +3054,196 @@ fn paused_snapshot_round_trips_through_file() {
     assert!(!sbox2.poisoned());
     let echo: String = sbox2.call("Echo", "disk-roundtrip".to_string()).unwrap();
     assert_eq!(echo, "disk-roundtrip");
+}
+
+/// Timing harness (ignored by default): measure save vs save_archive and
+/// load vs load_archive on a production-sized (~512 MiB heap) snapshot,
+/// to compare the OCI directory form against the `.tar` / `.tar.gz`
+/// archive form. Run with:
+///   cargo test -p hyperlight-host --lib snapshot_archive_timings \
+///       -- --ignored --nocapture
+#[test]
+#[ignore]
+fn snapshot_archive_timings() {
+    use std::time::Instant;
+
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut cfg = SandboxConfiguration::default();
+    // Match the ateom demo default heap so the memory image is the same
+    // ~561 MB size measured in production. Scratch is not part of the
+    // snapshot; set it comfortably above the minimum so construction
+    // succeeds.
+    cfg.set_heap_size(512 * 1024 * 1024);
+    cfg.set_scratch_size(16 * 1024 * 1024);
+    let mut sbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        Some(cfg),
+    )
+    .unwrap()
+    .evolve()
+    .unwrap();
+    // Touch the guest so it has actually run (parity with a real
+    // post-warmup snapshot).
+    let _: String = sbox.call("Echo", "warmup".to_string()).unwrap();
+    let snap = sbox.snapshot().unwrap();
+
+    let tag = OciTag::new("latest").unwrap();
+    let reps = 5;
+
+    // Helper: median of a set of millisecond samples.
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    }
+
+    // --- SAVE: directory ---
+    let mut save_dir_ms = Vec::new();
+    for _ in 0..reps {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("layout");
+        let t = Instant::now();
+        snap.save(&path, &tag).unwrap();
+        save_dir_ms.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+
+    // --- SAVE: .tar ---
+    let mut save_tar_ms = Vec::new();
+    let mut tar_size = 0u64;
+    for _ in 0..reps {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snap.tar");
+        let t = Instant::now();
+        snap.save_archive(&path, &tag, ArchiveFormat::Tar).unwrap();
+        save_tar_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        tar_size = std::fs::metadata(&path).unwrap().len();
+    }
+
+    // --- SAVE: .tar.gz ---
+    let mut save_targz_ms = Vec::new();
+    let mut targz_size = 0u64;
+    for _ in 0..reps {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snap.tar.gz");
+        let t = Instant::now();
+        snap.save_archive(&path, &tag, ArchiveFormat::TarGz)
+            .unwrap();
+        save_targz_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        targz_size = std::fs::metadata(&path).unwrap().len();
+    }
+
+    // Persist one of each form for the load benchmarks.
+    let dir_keep = tempfile::tempdir().unwrap();
+    let dir_path = dir_keep.path().join("layout");
+    snap.save(&dir_path, &tag).unwrap();
+    let mem_bytes = std::fs::metadata(find_snapshot_blob(&dir_path))
+        .unwrap()
+        .len();
+    let tar_keep = tempfile::tempdir().unwrap();
+    let tar_path = tar_keep.path().join("snap.tar");
+    snap.save_archive(&tar_path, &tag, ArchiveFormat::Tar)
+        .unwrap();
+    let targz_keep = tempfile::tempdir().unwrap();
+    let targz_path = targz_keep.path().join("snap.tar.gz");
+    snap.save_archive(&targz_path, &tag, ArchiveFormat::TarGz)
+        .unwrap();
+
+    // --- LOAD: directory (lazy mmap) ---
+    let mut load_dir_ms = Vec::new();
+    for _ in 0..reps {
+        let t = Instant::now();
+        let loaded = Snapshot::load(&dir_path, tag.clone()).unwrap();
+        load_dir_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        drop(loaded);
+    }
+
+    // --- LOAD: .tar (extract + mmap) ---
+    let mut load_tar_ms = Vec::new();
+    for _ in 0..reps {
+        let t = Instant::now();
+        let loaded = Snapshot::load_archive(&tar_path, tag.clone()).unwrap();
+        load_tar_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        drop(loaded);
+    }
+
+    // --- LOAD: .tar.gz (gunzip + extract + mmap) ---
+    let mut load_targz_ms = Vec::new();
+    for _ in 0..reps {
+        let t = Instant::now();
+        let loaded = Snapshot::load_archive(&targz_path, tag.clone()).unwrap();
+        load_targz_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        drop(loaded);
+    }
+
+    eprintln!(
+        "\n=== snapshot_archive_timings (memory image {:.2} MB) ===",
+        mem_bytes as f64 / 1e6
+    );
+    eprintln!(
+        "sizes:  dir(blob)≈{:.2} MB  tar={:.2} MB  tar.gz={:.2} MB",
+        mem_bytes as f64 / 1e6,
+        tar_size as f64 / 1e6,
+        targz_size as f64 / 1e6,
+    );
+    eprintln!("SAVE  (median of {reps}):");
+    eprintln!("  directory : {:8.1} ms", median(save_dir_ms));
+    eprintln!("  .tar      : {:8.1} ms", median(save_tar_ms));
+    eprintln!("  .tar.gz   : {:8.1} ms", median(save_targz_ms));
+    eprintln!("LOAD  (median of {reps}):");
+    eprintln!("  directory : {:8.1} ms", median(load_dir_ms));
+    eprintln!("  .tar      : {:8.1} ms", median(load_tar_ms));
+    eprintln!("  .tar.gz   : {:8.1} ms", median(load_targz_ms));
+
+    // --- Synthetic production-representative gzip/gunzip bound ---
+    // The simple-guest heap is almost entirely zeros, so its tar.gz is
+    // unrealistically small/cheap (538 MB -> 0.82 MB). A real warmed guest
+    // (e.g. the Python counter actor) compresses ~561 MB -> ~11 MB (~50x).
+    // Build a buffer with that same ~50x compressibility and time gzip +
+    // gunzip directly to bound the CPU the archive path actually pays in
+    // production.
+    {
+        use std::io::{Read, Write};
+
+        use flate2::Compression;
+        use flate2::read::GzDecoder;
+        use flate2::write::GzEncoder;
+
+        let total: usize = mem_bytes as usize;
+        let mut buf = vec![0u8; total];
+        // Scatter pseudo-random bytes over ~2% of the image so it compresses
+        // ~50x, matching the observed production ratio.
+        let mut state: u64 = 0x9e3779b97f4a7c15;
+        let mut i = 0usize;
+        while i < total {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            buf[i] = (state >> 24) as u8;
+            i += 50; // 1 in 50 bytes non-zero
+        }
+
+        let t = Instant::now();
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&buf).unwrap();
+        let gz = enc.finish().unwrap();
+        let gz_ms = t.elapsed().as_secs_f64() * 1e3;
+
+        let t = Instant::now();
+        let mut dec = GzDecoder::new(&gz[..]);
+        let mut out = Vec::with_capacity(total);
+        dec.read_to_end(&mut out).unwrap();
+        let gunzip_ms = t.elapsed().as_secs_f64() * 1e3;
+
+        eprintln!(
+            "SYNTHETIC ~50x-compressible {:.2} MB image (production-like):",
+            total as f64 / 1e6
+        );
+        eprintln!(
+            "  gzip      : {:8.1} ms  -> {:.2} MB",
+            gz_ms,
+            gz.len() as f64 / 1e6
+        );
+        eprintln!("  gunzip    : {:8.1} ms", gunzip_ms);
+    }
+    eprintln!("=== end timings ===\n");
 }
