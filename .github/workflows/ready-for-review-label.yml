@@ -1,0 +1,33 @@
+name: Ready-for-review label
+
+# When a pull-request changes state (closed, converted to draft) or a review is submitted/dismissed,
+# run the `manage-ready-for-review.yml` workflow, to remove the
+# "ready-for-review" label from a PR if its no longer needed.
+#
+# `pull_request_target` (rather than `pull_request`) is required so that the job
+# has a read/write token for pull requests opened from forks. This is safe here
+# because the reusable workflow never checks out or executes pull-request code.
+#
+# The label removal workflow lives in hyperlight-dev's `.github` repository. To apply this workflow
+# to another repository, copy this file to that repo.
+on:
+  pull_request_target:
+    types: [closed, converted_to_draft]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Serialise runs per pull request so that concurrent events cannot race.
+concurrency:
+  group: ready-for-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+jobs:
+  manage-label:
+    # Shared workflow in the org-wide `.github` repository, pinned to a commit SHA
+    uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@55e0ed4457b40f371ec9b6f2828397b09a833a43
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
