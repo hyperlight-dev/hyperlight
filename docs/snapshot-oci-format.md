@@ -111,6 +111,40 @@ one manifest in `index.json`, is rejected.
 
 [`OciReference`]: https://docs.rs/hyperlight-host/latest/hyperlight_host/sandbox/snapshot/enum.OciReference.html
 
+## Archive form (`.tar` / `.tar.gz`)
+
+The same layout can be stored as a single file instead of a directory.
+`Snapshot::save_archive(path, tag, format)` packs the OCI layout it
+would otherwise write into a `.tar` or `.tar.gz` archive, with the
+layout entries (`oci-layout`, `index.json`, `blobs/sha256/...`) at the
+archive root. `Snapshot::load_archive` and
+`Snapshot::checked_load_archive` read one back.
+
+The archive is exactly the directory layout, so every structural,
+digest, arch / hypervisor / ABI, and bounds check runs unchanged. The
+archive is written directly to the tar stream: the (large) memory image
+is streamed once from its in-memory mapping, with no intermediate copy
+on disk. Loading extracts into a temporary directory and then loads from
+it using the directory loader. Because the memory image is mmap'd from
+the extracted file, the temporary directory is kept alive for the
+lifetime of the loaded snapshot and removed when it is dropped.
+
+The format is chosen by [`ArchiveFormat`]: `Tar` (uncompressed) or
+`TarGz` (gzip). `ArchiveFormat::from_path` infers it from a `.tar`,
+`.tar.gz`, or `.tgz` extension; `load_archive` also falls back to
+sniffing the gzip magic bytes. The memory image is mostly zero pages and
+compresses by tens of times, so `TarGz` is a large space win for a
+modest CPU cost.
+
+`save_archive` writes atomically (stream into a sibling temp file, then
+rename over `path`) and merges into an existing archive under `tag`, the
+same merge semantics as `save` on a directory: blobs from the existing
+archive are streamed straight into the new one, so — exactly as with the
+directory form — blobs orphaned by a replaced tag remain present rather
+than being dropped.
+
+[`ArchiveFormat`]: https://docs.rs/hyperlight-host/latest/hyperlight_host/sandbox/snapshot/enum.ArchiveFormat.html
+
 ## Portability
 
 Snapshot images are bound to a specific CPU architecture and
