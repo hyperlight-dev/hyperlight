@@ -28,11 +28,11 @@ on:
         type: string
       full_aarch64:
         description: >-
-          When "true", run the full aarch64 test set (Miri + single-driver tests).
-          PRs leave this "false" so the aarch64 runner only
-          builds and runs the default Rust tests; the daily schedule
-          (DailyArm64.yml) sets it "true". Has no effect on X64, which always
-          runs the full set.
+          When "true", also run the Miri and single-driver tests on aarch64.
+          PRs leave this "false" so the aarch64 runner only builds and runs the
+          default Rust tests; the daily schedule (DailyArm64.yml) sets it "true".
+          This input only affects aarch64: it does not change X64, where those
+          tests already run on Linux and are skipped on Windows regardless.
         required: false
         type: string
         default: "false"
@@ -104,8 +104,9 @@ jobs:
         run: just build ${{ inputs.config }}
 
       - name: Run Miri tests
-        # Skipped on aarch64 PRs to conserve the limited runners; the
-        # daily schedule (full_aarch64 == 'true') restores it. X64 always runs.
+        # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
+        # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux
+        # it always runs.
         if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
         run: env -u RUSTC_WRAPPER just miri-tests
 
@@ -115,8 +116,9 @@ jobs:
           just test ${{ inputs.config }}
 
       - name: Run Rust tests with single driver
-        # Skipped on aarch64 PRs to conserve the limited runners; the
-        # daily schedule (full_aarch64 == 'true') restores it. X64 always runs.
+        # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
+        # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux
+        # it always runs.
         if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)

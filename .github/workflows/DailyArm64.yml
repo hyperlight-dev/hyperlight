@@ -95,6 +95,9 @@ jobs:
     needs: [build-guests, build-test, run-examples, fuzzing]
     if: always() && (needs.build-guests.result == 'failure' || needs.build-test.result == 'failure' || needs.run-examples.result == 'failure' || needs.fuzzing.result == 'failure')
     permissions:
+      # Job-level permissions replace (not merge with) the workflow-level grant,
+      # so contents:read must be re-declared for actions/checkout to work.
+      contents: read
       issues: write
     steps:
       - name: Checkout code
