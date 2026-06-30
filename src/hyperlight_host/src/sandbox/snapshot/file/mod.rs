@@ -17,13 +17,16 @@ limitations under the License.
 //! OCI Image Layout serde for [`Snapshot`]. See
 //! `docs/snapshot-oci-format.md` for the on-disk format.
 
+pub(crate) mod archive;
 mod config;
 mod digest;
 mod fsutil;
 mod media_types;
 pub(crate) mod reference;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::PAGE_SIZE;
@@ -32,6 +35,9 @@ use oci_spec::image::{
     ImageManifestBuilder, MediaType, SCHEMA_VERSION,
 };
 
+use self::archive::{
+    ArchiveFormat, ArchiveWriter, copy_existing_blobs, detect_format, unpack_archive_to_dir,
+};
 use self::config::{Arch, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
@@ -67,7 +73,23 @@ fn check_json_blob_size(what: &str, len: usize) -> crate::Result<()> {
     Ok(())
 }
 
-/// Select one manifest descriptor from `index` by `reference`.
+/// The in-memory products of building a snapshot's OCI layout for one
+/// tag: the blob digests (whose hex is also the blob filename), the
+/// serialised manifest blob, and the index manifest descriptor. Built
+/// by [`Snapshot::build_layout_artifacts`] and consumed both when
+/// writing a directory layout and when streaming an archive.
+struct LayoutArtifacts {
+    /// Digest of the raw memory image blob.
+    snapshot_digest: Digest256,
+    /// Digest of the config JSON blob.
+    config_digest: Digest256,
+    /// The serialised OCI image manifest blob.
+    manifest_bytes: Vec<u8>,
+    /// Digest of `manifest_bytes`.
+    manifest_digest: Digest256,
+    /// The descriptor recorded for this tag in `index.json`.
+    descriptor: Descriptor,
+}
 ///
 /// A tag matches the `org.opencontainers.image.ref.name` annotation
 /// and must be unique. A digest matches the manifest content digest.
@@ -456,13 +478,186 @@ impl Snapshot {
         Ok(written_digest)
     }
 
-    fn write_blobs_and_build_descriptor(
+    /// Save this snapshot as a single `.tar` or `.tar.gz` archive at
+    /// `path`, in addition to the directory form written by
+    /// [`Snapshot::save`].
+    ///
+    /// The archive holds exactly the OCI Image Layout that [`save`]
+    /// writes (`oci-layout`, `index.json`, `blobs/sha256/...`), stored
+    /// at the archive root. Load it back with
+    /// [`Snapshot::load_archive`] or [`Snapshot::checked_load_archive`].
+    ///
+    /// [`save`]: Snapshot::save
+    ///
+    /// # `path`
+    ///
+    /// The archive file to write. Its parent directory must exist. The
+    /// write is atomic: a temp file in the same directory is packed and
+    /// then renamed over `path`, so a reader sees either the old archive
+    /// or the new one.
+    ///
+    /// If `path` already holds a snapshot archive, this snapshot is
+    /// merged into it under `tag`, matching the merge behaviour of
+    /// [`save`] on a directory: other tags are preserved and a tag equal
+    /// to `tag` is replaced. Blobs are streamed straight from the old
+    /// archive into the new one, so — exactly as with a directory layout
+    /// — blobs orphaned by a replaced tag remain present.
+    ///
+    /// # `format`
+    ///
+    /// [`ArchiveFormat::Tar`] for an uncompressed archive, or
+    /// [`ArchiveFormat::TarGz`] for gzip compression. The memory image
+    /// is highly compressible (mostly zero pages), so `TarGz` typically
+    /// shrinks a snapshot by tens of times at the cost of some CPU.
+    /// [`ArchiveFormat::from_path`] can infer the format from `path`'s
+    /// extension.
+    ///
+    /// The layout is written directly into the tar stream: the (large)
+    /// memory image is streamed once from its in-memory mapping, with no
+    /// intermediate copy on disk.
+    ///
+    /// See [`save`] for portability and compatibility notes that apply
+    /// equally to the archive form.
+    pub fn save_archive(
         &self,
-        dir: &Path,
+        path: impl AsRef<Path>,
+        tag: &OciTag,
+        format: ArchiveFormat,
+    ) -> crate::Result<OciDigest> {
+        let path = path.as_ref();
+
+        // Build the config and every in-memory layout artifact up front.
+        // This can reject the snapshot (e.g. a pre-init snapshot), so do
+        // it before creating any file.
+        let cfg = self.build_config()?;
+        let cfg_bytes = serde_json::to_vec_pretty(&cfg).map_err(|e| {
+            crate::new_error!("save_archive: failed to serialise config JSON: {}", e)
+        })?;
+        check_json_blob_size("config blob", cfg_bytes.len())?;
+        let artifacts = self.build_layout_artifacts(tag, &cfg, &cfg_bytes)?;
+        let written_digest = OciDigest::from_oci_spec_digest(artifacts.descriptor.digest());
+
+        // Resolve the directory that will hold the temp archive, so the
+        // final rename is a same-filesystem atomic operation.
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let parent_meta = std::fs::metadata(&parent).map_err(|e| {
+            crate::new_error!(
+                "save_archive: parent directory {:?} not accessible: {}",
+                parent,
+                e
+            )
+        })?;
+        if !parent_meta.is_dir() {
+            return Err(crate::new_error!(
+                "save_archive: parent of {:?} is not a directory",
+                path
+            ));
+        }
+
+        // Stream into a temp file in `parent`, then atomically rename
+        // over `path`. A reader sees either the old archive or the new.
+        let tmp = tempfile::Builder::new()
+            .prefix(".hl-snap-archive-")
+            .tempfile_in(&parent)
+            .map_err(|e| crate::new_error!("save_archive: failed to create temp archive: {}", e))?;
+        let mut out = ArchiveWriter::create(tmp.path(), format)?;
+
+        // Blob paths already in the new archive, so the new snapshot's
+        // blobs dedup against any copied from an existing archive.
+        let mut written: HashSet<String> = HashSet::new();
+
+        // Merge: copy every blob from an existing archive (preserving
+        // other tags) and recover its index for the manifest list.
+        let mut manifests: Vec<Descriptor> = Vec::new();
+        if path
+            .try_exists()
+            .map_err(|e| crate::new_error!("save_archive: failed to stat {:?}: {}", path, e))?
+        {
+            let existing_fmt = detect_format(path)?;
+            if let Some(index_bytes) =
+                copy_existing_blobs(path, existing_fmt, &mut out, &mut written)?
+            {
+                let existing: ImageIndex = serde_json::from_slice(&index_bytes).map_err(|e| {
+                    crate::new_error!(
+                        "save_archive: existing index.json is not a valid OCI image index: {}",
+                        e
+                    )
+                })?;
+                manifests = existing.manifests().to_vec();
+            }
+        }
+
+        // Write this snapshot's blobs, deduped against copied blobs.
+        let snapshot_path = format!("blobs/sha256/{}", artifacts.snapshot_digest.hex);
+        if written.insert(snapshot_path.clone()) {
+            let mem = self.memory.as_slice();
+            out.append(&snapshot_path, mem.len() as u64, &mut &mem[..])?;
+        }
+        let config_path = format!("blobs/sha256/{}", artifacts.config_digest.hex);
+        if written.insert(config_path.clone()) {
+            out.append_bytes(&config_path, &cfg_bytes)?;
+        }
+        let manifest_path = format!("blobs/sha256/{}", artifacts.manifest_digest.hex);
+        if written.insert(manifest_path.clone()) {
+            out.append_bytes(&manifest_path, &artifacts.manifest_bytes)?;
+        }
+
+        // Replacement is by tag, not by digest (parity with directory
+        // `save`): drop any existing manifest for this tag, then add the
+        // new one.
+        manifests.retain(|d| {
+            d.annotations()
+                .as_ref()
+                .and_then(|a| a.get(ANNOTATION_REF_NAME))
+                .map(|s| s.as_str() != tag.as_str())
+                .unwrap_or(true)
+        });
+        manifests.push(artifacts.descriptor);
+
+        let index = ImageIndexBuilder::default()
+            .schema_version(SCHEMA_VERSION)
+            .media_type(MediaType::ImageIndex)
+            .manifests(manifests)
+            .build()
+            .map_err(|e| crate::new_error!("save_archive: failed to build OCI index: {}", e))?;
+        let index_bytes = serde_json::to_vec_pretty(&index)
+            .map_err(|e| crate::new_error!("save_archive: failed to serialise OCI index: {}", e))?;
+        check_json_blob_size("index.json", index_bytes.len())?;
+
+        let layout_bytes = serde_json::to_vec(&serde_json::json!({
+            "imageLayoutVersion": OCI_LAYOUT_VERSION,
+        }))
+        .map_err(|e| crate::new_error!("save_archive: failed to serialise oci-layout: {}", e))?;
+
+        out.append_bytes("oci-layout", &layout_bytes)?;
+        out.append_bytes("index.json", &index_bytes)?;
+        out.finish()?;
+
+        tmp.persist(path).map_err(|e| {
+            crate::new_error!("save_archive: failed to commit archive {:?}: {}", path, e)
+        })?;
+
+        Ok(written_digest)
+    }
+
+    /// Hash the memory image and build every in-memory artifact of the
+    /// OCI layout for this snapshot under `tag`: the blob digests, the
+    /// serialised manifest, and the index manifest descriptor. Writes
+    /// nothing. Shared by the directory writer
+    /// ([`write_blobs_and_build_descriptor`]) and the archive writer
+    /// ([`save_archive`]) so both compute the memory hash exactly once.
+    ///
+    /// [`write_blobs_and_build_descriptor`]: Snapshot::write_blobs_and_build_descriptor
+    /// [`save_archive`]: Snapshot::save_archive
+    fn build_layout_artifacts(
+        &self,
         tag: &OciTag,
         cfg: &OciSnapshotConfig,
         cfg_bytes: &[u8],
-    ) -> crate::Result<Descriptor> {
+    ) -> crate::Result<LayoutArtifacts> {
         let memory_bytes = self.memory.as_slice();
         let memory_size = memory_bytes.len();
         if memory_size == 0 || !memory_size.is_multiple_of(PAGE_SIZE) {
@@ -472,23 +667,12 @@ impl Snapshot {
             ));
         }
 
-        let blobs_dir = dir.join("blobs").join("sha256");
-        std::fs::create_dir_all(&blobs_dir).map_err(|e| {
-            crate::new_error!("failed to create OCI blobs dir {:?}: {}", blobs_dir, e)
-        })?;
-
-        // Snapshot blob: the raw memory bytes.
         let snapshot_digest = Digest256::from_bytes(memory_bytes);
-        put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
+        let config_digest = Digest256::from_bytes(cfg_bytes);
 
-        // Config blob.
-        let cfg_digest = Digest256::from_bytes(cfg_bytes);
-        put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
-
-        // Manifest blob.
         let config_descriptor = DescriptorBuilder::default()
             .media_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
-            .digest(oci_digest(&cfg_digest)?)
+            .digest(oci_digest(&config_digest)?)
             .size(cfg_bytes.len() as u64)
             .build()
             .map_err(|e| crate::new_error!("failed to build config descriptor: {}", e))?;
@@ -514,7 +698,6 @@ impl Snapshot {
             .map_err(|e| crate::new_error!("failed to serialise OCI manifest: {}", e))?;
         check_json_blob_size("manifest blob", manifest_bytes.len())?;
         let manifest_digest = Digest256::from_bytes(&manifest_bytes);
-        put_blob(&blobs_dir, &manifest_digest, &manifest_bytes)?;
 
         let mut anns = std::collections::HashMap::new();
         anns.insert(ANNOTATION_REF_NAME.to_string(), tag.as_str().to_string());
@@ -523,13 +706,53 @@ impl Snapshot {
             ANNOTATION_HYPERVISOR.to_string(),
             cfg.hypervisor.as_str().to_string(),
         );
-        DescriptorBuilder::default()
+        let descriptor = DescriptorBuilder::default()
             .media_type(MediaType::ImageManifest)
             .digest(oci_digest(&manifest_digest)?)
             .size(manifest_bytes.len() as u64)
             .annotations(anns)
             .build()
-            .map_err(|e| crate::new_error!("failed to build manifest descriptor: {}", e))
+            .map_err(|e| crate::new_error!("failed to build manifest descriptor: {}", e))?;
+
+        Ok(LayoutArtifacts {
+            snapshot_digest,
+            config_digest,
+            manifest_bytes,
+            manifest_digest,
+            descriptor,
+        })
+    }
+
+    fn write_blobs_and_build_descriptor(
+        &self,
+        dir: &Path,
+        tag: &OciTag,
+        cfg: &OciSnapshotConfig,
+        cfg_bytes: &[u8],
+    ) -> crate::Result<Descriptor> {
+        let artifacts = self.build_layout_artifacts(tag, cfg, cfg_bytes)?;
+
+        let blobs_dir = dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blobs_dir).map_err(|e| {
+            crate::new_error!("failed to create OCI blobs dir {:?}: {}", blobs_dir, e)
+        })?;
+
+        // Snapshot blob: the raw memory bytes.
+        put_blob_if_absent(
+            &blobs_dir,
+            &artifacts.snapshot_digest,
+            self.memory.as_slice(),
+        )?;
+        // Config blob.
+        put_blob(&blobs_dir, &artifacts.config_digest, cfg_bytes)?;
+        // Manifest blob.
+        put_blob(
+            &blobs_dir,
+            &artifacts.manifest_digest,
+            &artifacts.manifest_bytes,
+        )?;
+
+        Ok(artifacts.descriptor)
     }
 
     fn build_config(&self) -> crate::Result<OciSnapshotConfig> {
@@ -673,6 +896,85 @@ impl Snapshot {
         reference: impl Into<OciReference>,
     ) -> crate::Result<Self> {
         Self::load_inner(path.as_ref(), &reference.into(), true)
+    }
+
+    /// Load a snapshot from a `.tar` or `.tar.gz` archive written by
+    /// [`Snapshot::save_archive`], the archive counterpart of
+    /// [`Snapshot::load`].
+    ///
+    /// The archive is extracted into a temporary directory and the
+    /// snapshot is loaded from that directory exactly as [`load`] would.
+    /// The memory image is mmap'd from the extracted file, so the
+    /// temporary directory is kept alive for the lifetime of the
+    /// returned snapshot and removed when it is dropped.
+    ///
+    /// [`load`]: Snapshot::load
+    ///
+    /// The format is inferred from `path`'s extension (`.tar`,
+    /// `.tar.gz`, `.tgz`); an unrecognised extension falls back to
+    /// sniffing the gzip magic bytes. `reference` selects the snapshot
+    /// within the archive, like [`load`].
+    ///
+    /// Like [`load`], this does not verify blob digests; use
+    /// [`Snapshot::checked_load_archive`] for that.
+    pub fn load_archive(
+        path: impl AsRef<Path>,
+        reference: impl Into<OciReference>,
+    ) -> crate::Result<Self> {
+        Self::load_archive_inner(path.as_ref(), &reference.into(), false)
+    }
+
+    /// Load a snapshot from an archive like [`Snapshot::load_archive`],
+    /// additionally verifying the manifest, config, and memory blobs
+    /// against their recorded sha256 digests, as
+    /// [`Snapshot::checked_load`] does for a directory.
+    ///
+    /// # Trust
+    ///
+    /// A digest check does not prove the bytes are authentic. Anyone
+    /// who edits a blob can recompute its digest to match, so a hostile
+    /// archive passes the check. Load only from a source you trust.
+    pub fn checked_load_archive(
+        path: impl AsRef<Path>,
+        reference: impl Into<OciReference>,
+    ) -> crate::Result<Self> {
+        Self::load_archive_inner(path.as_ref(), &reference.into(), true)
+    }
+
+    fn load_archive_inner(
+        path: &Path,
+        reference: &OciReference,
+        verify_blobs: bool,
+    ) -> crate::Result<Self> {
+        let meta = std::fs::metadata(path)
+            .map_err(|e| crate::new_error!("load_archive failed to stat {:?}: {}", path, e))?;
+        if !meta.is_file() {
+            return Err(crate::new_error!(
+                "load_archive path {:?} is not a file",
+                path
+            ));
+        }
+
+        let format = detect_format(path)?;
+
+        // Extract beside the archive so a large memory image does not
+        // have to land on tmpfs, and so the mmap'd blob shares the
+        // archive's filesystem.
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let tmp = tempfile::Builder::new()
+            .prefix(".hl-snap-load-")
+            .tempdir_in(&parent)
+            .map_err(|e| crate::new_error!("load_archive: failed to create temp dir: {}", e))?;
+        unpack_archive_to_dir(path, tmp.path(), format)?;
+
+        let mut snapshot = Self::load_inner(tmp.path(), reference, verify_blobs)?;
+        // The loaded snapshot mmaps its memory image from `tmp`. Keep
+        // the directory alive until the snapshot is dropped.
+        snapshot.extract_guard = Some(Arc::new(tmp));
+        Ok(snapshot)
     }
 
     fn load_inner(
@@ -866,6 +1168,7 @@ impl Snapshot {
             snapshot_generation,
             host_functions,
             io_buffers,
+            extract_guard: None,
         })
     }
 }

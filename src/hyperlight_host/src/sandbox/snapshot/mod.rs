@@ -18,7 +18,9 @@ mod file;
 mod file_tests;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
+pub use file::archive::ArchiveFormat;
 pub use file::reference::{OciDigest, OciReference, OciTag};
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{io_page, scratch_base_gpa, scratch_base_gva};
@@ -133,6 +135,14 @@ pub struct Snapshot {
     /// the snapshot memory image and is reset on restore, so these are
     /// written back explicitly to keep the resumed guest from crashing.
     io_buffers: Option<IoBuffers>,
+
+    /// Keeps a temporary extraction directory alive for the lifetime of
+    /// this snapshot. `Some` only for a snapshot produced by
+    /// [`Snapshot::load_archive`] / [`Snapshot::checked_load_archive`],
+    /// which extract the archive into a temp directory and then mmap the
+    /// memory blob from it. The mapping is file-backed, so the directory
+    /// must outlive the snapshot; dropping this guard removes it.
+    extract_guard: Option<Arc<tempfile::TempDir>>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -453,6 +463,7 @@ impl Snapshot {
                 host_functions: None,
             },
             io_buffers: None,
+            extract_guard: None,
         })
     }
 
@@ -646,6 +657,7 @@ impl Snapshot {
             snapshot_generation,
             host_functions,
             io_buffers,
+            extract_guard: None,
         })
     }
 
