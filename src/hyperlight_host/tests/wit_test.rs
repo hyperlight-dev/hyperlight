@@ -22,7 +22,7 @@ use hyperlight_testing::wit_guest_as_string;
 
 extern crate alloc;
 mod bindings {
-    hyperlight_component_macro::host_bindgen!("../tests/rust_guests/witguest/interface.wasm");
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/guest.wit");
 }
 
 use bindings::test::wit::roundtrip::{Testrecord, Testvariant};
@@ -427,7 +427,10 @@ mod wit_test {
 }
 
 mod pick_world_bindings {
-    hyperlight_component_macro::host_bindgen!({path: "../tests/rust_guests/witguest/twoworlds.wasm", world_name: "firstworld"});
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "firstworld",
+    });
 }
 mod pick_world_binding_test {
     use crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport;
@@ -450,7 +453,10 @@ mod pick_world_binding_test {
 }
 
 mod pick_world_bindings2 {
-    hyperlight_component_macro::host_bindgen!({path: "../tests/rust_guests/witguest/twoworlds.wasm", world_name: "secondworld"});
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "secondworld",
+    });
 }
 mod pick_world_binding_test2 {
     use crate::pick_world_bindings2::r#twoworlds::r#wit::r#second_export::RecSecondExport;
@@ -473,9 +479,7 @@ mod pick_world_binding_test2 {
 }
 
 mod bindgen_test_case_bindings {
-    hyperlight_component_macro::host_bindgen!(
-        "../tests/rust_guests/witguest/bindgen-test-cases.wasm"
-    );
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/bindgen-test-cases");
 }
 mod bindgen_test_cases {
     use crate::bindgen_test_case_bindings::*;
@@ -535,5 +539,35 @@ mod bindgen_test_cases {
         fn uses_exported_types(&mut self) -> &mut Self {
             self
         }
+    }
+}
+
+mod inline_bindings {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            package test:inline-bindgen;
+
+            world inline-world {
+                export types;
+            }
+
+            interface types {
+                record inline-record {
+                    value: string,
+                }
+            }
+        "#,
+        world: "inline-world",
+    });
+}
+mod inline_bindgen_test {
+    use crate::inline_bindings::test::inline_bindgen::types::InlineRecord;
+
+    #[test]
+    fn inline_wit_types_are_generated() {
+        let result = InlineRecord {
+            value: String::from("inline"),
+        };
+        assert_eq!(result.value, "inline");
     }
 }
