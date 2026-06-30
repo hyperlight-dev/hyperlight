@@ -1,8 +1,8 @@
 name: Ready-for-review label
 
 # When a pull-request changes state (closed, converted to draft) or a review is submitted/dismissed,
-# run the  `manage-ready-for-review.yml` workflow, to remove the 
-# "ready-for-review" label once a PR if its no longer needed.
+# run the `manage-ready-for-review.yml` workflow, to remove the
+# "ready-for-review" label from a PR if its no longer needed.
 #
 # `pull_request_target` (rather than `pull_request`) is required so that the job
 # has a read/write token for pull requests opened from forks. This is safe here
