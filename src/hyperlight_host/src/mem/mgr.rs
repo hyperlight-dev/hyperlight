@@ -37,6 +37,133 @@ use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegion
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
+/// Environment variable selecting how the guest scratch region is re-zeroed on
+/// snapshot restore. See [`ScratchZeroStrategy`]. Unset or unrecognised means
+/// [`ScratchZeroStrategy::Auto`], the platform-optimal default.
+const SCRATCH_ZERO_STRATEGY_ENV_VAR: &str = "HYPERLIGHT_SCRATCH_ZERO_STRATEGY";
+
+/// Strategy for re-zeroing the guest scratch region when restoring a snapshot.
+///
+/// On restore the scratch — dirtied by the previous run via copy-on-write — must
+/// read back as zero to preserve cross-restore isolation. There are two ways to
+/// achieve that:
+///
+/// * **In-place**: reuse the existing mapping and `SharedMemory::zero` it. On
+///   Linux/KVM this is an O(1) `madvise(MADV_DONTNEED)` — the pages are dropped
+///   and lazily re-faulted as zero, and KVM observes the change through the host
+///   MMU notifier. On hypervisors that map guest memory up-front and do *not*
+///   participate in host-MM notifications (Windows/WHP and MSHV), an in-place
+///   discard would desync the guest's second-stage page tables, so `zero()`
+///   instead falls back to an eager O(size) `memset` — seconds for a
+///   multi-hundred-MiB scratch.
+/// * **Fresh**: allocate a new demand-zero scratch section and remap it into the
+///   guest. Allocation is O(1) (the OS zero-fills lazily on fault) and the old
+///   section is released once it has been unmapped from the VM. This avoids the
+///   eager memset on the map-at-start hypervisors.
+///
+/// [`Auto`](Self::Auto) reuses in-place only where that is lazy (KVM) and uses a
+/// fresh section everywhere else. The forcing variants exist for benchmarking,
+/// A/B testing, and as an operational escape hatch.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ScratchZeroStrategy {
+    /// Reuse-and-zero where lazy (KVM); fresh section otherwise (WHP, MSHV).
+    Auto,
+    /// Always reuse the existing scratch mapping and zero it in place.
+    Eager,
+    /// Always allocate a fresh demand-zero section and remap it into the guest.
+    Fresh,
+}
+
+impl ScratchZeroStrategy {
+    /// Parse a strategy from a raw environment-variable value (case- and
+    /// whitespace-insensitive). Absent or unrecognised values map to
+    /// [`Auto`](Self::Auto).
+    fn from_env_value(raw: Option<&str>) -> Self {
+        match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("eager") | Some("inplace") | Some("in-place") => Self::Eager,
+            Some("fresh") | Some("remap") => Self::Fresh,
+            _ => Self::Auto,
+        }
+    }
+
+    /// Read the strategy from [`SCRATCH_ZERO_STRATEGY_ENV_VAR`].
+    ///
+    /// Read on every restore rather than cached, so it can be toggled at runtime
+    /// by tests and operators; the lookup is negligible next to the restore work
+    /// it guards.
+    fn from_env() -> Self {
+        Self::from_env_value(std::env::var(SCRATCH_ZERO_STRATEGY_ENV_VAR).ok().as_deref())
+    }
+
+    /// Whether to allocate a fresh scratch section (`true`) rather than reuse the
+    /// existing mapping and zero it in place (`false`).
+    ///
+    /// [`Auto`](Self::Auto) mirrors `SharedMemory::zero`'s own `madvise` gate:
+    /// in-place only on Linux with the `kvm` driver and without `mshv3`. Because
+    /// the default feature set enables *both* `kvm` and `mshv3`, a default build
+    /// takes the fresh path (matching `zero()`, which cannot lazily discard when
+    /// `mshv3` may be the backend).
+    fn use_fresh_scratch(self) -> bool {
+        match self {
+            Self::Fresh => true,
+            Self::Eager => false,
+            Self::Auto => {
+                !cfg!(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scratch_zero_strategy_tests {
+    use super::ScratchZeroStrategy;
+
+    #[test]
+    fn parses_env_values() {
+        assert_eq!(
+            ScratchZeroStrategy::from_env_value(None),
+            ScratchZeroStrategy::Auto
+        );
+        for auto in ["", "auto", "nonsense", "  "] {
+            assert_eq!(
+                ScratchZeroStrategy::from_env_value(Some(auto)),
+                ScratchZeroStrategy::Auto,
+                "{auto:?}"
+            );
+        }
+        for eager in ["eager", "EAGER", "  Eager  ", "inplace", "in-place"] {
+            assert_eq!(
+                ScratchZeroStrategy::from_env_value(Some(eager)),
+                ScratchZeroStrategy::Eager,
+                "{eager:?}"
+            );
+        }
+        for fresh in ["fresh", "FRESH", " remap "] {
+            assert_eq!(
+                ScratchZeroStrategy::from_env_value(Some(fresh)),
+                ScratchZeroStrategy::Fresh,
+                "{fresh:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn forcing_variants_are_platform_independent() {
+        assert!(!ScratchZeroStrategy::Eager.use_fresh_scratch());
+        assert!(ScratchZeroStrategy::Fresh.use_fresh_scratch());
+    }
+
+    #[test]
+    fn auto_uses_inplace_only_on_kvm_without_mshv3() {
+        let expect_inplace =
+            cfg!(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))));
+        assert_eq!(
+            ScratchZeroStrategy::Auto.use_fresh_scratch(),
+            !expect_inplace
+        );
+    }
+}
+
 #[cfg(crashdump)]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
     match kind {
@@ -482,7 +609,17 @@ impl SandboxMemoryManager<HostSharedMemory> {
             Some(gsnapshot)
         };
         let new_scratch_size = snapshot.layout().get_scratch_size();
-        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
+        // Reuse the existing scratch and zero it in place only when that in-place zero is
+        // cheap. On Linux/KVM `zero()` is an O(1) `madvise(MADV_DONTNEED)`; on map-at-start
+        // hypervisors without host-MM notification (Windows/WHP, MSHV) it degrades to an
+        // eager O(size) memset (seconds for a multi-hundred-MiB scratch). There, instead swap
+        // in a fresh, demand-zero section and remap it into the VM below — the same path
+        // already taken when the scratch size changes. Restore stays hermetic (the scratch
+        // reads back as zero) while the eager memset becomes an O(1) allocation. The
+        // HYPERLIGHT_SCRATCH_ZERO_STRATEGY env var can force either mechanism.
+        let reuse_scratch = !ScratchZeroStrategy::from_env().use_fresh_scratch()
+            && new_scratch_size == self.scratch_mem.mem_size();
+        let gscratch = if reuse_scratch {
             self.scratch_mem.zero()?;
             None
         } else {

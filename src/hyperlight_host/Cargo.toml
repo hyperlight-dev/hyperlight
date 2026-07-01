@@ -113,10 +113,17 @@ hyperlight-component-macro = { workspace = true }
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
+    # Process working-set / private-usage and handle-count probes used by the
+    # scratch-restore perf/leak integration test.
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
 ] }
 
 [target.'cfg(unix)'.dev-dependencies]
 proc-maps = "0.5.0"
+# Host page size for converting /proc/self/statm page counts to bytes in the
+# scratch-restore perf/leak integration test.
+page_size = "0.6.0"
 
 [build-dependencies]
 anyhow = { version = "1.0.102" }
