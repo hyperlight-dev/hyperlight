@@ -97,6 +97,18 @@ pub use sandbox::host_funcs::HostFunctions;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
 
+/// Unstable, internal API surface exposed solely for Hyperlight's own
+/// integration tests. Not part of the public API: anything here may
+/// change or disappear without notice. Do not depend on it.
+#[doc(hidden)]
+pub mod __private {
+    /// Short golden-tag token for the host CPU vendor, or `None` if the
+    /// goldens do not cover it. See the snapshot golden tests.
+    pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
+        crate::sandbox::snapshot::host_cpu_vendor_golden_tag()
+    }
+}
+
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;
 

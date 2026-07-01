@@ -737,6 +737,7 @@ mod tests {
 mod schema_pin {
     use super::*;
 
+    #[cfg(target_arch = "x86_64")]
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
@@ -886,6 +887,47 @@ mod schema_pin {
       10,
       11
     ]
+  },
+  "layout": {
+    "input_data_size": 1,
+    "output_data_size": 2,
+    "heap_size": 3,
+    "code_size": 4,
+    "init_data_size": 5,
+    "init_data_permissions": null,
+    "scratch_size": 8,
+    "snapshot_size": 9,
+    "pt_size": null
+  },
+  "memory_size": 65536,
+  "host_functions": [
+    {
+      "function_name": "fn_void",
+      "parameter_types": [
+        "bool"
+      ],
+      "return_type": "void"
+    }
+  ],
+  "snapshot_generation": 42
+}"#;
+
+    #[cfg(target_arch = "aarch64")]
+    const PINNED_CALL: &str = r#"{
+  "hyperlight_version": "x.y.z",
+  "arch": "aarch64",
+  "abi_version": 1,
+  "hypervisor": "mshv",
+  "cpu_vendor": "intel",
+  "stack_top_gva": 3735928559,
+  "entrypoint_addr": 8192,
+  "sregs": {
+    "tcr_el1": 1,
+    "mair_el1": 2,
+    "sctlr_el1": 3,
+    "cpacr_el1": 4,
+    "vbar_el1": 5,
+    "sp_el1": 6
   },
   "layout": {
     "input_data_size": 1,

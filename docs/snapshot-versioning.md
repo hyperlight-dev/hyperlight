@@ -66,6 +66,18 @@ which fetches the tag set for the current `GOLDENS_VERSION` from GHCR)
 and runs them through the current loader. If the new loader cannot
 decode the old bytes, the test fails.
 
+To run the golden tests locally you need the [`oras`](https://oras.land/docs/installation)
+CLI on your `PATH` to pull the published goldens. `just test-like-ci`
+does not pull, so fill the local directory first:
+
+```sh
+just snapshot-goldens-pull    # fetch this host's goldens from GHCR
+just snapshot-goldens-verify  # run them through the current loader
+```
+
+Each host verifies only its own `(arch, hypervisor, cpu vendor, profile)`
+golden. A missing entry fails the test rather than being skipped.
+
 On a pull request the verify test runs on every supported arch and
 hypervisor runner. The default path pulls the published tag set for the
 current `GOLDENS_VERSION` and verifies it against the branch's loader. A

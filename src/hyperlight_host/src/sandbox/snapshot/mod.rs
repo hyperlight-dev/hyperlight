@@ -20,8 +20,7 @@ mod tripwires;
 
 use std::collections::{BTreeMap, HashMap};
 
-#[doc(hidden)]
-pub use file::host_cpu_vendor_golden_tag;
+pub(crate) use file::host_cpu_vendor_golden_tag;
 pub use file::reference::{OciDigest, OciReference, OciTag};
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{io_page, scratch_base_gpa, scratch_base_gva};

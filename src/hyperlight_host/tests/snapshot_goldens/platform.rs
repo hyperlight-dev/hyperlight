@@ -136,7 +136,7 @@ impl Platform {
         Some(Self {
             arch: Arch::detect()?,
             hv: Hypervisor::detect()?,
-            cpu: hyperlight_host::sandbox::snapshot::host_cpu_vendor_golden_tag()?,
+            cpu: hyperlight_host::__private::host_cpu_vendor_golden_tag()?,
             profile: Profile::detect(),
         })
     }
