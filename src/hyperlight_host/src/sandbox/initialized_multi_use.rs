@@ -229,9 +229,9 @@ impl MultiUseSandbox {
         if caller_supplied_config {
             warn_on_layout_override(&config, snapshot.layout());
         }
-        config.set_input_data_size(snapshot.layout().input_data_size);
-        config.set_output_data_size(snapshot.layout().output_data_size);
-        config.set_heap_size(snapshot.layout().heap_size as u64);
+        config.set_input_data_size(snapshot.layout().input_data_size());
+        config.set_output_data_size(snapshot.layout().output_data_size());
+        config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         let load_info = snapshot.load_info();
 
@@ -1092,17 +1092,17 @@ fn warn_on_layout_override(
         (
             "input_data_size",
             caller.get_input_data_size() as u64,
-            snapshot.input_data_size as u64,
+            snapshot.input_data_size() as u64,
         ),
         (
             "output_data_size",
             caller.get_output_data_size() as u64,
-            snapshot.output_data_size as u64,
+            snapshot.output_data_size() as u64,
         ),
         (
             "heap_size",
             caller.get_heap_size(),
-            snapshot.heap_size as u64,
+            snapshot.heap_size() as u64,
         ),
         (
             "scratch_size",

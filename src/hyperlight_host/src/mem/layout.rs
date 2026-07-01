@@ -249,29 +249,29 @@ impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
     /// Input data buffer size (from SandboxConfiguration).
-    pub(crate) input_data_size: usize,
+    input_data_size: usize,
     /// Output data buffer size (from SandboxConfiguration).
-    pub(crate) output_data_size: usize,
+    output_data_size: usize,
     /// The heap size of this sandbox.
-    pub(crate) heap_size: usize,
+    heap_size: usize,
     /// The size of the guest code section.
-    pub(crate) code_size: usize,
+    code_size: usize,
     /// The size of the init data section (guest blob).
-    pub(crate) init_data_size: usize,
+    init_data_size: usize,
     /// Permission flags for the init data region.
-    pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
+    init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
-    pub(crate) scratch_size: usize,
+    scratch_size: usize,
     /// Size of the primary guest memory region at `BASE_ADDRESS`
     /// (code, PEB, heap, init data). For a snapshot-backed layout
     /// this is also the guest-visible prefix of the host snapshot
     /// mapping.
-    pub(crate) snapshot_size: usize,
+    snapshot_size: usize,
     /// Size of the page-table region. Sits at the tail of the host
     /// snapshot mapping but is never mapped to the guest from there.
     /// On restore the host copies it into scratch, where the guest
     /// sees it at `SNAPSHOT_PT_GVA`. `None` until page tables are built.
-    pub(crate) pt_size: Option<usize>,
+    pt_size: Option<usize>,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -401,124 +401,47 @@ impl SandboxMemoryLayout {
         Ok(ret)
     }
 
-    /// Offset of the PEB struct within the snapshot region.
-    pub(crate) fn peb_offset(&self) -> usize {
-        self.code_size.next_multiple_of(PAGE_SIZE_USIZE)
+    pub(crate) fn input_data_size(&self) -> usize {
+        self.input_data_size
     }
 
-    /// Guest physical address of the PEB.
-    pub(crate) fn peb_address(&self) -> usize {
-        Self::BASE_ADDRESS + self.peb_offset()
+    pub(crate) fn output_data_size(&self) -> usize {
+        self.output_data_size
     }
 
-    /// Offset of the guest heap buffer within the snapshot region.
-    pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
-        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
+    pub(crate) fn heap_size(&self) -> usize {
+        self.heap_size
     }
 
-    /// Offset of the init data section within the snapshot region.
-    pub(crate) fn init_data_offset(&self) -> usize {
-        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE_USIZE)
+    pub(crate) fn code_size(&self) -> usize {
+        self.code_size
     }
 
-    /// The code offset is always 0.
-    pub(crate) fn guest_code_offset(&self) -> usize {
-        0
+    pub(crate) fn init_data_size(&self) -> usize {
+        self.init_data_size
     }
 
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn init_data_permissions(&self) -> Option<MemoryRegionFlags> {
+        self.init_data_permissions
+    }
+
     pub(crate) fn get_scratch_size(&self) -> usize {
         self.scratch_size
     }
 
-    /// Get the guest virtual address of the start of output data.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
-        hyperlight_common::layout::scratch_base_gva(self.scratch_size) + self.input_data_size as u64
+    /// Guest-visible prefix size of the snapshot blob.
+    pub(crate) fn snapshot_size(&self) -> usize {
+        self.snapshot_size
     }
 
-    /// Get the offset into the host scratch buffer of the start of
-    /// the output data.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
-        self.input_data_size
+    /// Recorded page-table tail size, `None` until page tables are built.
+    pub(crate) fn pt_size(&self) -> Option<usize> {
+        self.pt_size
     }
 
-    /// Get the guest virtual address of the start of input data
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_buffer_gva(&self) -> u64 {
-        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
-    }
-
-    /// Get the offset into the host scratch buffer of the start of
-    /// the input data
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_input_data_buffer_scratch_host_offset(&self) -> usize {
-        0
-    }
-
-    /// Get the offset from the beginning of the scratch region to the
-    /// location where page tables will be eagerly copied on restore
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.input_data_size + self.output_data_size)
-            .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
-    }
-
-    /// Get the base GPA to which the page tables will be eagerly
-    /// copied on restore
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pt_base_gpa(&self) -> u64 {
-        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
-            + self.get_pt_base_scratch_offset() as u64
-    }
-
-    /// Get the first GPA of the scratch region that the host hasn't
-    /// used for something else
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
-        self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
-    }
-
-    /// Get the total size of guest memory in `self`'s memory
-    /// layout.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_unaligned_memory_size(&self) -> usize {
-        self.init_data_offset() + self.init_data_size
-    }
-
-    /// get the code offset
-    /// This is the offset in the sandbox memory where the code starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_code_offset(&self) -> usize {
-        self.guest_code_offset()
-    }
-
-    /// Get the guest address of the code section in the sandbox
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_code_address(&self) -> usize {
-        Self::BASE_ADDRESS + self.guest_code_offset()
-    }
-
-    /// Get the total size of guest memory in `self`'s memory
-    /// layout aligned to page size boundaries.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_memory_size(&self) -> Result<usize> {
-        let total_memory = self.get_unaligned_memory_size();
-
-        // Size should be a multiple of page size.
-        let remainder = total_memory % PAGE_SIZE_USIZE;
-        let multiples = total_memory / PAGE_SIZE_USIZE;
-        let size = match remainder {
-            0 => total_memory,
-            _ => (multiples + 1) * PAGE_SIZE_USIZE,
-        };
-
-        if size > Self::MAX_MEMORY_SIZE {
-            Err(MemoryRequestTooBig(size, Self::MAX_MEMORY_SIZE))
-        } else {
-            Ok(size)
-        }
+    /// Page-table tail size, or 0 if page tables are not yet built.
+    pub(crate) fn get_pt_size(&self) -> usize {
+        self.pt_size.unwrap_or(0)
     }
 
     /// Record the size of the page-table tail appended to the
@@ -527,7 +450,6 @@ impl SandboxMemoryLayout {
     /// region, and are copied into the scratch region on restore.
     /// `snapshot_size` (the guest-visible prefix of the blob) is an
     /// independent field and must be set separately.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.input_data_size,
@@ -541,15 +463,8 @@ impl SandboxMemoryLayout {
         Ok(())
     }
 
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_snapshot_size(&mut self, new_size: usize) {
         self.snapshot_size = new_size;
-    }
-
-    /// Get the size of the memory region used for page tables
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pt_size(&self) -> usize {
-        self.pt_size.unwrap_or(0)
     }
 
     /// Returns the memory regions associated with this memory layout,
@@ -731,6 +646,107 @@ impl SandboxMemoryLayout {
     }
 }
 
+/// Changes to the below methods is part of Snapshot ABI, and
+/// changing any output shifts where the loader
+/// reads captured bytes and breaks existing snapshots. Any change here
+/// is a snapshot ABI break: see the `layout_offsets_are_pinned` test
+/// and docs/snapshot-versioning.md.
+impl SandboxMemoryLayout {
+    /// Offset of the PEB struct within the snapshot region.
+    pub(crate) fn peb_offset(&self) -> usize {
+        self.code_size.next_multiple_of(PAGE_SIZE_USIZE)
+    }
+
+    /// Guest physical address of the PEB.
+    pub(crate) fn peb_address(&self) -> usize {
+        Self::BASE_ADDRESS + self.peb_offset()
+    }
+
+    /// Offset of the guest heap buffer within the snapshot region.
+    pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
+        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
+    }
+
+    /// Offset of the init data section within the snapshot region.
+    pub(crate) fn init_data_offset(&self) -> usize {
+        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE_USIZE)
+    }
+
+    /// The code offset is always 0.
+    pub(crate) fn guest_code_offset(&self) -> usize {
+        0
+    }
+
+    /// Guest address of the code section in the sandbox.
+    pub(crate) fn get_guest_code_address(&self) -> usize {
+        Self::BASE_ADDRESS + self.guest_code_offset()
+    }
+
+    /// Guest virtual address of the start of output data.
+    pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size) + self.input_data_size as u64
+    }
+
+    /// Offset into the host scratch buffer of the start of the output data.
+    pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
+        self.input_data_size
+    }
+
+    /// Guest virtual address of the start of input data.
+    fn get_input_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+    }
+
+    /// Offset into the host scratch buffer of the start of the input data.
+    pub(crate) fn get_input_data_buffer_scratch_host_offset(&self) -> usize {
+        0
+    }
+
+    /// Offset from the beginning of the scratch region to the location
+    /// where page tables are eagerly copied on restore.
+    pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
+        (self.input_data_size + self.output_data_size)
+            .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+    }
+
+    /// Base GPA to which the page tables are eagerly copied on restore.
+    pub(crate) fn get_pt_base_gpa(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
+            + self.get_pt_base_scratch_offset() as u64
+    }
+
+    /// First GPA of the scratch region the host has not used for
+    /// something else.
+    pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
+        self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
+    }
+
+    /// Total size of guest memory in `self`'s memory layout.
+    fn get_unaligned_memory_size(&self) -> usize {
+        self.init_data_offset() + self.init_data_size
+    }
+
+    /// Total size of guest memory in `self`'s memory layout, aligned
+    /// to page size boundaries.
+    pub(crate) fn get_memory_size(&self) -> Result<usize> {
+        let total_memory = self.get_unaligned_memory_size();
+
+        // Size should be a multiple of page size.
+        let remainder = total_memory % PAGE_SIZE_USIZE;
+        let multiples = total_memory / PAGE_SIZE_USIZE;
+        let size = match remainder {
+            0 => total_memory,
+            _ => (multiples + 1) * PAGE_SIZE_USIZE,
+        };
+
+        if size > Self::MAX_MEMORY_SIZE {
+            Err(MemoryRequestTooBig(size, Self::MAX_MEMORY_SIZE))
+        } else {
+            Ok(size)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
@@ -822,5 +838,152 @@ mod tests {
                 other,
             );
         }
+    }
+
+    /// Pinned region offsets. These methods place every region that a
+    /// restored snapshot is interpreted against, so a change shifts
+    /// where the loader reads captured bytes and breaks existing
+    /// snapshots. Treat a failure as an ABI change: follow
+    /// docs/snapshot-versioning.md rather than editing the constants.
+    #[test]
+    fn layout_offsets_are_pinned() {
+        /// `assert_eq!` carrying the shared snapshot-ABI failure
+        /// message, mirroring `abi_assert!` in the snapshot tripwires.
+        macro_rules! pin_eq {
+            ($left:expr, $right:expr) => {
+                assert_eq!(
+                    $left, $right,
+                    "snapshot ABI changed: this breaks loading of existing snapshots. \
+                     Do not just update the expected value to make this compile. \
+                     See docs/snapshot-versioning.md."
+                );
+            };
+        }
+
+        // The scratch region's top GVA and GPA are baked into snapshot
+        // page tables by `map_specials`, so they are part of the
+        // snapshot ABI. The pins below fix offsets from this base.
+        #[cfg(target_arch = "x86_64")]
+        {
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GVA,
+                0xffff_ffff_ffff_efff
+            );
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GPA,
+                0x0000_000f_ffff_ffff
+            );
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GVA,
+                0x0000_ffff_ffff_dfff
+            );
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GPA,
+                0x0000_000f_ffff_efff
+            );
+        }
+
+        // `map_specials` bakes the IO page mapping into snapshot page
+        // tables, so its address is part of the snapshot ABI. amd64 has
+        // no IO page. aarch64 maps one fixed GPA to one fixed GVA.
+        #[cfg(target_arch = "x86_64")]
+        pin_eq!(hyperlight_common::layout::io_page(), None);
+        #[cfg(target_arch = "aarch64")]
+        pin_eq!(
+            hyperlight_common::layout::io_page(),
+            Some((0x0000_000f_ffff_f000, 0x0000_ffff_ffff_e000))
+        );
+
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x2000);
+        cfg.set_output_data_size(0x2000);
+        cfg.set_heap_size(0x2000);
+        cfg.set_scratch_size(0x10000);
+        let layout = SandboxMemoryLayout::new(cfg, 0x1000, 0, None).unwrap();
+
+        pin_eq!(layout.guest_code_offset(), 0);
+        pin_eq!(layout.peb_offset(), 0x1000);
+        pin_eq!(layout.peb_address(), 0x2000);
+        pin_eq!(layout.guest_heap_buffer_offset(), 0x2000);
+        pin_eq!(layout.init_data_offset(), 0x4000);
+        pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
+
+        pin_eq!(layout.get_scratch_size(), 0x10000);
+        pin_eq!(layout.get_pt_size(), 0);
+
+        pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
+        pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x2000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x4000);
+
+        // The output buffer sits one input buffer past the input
+        // buffer in the guest's scratch view.
+        pin_eq!(
+            layout.get_output_data_buffer_gva() - layout.get_input_data_buffer_gva(),
+            0x2000
+        );
+
+        // The input buffer sits at the scratch base. The page tables
+        // sit `get_pt_base_scratch_offset` above it. With the
+        // `SCRATCH_TOP` pins above, these fix the absolute addresses.
+        pin_eq!(
+            layout.get_input_data_buffer_gva()
+                - hyperlight_common::layout::scratch_base_gva(0x10000),
+            0
+        );
+        pin_eq!(
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x10000),
+            0x4000
+        );
+        // pt_size is zero here, so the first free scratch GPA equals
+        // the page table base.
+        pin_eq!(
+            layout.get_first_free_scratch_gpa(),
+            layout.get_pt_base_gpa()
+        );
+
+        // A second config with different sizes shifts the offsets off
+        // the first config's page boundaries.
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x4000);
+        cfg.set_output_data_size(0x2000);
+        cfg.set_heap_size(0x5000);
+        cfg.set_scratch_size(0x20000);
+        let layout = SandboxMemoryLayout::new(cfg, 0x3000, 0, None).unwrap();
+
+        pin_eq!(layout.guest_code_offset(), 0);
+        pin_eq!(layout.peb_offset(), 0x3000);
+        pin_eq!(layout.peb_address(), 0x4000);
+        pin_eq!(layout.guest_heap_buffer_offset(), 0x4000);
+        pin_eq!(layout.init_data_offset(), 0x9000);
+        pin_eq!(layout.get_memory_size().unwrap(), 0x9000);
+
+        pin_eq!(layout.get_scratch_size(), 0x20000);
+        pin_eq!(layout.get_pt_size(), 0);
+
+        pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
+        pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x4000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x6000);
+
+        pin_eq!(
+            layout.get_output_data_buffer_gva() - layout.get_input_data_buffer_gva(),
+            0x4000
+        );
+
+        pin_eq!(
+            layout.get_input_data_buffer_gva()
+                - hyperlight_common::layout::scratch_base_gva(0x20000),
+            0
+        );
+        pin_eq!(
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x20000),
+            0x6000
+        );
+        pin_eq!(
+            layout.get_first_free_scratch_gpa(),
+            layout.get_pt_base_gpa()
+        );
     }
 }

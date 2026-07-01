@@ -142,6 +142,11 @@ fn test_exception_handler(
 #[guest_function("InstallHandler")]
 #[cfg(target_arch = "x86_64")]
 fn install_handler(vector: i32) {
+    // The exception handler increments a counter that starts on a
+    // copy-on-write page. Write the counter once here so its page copies
+    // into scratch. The handler then increments a writable page and does
+    // not fault while it runs on the exception stack.
+    HANDLER_INVOCATION_COUNT.fetch_add(0, Ordering::SeqCst);
     hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize].store(
         test_exception_handler as *const () as usize as u64,
         Ordering::Release,
@@ -396,6 +401,132 @@ fn echo(value: String) -> String {
 #[guest_function("GetSizePrefixedBuffer")]
 fn get_size_prefixed_buffer(data: Vec<u8>) -> Vec<u8> {
     data
+}
+
+#[guest_function("EchoI32")]
+fn echo_i32(v: i32) -> i32 {
+    v
+}
+
+#[guest_function("EchoU32")]
+fn echo_u32(v: u32) -> u32 {
+    v
+}
+
+#[guest_function("EchoI64")]
+fn echo_i64(v: i64) -> i64 {
+    v
+}
+
+#[guest_function("EchoU64")]
+fn echo_u64(v: u64) -> u64 {
+    v
+}
+
+#[guest_function("EchoBool")]
+fn echo_bool(v: bool) -> bool {
+    v
+}
+
+#[guest_function("NoOp")]
+fn no_op() {}
+
+#[host_function("HostEchoI32")]
+fn host_echo_i32(v: i32) -> Result<i32>;
+
+#[host_function("HostEchoU32")]
+fn host_echo_u32(v: u32) -> Result<u32>;
+
+#[host_function("HostEchoI64")]
+fn host_echo_i64(v: i64) -> Result<i64>;
+
+#[host_function("HostEchoU64")]
+fn host_echo_u64(v: u64) -> Result<u64>;
+
+#[host_function("HostEchoF32")]
+fn host_echo_f32(v: f32) -> Result<f32>;
+
+#[host_function("HostEchoF64")]
+fn host_echo_f64(v: f64) -> Result<f64>;
+
+#[host_function("HostEchoBool")]
+fn host_echo_bool(v: bool) -> Result<bool>;
+
+#[host_function("HostEchoString")]
+fn host_echo_string(v: String) -> Result<String>;
+
+#[host_function("HostEchoVecBytes")]
+fn host_echo_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>>;
+
+#[host_function("HostNoOp")]
+fn host_noop() -> Result<()>;
+
+#[guest_function("RoundTripHostI32")]
+fn round_trip_host_i32(v: i32) -> Result<i32> {
+    host_echo_i32(v)
+}
+
+#[guest_function("RoundTripHostU32")]
+fn round_trip_host_u32(v: u32) -> Result<u32> {
+    host_echo_u32(v)
+}
+
+#[guest_function("RoundTripHostI64")]
+fn round_trip_host_i64(v: i64) -> Result<i64> {
+    host_echo_i64(v)
+}
+
+#[guest_function("RoundTripHostU64")]
+fn round_trip_host_u64(v: u64) -> Result<u64> {
+    host_echo_u64(v)
+}
+
+#[guest_function("RoundTripHostF32")]
+fn round_trip_host_f32(v: f32) -> Result<f32> {
+    host_echo_f32(v)
+}
+
+#[guest_function("RoundTripHostF64")]
+fn round_trip_host_f64(v: f64) -> Result<f64> {
+    host_echo_f64(v)
+}
+
+#[guest_function("RoundTripHostBool")]
+fn round_trip_host_bool(v: bool) -> Result<bool> {
+    host_echo_bool(v)
+}
+
+#[guest_function("RoundTripHostString")]
+fn round_trip_host_string(v: String) -> Result<String> {
+    host_echo_string(v)
+}
+
+#[guest_function("RoundTripHostVecBytes")]
+fn round_trip_host_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>> {
+    host_echo_vec_bytes(v)
+}
+
+#[guest_function("RoundTripHostNoOp")]
+fn round_trip_host_noop() -> Result<()> {
+    host_noop()
+}
+
+static mut HEAP_PATTERN: Option<Vec<u8>> = None;
+
+#[guest_function("AllocAndWritePattern")]
+fn alloc_and_write_pattern(len: u64) {
+    let v: Vec<u8> = (0..len as usize).map(|i| (i & 0xff) as u8).collect();
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { HEAP_PATTERN = Some(v) };
+}
+
+#[guest_function("ReadPattern")]
+fn read_pattern() -> Vec<u8> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        HEAP_PATTERN.clone().unwrap_or_default()
+    }
 }
 
 #[expect(

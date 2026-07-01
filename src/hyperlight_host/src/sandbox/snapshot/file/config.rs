@@ -137,6 +137,18 @@ impl CpuVendor {
     pub(super) fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Short, stable token naming this vendor for snapshot golden
+    /// tags, or `None` for a vendor the goldens do not cover.
+    pub(crate) fn golden_tag(&self) -> Option<&'static str> {
+        match self.0.as_str() {
+            "GenuineIntel" => Some("intel"),
+            "AuthenticAMD" => Some("amd"),
+            // aarch64 MIDR_EL1 implementer byte for Apple silicon.
+            "0x61" => Some("apple"),
+            _ => None,
+        }
+    }
 }
 
 // --- Config JSON shape ----------------------------------------------
@@ -493,8 +505,8 @@ mod tests {
     use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister};
 
     /// Build a `CommonSegmentRegister` whose every field holds a
-    /// distinct value, so a transposed field in the `Sregs`
-    /// conversion produces an inequality.
+    /// distinct value, so a transposed field in the
+    /// `CommonSpecialRegisters` conversion produces an inequality.
     #[cfg(target_arch = "x86_64")]
     fn distinct_segment(start: u64) -> CommonSegmentRegister {
         CommonSegmentRegister {
@@ -640,5 +652,355 @@ mod tests {
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         // MIDR_EL1 implementer byte for Apple silicon.
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
+    }
+
+    /// The architecture the current host is not running.
+    fn other_arch() -> Arch {
+        match Arch::current() {
+            Arch::X86_64 => Arch::Aarch64,
+            Arch::Aarch64 => Arch::X86_64,
+        }
+    }
+
+    /// A config whose `arch` and `abi_version` match the current
+    /// build, so the architecture and ABI gates pass and a test can
+    /// trip a later gate in isolation. The layout is minimal: the
+    /// gating checks under test short-circuit before reading it.
+    fn gating_config() -> OciSnapshotConfig {
+        OciSnapshotConfig {
+            hyperlight_version: "test".to_string(),
+            arch: Arch::current(),
+            abi_version: SNAPSHOT_ABI_VERSION,
+            hypervisor: Hypervisor::Mshv,
+            cpu_vendor: CpuVendor::current(),
+            stack_top_gva: 0x2000,
+            entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
+            sregs: distinct_sregs(),
+            layout: MemoryLayout {
+                input_data_size: 0,
+                output_data_size: 0,
+                heap_size: 0,
+                code_size: 0,
+                init_data_size: 0,
+                init_data_permissions: None,
+                scratch_size: 0,
+                snapshot_size: PAGE_SIZE,
+                pt_size: None,
+            },
+            memory_size: PAGE_SIZE as u64,
+            host_functions: Vec::new(),
+            snapshot_generation: 0,
+        }
+    }
+
+    /// A snapshot built for a different architecture is rejected.
+    #[test]
+    fn validate_for_load_rejects_arch_mismatch() {
+        let mut cfg = gating_config();
+        cfg.arch = other_arch();
+        let err = cfg.validate_for_load().unwrap_err().to_string();
+        assert!(err.contains("architecture mismatch"), "got: {err}");
+    }
+
+    /// A snapshot stamped with a different ABI version is rejected.
+    #[test]
+    fn validate_for_load_rejects_abi_version_mismatch() {
+        let mut cfg = gating_config();
+        cfg.abi_version = SNAPSHOT_ABI_VERSION.wrapping_add(1);
+        let err = cfg.validate_for_load().unwrap_err().to_string();
+        assert!(err.contains("ABI version mismatch"), "got: {err}");
+    }
+
+    /// A snapshot captured under a different hypervisor backend is
+    /// rejected. Without a live backend the load is rejected outright,
+    /// which exercises the same gate from the other side.
+    #[test]
+    fn validate_for_load_rejects_hypervisor_mismatch() {
+        let Some(current) = Hypervisor::current() else {
+            let cfg = gating_config();
+            let err = cfg.validate_for_load().unwrap_err().to_string();
+            assert!(err.contains("no hypervisor available"), "got: {err}");
+            return;
+        };
+        let other = [Hypervisor::Kvm, Hypervisor::Mshv, Hypervisor::Whp]
+            .into_iter()
+            .find(|h| *h != current)
+            .expect("three backends, at least one differs from current");
+        let mut cfg = gating_config();
+        cfg.hypervisor = other;
+        let err = cfg.validate_for_load().unwrap_err().to_string();
+        assert!(err.contains("hypervisor mismatch"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod schema_pin {
+    use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    const PINNED_CALL: &str = r#"{
+  "hyperlight_version": "x.y.z",
+  "arch": "x86_64",
+  "abi_version": 1,
+  "hypervisor": "mshv",
+  "cpu_vendor": "intel",
+  "stack_top_gva": 3735928559,
+  "entrypoint_addr": 8192,
+  "sregs": {
+    "cs": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "ds": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "es": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "fs": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "gs": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "ss": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "tr": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "ldt": {
+      "base": 1,
+      "limit": 2,
+      "selector": 3,
+      "type_": 4,
+      "present": 5,
+      "dpl": 6,
+      "db": 7,
+      "s": 8,
+      "l": 9,
+      "g": 10,
+      "avl": 11,
+      "unusable": 12,
+      "padding": 13
+    },
+    "gdt": {
+      "base": 1,
+      "limit": 2
+    },
+    "idt": {
+      "base": 3,
+      "limit": 4
+    },
+    "cr0": 1,
+    "cr2": 2,
+    "cr4": 4,
+    "cr8": 5,
+    "efer": 6,
+    "apic_base": 7,
+    "interrupt_bitmap": [
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  "layout": {
+    "input_data_size": 1,
+    "output_data_size": 2,
+    "heap_size": 3,
+    "code_size": 4,
+    "init_data_size": 5,
+    "init_data_permissions": null,
+    "scratch_size": 8,
+    "snapshot_size": 9,
+    "pt_size": null
+  },
+  "memory_size": 65536,
+  "host_functions": [
+    {
+      "function_name": "fn_void",
+      "parameter_types": [
+        "bool"
+      ],
+      "return_type": "void"
+    }
+  ],
+  "snapshot_generation": 42
+}"#;
+
+    #[cfg(target_arch = "aarch64")]
+    const PINNED_CALL: &str = r#"{
+  "hyperlight_version": "x.y.z",
+  "arch": "aarch64",
+  "abi_version": 1,
+  "hypervisor": "mshv",
+  "cpu_vendor": "intel",
+  "stack_top_gva": 3735928559,
+  "entrypoint_addr": 8192,
+  "sregs": {
+    "tcr_el1": 1,
+    "mair_el1": 2,
+    "sctlr_el1": 3,
+    "cpacr_el1": 4,
+    "vbar_el1": 5,
+    "sp_el1": 6
+  },
+  "layout": {
+    "input_data_size": 1,
+    "output_data_size": 2,
+    "heap_size": 3,
+    "code_size": 4,
+    "init_data_size": 5,
+    "init_data_permissions": null,
+    "scratch_size": 8,
+    "snapshot_size": 9,
+    "pt_size": null
+  },
+  "memory_size": 65536,
+  "host_functions": [
+    {
+      "function_name": "fn_void",
+      "parameter_types": [
+        "bool"
+      ],
+      "return_type": "void"
+    }
+  ],
+  "snapshot_generation": 42
+}"#;
+
+    const PINNED_ARCH: &str = r#"[
+  "x86_64",
+  "aarch64"
+]"#;
+
+    const PINNED_HYPERVISOR: &str = r#"[
+  "kvm",
+  "mshv",
+  "whp"
+]"#;
+
+    fn assert_round_trip(pinned: &str) {
+        let parsed: OciSnapshotConfig =
+            serde_json::from_str(pinned).expect("pinned JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(
+            actual.trim(),
+            pinned.trim(),
+            "Snapshot config JSON schema changed. If the change can break \
+             existing snapshots on disk, bump `MT_CONFIG_V1` in \
+             `super::media_types` and follow `docs/snapshot-versioning.md`. \
+             Either way, paste the actual output below into the matching \
+             `PINNED_*`.\n\nactual:\n{actual}"
+        );
+    }
+
+    #[test]
+    fn call_round_trip() {
+        assert_round_trip(PINNED_CALL);
+    }
+
+    #[test]
+    fn arch_variants_round_trip() {
+        let parsed: Vec<Arch> =
+            serde_json::from_str(PINNED_ARCH).expect("pinned arch JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(actual.trim(), PINNED_ARCH.trim(), "Arch variants changed.");
+    }
+
+    #[test]
+    fn hypervisor_variants_round_trip() {
+        let parsed: Vec<Hypervisor> = serde_json::from_str(PINNED_HYPERVISOR)
+            .expect("pinned hypervisor JSON must deserialize");
+        let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        assert_eq!(
+            actual.trim(),
+            PINNED_HYPERVISOR.trim(),
+            "Hypervisor variants changed."
+        );
     }
 }

@@ -70,6 +70,12 @@ In addition to **kind/*** labels, we use optional **area/*** labels to specify t
 - **area/security** - Involves security-related changes or fixes.
 - **area/testing** - Related to tests or testing infrastructure.
 
+## Workflow labels
+
+Some labels change CI behaviour on a PR rather than categorizing it:
+
+- **regen-goldens** - Switches the snapshot golden verify job into regenerate mode. A PR that intentionally changes the snapshot format and bumps `GOLDENS_VERSION` carries this label so the verify job generates the goldens from the branch and runs them back through the branch loader, rather than pulling a published tag set that does not exist yet. See [snapshot-versioning.md](snapshot-versioning.md).
+
 
 ## Notes
 This document is a work in progress and may be updated as needed. The labels and categories are subject to change based on the evolving needs of the project and community feedback.

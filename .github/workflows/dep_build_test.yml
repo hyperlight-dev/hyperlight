@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: "false"
+      should_regen_goldens:
+        description: Regenerate snapshot goldens from the branch and skip pulling published ones
+        required: false
+        type: string
+        default: "false"
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,6 +48,7 @@ env:
 
 permissions:
   contents: read
+  packages: read
 
 defaults:
   run:
@@ -179,3 +185,34 @@ jobs:
         env:
           RUST_LOG: debug
         run: just test-rust-tracing ${{ inputs.config }}
+
+      - name: Install oras
+        uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2.0.0
+        with:
+          version: 1.3.1
+
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # login technically not needed for reading public packages, but might avoid potential rate limiting
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+      - name: Snapshot goldens (pull and verify)
+        if: ${{ inputs.should_regen_goldens != 'true' }}
+        run: |
+          just snapshot-goldens-pull ${{ inputs.config }}
+          just snapshot-goldens-verify ${{ inputs.config }}
+
+      - name: Snapshot goldens (regenerate and verify)
+        if: ${{ inputs.should_regen_goldens == 'true' }}
+        run: |
+          # regenerate goldens from current branch
+          just snapshot-goldens-regenerate ${{ inputs.config }}
+
+          # pull the goldens that are "compatible" with current branch (if any) without overwriting the regenerated ones
+          just snapshot-goldens-pull ${{ inputs.config }} compat
+
+          # verify current code against the regenerated and compat goldens
+          just snapshot-goldens-verify ${{ inputs.config }}

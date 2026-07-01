@@ -36,8 +36,10 @@ use self::config::{Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciS
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
-    ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME, MT_CONFIG_CURRENT,
-    MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
+    ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
+};
+pub(super) use self::media_types::{
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
@@ -45,7 +47,15 @@ use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 
-const OCI_LAYOUT_VERSION: &str = "1.0.0";
+pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
+
+/// Short golden-tag token for the host CPU vendor, or `None` if the
+/// goldens do not cover it. Exposed for the snapshot golden tests so
+/// they share the host crate's vendor detection.
+#[doc(hidden)]
+pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
+    CpuVendor::current().golden_tag()
+}
 
 /// Maximum size of any JSON blob read from disk during load:
 /// `oci-layout`, `index.json`, the OCI image manifest, and the
@@ -576,15 +586,15 @@ impl Snapshot {
             entrypoint_addr,
             sregs: *sregs,
             layout: MemoryLayout {
-                input_data_size: l.input_data_size,
-                output_data_size: l.output_data_size,
-                heap_size: l.heap_size,
-                code_size: l.code_size,
-                init_data_size: l.init_data_size,
-                init_data_permissions: l.init_data_permissions.map(|f| f.bits()),
+                input_data_size: l.input_data_size(),
+                output_data_size: l.output_data_size(),
+                heap_size: l.heap_size(),
+                code_size: l.code_size(),
+                init_data_size: l.init_data_size(),
+                init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
-                snapshot_size: l.snapshot_size,
-                pt_size: l.pt_size,
+                snapshot_size: l.snapshot_size(),
+                pt_size: l.pt_size(),
             },
             memory_size: self.memory.mem_size() as u64,
             host_functions,
@@ -803,10 +813,10 @@ impl Snapshot {
         // does not bound `snapshot_size` from below, since a smaller
         // `snapshot_size` can be offset by a larger `pt_size`.
         let required_memory_size = layout.get_memory_size()? as u64;
-        if (layout.snapshot_size as u64) < required_memory_size {
+        if (layout.snapshot_size() as u64) < required_memory_size {
             return Err(crate::new_error!(
                 "snapshot snapshot_size ({}) is smaller than the layout size ({})",
-                layout.snapshot_size,
+                layout.snapshot_size(),
                 required_memory_size
             ));
         }
@@ -821,7 +831,7 @@ impl Snapshot {
         //    of the snapshot region avoids overlap with
         //    `map_file_cow` regions installed immediately after the
         //    snapshot in guest PA space.
-        let memory = ReadonlySharedMemory::from_file(&snap_file, layout.snapshot_size)?;
+        let memory = ReadonlySharedMemory::from_file(&snap_file, layout.snapshot_size())?;
 
         // The size validation in `open_snapshot_blob` stats the file
         // before mapping. Nothing prevents the file from being

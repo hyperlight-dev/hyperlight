@@ -81,15 +81,74 @@ jobs:
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
 
+  # Pick the goldens mode. The `regen-goldens` label means regenerate. No label means pull.
+  # Also validate the label against the goldens state so a stale or missing label fails fast.
+  check-golden-label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      packages: read
+    outputs:
+      should_regen_goldens: ${{ steps.check.outputs.should_regen_goldens || 'false' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install oras
+        uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2.0.0
+        with:
+          version: 1.3.1
+
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # login technically not needed for reading public packages, but might avoid potential rate limiting
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+      - id: check
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          labels="$(gh pr view ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} --json labels -q '.labels[].name')"
+          if grep -qx regen-goldens <<<"$labels"; then
+            echo "should_regen_goldens=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_regen_goldens=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate regen-goldens label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          just snapshot-goldens-check-label "${{ steps.check.outputs.should_regen_goldens }}" FETCH_HEAD
+
   # Build and test - needs guest artifacts
   build-test:
     needs:
       - docs-pr
       - build-guests
+      - check-golden-label
     # Required because update-guest-locks is skipped on non-dependabot PRs,
     # and a skipped dependency transitively skips all downstream jobs.
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
+    permissions:
+      # checkout in the called workflow
+      contents: read
+      # pull goldens from GHCR in the called workflow
+      packages: read
     strategy:
       fail-fast: true
       matrix:
@@ -116,6 +175,7 @@ jobs:
       cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
+      should_regen_goldens: ${{ needs.check-golden-label.outputs.should_regen_goldens }}
 
   # Run examples - needs guest artifacts, runs in parallel with build-test
   run-examples:
@@ -191,6 +251,7 @@ jobs:
       - update-guest-locks
       - build-guests
       - code-checks
+      - check-golden-label
       - build-test
       - run-examples
       - fuzzing
