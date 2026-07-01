@@ -107,9 +107,11 @@ impl ScratchZeroStrategy {
         match self {
             Self::Fresh => true,
             Self::Eager => false,
-            Self::Auto => {
-                !cfg!(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))
-            }
+            Self::Auto => !cfg!(all(
+                target_os = "linux",
+                feature = "kvm",
+                not(any(feature = "mshv3"))
+            )),
         }
     }
 }
@@ -155,8 +157,11 @@ mod scratch_zero_strategy_tests {
 
     #[test]
     fn auto_uses_inplace_only_on_kvm_without_mshv3() {
-        let expect_inplace =
-            cfg!(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))));
+        let expect_inplace = cfg!(all(
+            target_os = "linux",
+            feature = "kvm",
+            not(any(feature = "mshv3"))
+        ));
         assert_eq!(
             ScratchZeroStrategy::Auto.use_fresh_scratch(),
             !expect_inplace

@@ -58,6 +58,41 @@ const DEFAULT_RESTORES: usize = 50;
 /// warm-up), so the leak check observes only steady-state growth.
 const WARMUP_RESTORES: usize = 5;
 
+/// A label describing the build/runtime configuration, so results from the same
+/// test across the CI matrix can be told apart. The enabled Cargo features are
+/// the key disambiguator: the suite runs once with default features and again
+/// with `trace_guest` (which adds per-exit overhead and changes the timings).
+fn config_label() -> String {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let mut features = Vec::new();
+    for (name, enabled) in [
+        ("kvm", cfg!(feature = "kvm")),
+        ("mshv3", cfg!(feature = "mshv3")),
+        ("executable_heap", cfg!(feature = "executable_heap")),
+        ("trace_guest", cfg!(feature = "trace_guest")),
+        ("gdb", cfg!(feature = "gdb")),
+        ("mem_profile", cfg!(feature = "mem_profile")),
+    ] {
+        if enabled {
+            features.push(name);
+        }
+    }
+    let features = if features.is_empty() {
+        "none".to_owned()
+    } else {
+        features.join("+")
+    };
+    format!(
+        "os={} arch={} profile={profile} features={features}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Process memory probes
 //
@@ -113,8 +148,7 @@ fn current_rss_bytes() -> u64 {
     // SAFETY: `counters` is a valid, correctly-sized PROCESS_MEMORY_COUNTERS; the
     // pseudo-handle from GetCurrentProcess needs no closing.
     unsafe {
-        GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, cb)
-            .expect("GetProcessMemoryInfo");
+        GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, cb).expect("GetProcessMemoryInfo");
     }
     counters.WorkingSetSize as u64
 }
@@ -237,8 +271,10 @@ fn run_strategy(strategy: &str) {
     unsafe { std::env::set_var(STRATEGY_ENV, strategy) };
 
     let restores = restores_from_env();
-    let measurements: Vec<Measurement> =
-        SCRATCH_SIZES.iter().map(|&s| measure(s, restores)).collect();
+    let measurements: Vec<Measurement> = SCRATCH_SIZES
+        .iter()
+        .map(|&s| measure(s, restores))
+        .collect();
 
     // SAFETY: see above.
     unsafe { std::env::remove_var(STRATEGY_ENV) };
@@ -264,12 +300,13 @@ fn run_strategy(strategy: &str) {
 /// Emit results to stdout, an optional results file, and the GitHub Actions step
 /// summary (when present).
 fn report(strategy: &str, measurements: &[Measurement]) {
+    let config = config_label();
     let mut lines = String::new();
     for m in measurements {
         let _ = writeln!(
             lines,
-            "SCRATCH_PERF strategy={strategy} scratch_mib={} restores={} mean_us={} min_us={} \
-             max_us={} rss_before_kib={} rss_after_kib={} {LEAK_GAUGE_NAME}_before={} \
+            "SCRATCH_PERF strategy={strategy} {config} scratch_mib={} restores={} mean_us={} \
+             min_us={} max_us={} rss_before_kib={} rss_after_kib={} {LEAK_GAUGE_NAME}_before={} \
              {LEAK_GAUGE_NAME}_after={} leak_growth={}",
             m.scratch_bytes / MIB,
             m.restores,
@@ -296,16 +333,23 @@ fn report(strategy: &str, measurements: &[Measurement]) {
 
 fn append_to_env_file(env_var: &str, contents: &str) {
     use std::io::Write as _;
-    if let Ok(path) = std::env::var(env_var) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = f.write_all(contents.as_bytes());
-        }
+    if let Ok(path) = std::env::var(env_var)
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+    {
+        let _ = f.write_all(contents.as_bytes());
     }
 }
 
 fn append_step_summary(strategy: &str, measurements: &[Measurement]) {
     let mut md = String::new();
-    let _ = writeln!(md, "\n#### scratch-zero strategy: `{strategy}`\n");
+    let _ = writeln!(
+        md,
+        "\n#### scratch-zero strategy: `{strategy}` — {}\n",
+        config_label()
+    );
     let _ = writeln!(
         md,
         "| scratch (MiB) | restores | mean (µs) | min (µs) | max (µs) | {LEAK_GAUGE_NAME} growth |"
