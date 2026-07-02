@@ -342,7 +342,7 @@ mod tests {
     use std::process::Command;
 
     use hyperlight_host::sandbox::SandboxConfiguration;
-    use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+    use hyperlight_host::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
     use serial_test::serial;
 
     #[cfg(not(windows))]
@@ -431,8 +431,9 @@ mod tests {
         sbox.generate_crashdump_to_dir(dump_dir.to_string_lossy())
             .expect("generate_crashdump should succeed");
 
-        // Find the generated hl_core_*.elf file
-        let mut elf_files: Vec<PathBuf> = fs::read_dir(dump_dir)
+        // Find the generated hl_core_*.elf file. The dump dir is a fresh
+        // per-test tempdir, so exactly one core must be present.
+        let elf_files: Vec<PathBuf> = fs::read_dir(dump_dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -443,15 +444,161 @@ mod tests {
             })
             .collect();
 
-        assert!(
-            !elf_files.is_empty(),
-            "No core dump file (hl_core_*.elf) found in {}",
-            dump_dir.display()
+        assert_eq!(
+            elf_files.len(),
+            1,
+            "Expected exactly one core dump file (hl_core_*.elf) in {}, found {}",
+            dump_dir.display(),
+            elf_files.len()
         );
 
-        // Return the newest one (lexicographic sort by timestamp works)
-        elf_files.sort();
-        elf_files.pop().unwrap()
+        elf_files.into_iter().next().unwrap()
+    }
+
+    /// Snapshot an initialized sandbox, build a fresh sandbox from that
+    /// snapshot, trigger a crash on it, and return the path to the generated
+    /// ELF core dump. Used to check that crash dumps from snapshot-created
+    /// sandboxes resolve symbols the same way as directly-evolved ones.
+    fn generate_crashdump_from_snapshot(dump_dir: &Path) -> PathBuf {
+        let guest_path =
+            hyperlight_testing::simple_guest_as_string().expect("Cannot find simpleguest binary");
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_guest_core_dump(true);
+        let u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg)).unwrap();
+        let mut sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+
+        let snapshot = sbox.snapshot().expect("snapshot");
+
+        let mut cfg2 = SandboxConfiguration::default();
+        cfg2.set_guest_core_dump(true);
+        let mut sbox2 =
+            MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(cfg2)).unwrap();
+
+        let result = sbox2.call::<()>("TriggerException", ());
+        assert!(result.is_err(), "TriggerException should return an error");
+
+        sbox2
+            .generate_crashdump_to_dir(dump_dir.to_string_lossy())
+            .expect("generate_crashdump should succeed");
+
+        // The dump dir is a fresh per-test tempdir, so exactly one core
+        // must be present.
+        let elf_files: Vec<PathBuf> = fs::read_dir(dump_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map_or(false, |n| n.starts_with("hl_core_") && n.ends_with(".elf"))
+            })
+            .collect();
+
+        assert_eq!(
+            elf_files.len(),
+            1,
+            "Expected exactly one core dump file (hl_core_*.elf) in {}, found {}",
+            dump_dir.display(),
+            elf_files.len()
+        );
+
+        elf_files.into_iter().next().unwrap()
+    }
+
+    /// Load `core_path` in GDB against the guest binary and assert that
+    /// `info symbol $pc` resolves to the guest function that raised the abort.
+    /// Resolving to the correct symbol only works when the core's `AT_ENTRY`
+    /// conveys the right PIE load bias. A wrong bias still resolves `$pc` to
+    /// *some* symbol, just the wrong one, so the expected name is asserted.
+    ///
+    /// As an independent check on the underlying mechanism, this also reads
+    /// the auxiliary vector (`info auxv`) and asserts the `AT_ENTRY` entry is
+    /// present and non-zero. GDB derives the PIE load bias from `AT_ENTRY`, so
+    /// a zero (or missing) value is the exact defect a broken entry point
+    /// produces, independent of GDB's symbol-relocation heuristics.
+    fn assert_gdb_resolves_pc_symbol(dump_dir: &Path, core_path: &Path) {
+        // The crash path is deterministic: TriggerException raises a CPU
+        // exception, and the guest handler reports it to the host via the
+        // abort/`outb` path, so `$pc` sits in that path when the dump is
+        // taken. Which exact leaf `$pc` lands on depends on inlining
+        // (`hyperlight_guest::exit::write_abort` when inlined, the
+        // `hyperlight_guest::exit::arch::out32` leaf in a non-inlined debug
+        // build), so we assert on the shared `hyperlight_guest::exit::`
+        // module prefix rather than one specific function.
+        const EXPECTED_SYMBOL: &str = "hyperlight_guest::exit::";
+
+        let guest_path = hyperlight_testing::simple_guest_as_string().expect("simpleguest binary");
+
+        let cmd_file = dump_dir.join("gdb_sym_cmds.txt");
+        let out_file = dump_dir.join("gdb_sym_output.txt");
+
+        let cmds = format!(
+            "\
+set pagination off
+set logging file {out}
+set logging enabled on
+file {binary}
+core-file {core}
+echo === SYMBOL ===\\n
+info symbol $pc
+echo === AUXV ===\\n
+info auxv
+echo === DONE ===\\n
+set logging enabled off
+quit
+",
+            out = out_file.display(),
+            binary = guest_path,
+            core = core_path.display(),
+        );
+
+        let gdb_output = run_gdb_batch(&cmd_file, &out_file, &cmds);
+        println!("GDB symbol output:\n{gdb_output}");
+
+        assert!(
+            gdb_output.contains("=== SYMBOL ==="),
+            "GDB should have printed the SYMBOL marker.\nOutput:\n{gdb_output}"
+        );
+        assert!(
+            !gdb_output.contains("No symbol matches $pc"),
+            "GDB failed to resolve $pc to a symbol — this indicates the core's \
+             AT_ENTRY does not convey the correct PIE load bias.\nOutput:\n{gdb_output}"
+        );
+        assert!(
+            gdb_output.contains(EXPECTED_SYMBOL),
+            "GDB resolved $pc to the wrong symbol — the core's AT_ENTRY conveys \
+             an incorrect PIE load bias. Expected `{EXPECTED_SYMBOL}`.\nOutput:\n{gdb_output}"
+        );
+
+        // Independent mechanism check: AT_ENTRY must be present and non-zero.
+        // `info auxv` prints one entry per line, e.g.
+        //   `9   AT_ENTRY   Entry point of program   0x200000da0`
+        // The value is the last whitespace-separated token on the line.
+        let at_entry = gdb_output
+            .lines()
+            .find(|l| l.contains("AT_ENTRY"))
+            .unwrap_or_else(|| panic!("info auxv did not report AT_ENTRY.\nOutput:\n{gdb_output}"));
+        let value_tok = at_entry
+            .split_whitespace()
+            .next_back()
+            .expect("AT_ENTRY line has a value token");
+        let value = value_tok
+            .strip_prefix("0x")
+            .and_then(|h| u64::from_str_radix(h, 16).ok())
+            .unwrap_or_else(|| {
+                panic!("could not parse AT_ENTRY value {value_tok:?}.\nOutput:\n{gdb_output}")
+            });
+        assert!(
+            value != 0,
+            "AT_ENTRY is zero — the core does not convey the guest's entry \
+             point, so GDB cannot compute the PIE load bias.\nOutput:\n{gdb_output}"
+        );
+
+        assert!(
+            gdb_output.contains("=== DONE ==="),
+            "GDB should have completed successfully.\nOutput:\n{gdb_output}"
+        );
     }
 
     /// Write GDB batch commands to `cmd_path`, run GDB, and return the
@@ -590,5 +737,41 @@ quit
             gdb_output.contains("=== DONE ==="),
             "GDB should have completed successfully.\nOutput:\n{gdb_output}"
         );
+    }
+
+    /// Verify that GDB can resolve a guest symbol from the crash dump.
+    ///
+    /// Symbol resolution for the PIE guest binary only works if the core's
+    /// `AT_ENTRY` auxv entry conveys the correct load bias: GDB computes the
+    /// bias as `AT_ENTRY - e_entry` and applies it to the binary's symbols.
+    /// If `AT_ENTRY` is wrong (e.g. zero), GDB cannot match `$pc` to any
+    /// symbol, so this test guards that the entry point is reported correctly.
+    #[test]
+    #[serial]
+    fn test_crashdump_gdb_symbols() {
+        if !gdb_is_available() {
+            eprintln!("Skipping test: {GDB_COMMAND} not found on PATH");
+            return;
+        }
+
+        let dump_dir = tempfile::tempdir().expect("create temp dir");
+        let core_path = generate_crashdump_with_content(dump_dir.path());
+        assert_gdb_resolves_pc_symbol(dump_dir.path(), &core_path);
+    }
+
+    /// Same symbol-resolution guarantee as [`test_crashdump_gdb_symbols`], but
+    /// for a sandbox created from a snapshot. The crash dump must convey the
+    /// same `AT_ENTRY` so symbols resolve identically.
+    #[test]
+    #[serial]
+    fn test_crashdump_gdb_symbols_from_snapshot() {
+        if !gdb_is_available() {
+            eprintln!("Skipping test: {GDB_COMMAND} not found on PATH");
+            return;
+        }
+
+        let dump_dir = tempfile::tempdir().expect("create temp dir");
+        let core_path = generate_crashdump_from_snapshot(dump_dir.path());
+        assert_gdb_resolves_pc_symbol(dump_dir.path(), &core_path);
     }
 }
