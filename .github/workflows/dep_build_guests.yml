@@ -87,6 +87,11 @@ jobs:
           just build-rust-guests ${{ inputs.config }}
           just move-rust-guests ${{ inputs.config }}
 
+      - name: Build non-PIE Rust guests
+        run: |
+          just build-rust-guests-non-pie ${{ inputs.config }}
+          just move-rust-guests-non-pie ${{ inputs.config }}
+
       - name: Build C guests
         run: |
           just build-c-guests ${{ inputs.config }}

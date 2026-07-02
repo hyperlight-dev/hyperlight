@@ -34,7 +34,9 @@ use crate::Result;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{
+    GuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionType,
+};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -322,6 +324,14 @@ impl Snapshot {
         let load_addr = layout.get_guest_code_address() as u64;
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
+        let loaded_size = exe_info.loaded_size() as u64;
+        let is_pie = exe_info.is_pie();
+
+        // Determine the virtual base address for the code region.
+        // For non-PIE binaries (ET_EXEC), the code should appear at the
+        // ELF's declared virtual address. For PIE binaries (ET_DYN),
+        // we use the physical load address (identity mapping).
+        let code_virt_base = if !is_pie { base_va } else { load_addr };
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
@@ -337,6 +347,29 @@ impl Snapshot {
 
         // Set up page table entries for the snapshot
         let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
+
+        // Verify the non-PIE code mapping does not conflict with other mappings.
+        // PIE uses identity mapping so the code region can't conflict by definition.
+        if !is_pie {
+            let code_virt_end = code_virt_base + loaded_size;
+            for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
+                if rgn.region_type == MemoryRegionType::Code {
+                    continue;
+                }
+                let rgn_start = rgn.guest_region.start as u64;
+                let rgn_end = rgn_start + rgn.guest_region.len() as u64;
+                if code_virt_base < rgn_end && rgn_start < code_virt_end {
+                    return Err(crate::new_error!(
+                        "Code mapping [{:#x}, {:#x}) conflicts with {:?} region [{:#x}, {:#x})",
+                        code_virt_base,
+                        code_virt_end,
+                        rgn.region_type,
+                        rgn_start,
+                        rgn_end,
+                    ));
+                }
+            }
+        }
 
         // 1. Map the (ideally readonly) pages of snapshot data
         for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
@@ -355,9 +388,25 @@ impl Snapshot {
                     executable,
                 })
             };
+
+            // For the code region, use code_virt_base as the GVA.
+            // For non-PIE this is the ELF's declared base VA (non-identity mapping).
+            // For PIE this should equal the GPA (identity mapping).
+            let virt_base = if rgn.region_type == MemoryRegionType::Code {
+                if is_pie {
+                    assert_eq!(
+                        code_virt_base, rgn.guest_region.start as u64,
+                        "PIE code region should be identity-mapped"
+                    );
+                }
+                code_virt_base
+            } else {
+                rgn.guest_region.start as u64
+            };
+
             let mapping = Mapping {
                 phys_base: rgn.guest_region.start as u64,
-                virt_base: rgn.guest_region.start as u64,
+                virt_base,
                 len: rgn.guest_region.len() as u64,
                 kind,
             };
@@ -375,13 +424,21 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
+        let entrypoint_offset = entrypoint_va.checked_sub(base_va).ok_or_else(|| {
+            crate::new_error!(
+                "ELF entrypoint VA ({:#x}) is below base VA ({:#x})",
+                entrypoint_va,
+                base_va
+            )
+        })?;
+
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
             layout,
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
+            entrypoint: NextAction::Initialise(code_virt_base + entrypoint_offset),
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
                 host_functions: None,
