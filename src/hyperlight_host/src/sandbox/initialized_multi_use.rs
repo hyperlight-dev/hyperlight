@@ -294,7 +294,7 @@ impl MultiUseSandbox {
         // If the snapshot was taken from an already-initialized guest
         // (NextAction::Call), apply the captured special registers so
         // the guest resumes in the correct CPU state.
-        if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
+        if matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_)) {
             let sregs = snapshot.sregs().ok_or_else(|| {
                 crate::new_error!("snapshot with NextAction::Call must have captured sregs")
             })?;
@@ -385,7 +385,7 @@ impl MultiUseSandbox {
             .vm
             .get_snapshot_sregs()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        let entrypoint = self.vm.get_entrypoint();
+        let next_action = self.vm.get_next_action();
         let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
         })?)
@@ -396,7 +396,7 @@ impl MultiUseSandbox {
             &root_pt_gpas,
             stack_top_gpa,
             sregs,
-            entrypoint,
+            next_action,
             host_functions,
         )?;
         let snapshot = Arc::new(memory_snapshot);
@@ -544,7 +544,7 @@ impl MultiUseSandbox {
             })?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
-        self.vm.set_entrypoint(snapshot.entrypoint());
+        self.vm.set_next_action(snapshot.next_action());
 
         let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
         for region in &current_regions {

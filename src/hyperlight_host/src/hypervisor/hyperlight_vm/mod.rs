@@ -372,7 +372,7 @@ pub(crate) struct HyperlightVm {
     #[cfg(not(gdb))]
     pub(super) vm: Box<dyn VirtualMachine>,
     pub(super) page_size: usize,
-    pub(super) entrypoint: NextAction, // only present if this vm has not yet been initialised
+    pub(super) next_action: NextAction, // `Initialise` before the guest has run, `Call` afterwards
     pub(super) rsp_gva: u64,
     pub(super) interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
@@ -565,14 +565,14 @@ impl HyperlightVm {
         self.rsp_gva = gva;
     }
 
-    /// Get the current entrypoint action
-    pub(crate) fn get_entrypoint(&self) -> NextAction {
-        self.entrypoint
+    /// Get the next action to perform when the sandbox resumes
+    pub(crate) fn get_next_action(&self) -> NextAction {
+        self.next_action
     }
 
-    /// Set the current entrypoint action
-    pub(crate) fn set_entrypoint(&mut self, entrypoint: NextAction) {
-        self.entrypoint = entrypoint
+    /// Set the next action to perform when the sandbox resumes
+    pub(crate) fn set_next_action(&mut self, next_action: NextAction) {
+        self.next_action = next_action
     }
 
     pub(crate) fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {

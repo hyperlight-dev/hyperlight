@@ -549,7 +549,7 @@ impl Snapshot {
     }
 
     fn build_config(&self) -> crate::Result<OciSnapshotConfig> {
-        let (entrypoint_addr, sregs) = match (self.entrypoint, self.sregs.as_ref()) {
+        let (entrypoint_addr, sregs) = match (self.next_action, self.sregs.as_ref()) {
             (NextAction::Call(addr), Some(sregs)) => (addr, sregs),
             (NextAction::Call(_), None) => {
                 return Err(crate::new_error!(
@@ -847,8 +847,8 @@ impl Snapshot {
             ));
         }
 
-        // 8. Build entrypoint + sregs back from the config.
-        let entrypoint = NextAction::Call(cfg.entrypoint_addr);
+        // 8. Build the next action + sregs back from the config.
+        let next_action = NextAction::Call(cfg.entrypoint_addr);
 
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
@@ -871,7 +871,7 @@ impl Snapshot {
             load_info: crate::mem::exe::LoadInfo::dummy(),
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
-            entrypoint,
+            next_action,
             snapshot_generation,
             host_functions,
         })

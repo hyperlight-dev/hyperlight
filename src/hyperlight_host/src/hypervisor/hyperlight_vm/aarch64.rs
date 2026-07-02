@@ -51,7 +51,7 @@ impl HyperlightVm {
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         root_pt_addr: u64,
-        entrypoint: NextAction,
+        next_action: NextAction,
         rsp_gva: u64,
         page_size: usize,
         config: &SandboxConfiguration,
@@ -84,7 +84,7 @@ impl HyperlightVm {
         let vm_can_reset_vcpu = vm.can_reset_vcpu();
         let mut ret = Self {
             vm,
-            entrypoint,
+            next_action,
             rsp_gva,
             interrupt_handle,
             page_size,
@@ -119,7 +119,7 @@ impl HyperlightVm {
             std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
         >,
     ) -> Result<(), InitializeError> {
-        let NextAction::Initialise(initialise) = self.entrypoint else {
+        let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
         };
         let mut x: [u64; 31] = [0; 31];
@@ -149,7 +149,7 @@ impl HyperlightVm {
             return Err(InitializeError::InvalidStackPointer(regs.sp));
         }
         self.rsp_gva = regs.sp;
-        self.entrypoint = NextAction::Call(regs.x[0]);
+        self.next_action = NextAction::Call(regs.x[0]);
 
         Ok(())
     }
@@ -162,7 +162,7 @@ impl HyperlightVm {
             std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
         >,
     ) -> Result<(), DispatchGuestCallError> {
-        let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
+        let NextAction::Call(dispatch_func_addr) = self.next_action else {
             return Err(DispatchGuestCallError::Uninitialized);
         };
         let mut regs = CommonRegisters {

@@ -93,7 +93,7 @@ pub struct Snapshot {
     sregs: Option<CommonSpecialRegisters>,
 
     /// The next action that should be performed on this snapshot
-    entrypoint: NextAction,
+    next_action: NextAction,
 
     /// The generation number assigned to this snapshot when it was
     /// taken — i.e. "this is the Nth snapshot taken from the sandbox's
@@ -381,7 +381,7 @@ impl Snapshot {
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
+            next_action: NextAction::Initialise(load_addr + entrypoint_va - base_va),
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
                 host_functions: None,
@@ -407,7 +407,7 @@ impl Snapshot {
         root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
-        entrypoint: NextAction,
+        next_action: NextAction,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
     ) -> Result<Self> {
@@ -560,7 +560,7 @@ impl Snapshot {
             load_info,
             stack_top_gva,
             sregs: Some(sregs),
-            entrypoint,
+            next_action,
             snapshot_generation,
             host_functions,
         })
@@ -603,8 +603,8 @@ impl Snapshot {
         self.sregs.as_ref()
     }
 
-    pub(crate) fn entrypoint(&self) -> NextAction {
-        self.entrypoint
+    pub(crate) fn next_action(&self) -> NextAction {
+        self.next_action
     }
 
     /// Validate that `provided` is a superset of the host functions
