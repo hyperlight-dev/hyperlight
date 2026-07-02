@@ -12,7 +12,7 @@ We use GitHub labels to categorize PRs. Before a PR can be merged, it must be as
 We use the **ready-for-review** label to signal that a PR is waiting for a (re-)review:
 
 - **Add** `ready-for-review` when you open a PR that is ready for review, or when a PR is ready for re-review (for example, once you have addressed requested changes and re-requested review).
-- The label is **removed automatically** by the [`Ready-for-review label`](../.github/workflows/ready-for-review-label.yml) workflow once the PR is no longer awaiting that review, specifically when any of the following become true:
+- The label is **removed automatically** by the ready-for-review label automation (the [`collect`](../.github/workflows/ready-for-review-label.yml) and [`manage`](../.github/workflows/ready-for-review-manage.yml) workflows) once the PR is no longer awaiting that review, specifically when any of the following become true:
   - the PR is closed or merged,
   - the PR is converted to a draft,
   - the PR has two or more approvals, or
