@@ -575,6 +575,13 @@ impl HyperlightVm {
         self.next_action = next_action
     }
 
+    /// Set the guest ELF entry point used to fill `AT_ENTRY` in
+    /// crashdumps.
+    #[cfg(crashdump)]
+    pub(crate) fn set_crashdump_entry_point(&mut self, entry_point: u64) {
+        self.rt_cfg.entry_point = Some(entry_point);
+    }
+
     pub(crate) fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
     }

@@ -584,6 +584,7 @@ impl Snapshot {
             cpu_vendor: CpuVendor::current(),
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
+            original_entrypoint_addr: self.original_entrypoint,
             sregs: *sregs,
             layout: MemoryLayout {
                 input_data_size: l.input_data_size(),
@@ -872,6 +873,7 @@ impl Snapshot {
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
             next_action,
+            original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,
             host_functions,
         })

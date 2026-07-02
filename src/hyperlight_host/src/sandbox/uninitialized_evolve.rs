@@ -153,12 +153,14 @@ pub(crate) fn set_up_hypervisor_partition(
     // Store the original entry point address in the runtime config for core dumps.
     // This is needed because `next_action` transitions from `Initialise(addr)` to
     // `Call(dispatch_addr)` after guest initialisation, losing the original value
-    // that GDB needs to compute the PIE binary's load offset.
+    // that GDB needs to compute the PIE binary's load offset. The manager carries
+    // it across that transition (and across snapshot save/restore), so it is
+    // correct for both the evolve path and `MultiUseSandbox::from_snapshot`.
     #[cfg(crashdump)]
     let rt_cfg = {
         let mut rt_cfg = rt_cfg;
-        if let crate::sandbox::snapshot::NextAction::Initialise(addr) = mgr.next_action {
-            rt_cfg.entry_point = Some(addr);
+        if mgr.original_entrypoint != 0 {
+            rt_cfg.entry_point = Some(mgr.original_entrypoint);
         }
         rt_cfg
     };

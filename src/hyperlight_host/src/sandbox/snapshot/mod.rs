@@ -95,6 +95,15 @@ pub struct Snapshot {
     /// The next action that should be performed on this snapshot
     next_action: NextAction,
 
+    /// Guest virtual address of the guest binary's ELF entry point
+    /// (`load_addr + e_entry - base_va`). Unlike `next_action`, which
+    /// transitions to `Call(dispatch_addr)` once the guest has run,
+    /// this preserves the original entry across that transition. Used
+    /// to fill `AT_ENTRY` in guest core dumps so a debugger can
+    /// compute the PIE load bias. 0 if unknown (e.g. an older
+    /// on-disk snapshot that predates this field).
+    original_entrypoint: u64,
+
     /// The generation number assigned to this snapshot when it was
     /// taken — i.e. "this is the Nth snapshot taken from the sandbox's
     /// execution path from init to here". Propagated into the
@@ -375,13 +384,16 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
+        let entrypoint_gva = load_addr + entrypoint_va - base_va;
+
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
             layout,
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            next_action: NextAction::Initialise(load_addr + entrypoint_va - base_va),
+            next_action: NextAction::Initialise(entrypoint_gva),
+            original_entrypoint: entrypoint_gva,
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
                 host_functions: None,
@@ -408,6 +420,7 @@ impl Snapshot {
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
         next_action: NextAction,
+        original_entrypoint: u64,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
     ) -> Result<Self> {
@@ -561,6 +574,7 @@ impl Snapshot {
             stack_top_gva,
             sregs: Some(sregs),
             next_action,
+            original_entrypoint,
             snapshot_generation,
             host_functions,
         })
@@ -605,6 +619,13 @@ impl Snapshot {
 
     pub(crate) fn next_action(&self) -> NextAction {
         self.next_action
+    }
+
+    /// Guest virtual address of the guest binary's ELF entry point,
+    /// preserved across the `Initialise` -> `Call` transition. Used
+    /// to fill `AT_ENTRY` in guest core dumps. 0 if unknown.
+    pub(crate) fn original_entrypoint(&self) -> u64 {
+        self.original_entrypoint
     }
 
     /// Validate that `provided` is a superset of the host functions
@@ -762,6 +783,7 @@ mod tests {
             0,
             default_sregs(),
             super::NextAction::None,
+            0,
             1,
             HostFunctionDetails::default(),
         )
@@ -779,6 +801,7 @@ mod tests {
             0,
             default_sregs(),
             super::NextAction::None,
+            0,
             2,
             HostFunctionDetails::default(),
         )

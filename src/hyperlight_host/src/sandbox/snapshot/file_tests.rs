@@ -1765,6 +1765,28 @@ fn entrypoint_addr_below_base_address_rejected() {
     assert_err_contains(err, "entrypoint addr");
 }
 
+#[test]
+fn original_entrypoint_addr_outside_snapshot_region_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        cfg["original_entrypoint_addr"] = Value::from(0xDEAD_BEEF_0000u64);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "original entrypoint addr");
+}
+
+#[test]
+fn original_entrypoint_addr_zero_accepted() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        cfg["original_entrypoint_addr"] = Value::from(0u64);
+    });
+    Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+}
+
 // `load`: skips blob digest verification, runs every
 // other validator.
 
