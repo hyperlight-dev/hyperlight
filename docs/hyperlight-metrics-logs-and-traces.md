@@ -137,27 +137,30 @@ runs `no_std` which `opentelemetry` doesn't know.
 
 ##### Guest
 
-When the guest starts executing the `entrypoint` function, it receives a `max_log_level` parameter that tells the guest what kind of logging level is expected from it.
+When the guest starts executing the `entrypoint` function, it receives a `max_log_level` parameter that tells the guest what logging level the host expects.
 
-The `trace_guest` logic takes advantage of this parameter and when the `max_log_level` is `trace`, it allocates a custom made `GuestSubscriber` that implements the `Subscriber`
-trait from `tracing_core` that allows defining a subscriber for the `tracing` crate to handle new spans and events.
+The `trace_guest` logic uses this parameter. When `max_log_level` is not `Off`, the guest installs a custom `GuestSubscriber` that implements the `Subscriber` trait from `tracing_core`, so it receives every span and event created through the `tracing` crate.
 
-This custom subscriber stores the spans and events in a buffer initialized only when tracing is enabled. For each new span and event, a method is called on the custom subscriber which not only stores the data, but also keeps track of the hierarchy and dependencies between the other spans/events.
-**NOTE**: The spans/events attributes are truncated to fit in the allocated buffer.
+The subscriber writes spans and events into a fixed-size buffer in guest memory. Each record keeps its parent link so the host can rebuild the hierarchy. Every span and event also records the current `TSC` value, which the host later turns into wall-clock timestamps.
 
-When the storage space is filled, the guest triggers a VM Exit that sends the guest pointers to the host. The host can access the guest memory, get the data and parse it to create the `spans` and `events` using the `opentelemetry` crate which allows specifying the starting and ending timestamps
-which are captured in the guest using the `TSC`.
-
-To improve performance, for each VMExit, the guest adds metadata for the host to be able to report the tracing data and free space.
+The guest delivers a batch by triggering a VM exit on the dedicated `TraceBatch` port. It passes the buffer pointer in `r9`, its length in `r10`, and the `TraceBatch` magic in `r8`. A batch is sent in two cases:
+* The buffer fills up.
+* The guest calls `flush()`. This happens after guest initialization, at the end of each guest function call, and on a deliberate abort.
 
 ##### Host
 
-When a guest exits, the host checks for metadata from the guest reporting tracing data.
-If tracing data is found, the host starts parsing it and reconstructing a tree which represents the spans hierarchy.
+The host reads a batch only on the VM exit that carries it, the `TraceBatch` port exit. It reads the pointer and length from the guest registers, walks the guest page tables to translate the guest virtual address to a physical address (needed because copy-on-write means guest pages are not identity-mapped), and reads the buffer.
 
-Additionally, the host also adds new children `span`s to the guest's reported active span, emphasizing the spans created on the host as a result of a temporary VM Exit. This helps visualize a call into the guest with context propagated across the VM boundary.
+The host decodes the batch and rebuilds the span hierarchy. It creates one `opentelemetry` span or event per guest record, using the `TSC` values to set explicit start and end times. It also inserts a `call-to-host` span for each exit into the host, so a call across the VM boundary shows host work as a child of the active guest span.
 
-The host creates `opentelemetry` spans and events for each guest span and event reported.
+A batch that fails to decode is logged and skipped. Trace data is advisory, so the guest keeps running.
+
+#### Limitations
+
+* Batches are delivered only on the `TraceBatch` exit, on buffer overflow or `flush()`. Normal function returns, guest initialization, deliberate aborts, and out-of-memory aborts flush. Panic and exception aborts use a raw abort path that does not flush, so their final buffered batch is lost.
+* A record larger than the buffer produces a batch that exceeds the host size limit, so the host drops that whole batch.
+* Guest tracing is gated at runtime by `max_log_level` (`Off` disables it) and at compile time by the `trace_guest` feature.
+* The host reconstructs guest spans with `opentelemetry`, so enabling `trace_guest` on the host pulls in the `opentelemetry` crates.
 
 ### Inspecting Guest memory Trace Files (for mem_profile)
 

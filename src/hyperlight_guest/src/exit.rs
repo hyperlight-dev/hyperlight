@@ -31,9 +31,11 @@ pub extern "C" fn abort() -> ! {
 
 /// Exits the VM with an Abort OUT action and a specific code.
 pub fn abort_with_code(code: &[u8]) -> ! {
-    // End any ongoing trace before aborting
+    // Send the buffered trace batch to the host before aborting. `flush`
+    // closes open spans, which allocates. An abort caused by allocation
+    // failure may lose the batch here.
     #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
-    hyperlight_guest_tracing::end_trace();
+    hyperlight_guest_tracing::flush();
     outb(OutBAction::Abort as u16, code);
     outb(OutBAction::Abort as u16, &[0xFF]); // send abort terminator (if not included in code)
     unreachable!()
@@ -44,9 +46,11 @@ pub fn abort_with_code(code: &[u8]) -> ! {
 /// # Safety
 /// This function is unsafe because it dereferences a raw pointer.
 pub unsafe fn abort_with_code_and_message(code: &[u8], message_ptr: *const c_char) -> ! {
-    // End any ongoing trace before aborting
+    // Send the buffered trace batch to the host before aborting. `flush`
+    // closes open spans, which allocates. An abort caused by allocation
+    // failure may lose the batch here.
     #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
-    hyperlight_guest_tracing::end_trace();
+    hyperlight_guest_tracing::flush();
     unsafe {
         // Step 1: Send abort code (typically 1 byte, but `code` allows flexibility)
         outb(OutBAction::Abort as u16, code);
@@ -75,7 +79,6 @@ pub fn write_abort(code: &[u8]) {
 
 /// OUT bytes to the host through multiple exits.
 pub(crate) fn outb(port: u16, data: &[u8]) {
-    // Ensure all tracing data is flushed before sending OUT bytes
     unsafe {
         let mut i = 0;
         while i < data.len() {

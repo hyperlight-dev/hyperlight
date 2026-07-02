@@ -622,11 +622,15 @@ impl HyperlightVm {
                 #[cfg(feature = "trace_guest")]
                 {
                     tc.end_host_trace();
-                    // Handle the guest trace data if any
-                    let regs = self.vm.regs().map_err(RunVmError::GetRegs)?;
 
-                    // Only parse the trace if it has reported
-                    if tc.has_trace_data(&regs) {
+                    // Guest trace batches arrive on the dedicated `TraceBatch`
+                    // port. Read the batch only on the exit that carries it. A
+                    // parse failure is logged and execution continues, since
+                    // trace data is advisory to the guest.
+                    if let Ok(VmExit::IoOut(port, _)) = &result
+                        && *port == hyperlight_common::outb::OutBAction::TraceBatch as u16
+                    {
+                        let regs = self.vm.regs().map_err(RunVmError::GetRegs)?;
                         let root_pt = self.get_root_pt().map_err(RunVmError::PageTableAccess)?;
 
                         // If something goes wrong with parsing the trace data, we log the error and

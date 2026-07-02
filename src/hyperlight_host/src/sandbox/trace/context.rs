@@ -198,11 +198,6 @@ impl TraceContext {
             + Duration::from_micros(rel_start_us as u64))
     }
 
-    /// Check if the registers indicate that there is trace data to be handled.
-    pub fn has_trace_data(&self, regs: &CommonRegisters) -> bool {
-        regs.r8 == OutBAction::TraceBatch as u64
-    }
-
     pub fn handle_trace(
         &mut self,
         regs: &CommonRegisters,
