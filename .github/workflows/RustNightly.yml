@@ -140,6 +140,6 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Notify Nightly Failure
-        run: ./dev/notify-ci-failure.sh --title="Nightly musl Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --title="Nightly musl Failure - ${{ github.run_number }}" --labels="area/ci-periodics-nightly,area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
