@@ -32,6 +32,8 @@ use super::*;
 use crate::hypervisor::InterruptHandleImpl;
 #[cfg(any(kvm, mshv3))]
 use crate::hypervisor::LinuxInterruptHandle;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 #[cfg(gdb)]
@@ -54,8 +56,6 @@ use crate::hypervisor::virtual_machine::whp::WhpVm;
 use crate::hypervisor::virtual_machine::{
     HypervisorType, RegisterError, VmError, get_available_hypervisor,
 };
-#[cfg(target_os = "windows")]
-use crate::hypervisor::{PartitionState, WindowsInterruptHandle};
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -128,13 +128,8 @@ impl HyperlightVm {
         });
 
         #[cfg(target_os = "windows")]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
-            state: AtomicU8::new(0),
-            partition_state: std::sync::RwLock::new(PartitionState {
-                handle: vm.partition_handle(),
-                dropped: false,
-            }),
-        });
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(WindowsInterruptHandle::new(vm.partition_handle()));
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;

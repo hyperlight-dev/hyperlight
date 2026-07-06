@@ -40,11 +40,95 @@ pub(crate) mod hyperlight_vm;
 
 use std::fmt::Debug;
 #[cfg(any(kvm, mshv3))]
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
+
+#[derive(Debug)]
+pub(crate) struct InterruptHandleStateMachine(AtomicU8);
+impl InterruptHandleStateMachine {
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
+
+    fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+
+    /// Set the running state
+    pub(crate) fn set_running(&self) {
+        // Release ordering to ensure that the tid store (which uses Release)
+        // is visible to any thread that observes running=true via Acquire ordering.
+        // This prevents the interrupt thread from reading a stale tid value.
+        self.0.fetch_or(Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    /// Clear the running state
+    pub(crate) fn clear_running(&self) {
+        // Release ordering to ensure all vcpu operations are visible before clearing running
+        self.0.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    /// Check if cancellation was requested
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.get_running_cancel_debug().1
+    }
+
+    /// Set the cancellation request flag
+    fn set_cancel(&self) {
+        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
+        // when it checks is_cancelled() with Acquire ordering
+        self.0.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    /// Clear the cancellation request flag
+    fn clear_cancel(&self) {
+        // Release ordering to ensure that any operations from the previous run()
+        // are visible to other threads. While this is typically called by the vcpu thread
+        // at the start of run(), the VM itself can move between threads across guest calls.
+        self.0.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    /// Check if debug interrupt was requested (always returns false when gdb feature is disabled)
+    pub(crate) fn is_debug_interrupted(&self) -> bool {
+        #[cfg(gdb)]
+        {
+            self.get_running_cancel_debug().2
+        }
+        #[cfg(not(gdb))]
+        {
+            false
+        }
+    }
+
+    /// Clear the debug interrupt request flag
+    #[cfg(gdb)]
+    fn set_debug_interrupt(&self) {
+        self.0
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+    }
+
+    /// Clear the debug interrupt request flag
+    #[cfg(gdb)]
+    fn clear_debug_interrupt(&self) {
+        self.0
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+    }
+
+    /// Get the running, cancel and debug flags atomically.
+    fn get_running_cancel_debug(&self) -> (bool, bool, bool) {
+        let state = self.0.load(Ordering::Acquire);
+        let running = state & Self::RUNNING_BIT != 0;
+        let cancel = state & Self::CANCEL_BIT != 0;
+        #[cfg(gdb)]
+        let debug = state & Self::DEBUG_INTERRUPT_BIT != 0;
+        #[cfg(not(gdb))]
+        let debug = false;
+        (running, cancel, debug)
+    }
+}
 
 /// A trait for platform-specific interrupt handle implementation details
 pub(crate) trait InterruptHandleImpl: InterruptHandle {
@@ -52,27 +136,12 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
     #[cfg(any(kvm, mshv3))]
     fn set_tid(&self);
 
-    /// Set the running state
-    fn set_running(&self);
-
-    /// Clear the running state
-    fn clear_running(&self);
-
     /// Mark the handle as dropped
     fn set_dropped(&self);
 
-    /// Check if cancellation was requested
-    fn is_cancelled(&self) -> bool;
-
-    /// Clear the cancellation request flag
-    fn clear_cancel(&self);
-
-    /// Check if debug interrupt was requested (always returns false when gdb feature is disabled)
-    fn is_debug_interrupted(&self) -> bool;
-
-    // Clear the debug interrupt request flag
-    #[cfg(gdb)]
-    fn clear_debug_interrupt(&self);
+    /// Local access the shared state, which does not perform any
+    /// operations other than updating the state machine
+    fn state(&self) -> &InterruptHandleStateMachine;
 }
 
 /// A trait for handling interrupts to a sandbox's vcpu
@@ -105,16 +174,7 @@ pub trait InterruptHandle: Send + Sync + Debug {
 #[cfg(any(kvm, mshv3))]
 #[derive(Debug)]
 pub(super) struct LinuxInterruptHandle {
-    /// Atomic value packing vcpu execution state.
-    ///
-    /// Bit layout:
-    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
-    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
-    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
-    ///
-    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
-    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
-    state: AtomicU8,
+    state: InterruptHandleStateMachine,
 
     /// Thread ID where the vcpu is running.
     ///
@@ -134,33 +194,18 @@ pub(super) struct LinuxInterruptHandle {
 
 #[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
-    const RUNNING_BIT: u8 = 1 << 1;
-    const CANCEL_BIT: u8 = 1 << 0;
-    #[cfg(gdb)]
-    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
-
     /// Get the running, cancel and debug flags atomically.
     ///
     /// # Memory Ordering
     /// Uses `Acquire` ordering to synchronize with the `Release` in `set_running()` and `kill()`.
     /// This ensures that when we observe running=true, we also see the correct `tid` value.
-    fn get_running_cancel_debug(&self) -> (bool, bool, bool) {
-        let state = self.state.load(Ordering::Acquire);
-        let running = state & Self::RUNNING_BIT != 0;
-        let cancel = state & Self::CANCEL_BIT != 0;
-        #[cfg(gdb)]
-        let debug = state & Self::DEBUG_INTERRUPT_BIT != 0;
-        #[cfg(not(gdb))]
-        let debug = false;
-        (running, cancel, debug)
-    }
 
     fn send_signal(&self) -> bool {
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
 
         loop {
-            let (running, cancel, debug) = self.get_running_cancel_debug();
+            let (running, cancel, debug) = self.state.get_running_cancel_debug();
 
             // Check if we should continue sending signals
             // Exit if not running OR if neither cancel nor debug_interrupt is set
@@ -194,70 +239,27 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
     }
 
-    fn set_running(&self) {
-        // Release ordering to ensure that the tid store (which uses Release)
-        // is visible to any thread that observes running=true via Acquire ordering.
-        // This prevents the interrupt thread from reading a stale tid value.
-        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
-    }
-
-    fn is_cancelled(&self) -> bool {
-        // Acquire ordering to synchronize with the Release in kill()
-        // This ensures we see the cancel flag set by the interrupt thread
-        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
-    }
-
-    fn clear_cancel(&self) {
-        // Release ordering to ensure that any operations from the previous run()
-        // are visible to other threads. While this is typically called by the vcpu thread
-        // at the start of run(), the VM itself can move between threads across guest calls.
-        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
-    }
-
-    fn clear_running(&self) {
-        // Release ordering to ensure all vcpu operations are visible before clearing running
-        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
-    }
-
-    fn is_debug_interrupted(&self) -> bool {
-        #[cfg(gdb)]
-        {
-            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
-        }
-        #[cfg(not(gdb))]
-        {
-            false
-        }
-    }
-
-    #[cfg(gdb)]
-    fn clear_debug_interrupt(&self) {
-        self.state
-            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
-    }
-
     fn set_dropped(&self) {
         // Release ordering to ensure all VM cleanup operations are visible
         // to any thread that checks dropped() via Acquire
         self.dropped.store(true, Ordering::Release);
+    }
+
+    fn state(&self) -> &InterruptHandleStateMachine {
+        &self.state
     }
 }
 
 #[cfg(any(kvm, mshv3))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
-        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
-        // when it checks is_cancelled() with Acquire ordering
-        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
-
-        // Send signals to interrupt the vcpu if it's currently running
+        self.state.set_cancel();
         self.send_signal()
     }
 
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
-        self.state
-            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+        self.state.set_debug_interrupt();
         self.send_signal()
     }
     fn dropped(&self) -> bool {
@@ -269,101 +271,37 @@ impl InterruptHandle for LinuxInterruptHandle {
 
 #[cfg(target_os = "windows")]
 #[derive(Debug)]
-pub(super) struct WindowsInterruptHandle {
-    /// Atomic value packing vcpu execution state.
-    ///
-    /// Bit layout:
-    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
-    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
-    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
-    ///
-    /// `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running,
-    /// which is why we need the RUNNING_BIT.
-    ///
-    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
-    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
-    state: AtomicU8,
-
+/// An interrupt handle that captures the pattern that requests to
+/// cancel need to be mutually exclusive with partition destruction
+#[allow(private_bounds)]
+pub(super) struct SynchronousInterruptHandle<T: SynchronousInterruptState> {
+    state: InterruptHandleStateMachine,
     /// RwLock protecting the partition handle and dropped state.
     ///
-    /// This lock prevents a race condition between `kill()` calling `WHvCancelRunVirtualProcessor`
-    /// and `WhpVm::drop()` calling `WHvDeletePartition`. These two Windows Hypervisor Platform APIs
-    /// must not execute concurrently - if `WHvDeletePartition` frees the partition while
-    /// `WHvCancelRunVirtualProcessor` is still accessing it, the result is a use-after-free
-    /// causing STATUS_ACCESS_VIOLATION or STATUS_HEAP_CORRUPTION.
+    /// Fox example, on Windows, this lock prevents a race condition
+    /// between `kill()` calling `WHvCancelRunVirtualProcessor` and
+    /// `WhpVm::drop()` calling `WHvDeletePartition`. These two
+    /// Windows Hypervisor Platform APIs must not execute concurrently
+    /// - if `WHvDeletePartition` frees the partition while
+    /// `WHvCancelRunVirtualProcessor` is still accessing it, the
+    /// result is a use-after-free causing STATUS_ACCESS_VIOLATION or
+    /// STATUS_HEAP_CORRUPTION.
     ///
     /// The synchronization works as follows:
     /// - `kill()` takes a read lock before calling `WHvCancelRunVirtualProcessor`
     /// - `set_dropped()` takes a write lock, which blocks until all in-flight `kill()` calls complete,
     ///   then sets `dropped = true`. This is called from `HyperlightVm::drop()` before `WhpVm::drop()`
     ///   runs, ensuring no `kill()` is accessing the partition when `WHvDeletePartition` is called.
-    partition_state: std::sync::RwLock<PartitionState>,
+    dropped_state: std::sync::RwLock<(bool, T)>,
 }
-
-/// State protected by the RwLock in `WindowsInterruptHandle`.
-///
-/// Contains a copy of the partition handle from `WhpVm` (not an owning reference).
-/// The RwLock and `dropped` flag ensure this handle is never used after `WhpVm`
-/// deletes the partition.
-#[cfg(target_os = "windows")]
-#[derive(Debug)]
-pub(super) struct PartitionState {
-    /// Copy of partition handle from `WhpVm`. Only valid while `dropped` is false.
-    pub(super) handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
-    /// Set true before partition deletion; prevents further use of `handle`.
-    pub(super) dropped: bool,
+trait SynchronousInterruptState: Debug + Send + Sync {
+    ///  The inside-the-lock part of the common part of both kill()
+    ///  and kill_from_debugger()
+    fn actually_cancel(&self) -> bool;
 }
 
 #[cfg(target_os = "windows")]
-impl WindowsInterruptHandle {
-    const RUNNING_BIT: u8 = 1 << 1;
-    const CANCEL_BIT: u8 = 1 << 0;
-    #[cfg(gdb)]
-    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
-}
-
-#[cfg(target_os = "windows")]
-impl InterruptHandleImpl for WindowsInterruptHandle {
-    fn set_running(&self) {
-        // Release ordering to ensure prior memory operations are visible when another thread observes running=true
-        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
-    }
-
-    fn is_cancelled(&self) -> bool {
-        // Acquire ordering to synchronize with the Release in kill()
-        // This ensures we see the CANCEL_BIT set by the interrupt thread
-        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
-    }
-
-    fn clear_cancel(&self) {
-        // Release ordering to ensure that any operations from the previous run()
-        // are visible to other threads. While this is typically called by the vcpu thread
-        // at the start of run(), the VM itself can move between threads across guest calls.
-        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
-    }
-
-    fn clear_running(&self) {
-        // Release ordering to ensure all vcpu operations are visible before clearing running
-        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
-    }
-
-    fn is_debug_interrupted(&self) -> bool {
-        #[cfg(gdb)]
-        {
-            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
-        }
-        #[cfg(not(gdb))]
-        {
-            false
-        }
-    }
-
-    #[cfg(gdb)]
-    fn clear_debug_interrupt(&self) {
-        self.state
-            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
-    }
-
+impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptHandle<T> {
     fn set_dropped(&self) {
         // Take write lock to:
         // 1. Wait for any in-flight kill() calls (holding read locks) to complete
@@ -371,37 +309,31 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
         // 3. Set dropped=true so no future kill() calls will use the handle
         // After this returns, no WHvCancelRunVirtualProcessor calls are in progress
         // or will ever be made, so WHvDeletePartition can safely be called.
-        match self.partition_state.write() {
+        match self.dropped_state.write() {
             Ok(mut guard) => {
-                guard.dropped = true;
+                guard.0 = true;
             }
             Err(e) => {
                 tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
         }
     }
+
+    fn state(&self) -> &InterruptHandleStateMachine {
+        &self.state
+    }
 }
-
-#[cfg(target_os = "windows")]
-impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) -> bool {
-        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
-
-        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
-        // when it checks is_cancelled() with Acquire ordering
-        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
-
-        // Acquire ordering to synchronize with the Release in set_running()
-        // This ensures we see the running state set by the vcpu thread
-        let state = self.state.load(Ordering::Acquire);
-        if state & Self::RUNNING_BIT == 0 {
+#[allow(private_bounds)]
+impl<T: SynchronousInterruptState> SynchronousInterruptHandle<T> {
+    fn lock_and_actually_cancel(&self) -> bool {
+        if !self.state.get_running_cancel_debug().0 {
             return false;
         }
 
         // Take read lock to prevent race with WHvDeletePartition in set_dropped().
         // Multiple kill() calls can proceed concurrently (read locks don't block each other),
         // but set_dropped() will wait for all kill() calls to complete before proceeding.
-        let guard = match self.partition_state.read() {
+        let guard = match self.dropped_state.read() {
             Ok(guard) => guard,
             Err(e) => {
                 tracing::error!("Failed to acquire partition_state read lock: {}", e);
@@ -409,49 +341,58 @@ impl InterruptHandle for WindowsInterruptHandle {
             }
         };
 
-        if guard.dropped {
+        if guard.0 {
             return false;
         }
 
-        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
+        guard.1.actually_cancel()
+    }
+}
+
+#[cfg(any(target_os = "windows", hvf))]
+impl<T: SynchronousInterruptState> InterruptHandle for SynchronousInterruptHandle<T> {
+    fn kill(&self) -> bool {
+        self.state.set_cancel();
+        self.lock_and_actually_cancel()
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
-        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
-
-        self.state
-            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
-
-        // Acquire ordering to synchronize with the Release in set_running()
-        let state = self.state.load(Ordering::Acquire);
-        if state & Self::RUNNING_BIT == 0 {
-            return false;
-        }
-
-        // Take read lock to prevent race with WHvDeletePartition in set_dropped()
-        let guard = match self.partition_state.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                tracing::error!("Failed to acquire partition_state read lock: {}", e);
-                return false;
-            }
-        };
-
-        if guard.dropped {
-            return false;
-        }
-
-        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
+        self.state.set_debug_interrupt();
+        self.lock_and_actually_cancel()
     }
-
     fn dropped(&self) -> bool {
         // Take read lock to check dropped state consistently
-        match self.partition_state.read() {
-            Ok(guard) => guard.dropped,
+        match self.dropped_state.read() {
+            Ok(guard) => guard.0,
             Err(e) => {
                 tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 true // Assume dropped if we can't acquire lock
             }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
+#[cfg(target_os = "windows")]
+pub(super) type WindowsInterruptHandle = SynchronousInterruptHandle<WHV_PARTITION_HANDLE>;
+#[cfg(target_os = "windows")]
+impl WindowsInterruptHandle {
+    fn new(hdl: WHV_PARTITION_HANDLE) -> Self {
+        SynchronousInterruptHandle {
+            state: InterruptHandleStateMachine::new(),
+            dropped_state: std::sync::RwLock::new((false, hdl)),
+        }
+    }
+}
+#[cfg(target_os = "windows")]
+impl SynchronousInterruptState for WHV_PARTITION_HANDLE {
+    fn actually_cancel(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+        unsafe { WHvCancelRunVirtualProcessor(*self, 0, 0).is_ok() }
+    }
+}
+
         }
     }
 }
