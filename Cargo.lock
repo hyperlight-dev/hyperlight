@@ -1663,10 +1663,12 @@ name = "hyperlight-host"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "bindgen",
  "bitflags 2.13.1",
  "blake3",
  "built",
  "bytemuck",
+ "cc",
  "cfg-if",
  "cfg_aliases",
  "chrono",

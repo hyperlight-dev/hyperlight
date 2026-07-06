@@ -14,16 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[allow(
-    dead_code,
-    non_snake_case,
-    non_upper_case_globals,
-    non_camel_case_types
-)] // bindgen
-pub(crate) mod bindings {
-    include!(concat!(env!("OUT_DIR"), "/hvf_bindings.rs"));
-}
+#include <Hypervisor/Hypervisor.h>
 
-pub(super) fn is_hypervisor_present() -> bool {
-    false
-}
+hv_return_t
+hv_vcpu_get_simd_fp_reg_rsabi(hv_vcpu_t vcpu, hv_simd_fp_reg_t reg, char *val);
+hv_return_t
+hv_vcpu_set_simd_fp_reg_rsabi(hv_vcpu_t vcpu, hv_simd_fp_reg_t reg, const char *val);

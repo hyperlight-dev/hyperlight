@@ -14,16 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[allow(
-    dead_code,
-    non_snake_case,
-    non_upper_case_globals,
-    non_camel_case_types
-)] // bindgen
-pub(crate) mod bindings {
-    include!(concat!(env!("OUT_DIR"), "/hvf_bindings.rs"));
+#include "bindings.h"
+
+hv_return_t
+hv_vcpu_get_simd_fp_reg_rsabi(hv_vcpu_t vcpu, hv_simd_fp_reg_t reg, char *val) {
+  hv_simd_fp_uchar16_t simd = {0};
+  hv_return_t ret = hv_vcpu_get_simd_fp_reg(vcpu, reg, &simd);
+  for (int i = 0; i < 16; ++i) {
+    val[i] = simd[i];
+  }
+  return ret;
 }
 
-pub(super) fn is_hypervisor_present() -> bool {
-    false
+hv_return_t
+hv_vcpu_set_simd_fp_reg_rsabi(hv_vcpu_t vcpu, hv_simd_fp_reg_t reg, const char *val) {
+  hv_simd_fp_uchar16_t simd;
+  for (int i = 0; i < 16; ++i) {
+    simd[i] = val[i];
+  }
+  return hv_vcpu_set_simd_fp_reg(vcpu, reg, simd);
 }
