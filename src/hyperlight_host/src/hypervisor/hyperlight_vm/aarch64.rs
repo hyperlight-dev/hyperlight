@@ -22,18 +22,19 @@ use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
 };
+use crate::hypervisor::InterruptHandleImpl;
+#[cfg(any(kvm, mshv3))]
+use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
-#[cfg(kvm)]
-use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
-    RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
+    HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
+    get_available_hypervisor,
 };
-use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -46,6 +47,7 @@ use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
@@ -66,6 +68,8 @@ impl HyperlightVm {
             // TODO: mshv support
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            #[cfg(hvf)]
+            Some(HypervisorType::Hvf) => return Err(CreateHyperlightVmError::NoHypervisorFound),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))

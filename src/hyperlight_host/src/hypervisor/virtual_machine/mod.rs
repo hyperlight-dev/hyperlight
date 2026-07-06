@@ -28,6 +28,9 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
+/// Hypervisor.framework functionality (MacOS)
+#[cfg(hvf)]
+pub(crate) mod hvf;
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
 pub(crate) mod kvm;
@@ -77,6 +80,12 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 } else {
                     None
                 }
+            } else if #[cfg(hvf)] {
+                if hvf::is_hypervisor_present() {
+                    Some(HypervisorType::Hvf)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -102,6 +111,9 @@ pub(crate) enum HypervisorType {
 
     #[cfg(target_os = "windows")]
     Whp,
+
+    #[cfg(hvf)]
+    Hvf,
 }
 
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
@@ -122,6 +134,7 @@ compile_error!(
 );
 
 /// The various reasons a VM's vCPU can exit
+#[cfg_attr(target_os = "macos", allow(unused))]
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
