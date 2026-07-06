@@ -42,7 +42,7 @@ use std::fmt::Debug;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicU8, Ordering};
-#[cfg(any(kvm, mshv3))]
+#[cfg(any(kvm, mshv3, hvf))]
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -136,6 +136,10 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
     #[cfg(any(kvm, mshv3))]
     fn set_tid(&self);
 
+    /// Set the currently-executing vcpu id
+    #[cfg(hvf)]
+    fn set_vcpu(&self, vcpu: hv_vcpu_t);
+
     /// Mark the handle as dropped
     fn set_dropped(&self);
 }
@@ -190,22 +194,29 @@ pub(super) struct RetryingInterruptHandle<T: InterruptHandleImpl> {
     inner: T,
 }
 
+#[cfg(any(kvm, mshv3, hvf))]
 impl<T: InterruptHandleImpl> InterruptHandleImpl for RetryingInterruptHandle<T> {
     #[cfg(any(kvm, mshv3))]
     fn set_tid(&self) {
         self.inner.set_tid();
     }
 
+    #[cfg(hvf)]
+    fn set_vcpu(&self, vcpu: hv_vcpu_t) {
+        self.inner.set_vcpu(vcpu);
+    }
 
     fn set_dropped(&self) {
         self.inner.set_dropped();
     }
 }
+#[cfg(any(kvm, mshv3, hvf))]
 impl<T: InterruptHandleImpl> InterruptHandle for RetryingInterruptHandle<T> {
     fn dropped(&self) -> bool {
         self.inner.dropped()
     }
 }
+#[cfg(any(kvm, mshv3, hvf))]
 impl<T: InterruptHandleImpl> InterruptHandleInternal for RetryingInterruptHandle<T> {
     fn state(&self) -> &InterruptHandleStateMachine {
         self.inner.state()
@@ -316,7 +327,7 @@ impl InterruptHandleInternal for LinuxInterruptHandleState {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", hvf))]
 #[derive(Debug)]
 /// An interrupt handle that captures the pattern that requests to
 /// cancel need to be mutually exclusive with partition destruction
@@ -328,11 +339,11 @@ pub(super) struct SynchronousInterruptHandle<T: SynchronousInterruptState> {
     /// Fox example, on Windows, this lock prevents a race condition
     /// between `kill()` calling `WHvCancelRunVirtualProcessor` and
     /// `WhpVm::drop()` calling `WHvDeletePartition`. These two
-    /// Windows Hypervisor Platform APIs must not execute concurrently
-    /// - if `WHvDeletePartition` frees the partition while
-    /// `WHvCancelRunVirtualProcessor` is still accessing it, the
-    /// result is a use-after-free causing STATUS_ACCESS_VIOLATION or
-    /// STATUS_HEAP_CORRUPTION.
+    /// Windows Hypervisor Platform APIs must not execute
+    /// concurrently---if `WHvDeletePartition` frees the partition
+    /// while `WHvCancelRunVirtualProcessor` is still accessing it,
+    /// the result is a use-after-free causing STATUS_ACCESS_VIOLATION
+    /// or STATUS_HEAP_CORRUPTION.
     ///
     /// The synchronization works as follows:
     /// - `kill()` takes a read lock before calling `WHvCancelRunVirtualProcessor`
@@ -346,10 +357,21 @@ trait SynchronousInterruptState: Debug + Send + Sync {
     ///  The inside-the-lock part of the common part of both kill()
     ///  and kill_from_debugger()
     fn actually_cancel(&self) -> bool;
+
+    #[cfg(hvf)]
+    fn set_vcpu(&mut self, vcpu: hv_vcpu_t);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", hvf))]
 impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptHandle<T> {
+    #[cfg(hvf)]
+    fn set_vcpu(&self, vcpu: hv_vcpu_t) {
+        let Ok(mut guard) = self.dropped_state.write() else {
+            return;
+        };
+        guard.1.set_vcpu(vcpu);
+    }
+
     fn set_dropped(&self) {
         // Take write lock to:
         // 1. Wait for any in-flight kill() calls (holding read locks) to complete
@@ -431,6 +453,38 @@ impl SynchronousInterruptState for WHV_PARTITION_HANDLE {
     }
 }
 
+#[cfg(hvf)]
+use crate::hypervisor::virtual_machine::hvf::bindings::hv_vcpu_t;
+#[cfg(hvf)]
+pub(super) type HvfInterruptHandle =
+    RetryingInterruptHandle<SynchronousInterruptHandle<Option<hv_vcpu_t>>>;
+#[cfg(hvf)]
+impl SynchronousInterruptState for Option<hv_vcpu_t> {
+    fn actually_cancel(&self) -> bool {
+        use crate::hypervisor::virtual_machine::hvf::bindings::{HV_SUCCESS, hv_vcpus_exit};
+        let Some(vcpu) = self else {
+            return false;
+        };
+        unsafe {
+            // bindgen automatically uses *mut, but actually this will
+            // not be written to.
+            hv_vcpus_exit(&raw const *vcpu as *mut hv_vcpu_t, 1).0.0.0 == HV_SUCCESS
+        }
+    }
+
+    fn set_vcpu(&mut self, vcpu: hv_vcpu_t) {
+        *self = Some(vcpu);
+    }
+}
+#[cfg(hvf)]
+impl HvfInterruptHandle {
+    pub(super) fn new(retry_delay: Duration) -> Self {
+        RetryingInterruptHandle {
+            retry_delay,
+            inner: SynchronousInterruptHandle {
+                state: InterruptHandleStateMachine::new(),
+                dropped_state: std::sync::RwLock::new((false, None)),
+            },
         }
     }
 }

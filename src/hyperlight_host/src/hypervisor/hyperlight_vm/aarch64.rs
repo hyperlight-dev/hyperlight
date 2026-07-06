@@ -22,6 +22,8 @@ use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
 };
+#[cfg(hvf)]
+use crate::hypervisor::HvfInterruptHandle;
 use crate::hypervisor::InterruptHandleImpl;
 #[cfg(any(kvm, mshv3))]
 use crate::hypervisor::LinuxInterruptHandle;
@@ -62,6 +64,9 @@ impl HyperlightVm {
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
         // TODO: support gdb on aarch64
         type VmType = Box<dyn VirtualMachine>;
+        #[cfg(hvf)]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(HvfInterruptHandle::new(config.get_interrupt_retry_delay()));
         let vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
