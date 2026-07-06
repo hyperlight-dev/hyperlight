@@ -18,7 +18,7 @@ use std::any::type_name;
 use std::ffi::c_void;
 use std::io::Error;
 use std::mem::{align_of, size_of};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
@@ -178,14 +178,14 @@ impl HostMapping {
 }
 
 /// RAII guard for an `mmap` reservation. Calls `munmap` on drop.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[derive(Debug)]
 struct Mmap {
     base: *mut c_void,
     len: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl Drop for Mmap {
     fn drop(&mut self) {
         // SAFETY: `self.base` and `self.len` are exactly what was
@@ -537,7 +537,7 @@ impl ExclusiveSharedMemory {
     /// size in bytes. The region will be surrounded by guard pages.
     ///
     /// Return `Err` if shared memory could not be allocated.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
         use libc::{
@@ -1563,7 +1563,7 @@ impl ReadonlySharedMemory {
     /// Linux: reserve `[guard][blob][guard]` as one anonymous
     /// `PROT_NONE` mapping, then `MAP_FIXED` the file over the
     /// middle slot.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
         use std::os::unix::io::AsRawFd;
 

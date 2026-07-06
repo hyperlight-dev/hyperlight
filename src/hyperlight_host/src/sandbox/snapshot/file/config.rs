@@ -123,7 +123,7 @@ impl CpuVendor {
             bytes[8..12].copy_from_slice(&r.ecx.to_le_bytes());
             Self(String::from_utf8_lossy(&bytes).into_owned())
         }
-        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        #[cfg(all(target_arch = "aarch64"))]
         {
             let midr: u64;
             // SAFETY: Linux emulates MIDR_EL1 reads from EL0.

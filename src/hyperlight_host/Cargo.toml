@@ -78,7 +78,7 @@ rust-embed = { version = "8.11.0", features = ["debug-embed", "include-exclude",
 windows-version = "0.1"
 lazy_static = "1.4.0"
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true }
 kvm-ioctls = { version = "0.25", optional = true }
 mshv-bindings = { version = "0.6", optional = true }
