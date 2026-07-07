@@ -14,10 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub const PAGE_SHIFT: u64 = 12;
-pub const PAGE_SIZE: u64 = 1 << 12;
-pub const PAGE_SIZE_USIZE: usize = 1 << 12;
-
 /// A memory region in the guest address space
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]

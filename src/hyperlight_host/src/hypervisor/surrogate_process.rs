@@ -18,7 +18,6 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Memory::{
@@ -150,7 +149,7 @@ impl SurrogateProcess {
                         VirtualProtectEx(
                             self.process_handle.into(),
                             first_guard_page_start,
-                            PAGE_SIZE_USIZE,
+                            page_size::get(),
                             PAGE_NOACCESS,
                             &mut unused_out_old_prot_flags,
                         )
@@ -161,12 +160,12 @@ impl SurrogateProcess {
 
                     // the last page of the raw_size is the guard page
                     let last_guard_page_start =
-                        unsafe { first_guard_page_start.add(host_size - PAGE_SIZE_USIZE) };
+                        unsafe { first_guard_page_start.add(host_size - page_size::get()) };
                     if let Err(e) = unsafe {
                         VirtualProtectEx(
                             self.process_handle.into(),
                             last_guard_page_start,
-                            PAGE_SIZE_USIZE,
+                            page_size::get(),
                             PAGE_NOACCESS,
                             &mut unused_out_old_prot_flags,
                         )

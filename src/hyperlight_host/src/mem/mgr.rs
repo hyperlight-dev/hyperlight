@@ -572,7 +572,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // immediately after the snapshot in the guest PA space.
         let snapshot_pt_end = self.shared_mem.mem_size();
         let snapshot_pt_size = self.layout.get_pt_size();
-        let snapshot_pt_start = snapshot_pt_end - snapshot_pt_size;
+        let snapshot_pt_start =
+            snapshot_pt_end - snapshot_pt_size.next_multiple_of(page_size::get());
         self.scratch_mem.with_exclusivity(|scratch| {
             #[cfg(not(unshared_snapshot_mem))]
             let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];

@@ -575,8 +575,6 @@ impl HyperlightVm {
 
 #[cfg(gdb)]
 pub(super) mod debug {
-    use hyperlight_common::mem::PAGE_SIZE;
-
     use super::HyperlightVm;
     use crate::hypervisor::gdb::arch::{SW_BP, SW_BP_SIZE};
     use crate::hypervisor::gdb::{
@@ -766,7 +764,7 @@ pub(super) mod debug {
 
                 let read_len = std::cmp::min(
                     data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                    page_size::get() - (gpa as usize & (page_size::get() - 1)),
                 );
 
                 mem_access.read(&mut data[..read_len], gpa)?;
@@ -794,7 +792,7 @@ pub(super) mod debug {
 
                 let write_len = std::cmp::min(
                     data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                    page_size::get() - (gpa as usize & (page_size::get() - 1)),
                 );
 
                 // Use the memory access to write to guest memory

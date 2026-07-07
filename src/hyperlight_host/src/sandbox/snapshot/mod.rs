@@ -550,6 +550,11 @@ impl Snapshot {
                 }
                 pt_buf.set_root(pt_buf.initial_root());
 
+                snapshot_memory.resize(
+                    snapshot_memory.len().next_multiple_of(page_size::get()),
+                    0u8,
+                );
+
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
                 layout.set_pt_size(pt_data.len())?;
@@ -564,7 +569,7 @@ impl Snapshot {
         // `map_file_cow` regions installed immediately after the
         // snapshot in guest PA space.
         let guest_visible_size = memory.len() - layout.get_pt_size();
-        debug_assert!(guest_visible_size.is_multiple_of(PAGE_SIZE));
+        debug_assert!(guest_visible_size.is_multiple_of(page_size::get()));
         layout.set_snapshot_size(guest_visible_size);
 
         Ok(Self {
@@ -727,14 +732,16 @@ mod tests {
         CommonSpecialRegisters::default()
     }
 
-    const SIMPLE_PT_BASE: usize = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
+    fn simple_pt_base() -> usize {
+        page_size::get() + SandboxMemoryLayout::BASE_ADDRESS
+    }
 
     fn make_simple_pt_mem(contents: &[u8]) -> SnapshotSharedMemory<ExclusiveSharedMemory> {
-        let pt_buf = GuestPageTableBuffer::new(SIMPLE_PT_BASE);
+        let pt_buf = GuestPageTableBuffer::new(simple_pt_base());
         let mapping = Mapping {
             phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
-            len: PAGE_SIZE as u64,
+            len: page_size::get() as u64,
             kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
@@ -745,10 +752,10 @@ mod tests {
         super::map_specials(&pt_buf, PAGE_SIZE);
         let pt_bytes = pt_buf.into_bytes();
 
-        let mut snapshot_mem = vec![0u8; PAGE_SIZE + pt_bytes.len()];
-        snapshot_mem[0..PAGE_SIZE].copy_from_slice(contents);
-        snapshot_mem[PAGE_SIZE..].copy_from_slice(&pt_bytes);
-        ReadonlySharedMemory::from_bytes(&snapshot_mem, PAGE_SIZE)
+        let mut snapshot_mem = vec![0u8; page_size::get() + pt_bytes.len()];
+        snapshot_mem[0..page_size::get()].copy_from_slice(contents);
+        snapshot_mem[page_size::get()..].copy_from_slice(&pt_bytes);
+        ReadonlySharedMemory::from_bytes(&snapshot_mem, page_size::get())
             .unwrap()
             .to_mgr_snapshot_mem()
             .unwrap()
@@ -759,12 +766,12 @@ mod tests {
         let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
         let mgr = SandboxMemoryManager::new(
             SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap(),
-            make_simple_pt_mem(&[0u8; PAGE_SIZE]),
+            make_simple_pt_mem(&vec![0u8; page_size::get()]),
             scratch_mem,
             super::NextAction::None,
         );
         let (mgr, _) = mgr.build().unwrap();
-        (mgr, SIMPLE_PT_BASE as u64)
+        (mgr, simple_pt_base() as u64)
     }
 
     #[test]
@@ -772,7 +779,7 @@ mod tests {
         let (mut mgr, pt_base) = make_simple_pt_mgr();
 
         // Create first snapshot with pattern A
-        let pattern_a = vec![0xAA; PAGE_SIZE];
+        let pattern_a = vec![0xAA; page_size::get()];
         let snapshot_a = super::Snapshot::new(
             &mut make_simple_pt_mem(&pattern_a).build().0,
             &mut mgr.scratch_mem,
@@ -790,7 +797,7 @@ mod tests {
         .unwrap();
 
         // Create second snapshot with pattern B
-        let pattern_b = vec![0xBB; PAGE_SIZE];
+        let pattern_b = vec![0xBB; page_size::get()];
         let snapshot_b = super::Snapshot::new(
             &mut make_simple_pt_mem(&pattern_b).build().0,
             &mut mgr.scratch_mem,

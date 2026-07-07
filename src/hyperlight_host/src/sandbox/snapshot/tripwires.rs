@@ -54,14 +54,15 @@ const _: () = {
 };
 
 const _: () = {
-    use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
+    use hyperlight_common::mem::HyperlightPEB;
+    use hyperlight_common::vmem::PAGE_SIZE;
     // The loading host derives `guest_heap_buffer_offset`, and every
     // offset after it, from the PEB's page-rounded size. Existing
     // snapshots place the PEB in a single page, so the only thing that
     // must hold is that the PEB keeps fitting in one page. Field layout
     // is not pinned: only the captured guest reads the fields, and it
     // travels inside the snapshot, so it stays self-consistent.
-    abi_assert!(std::mem::size_of::<HyperlightPEB>() <= PAGE_SIZE_USIZE);
+    abi_assert!(std::mem::size_of::<HyperlightPEB>() <= PAGE_SIZE);
 };
 
 const _: () = {

@@ -23,7 +23,6 @@ use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
@@ -294,7 +293,7 @@ impl Placeholder {
 
     fn split_front(self, front_size: usize) -> Result<(Placeholder, Placeholder)> {
         debug_assert!(front_size > 0 && front_size < self.size);
-        debug_assert!(front_size.is_multiple_of(PAGE_SIZE_USIZE));
+        debug_assert!(front_size.is_multiple_of(page_size::get()));
         // SAFETY: `self` owns the placeholder reservation at
         // `[self.addr, self.addr + self.size)`. `MEM_RELEASE |
         // MEM_PRESERVE_PLACEHOLDER` is the Win32 idiom for splitting
@@ -401,7 +400,7 @@ pub trait SharedMemory {
     /// need to be marked as `unsafe` because doing anything with this
     /// pointer itself requires `unsafe`.
     fn base_addr(&self) -> usize {
-        self.region().ptr() as usize + PAGE_SIZE_USIZE
+        self.region().ptr() as usize + page_size::get()
     }
 
     /// Return the base address of the host mapping of this region as
@@ -409,14 +408,14 @@ pub trait SharedMemory {
     /// not need to be marked as `unsafe` because doing anything with
     /// this pointer itself requires `unsafe`.
     fn base_ptr(&self) -> *mut u8 {
-        self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
+        self.region().ptr().wrapping_add(page_size::get())
     }
 
     /// Return the length of usable memory contained in `self`.
     /// The returned size does not include the size of the surrounding
     /// guard pages.
     fn mem_size(&self) -> usize {
-        self.region().size() - 2 * PAGE_SIZE_USIZE
+        self.region().size() - 2 * page_size::get()
     }
 
     /// Return the raw base address of the host mapping, including the
@@ -448,7 +447,7 @@ pub trait SharedMemory {
                 from_handle: self.region().file_mapping_handle().into(),
                 handle_base: self.region().ptr() as usize,
                 handle_size: self.region().size(),
-                offset: PAGE_SIZE_USIZE,
+                offset: page_size::get(),
             }
         }
     }
@@ -552,13 +551,13 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE) // guard page around the memory
+            .checked_add(2 * page_size::get()) // guard page around the memory
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
 
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if total_size % page_size::get() != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
-                PAGE_SIZE_USIZE
+                page_size::get()
             ));
         }
 
@@ -600,7 +599,7 @@ impl ExclusiveSharedMemory {
         // protect the guard pages
         #[cfg(not(miri))]
         {
-            let res = unsafe { mprotect(mmap.base, PAGE_SIZE_USIZE, PROT_NONE) };
+            let res = unsafe { mprotect(mmap.base, page_size::get(), PROT_NONE) };
             if res != 0 {
                 return Err(HyperlightError::MprotectFailed(
                     Error::last_os_error().raw_os_error(),
@@ -608,8 +607,8 @@ impl ExclusiveSharedMemory {
             }
             let res = unsafe {
                 mprotect(
-                    (mmap.base as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
-                    PAGE_SIZE_USIZE,
+                    (mmap.base as *const u8).add(total_size - page_size::get()) as *mut c_void,
+                    page_size::get(),
                     PROT_NONE,
                 )
             };
@@ -646,13 +645,13 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE)
+            .checked_add(2 * page_size::get())
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded {}", usize::MAX))?;
 
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if total_size % page_size::get() != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
-                PAGE_SIZE_USIZE
+                page_size::get()
             ));
         }
 
@@ -719,7 +718,7 @@ impl ExclusiveSharedMemory {
         if let Err(e) = unsafe {
             VirtualProtect(
                 first_guard_page_start,
-                PAGE_SIZE_USIZE,
+                page_size::get(),
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -727,11 +726,11 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
-        let last_guard_page_start = unsafe { view.addr.add(total_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start = unsafe { view.addr.add(total_size - page_size::get()) };
         if let Err(e) = unsafe {
             VirtualProtect(
                 last_guard_page_start,
-                PAGE_SIZE_USIZE,
+                page_size::get(),
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -1489,7 +1488,7 @@ unsafe impl Sync for ReadonlySharedMemory {}
 
 impl ReadonlySharedMemory {
     pub(crate) fn from_bytes(contents: &[u8], guest_mapped_size: usize) -> Result<Self> {
-        if guest_mapped_size == 0 || !guest_mapped_size.is_multiple_of(PAGE_SIZE_USIZE) {
+        if guest_mapped_size == 0 || !guest_mapped_size.is_multiple_of(page_size::get()) {
             return Err(new_error!(
                 "guest_mapped_size {} must be a non-zero multiple of PAGE_SIZE",
                 guest_mapped_size
@@ -1502,7 +1501,8 @@ impl ReadonlySharedMemory {
                 contents.len()
             ));
         }
-        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
+        let mut anon =
+            ExclusiveSharedMemory::new(contents.len().next_multiple_of(page_size::get()))?;
         anon.copy_from_slice(contents, 0)?;
         Ok(ReadonlySharedMemory {
             region: anon.region,
@@ -1535,7 +1535,7 @@ impl ReadonlySharedMemory {
             ));
         }
 
-        if !len.is_multiple_of(PAGE_SIZE_USIZE) {
+        if !len.is_multiple_of(page_size::get()) {
             return Err(new_error!(
                 "file length {} must be a multiple of PAGE_SIZE",
                 len
@@ -1544,7 +1544,7 @@ impl ReadonlySharedMemory {
 
         if guest_mapped_size == 0
             || guest_mapped_size > len
-            || !guest_mapped_size.is_multiple_of(PAGE_SIZE_USIZE)
+            || !guest_mapped_size.is_multiple_of(page_size::get())
         {
             return Err(new_error!(
                 "guest_mapped_size {} must be a non-zero multiple of PAGE_SIZE no greater than file length {}",
@@ -1574,7 +1574,7 @@ impl ReadonlySharedMemory {
             mmap, off_t, size_t,
         };
 
-        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+        let total_size = len.checked_add(2 * page_size::get()).ok_or_else(|| {
             new_error!("Memory required for file-backed mapping exceeded usize::MAX")
         })?;
 
@@ -1619,7 +1619,7 @@ impl ReadonlySharedMemory {
         let file_prot = PROT_READ;
         // SAFETY: `total_size = len + 2 * PAGE_SIZE_USIZE`, so
         // `base + PAGE_SIZE_USIZE` is in-bounds of the reservation.
-        let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
+        let usable_ptr = unsafe { (base as *mut u8).add(page_size::get()) };
         // SAFETY: `usable_ptr..usable_ptr + len` lies entirely within
         // the reservation owned by `reservation`. `MAP_FIXED`
         // replaces that sub-range in place; on failure the
@@ -1655,7 +1655,7 @@ impl ReadonlySharedMemory {
     fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
         use std::os::windows::io::AsRawHandle;
 
-        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+        let total_size = len.checked_add(2 * page_size::get()).ok_or_else(|| {
             new_error!("Memory required for file-backed mapping exceeded usize::MAX")
         })?;
 
@@ -1668,7 +1668,7 @@ impl ReadonlySharedMemory {
         // 2. Split the placeholder into three adjacent slots. The
         //    leading and trailing slots stay unmapped and act as
         //    guard pages. The middle slot will receive the file view.
-        let (leading, middle, trailing) = whole.split_into_three(PAGE_SIZE_USIZE, len)?;
+        let (leading, middle, trailing) = whole.split_into_three(page_size::get(), len)?;
 
         // 3. Create a read-only file mapping section over the file.
         // SAFETY: `file_handle` is a valid file HANDLE borrowed from
@@ -1757,7 +1757,7 @@ impl SharedMemory for ReadonlySharedMemory {
                 from_handle: self.region().file_mapping_handle().into(),
                 handle_base: self.region().ptr() as usize,
                 handle_size: self.region().size(),
-                offset: PAGE_SIZE_USIZE,
+                offset: page_size::get(),
             },
             WindowsMapping::FileBacked { .. } => super::memory_region::HostRegionBase {
                 from_handle: self.region().file_mapping_handle().into(),
@@ -1791,7 +1791,6 @@ impl<S: SharedMemory> PartialEq<S> for ReadonlySharedMemory {
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::mem::PAGE_SIZE_USIZE;
     #[cfg(not(miri))]
     use proptest::prelude::*;
 
@@ -1804,7 +1803,7 @@ mod tests {
 
     #[test]
     fn fill() {
-        let mem_size: usize = 4096;
+        let mem_size: usize = page_size::get();
         let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
         let (mut hshm, _) = eshm.build();
 
@@ -1822,7 +1821,7 @@ mod tests {
         assert!(vec[2048..3072].iter().all(|&x| x == 3));
         assert!(vec[3072..4096].iter().all(|&x| x == 4));
 
-        hshm.fill(5, 0, 4096).unwrap();
+        hshm.fill(5, 0, mem_size).unwrap();
 
         let vec2 = hshm
             .with_exclusivity(|e| e.copy_all_to_vec().unwrap())
@@ -1837,7 +1836,7 @@ mod tests {
     /// would overflow `usize`.
     #[test]
     fn bounds_check_overflow() {
-        let mem_size: usize = 4096;
+        let mem_size: usize = page_size::get();
         let mut eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
 
         // ExclusiveSharedMemory methods
@@ -1863,7 +1862,7 @@ mod tests {
 
     #[test]
     fn copy_into_from() -> Result<()> {
-        let mem_size: usize = 4096;
+        let mem_size: usize = page_size::get();
         let vec_len = 10;
         let eshm = ExclusiveSharedMemory::new(mem_size)?;
         let (hshm, _) = eshm.build();
@@ -1954,7 +1953,7 @@ mod tests {
 
     #[test]
     fn clone() {
-        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
         let (hshm1, _) = eshm.build();
         let hshm2 = hshm1.clone();
 
@@ -1991,7 +1990,7 @@ mod tests {
     #[test]
     fn copy_all_to_vec() {
         let mut data = vec![b'a', b'b', b'c'];
-        data.resize(4096, 0);
+        data.resize(page_size::get(), 0);
         let mut eshm = ExclusiveSharedMemory::new(data.len()).unwrap();
         eshm.copy_from_slice(data.as_slice(), 0).unwrap();
         let ret_vec = eshm.copy_all_to_vec().unwrap();
@@ -2014,11 +2013,11 @@ mod tests {
         // where another test allocates memory at the same address between our
         // drop and the mapping check. Ensure UNIQUE_SIZE is not used by any
         // other test in the codebase to avoid this.
-        const UNIQUE_SIZE: usize = PAGE_SIZE_USIZE * 17;
+        let unique_size: usize = page_size::get() * 17;
 
         let pid = std::process::id();
 
-        let eshm = ExclusiveSharedMemory::new(UNIQUE_SIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(unique_size).unwrap();
         let (hshm1, gshm) = eshm.build();
         let hshm2 = hshm1.clone();
 
@@ -2068,7 +2067,7 @@ mod tests {
         #[test]
         fn copy_with_various_alignments() {
             // Use a buffer large enough to test all alignment cases
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2095,7 +2094,7 @@ mod tests {
         /// Test copy operations with lengths smaller than chunk size (< 16 bytes)
         #[test]
         fn copy_small_lengths() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2114,7 +2113,7 @@ mod tests {
         /// Test copy operations with lengths that don't align to chunk boundaries
         #[test]
         fn copy_non_aligned_lengths() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2136,7 +2135,7 @@ mod tests {
         /// Test copy with exactly one chunk (16 bytes)
         #[test]
         fn copy_exact_chunk_size() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2153,7 +2152,7 @@ mod tests {
         /// Test fill with various alignment offsets
         #[test]
         fn fill_with_various_alignments() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (mut hshm, _) = eshm.build();
 
@@ -2182,7 +2181,7 @@ mod tests {
         /// Test fill with lengths smaller than chunk size
         #[test]
         fn fill_small_lengths() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (mut hshm, _) = eshm.build();
 
@@ -2206,7 +2205,7 @@ mod tests {
         /// Test fill with non-aligned lengths
         #[test]
         fn fill_non_aligned_lengths() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (mut hshm, _) = eshm.build();
 
@@ -2232,7 +2231,7 @@ mod tests {
         /// Test edge cases: length 0 and length 1
         #[test]
         fn copy_edge_cases() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2254,7 +2253,7 @@ mod tests {
         /// Test combined: unaligned start + non-aligned length
         #[test]
         fn copy_unaligned_start_and_length() {
-            let mem_size: usize = 4096;
+            let mem_size: usize = page_size::get();
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
             let (hshm, _) = eshm.build();
 
@@ -2296,7 +2295,7 @@ mod tests {
 
         #[test]
         fn normal_push_pop_roundtrip() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             // Size-prefixed flatbuffer-like payload: [size: u32 LE][payload]
@@ -2312,7 +2311,7 @@ mod tests {
 
         #[test]
         fn malicious_flatbuffer_size_prefix() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"small";
@@ -2335,7 +2334,7 @@ mod tests {
 
         #[test]
         fn malicious_element_offset_too_small() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"test";
@@ -2360,7 +2359,7 @@ mod tests {
 
         #[test]
         fn malicious_element_offset_past_stack_pointer() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"test";
@@ -2385,7 +2384,7 @@ mod tests {
 
         #[test]
         fn malicious_flatbuffer_size_off_by_one() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"abcd";
@@ -2410,7 +2409,7 @@ mod tests {
         /// `stack_pointer_rel - last_element_offset_rel - 8`.
         #[test]
         fn back_pointer_near_stack_pointer_underflow() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"test";
@@ -2436,7 +2435,7 @@ mod tests {
         /// Size prefix of 0xFFFF_FFFD causes u32 overflow: 0xFFFF_FFFD + 4 wraps.
         #[test]
         fn size_prefix_u32_overflow() {
-            let mem_size = 4096;
+            let mem_size = page_size::get();
             let mut hshm = make_buffer(mem_size);
 
             let payload = b"test";
@@ -2481,7 +2480,7 @@ mod tests {
         fn read() {
             setup_signal_handler();
 
-            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
             unsafe { std::ptr::read_volatile(guard_page_ptr) };
@@ -2492,7 +2491,7 @@ mod tests {
         fn write() {
             setup_signal_handler();
 
-            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
             unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
@@ -2503,7 +2502,7 @@ mod tests {
         fn exec() {
             setup_signal_handler();
 
-            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
             let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
@@ -2550,7 +2549,6 @@ mod tests {
     mod from_file_tests {
         use std::io::Write;
 
-        use hyperlight_common::mem::PAGE_SIZE_USIZE;
         use tempfile::NamedTempFile;
 
         use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
@@ -2570,10 +2568,10 @@ mod tests {
 
         #[test]
         fn from_file_success_single_page() {
-            let tmp = make_temp_file(PAGE_SIZE_USIZE);
-            let mut rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+            let tmp = make_temp_file(page_size::get());
+            let mut rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                 .expect("from_file should succeed");
-            assert_eq!(rsm.mem_size(), PAGE_SIZE_USIZE);
+            assert_eq!(rsm.mem_size(), page_size::get());
             rsm.with_contents(|slice| {
                 for (i, b) in slice.iter().enumerate() {
                     assert_eq!(*b, (i & 0xff) as u8);
@@ -2584,31 +2582,31 @@ mod tests {
 
         #[test]
         fn from_file_success_smaller_guest_mapped_size() {
-            let tmp = make_temp_file(2 * PAGE_SIZE_USIZE);
-            let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+            let tmp = make_temp_file(2 * page_size::get());
+            let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                 .expect("from_file should succeed");
-            assert_eq!(rsm.mem_size(), 2 * PAGE_SIZE_USIZE);
+            assert_eq!(rsm.mem_size(), 2 * page_size::get());
         }
 
         #[test]
         fn from_file_rejects_empty_file() {
             let tmp = make_temp_file(0);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                 .expect_err("empty file should be rejected");
             assert!(format!("{}", err).contains("size 0"));
         }
 
         #[test]
         fn from_file_rejects_unaligned_file_length() {
-            let tmp = make_temp_file(PAGE_SIZE_USIZE + 1);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+            let tmp = make_temp_file(page_size::get() + 1);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                 .expect_err("unaligned file length should be rejected");
             assert!(format!("{}", err).contains("multiple of PAGE_SIZE"));
         }
 
         #[test]
         fn from_file_rejects_zero_guest_mapped_size() {
-            let tmp = make_temp_file(PAGE_SIZE_USIZE);
+            let tmp = make_temp_file(page_size::get());
             let err = ReadonlySharedMemory::from_file(tmp.as_file(), 0)
                 .expect_err("zero guest_mapped_size should be rejected");
             assert!(format!("{}", err).contains("guest_mapped_size"));
@@ -2616,16 +2614,16 @@ mod tests {
 
         #[test]
         fn from_file_rejects_unaligned_guest_mapped_size() {
-            let tmp = make_temp_file(2 * PAGE_SIZE_USIZE);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE + 1)
+            let tmp = make_temp_file(2 * page_size::get());
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get() + 1)
                 .expect_err("unaligned guest_mapped_size should be rejected");
             assert!(format!("{}", err).contains("guest_mapped_size"));
         }
 
         #[test]
         fn from_file_rejects_guest_mapped_size_exceeding_file() {
-            let tmp = make_temp_file(PAGE_SIZE_USIZE);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 2 * PAGE_SIZE_USIZE)
+            let tmp = make_temp_file(page_size::get());
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 2 * page_size::get())
                 .expect_err("guest_mapped_size > file length should be rejected");
             assert!(format!("{}", err).contains("guest_mapped_size"));
         }
@@ -2636,8 +2634,6 @@ mod tests {
         /// test in the parent module re-executes each one in a subprocess
         /// and asserts the trap occurred.
         mod guard_page_crash_tests {
-            use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
             use super::make_temp_file;
             use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 
@@ -2645,10 +2641,10 @@ mod tests {
             #[test]
             #[ignore]
             pub(super) fn leading_guard_page_traps() {
-                let tmp = make_temp_file(PAGE_SIZE_USIZE);
-                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                let tmp = make_temp_file(page_size::get());
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                     .expect("from_file should succeed");
-                let guard_ptr = unsafe { rsm.base_ptr().sub(PAGE_SIZE_USIZE) };
+                let guard_ptr = unsafe { rsm.base_ptr().sub(page_size::get()) };
                 println!("reached_guard");
                 let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
                 println!("survived_guard");
@@ -2658,8 +2654,8 @@ mod tests {
             #[test]
             #[ignore]
             pub(super) fn trailing_guard_page_traps() {
-                let tmp = make_temp_file(PAGE_SIZE_USIZE);
-                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
+                let tmp = make_temp_file(page_size::get());
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
                     .expect("from_file should succeed");
                 let guard_ptr = unsafe { rsm.base_ptr().add(rsm.mem_size()) };
                 println!("reached_guard");
