@@ -343,7 +343,7 @@ impl VirtualMachine for KvmVm {
         Ok((&kvm_regs).into())
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let kvm_regs: kvm_regs = regs.into();
         self.vcpu_fd
             .set_regs(&kvm_regs)
@@ -361,7 +361,7 @@ impl VirtualMachine for KvmVm {
         Ok((&kvm_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let kvm_fpu: kvm_fpu = fpu.into();
         // Note: On KVM this ignores MXCSR.
         // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
@@ -379,7 +379,10 @@ impl VirtualMachine for KvmVm {
         Ok((&kvm_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd
             .set_sregs(&kvm_sregs)

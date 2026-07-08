@@ -67,7 +67,7 @@ impl HyperlightVm {
         #[cfg(hvf)]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
             Arc::new(HvfInterruptHandle::new(config.get_interrupt_retry_delay()));
-        let vm: VmType = match get_available_hypervisor() {
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             // TODO: mshv support

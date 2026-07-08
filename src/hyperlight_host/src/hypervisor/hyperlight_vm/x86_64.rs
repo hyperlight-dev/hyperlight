@@ -18,11 +18,6 @@ limitations under the License.
 use std::collections::HashMap;
 #[cfg(crashdump)]
 use std::path::Path;
-#[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU8;
-#[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
@@ -90,7 +85,7 @@ impl HyperlightVm {
         #[cfg(not(gdb))]
         type VmType = Box<dyn VirtualMachine>;
 
-        let vm: VmType = match get_available_hypervisor() {
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             #[cfg(mshv3)]

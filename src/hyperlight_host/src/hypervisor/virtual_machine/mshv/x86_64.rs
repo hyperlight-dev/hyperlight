@@ -376,7 +376,7 @@ impl VirtualMachine for MshvVm {
         Ok((&mshv_regs).into())
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let mshv_regs: StandardRegisters = regs.into();
         self.vcpu_fd
             .set_regs(&mshv_regs)
@@ -392,7 +392,7 @@ impl VirtualMachine for MshvVm {
         Ok((&mshv_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let mshv_fpu: FloatingPointUnit = fpu.into();
         self.vcpu_fd
             .set_fpu(&mshv_fpu)
@@ -408,7 +408,10 @@ impl VirtualMachine for MshvVm {
         Ok((&mshv_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         let mshv_sregs: SpecialRegisters = sregs.into();
         self.vcpu_fd
             .set_sregs(&mshv_sregs)

@@ -354,17 +354,20 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError>;
     /// Set regs
-    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError>;
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError>;
     /// Get fpu regs
     #[allow(dead_code)]
     fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError>;
     /// Set fpu regs
-    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError>;
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError>;
     /// Get special regs
     #[allow(dead_code)]
     fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError>;
     /// Set special regs
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError>;
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError>;
     /// Get the debug registers of the vCPU
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
