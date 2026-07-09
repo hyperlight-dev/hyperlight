@@ -5,7 +5,6 @@ name: Validate Pull Request
 on:
   pull_request:
     branches: [main, "release/**"]
-  merge_group:
 
 # Cancels old running job if a new one is triggered (e.g. by a push onto the same branch).
 # This will cancel dependent jobs as well, such as dep_rust and dep_fuzzing
@@ -23,22 +22,20 @@ jobs:
     outputs:
       docs-only: ${{ steps.docs-only.outputs.result }}
     steps:
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
-        id: changes
-        with:
-          filters: |
-            docs:
-              - '**/*.md'
-              - '**/*.txt'
-            all:
-              - '**/*'
+      # Determine whether a PR only touches docs (*.md / *.txt) so downstream
+      # jobs can skip expensive work.
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         id: docs-only
         with:
           script: |
-            let docs_file_count = ${{steps.changes.outputs.docs_count}};
-            let all_file_count = ${{steps.changes.outputs.all_count}};
-            return all_file_count === docs_file_count;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const isDoc = f => /\.(md|txt)$/.test(f.filename);
+            return files.length > 0 && files.every(isDoc);
           result-encoding: string
 
   # Update guest Cargo.lock for Dependabot PRs.
