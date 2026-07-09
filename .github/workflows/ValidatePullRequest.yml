@@ -214,7 +214,7 @@ jobs:
     if: ${{ !cancelled() && !failure() }}
     strategy:
       matrix:
-        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
+        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace', 'fuzz_virtq_packed_ring']
         arch:
           - X64
         # arm64 fuzzing runs on the daily schedule (DailyArm64.yml) instead of on

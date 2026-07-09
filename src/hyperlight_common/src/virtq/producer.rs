@@ -1003,7 +1003,7 @@ fn checked_descriptor_len(len: usize) -> Result<u32, VirtqError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::virtq::ring::tests::{TestMem, make_ring};
+    use crate::virtq::ring::tests::{TestMem, make_consumer, make_ring};
     use crate::virtq::test_utils::*;
 
     fn poll_received<M: MemOps + Clone, N: Notifier>(
@@ -1724,6 +1724,45 @@ mod tests {
         }
 
         assert!(matches!(producer.poll(), Err(VirtqError::MemoryReadError)));
+    }
+
+    #[test]
+    fn test_villain_used_len_exceeding_writable_capacity_is_rejected_and_released() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+        let mut ring_consumer = make_consumer(&ring);
+
+        let se = producer.chain().writable(4).build().unwrap();
+        producer.submit(se).unwrap();
+
+        let (id, _) = ring_consumer.poll_available().unwrap();
+        ring_consumer.submit_used(id, 8).unwrap();
+
+        assert!(matches!(producer.poll(), Err(VirtqError::InvalidState)));
+        assert_eq!(producer.inner.num_inflight(), 0);
+
+        let se = producer.chain().writable(4).build().unwrap();
+        producer.submit(se).unwrap();
+        assert_eq!(producer.inner.num_inflight(), 1);
+    }
+
+    #[test]
+    fn test_villain_used_descriptor_with_invalid_id_is_rejected() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        let se = producer.chain().writable(4).build().unwrap();
+        producer.submit(se).unwrap();
+
+        let mut desc = Descriptor::new(0, 0, ring.len() as u16, DescFlags::empty());
+        desc.mark_used(true);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            producer.poll(),
+            Err(VirtqError::RingError(RingError::InvalidState))
+        ));
+        assert_eq!(producer.inner.num_inflight(), 1);
     }
 
     #[test]

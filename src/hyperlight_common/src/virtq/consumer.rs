@@ -698,6 +698,46 @@ mod tests {
     }
 
     #[test]
+    fn test_villain_indirect_descriptor_does_not_mark_high_level_inflight() {
+        let ring = make_ring(16);
+        let mem = ring.mem();
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem, TestNotifier::new());
+
+        let mut desc = Descriptor::new(0x1000, 16, 0, DescFlags::INDIRECT);
+        desc.mark_avail(true);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            consumer.poll(1024),
+            Err(VirtqError::RingError(RingError::BadChain))
+        ));
+        assert_eq!(consumer.inflight.count_ones(..), 0);
+        assert_eq!(consumer.inner.num_inflight(), 0);
+    }
+
+    #[test]
+    fn test_villain_bad_chain_does_not_mark_high_level_inflight() {
+        let ring = make_ring(16);
+        let mem = ring.mem();
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem, TestNotifier::new());
+
+        let mut first = Descriptor::new(0x1000, 16, 0, DescFlags::NEXT | DescFlags::WRITE);
+        first.mark_avail(true);
+        ring.write_desc(0, first);
+
+        let mut second = Descriptor::new(0x2000, 16, 0, DescFlags::empty());
+        second.mark_avail(true);
+        ring.write_desc(1, second);
+
+        assert!(matches!(
+            consumer.poll(1024),
+            Err(VirtqError::RingError(RingError::BadChain))
+        ));
+        assert_eq!(consumer.inflight.count_ones(..), 0);
+        assert_eq!(consumer.inner.num_inflight(), 0);
+    }
+
+    #[test]
     fn test_writable_chain_writes_single_segment() {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);

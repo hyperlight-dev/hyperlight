@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace']
+        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace', 'fuzz_virtq_packed_ring']
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       target: ${{ matrix.target }}
