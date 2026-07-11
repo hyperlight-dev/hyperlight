@@ -22,7 +22,7 @@ limitations under the License.
 //! the Windows SDK header `WinHvPlatformDefs.h` (10.0.26100.0).
 
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use hyperlight_common::outb::VmAction;
 #[cfg(feature = "trace_guest")]
@@ -114,6 +114,7 @@ mod arm64_regs {
 }
 
 /// ARM64 WHP exit reasons (from the SDK header under `_ARM64_`).
+#[allow(dead_code)]
 mod arm64_exit_reasons {
     use windows::Win32::System::Hypervisor::WHV_RUN_VP_EXIT_REASON;
 
@@ -221,6 +222,7 @@ use std::sync::atomic::AtomicBool as StdAtomicBool;
 /// can exist at a time. This flag prevents a second one from being created.
 static NO_SURROGATE_VM_ACTIVE: StdAtomicBool = StdAtomicBool::new(false);
 
+#[derive(Debug)]
 struct NoSurrogateGuard;
 
 impl NoSurrogateGuard {
@@ -292,8 +294,6 @@ pub(crate) struct WhpVm {
     /// Tracks host-side file mappings for cleanup.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
     _no_surrogate_guard: Option<NoSurrogateGuard>,
-    /// Tracks whether the cancel flag is set
-    cancelled: AtomicBool,
 }
 
 // Safety: same reasoning as x86_64 WhpVm — raw pointers are kernel resource handles,
@@ -344,7 +344,6 @@ impl WhpVm {
             surrogate_process,
             file_mappings: Vec::new(),
             _no_surrogate_guard: no_surrogate_guard,
-            cancelled: AtomicBool::new(false),
         })
     }
 
@@ -391,7 +390,7 @@ impl WhpVm {
             .map_err(|e| RegisterError::GetFpu(e.into()))?;
         }
         let v = unsafe { values[0].Reg128 };
-        Ok((v.High64 as u128) << 64 | v.Low64 as u128)
+        Ok((unsafe { v.Anonymous.High64 } as u128) << 64 | unsafe { v.Anonymous.Low64 } as u128)
     }
 
     /// Set a single 128-bit register value (for SIMD Q registers).
@@ -399,8 +398,10 @@ impl WhpVm {
         let names = [name];
         let values = [WHV_REGISTER_VALUE {
             Reg128: WHV_UINT128 {
-                Low64: value as u64,
-                High64: (value >> 64) as u64,
+                Anonymous: WHV_UINT128_0 {
+                    Low64: value as u64,
+                    High64: (value >> 64) as u64,
+                },
             },
         }];
         unsafe {
@@ -408,11 +409,6 @@ impl WhpVm {
                 .map_err(|e| RegisterError::SetFpu(e.into()))?;
         }
         Ok(())
-    }
-
-    /// Get the partition handle for this VM.
-    pub(crate) fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
-        self.partition
     }
 }
 

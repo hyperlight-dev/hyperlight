@@ -17,7 +17,9 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
+use std::sync::atomic::AtomicU8;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
