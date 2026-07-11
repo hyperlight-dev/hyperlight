@@ -425,7 +425,11 @@ impl VirtualMachine for WhpVm {
                             if self.handle_hw_io_out(port, &data) {
                                 continue;
                             }
-                        } else if let Some(val) = super::x86_64::hw_interrupts::handle_io_in(port) {
+                        } else if let Some(val) =
+                            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_io_in(
+                                port,
+                            )
+                        {
                             self.set_registers(&[(
                                 WHvX64RegisterRax,
                                 Align16(WHV_REGISTER_VALUE { Reg64: val }),
@@ -1092,7 +1096,7 @@ impl WhpVm {
             ));
         }
 
-        super::x86_64::hw_interrupts::init_lapic_registers(&mut state);
+        crate::hypervisor::virtual_machine::x86_64::hw_interrupts::init_lapic_registers(&mut state);
 
         unsafe {
             WHvSetVirtualProcessorInterruptControllerState2(
@@ -1141,7 +1145,7 @@ impl WhpVm {
     /// delivers through the LAPIC and the guest only acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut state) = self.get_lapic_state() {
-            super::x86_64::hw_interrupts::lapic_eoi(&mut state);
+            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::lapic_eoi(&mut state);
             if let Err(e) = self.set_lapic_state(&state) {
                 tracing::warn!("WHP set_lapic_state (EOI) failed: {e}");
             }
@@ -1151,8 +1155,8 @@ impl WhpVm {
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
             let partition_raw = self.partition.0;
-            let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
-            super::x86_64::hw_interrupts::handle_pv_timer_config(
+            let vector = crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TIMER_VECTOR;
+            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_pv_timer_config(
                 &mut self.timer,
                 data,
                 move || {
@@ -1174,9 +1178,12 @@ impl WhpVm {
             return true;
         }
         let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());
-        super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
-            self.do_lapic_eoi()
-        })
+        crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_common_io_out(
+            port,
+            data,
+            timer_active,
+            || self.do_lapic_eoi(),
+        )
     }
 }
 

@@ -29,12 +29,17 @@ use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
-#[cfg(kvm)]
+#[cfg(target_os = "windows")]
+use crate::hypervisor::virtual_machine::whp::WhpVm;
+#[cfg(any(kvm, mshv3, target_os = "windows"))]
 use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
     RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
 };
+#[cfg(target_os = "linux")]
 use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
+#[cfg(target_os = "windows")]
+use crate::hypervisor::{InterruptHandleImpl, PartitionState, WindowsInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -54,7 +59,7 @@ impl HyperlightVm {
         entrypoint: NextAction,
         rsp_gva: u64,
         page_size: usize,
-        config: &SandboxConfiguration,
+        #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] _gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] _rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
@@ -64,19 +69,34 @@ impl HyperlightVm {
         let vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
-            // TODO: mshv support
             #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            Some(HypervisorType::Mshv) => {
+                // MSHV aarch64 VirtualMachine impl not yet available on this branch
+                return Err(CreateHyperlightVmError::NoHypervisorFound);
+            }
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
             .map_err(VmError::Register)?;
+
+        #[cfg(target_os = "linux")]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
             state: AtomicU8::new(0),
             tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
             retry_delay: config.get_interrupt_retry_delay(),
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
             dropped: AtomicBool::new(false),
+        });
+
+        #[cfg(target_os = "windows")]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
+            state: AtomicU8::new(0),
+            partition_state: std::sync::RwLock::new(PartitionState {
+                handle: vm.partition_handle(),
+                dropped: false,
+            }),
         });
 
         let snapshot_slot = 0u32;
