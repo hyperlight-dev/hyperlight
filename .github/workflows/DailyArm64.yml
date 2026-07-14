@@ -27,6 +27,8 @@ jobs:
   # Build aarch64 guest binaries once and upload them as artifacts for the
   # build-test and run-examples jobs to download.
   build-guests:
+    # Temporarily disabled while Arm runners are unavailable.
+    if: ${{ false }}
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +42,8 @@ jobs:
   # Full aarch64 build-and-test. full_aarch64: "true" re-enables the Miri and
   # single-driver steps that are skipped on PRs.
   build-test:
+    # Temporarily disabled while Arm runners are unavailable.
+    if: ${{ false }}
     needs: build-guests
     permissions:
       # checkout in the called workflow
@@ -60,6 +64,8 @@ jobs:
       full_aarch64: "true"
 
   run-examples:
+    # Temporarily disabled while Arm runners are unavailable.
+    if: ${{ false }}
     needs: build-guests
     strategy:
       fail-fast: false
@@ -77,6 +83,8 @@ jobs:
   # limited arm64 runners, and runs here daily instead. The tracing
   # fuzzers (fuzz_guest_trace, fuzz_guest_estimate_trace_event) are x86_64-only
   fuzzing:
+    # Temporarily disabled while Arm runners are unavailable.
+    if: ${{ false }}
     needs: build-guests
     strategy:
       fail-fast: false

@@ -33,7 +33,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [X64, arm64]
+        # Temporarily disabled while Arm runners are unavailable.
+        arch: [X64]
+        # arch: [X64, arm64]
         config: [debug, release]
     uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
@@ -74,12 +76,13 @@ jobs:
           - arch: X64
             hypervisor: hyperv-ws2025
             config: release
-          - arch: arm64
-            hypervisor: kvm
-            config: debug
-          - arch: arm64
-            hypervisor: kvm
-            config: release
+          # Arm cache entries are retained for when Arm CI is re-enabled.
+          # - arch: arm64
+          #   hypervisor: kvm
+          #   config: debug
+          # - arch: arm64
+          #   hypervisor: kvm
+          #   config: release
     timeout-minutes: ${{ fromJSON(vars.PRIME_CACHES_JOB_TIMEOUT || '30') }}
     runs-on: ${{ fromJson(matrix.arch == 'X64'
         && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd", "JobId=prime-cache-{2}-{3}-{4}-{5}-{6}"]',

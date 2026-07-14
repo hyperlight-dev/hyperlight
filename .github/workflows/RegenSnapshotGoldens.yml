@@ -124,7 +124,9 @@ jobs:
     if: needs.check-published.outputs.needs_publish == 'true'
     strategy:
       matrix:
-        arch: [X64, arm64]
+        # Temporarily disabled while Arm runners are unavailable.
+        arch: [X64]
+        # arch: [X64, arm64]
         config: [debug, release]
     uses: ./.github/workflows/dep_build_guests.yml
     with:
@@ -140,7 +142,9 @@ jobs:
       matrix:
         hypervisor: [kvm, mshv3, hyperv-ws2025]
         cpu: [amd, intel, apple]
-        arch: [X64, arm64]
+        # Temporarily disabled while Arm runners are unavailable.
+        arch: [X64]
+        # arch: [X64, arm64]
         config: [debug, release]
         exclude:
           # aarch64 covers Apple under KVM only.
@@ -148,12 +152,13 @@ jobs:
             hypervisor: mshv3
           - cpu: apple
             hypervisor: hyperv-ws2025
+          # Arm exclusions are retained for when Arm CI is re-enabled.
+          # - cpu: amd
+          #   arch: arm64
+          # - cpu: intel
+          #   arch: arm64
           - cpu: apple
             arch: X64
-          - cpu: amd
-            arch: arm64
-          - cpu: intel
-            arch: arm64
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "{1}"{2}]',
           matrix.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
