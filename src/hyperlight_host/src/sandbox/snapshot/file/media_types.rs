@@ -27,7 +27,7 @@ pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_CURRENT: &str = MT_SNAPSHOT_V
 /// ABI version for the snapshot memory blob. Bumped when the
 /// host-guest contract for the snapshot bytes changes. See
 /// docs/snapshot-versioning.md.
-pub(in crate::sandbox::snapshot) const SNAPSHOT_ABI_VERSION: u32 = 1;
+pub(in crate::sandbox::snapshot) const SNAPSHOT_ABI_VERSION: u32 = 2;
 
 /// OCI standard annotation key for a manifest's tag inside an image
 /// index. Set on the manifest descriptor in `index.json`, not on the

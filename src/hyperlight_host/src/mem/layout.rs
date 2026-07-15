@@ -360,7 +360,7 @@ impl SandboxMemoryLayout {
     pub(crate) const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x1000;
+    pub(crate) const BASE_ADDRESS: usize = 0x4000;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -774,7 +774,7 @@ mod tests {
 
         expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE);
 
-        expected_size
+        expected_size.next_multiple_of(page_size::get())
     }
 
     #[test]
@@ -891,7 +891,7 @@ mod tests {
             );
             pin_eq!(
                 hyperlight_common::layout::SCRATCH_TOP_GPA,
-                0x0000_000f_ffff_efff
+                0x0000_000f_ffff_bfff
             );
         }
 
@@ -915,7 +915,7 @@ mod tests {
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x1000);
-        pin_eq!(layout.peb_address(), 0x2000);
+        pin_eq!(layout.peb_address(), 0x5000);
         pin_eq!(layout.guest_heap_buffer_offset(), 0x2000);
         pin_eq!(layout.init_data_offset(), 0x4000);
         pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
@@ -964,10 +964,13 @@ mod tests {
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x3000);
-        pin_eq!(layout.peb_address(), 0x4000);
+        pin_eq!(layout.peb_address(), 0x7000);
         pin_eq!(layout.guest_heap_buffer_offset(), 0x4000);
         pin_eq!(layout.init_data_offset(), 0x9000);
-        pin_eq!(layout.get_memory_size().unwrap(), 0x9000);
+        pin_eq!(
+            layout.get_memory_size().unwrap(),
+            0x9000_usize.next_multiple_of(page_size::get())
+        );
 
         pin_eq!(layout.get_scratch_size(), 0x20000);
         pin_eq!(layout.get_pt_size(), 0);

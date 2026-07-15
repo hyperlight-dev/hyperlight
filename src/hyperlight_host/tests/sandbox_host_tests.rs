@@ -123,7 +123,7 @@ fn invalid_guest_function_name() {
 #[test]
 fn set_static() {
     let mut cfg: SandboxConfiguration = Default::default();
-    cfg.set_scratch_size(0x100A000);
+    cfg.set_scratch_size(0x100C000);
     with_all_sandboxes_cfg(Some(cfg), |mut sandbox| {
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());

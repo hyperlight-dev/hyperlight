@@ -28,7 +28,7 @@ use super::file::{
     MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, OCI_LAYOUT_VERSION, SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 1;
+const EXPECTED_ABI_VERSION: u32 = 2;
 const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v1+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
@@ -87,7 +87,7 @@ const _: () = {
 
 const _: () = {
     use crate::mem::layout::SandboxMemoryLayout;
-    abi_assert!(SandboxMemoryLayout::BASE_ADDRESS == 0x1000);
+    abi_assert!(SandboxMemoryLayout::BASE_ADDRESS == 0x4000);
 };
 
 const fn str_eq(a: &str, b: &str) -> bool {

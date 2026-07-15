@@ -21,12 +21,15 @@ limitations under the License.
 //! publish. See `docs/snapshot-versioning.md`.
 
 /// Goldens version, a `vMAJOR.MINOR` string.
-pub(crate) const GOLDENS_VERSION: &str = "v1.0";
+pub(crate) const GOLDENS_VERSION: &str = "v2.0";
 
 /// Old majors kept loadable through a compatibility path, verified
 /// alongside `GOLDENS_VERSION`. A backwards-compatible break (Option 2)
 /// adds the outgoing version here. See `docs/snapshot-versioning.md`.
+#[cfg(target_arch = "aarch64")]
 pub(crate) const COMPAT_VERSIONS: &[&str] = &[];
+#[cfg(target_arch = "x86_64")]
+pub(crate) const COMPAT_VERSIONS: &[&str] = &["v1.0"];
 
 /// Every version the verify test checks: the current one and each kept
 /// old major.
