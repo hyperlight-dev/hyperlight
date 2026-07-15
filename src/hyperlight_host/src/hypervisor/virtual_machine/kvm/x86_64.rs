@@ -14,16 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
-    kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
+    Msrs, kvm_debugregs, kvm_enable_cap, kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs,
+    kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::Cap::UserMemory;
-use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{
+    Cap, Kvm, MsrExitReason, MsrFilterDefaultAction, MsrFilterRange, MsrFilterRangeFlags, VcpuExit,
+    VcpuFd, VmFd,
+};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -34,7 +39,7 @@ use vmm_sys_util::eventfd::EventFd;
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
-    MXCSR_DEFAULT,
+    MXCSR_DEFAULT, MsrEntry, is_resettable_msr,
 };
 #[cfg(test)]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
@@ -109,6 +114,42 @@ pub(crate) struct KvmVm {
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
     LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+/// Cached host indices reported by `KVM_GET_MSR_INDEX_LIST`.
+/// An empty set makes support checks fail closed.
+static HOST_MSR_INDICES: LazyLock<HashSet<u32>> = LazyLock::new(|| match KVM.as_ref() {
+    Ok(kvm) => match kvm.get_msr_index_list() {
+        Ok(list) => list.as_slice().iter().copied().collect(),
+        Err(e) => {
+            tracing::warn!("KVM_GET_MSR_INDEX_LIST failed: {e}");
+            HashSet::new()
+        }
+    },
+    Err(_) => HashSet::new(),
+});
+
+/// Returns the set of MSR indices the host KVM supports for get/set.
+pub(crate) fn host_msr_indices() -> &'static HashSet<u32> {
+    &HOST_MSR_INDICES
+}
+
+/// KVM allows at most this many MSR filter ranges.
+const KVM_MSR_FILTER_MAX_RANGES: usize = 16;
+
+/// Returns the smallest contiguous ranges covering the supplied indices.
+fn coalesce_msr_ranges(indices: &[u32]) -> Vec<(u32, usize)> {
+    let mut sorted: Vec<u32> = indices.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut groups: Vec<(u32, usize)> = Vec::new();
+    for idx in sorted {
+        match groups.last_mut() {
+            Some((base, count)) if *base + *count as u32 == idx => *count += 1,
+            _ => groups.push((idx, 1)),
+        }
+    }
+    groups
+}
 
 #[cfg(feature = "hw-interrupts")]
 impl KvmVm {
@@ -228,6 +269,20 @@ impl KvmVm {
                 }
                 Ok(VcpuExit::MmioRead(addr, _)) => return Ok(VmExit::MmioRead(addr)),
                 Ok(VcpuExit::MmioWrite(addr, _)) => return Ok(VmExit::MmioWrite(addr)),
+                // Complete filtered access through the default run path.
+                Ok(VcpuExit::X86Rdmsr(msr_exit)) => {
+                    let msr_index = msr_exit.index;
+                    *msr_exit.error = 1;
+                    self.complete_filtered_msr_exit()?;
+                    return Ok(VmExit::MsrRead(msr_index));
+                }
+                Ok(VcpuExit::X86Wrmsr(msr_exit)) => {
+                    let msr_index = msr_exit.index;
+                    let value = msr_exit.data;
+                    *msr_exit.error = 1;
+                    self.complete_filtered_msr_exit()?;
+                    return Ok(VmExit::MsrWrite { msr_index, value });
+                }
                 #[cfg(gdb)]
                 Ok(VcpuExit::Debug(debug_exit)) => {
                     return Ok(VmExit::Debug {
@@ -247,6 +302,23 @@ impl KvmVm {
                     )));
                 }
             }
+        }
+    }
+
+    /// Finish a filtered MSR access after its `error` flag was set.
+    /// Reentering `KVM_RUN` injects `#GP` for the pending access.
+    /// immediate_exit halts the guest right after, so it never runs past
+    /// the fault. That reentry returns `EINTR`, which is expected here.
+    fn complete_filtered_msr_exit(&mut self) -> std::result::Result<(), RunVcpuError> {
+        self.vcpu_fd.set_kvm_immediate_exit(1);
+        // `.err()` drops the `Ok(VcpuExit)`, which borrows `vcpu_fd`, keeping
+        // only the owned error so the borrow ends before the next call.
+        let err = self.vcpu_fd.run().err();
+        self.vcpu_fd.set_kvm_immediate_exit(0);
+        match err {
+            None => Ok(()),
+            Some(e) if e.errno() == libc::EINTR => Ok(()),
+            Some(e) => Err(RunVcpuError::Unknown(e.into())),
         }
     }
 
@@ -275,6 +347,21 @@ impl KvmVm {
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
+            // Reentering KVM_RUN completes the failed MSR exit and injects #GP.
+            // immediate_exit prevents further guest execution.
+            Ok(VcpuExit::X86Rdmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                *msr_exit.error = 1;
+                self.complete_filtered_msr_exit()?;
+                Ok(VmExit::MsrRead(msr_index))
+            }
+            Ok(VcpuExit::X86Wrmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                let value = msr_exit.data;
+                *msr_exit.error = 1;
+                self.complete_filtered_msr_exit()?;
+                Ok(VmExit::MsrWrite { msr_index, value })
+            }
             #[cfg(gdb)]
             Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
                 dr6: debug_exit.dr6,
@@ -291,6 +378,150 @@ impl KvmVm {
                 other
             ))),
         }
+    }
+
+    /// Installs a deny filter containing the validated allow list.
+    /// Requires `KVM_CAP_X86_USER_SPACE_MSR` and `KVM_CAP_X86_MSR_FILTER`.
+    pub(crate) fn configure_msr_access(
+        &self,
+        allowed: &[u32],
+    ) -> std::result::Result<(), CreateVmError> {
+        let hv = KVM.as_ref().map_err(|e| e.clone())?;
+        if !hv.check_extension(Cap::X86UserSpaceMsr) || !hv.check_extension(Cap::X86MsrFilter) {
+            tracing::error!(
+                "KVM does not support KVM_CAP_X86_USER_SPACE_MSR or KVM_CAP_X86_MSR_FILTER."
+            );
+            return Err(CreateVmError::MsrFilterNotSupported);
+        }
+
+        // Every permitted guest write must have restorable host state.
+        for &msr in allowed {
+            self.validate_allowed_msr(msr)?;
+        }
+
+        // Tell KVM to exit to userspace on filtered MSR access.
+        let cap = kvm_enable_cap {
+            cap: Cap::X86UserSpaceMsr as u32,
+            args: [MsrExitReason::Filter.bits() as u64, 0, 0, 0],
+            ..Default::default()
+        };
+        self.vm_fd
+            .enable_cap(&cap)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        // Each contiguous group consumes one KVM filter range.
+        let groups = coalesce_msr_ranges(allowed);
+        if groups.len() > KVM_MSR_FILTER_MAX_RANGES {
+            return Err(CreateVmError::TooManyMsrRanges(groups.len()));
+        }
+
+        // The bitmaps must live through set_msr_filter.
+        let bitmaps: Vec<Vec<u8>> = groups
+            .iter()
+            .map(|(_, count)| {
+                let mut bytes = vec![0u8; count.div_ceil(8)];
+                for bit in 0..*count {
+                    bytes[bit / 8] |= 1 << (bit % 8);
+                }
+                bytes
+            })
+            .collect();
+
+        // Default deny requires at least one range.
+        static DENY_BITMAP: [u8; 1] = [0u8];
+        let ranges: Vec<MsrFilterRange> = if groups.is_empty() {
+            vec![MsrFilterRange {
+                flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                base: 0,
+                msr_count: 1,
+                bitmap: &DENY_BITMAP,
+            }]
+        } else {
+            groups
+                .iter()
+                .zip(bitmaps.iter())
+                .map(|((base, count), bitmap)| MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: *base,
+                    msr_count: *count as u32,
+                    bitmap: bitmap.as_slice(),
+                })
+                .collect()
+        };
+
+        self.vm_fd
+            .set_msr_filter(MsrFilterDefaultAction::DENY, &ranges)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(())
+    }
+
+    /// Validates that an allowed MSR has restorable host state.
+    fn validate_allowed_msr(&self, msr: u32) -> std::result::Result<(), CreateVmError> {
+        if !is_resettable_msr(msr) {
+            return Err(CreateVmError::MsrNotAllowable {
+                msr,
+                reason: "MSR is not a resettable MSR".to_string(),
+            });
+        }
+        if !host_msr_indices().contains(&msr) {
+            return Err(CreateVmError::MsrNotAllowable {
+                msr,
+                reason: "MSR is not supported by the host".to_string(),
+            });
+        }
+        let value = self
+            .read_msr(msr)
+            .map_err(|e| CreateVmError::MsrNotAllowable {
+                msr,
+                reason: format!("MSR is not readable: {e}"),
+            })?;
+        self.write_msr(msr, value)
+            .map_err(|e| CreateVmError::MsrNotAllowable {
+                msr,
+                reason: format!("MSR is not resettable: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Reads one vCPU MSR without the guest filter.
+    fn read_msr(&self, index: u32) -> std::result::Result<u64, RegisterError> {
+        let mut msrs = Msrs::from_entries(&[kvm_msr_entry {
+            index,
+            ..Default::default()
+        }])
+        .map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .get_msrs(&mut msrs)
+            .map_err(|e| RegisterError::GetMsrs(e.into()))?;
+        if n != 1 {
+            return Err(RegisterError::MsrShortCount {
+                expected: 1,
+                actual: n,
+            });
+        }
+        Ok(msrs.as_slice()[0].data)
+    }
+
+    /// Writes one vCPU MSR without the guest filter.
+    fn write_msr(&self, index: u32, data: u64) -> std::result::Result<(), RegisterError> {
+        let msrs = Msrs::from_entries(&[kvm_msr_entry {
+            index,
+            data,
+            ..Default::default()
+        }])
+        .map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .set_msrs(&msrs)
+            .map_err(|e| RegisterError::SetMsrs(e.into()))?;
+        if n != 1 {
+            return Err(RegisterError::MsrShortCount {
+                expected: 1,
+                actual: n,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -400,6 +631,66 @@ impl VirtualMachine for KvmVm {
         self.vcpu_fd
             .set_debug_regs(&kvm_debug_regs)
             .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn msrs(&self, indices: &[u32]) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<kvm_msr_entry> = indices
+            .iter()
+            .map(|&index| kvm_msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .get_msrs(&mut msrs)
+            .map_err(|e| RegisterError::GetMsrs(e.into()))?;
+        if n != indices.len() {
+            return Err(RegisterError::MsrShortCount {
+                expected: indices.len(),
+                actual: n,
+            });
+        }
+        Ok(msrs
+            .as_slice()
+            .iter()
+            .map(|e| MsrEntry {
+                index: e.index,
+                value: e.data,
+            })
+            .collect())
+    }
+
+    fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
+        let entries: Vec<kvm_msr_entry> = msrs
+            .iter()
+            .map(|e| kvm_msr_entry {
+                index: e.index,
+                data: e.value,
+                ..Default::default()
+            })
+            .collect();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let kvm_msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .set_msrs(&kvm_msrs)
+            .map_err(|e| RegisterError::SetMsrs(e.into()))?;
+        if n != entries.len() {
+            return Err(RegisterError::MsrShortCount {
+                expected: entries.len(),
+                actual: n,
+            });
+        }
         Ok(())
     }
 
@@ -570,10 +861,45 @@ impl DebuggableVm for KvmVm {
 }
 
 #[cfg(test)]
-#[cfg(feature = "hw-interrupts")]
-mod hw_interrupt_tests {
+mod tests {
     use super::*;
 
+    #[test]
+    fn coalesces_unsorted_contiguous_indices() {
+        assert_eq!(
+            coalesce_msr_ranges(&[0x176, 0x174, 0x175]),
+            vec![(0x174, 3)]
+        );
+    }
+
+    #[test]
+    fn deduplicates_indices() {
+        assert_eq!(
+            coalesce_msr_ranges(&[0x174, 0x174, 0x176]),
+            vec![(0x174, 1), (0x176, 1)]
+        );
+    }
+
+    #[test]
+    fn preserves_sixteen_range_boundary() {
+        let indices: Vec<u32> = (0..KVM_MSR_FILTER_MAX_RANGES as u32)
+            .map(|index| index * 2)
+            .collect();
+        let ranges = coalesce_msr_ranges(&indices);
+        assert_eq!(ranges.len(), KVM_MSR_FILTER_MAX_RANGES);
+        assert!(ranges.iter().all(|(_, count)| *count == 1));
+    }
+
+    #[test]
+    fn scattered_indices_exceed_sixteen_range_limit() {
+        let indices: Vec<u32> = (0..=KVM_MSR_FILTER_MAX_RANGES as u32)
+            .map(|index| index * 2)
+            .collect();
+        let ranges = coalesce_msr_ranges(&indices);
+        assert!(ranges.len() > KVM_MSR_FILTER_MAX_RANGES);
+    }
+
+    #[cfg(feature = "hw-interrupts")]
     #[test]
     fn halt_port_is_not_standard_device() {
         // VmAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports

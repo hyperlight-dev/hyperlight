@@ -41,9 +41,12 @@ use crate::hypervisor::gdb::{
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebugMemoryAccessError};
 use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, MsrEntry, MsrResetState,
+    core_reset_indices, is_mtrr_reset_index,
 };
-#[cfg(not(gdb))]
+#[cfg(kvm)]
+use crate::hypervisor::regs::{MSR_KERNEL_GS_BASE, MSR_TSC};
+#[cfg(any(not(gdb), mshv3, target_os = "windows"))]
 use crate::hypervisor::virtual_machine::VirtualMachine;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
@@ -69,6 +72,26 @@ use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
+#[cfg(gdb)]
+type BoxedVm = Box<dyn DebuggableVm>;
+#[cfg(not(gdb))]
+type BoxedVm = Box<dyn VirtualMachine>;
+
+/// Determines the MTRR reset indices for an MSHV or WHP backend and validates
+/// its allow list. Both hosts lack an MSR filter, so the allow list adds reset
+/// state.
+#[cfg(any(mshv3, target_os = "windows"))]
+fn determine_reset_msrs(
+    vm: &dyn VirtualMachine,
+    allowed: &[u32],
+) -> std::result::Result<Vec<u32>, VmError> {
+    use crate::hypervisor::virtual_machine::{mtrr_reset_indices, validate_allowed_msrs};
+
+    let required_mtrrs = mtrr_reset_indices(vm).map_err(VmError::CreateVm)?;
+    validate_allowed_msrs(vm, allowed).map_err(VmError::CreateVm)?;
+    Ok(required_mtrrs)
+}
+
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -85,18 +108,27 @@ impl HyperlightVm {
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        #[cfg(gdb)]
-        type VmType = Box<dyn DebuggableVm>;
-        #[cfg(not(gdb))]
-        type VmType = Box<dyn VirtualMachine>;
-
-        let vm: VmType = match get_available_hypervisor() {
+        let (vm, required_mtrrs): (BoxedVm, Vec<u32>) = match get_available_hypervisor() {
             #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+            Some(HypervisorType::Kvm) => {
+                let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
+                kvm_vm
+                    .configure_msr_access(config.get_allowed_msrs())
+                    .map_err(VmError::CreateVm)?;
+                (Box::new(kvm_vm), Vec::new())
+            }
             #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
+            Some(HypervisorType::Mshv) => {
+                let vm: BoxedVm = Box::new(MshvVm::new().map_err(VmError::CreateVm)?);
+                let required_mtrrs = determine_reset_msrs(vm.as_ref(), config.get_allowed_msrs())?;
+                (vm, required_mtrrs)
+            }
             #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
+            Some(HypervisorType::Whp) => {
+                let vm: BoxedVm = Box::new(WhpVm::new().map_err(VmError::CreateVm)?);
+                let required_mtrrs = determine_reset_msrs(vm.as_ref(), config.get_allowed_msrs())?;
+                (vm, required_mtrrs)
+            }
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
@@ -136,6 +168,10 @@ impl HyperlightVm {
             }),
         });
 
+        // The MSRs reset on restore and captured in snapshots.
+        let msr_reset =
+            Self::capture_msr_reset_state(&vm, required_mtrrs, config.get_allowed_msrs())?;
+
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
@@ -168,6 +204,7 @@ impl HyperlightVm {
             trace_info,
             #[cfg(crashdump)]
             rt_cfg,
+            msr_reset,
         };
 
         ret.update_snapshot_mapping(snapshot_mem)?;
@@ -197,6 +234,50 @@ impl HyperlightVm {
         }
 
         Ok(ret)
+    }
+
+    /// Determines this VM's MSR reset set: the MSRs reset on restore and
+    /// captured in snapshots. `required_mtrrs` is the VCNT-driven MTRR set
+    /// gathered at creation. `allowed` is the validated allow list.
+    fn capture_msr_reset_state(
+        vm: &BoxedVm,
+        required_mtrrs: Vec<u32>,
+        allowed: &[u32],
+    ) -> std::result::Result<MsrResetState, VmError> {
+        let core: Vec<u32> = match get_available_hypervisor() {
+            #[cfg(kvm)]
+            Some(HypervisorType::Kvm) => vec![MSR_KERNEL_GS_BASE, MSR_TSC], // GS_BASE is needed for correctness. TSC is to match mshv/whp behavior
+            #[cfg(mshv3)]
+            Some(HypervisorType::Mshv) => Self::probe_core_reset_indices(vm),
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => Self::probe_core_reset_indices(vm),
+            // The VM already exists, so a hypervisor was found. The `None`
+            // arm in `new` returned before this point.
+            None => unreachable!(),
+        };
+        let mut indices: Vec<u32> = core
+            .into_iter()
+            .chain(required_mtrrs)
+            .chain(allowed.iter().copied())
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        let baseline = vm.msrs(&indices).map_err(VmError::Register)?;
+        let mut allowed = allowed.to_vec();
+        allowed.sort_unstable();
+        allowed.dedup();
+        Ok(MsrResetState::new(baseline, allowed))
+    }
+
+    /// Core stateful MSRs a filterless host can read.
+    ///
+    /// MTRRs come from the VCNT-driven required set, so they are excluded.
+    #[cfg(any(mshv3, target_os = "windows"))]
+    fn probe_core_reset_indices(vm: &BoxedVm) -> Vec<u32> {
+        core_reset_indices()
+            .filter(|i| !is_mtrr_reset_index(*i))
+            .filter(|i| vm.msrs(&[*i]).is_ok())
+            .collect()
     }
 
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -268,6 +349,54 @@ impl HyperlightVm {
         &mut self,
     ) -> Result<CommonSpecialRegisters, AccessPageTableError> {
         Ok(self.vm.sregs()?)
+    }
+
+    /// Returns the current values of the MSR reset set.
+    pub(crate) fn get_msr_reset_state(&self) -> Result<Vec<MsrEntry>, AccessPageTableError> {
+        Ok(self.vm.msrs(&self.msr_reset.indices())?)
+    }
+
+    /// Returns this VM's requested allow list, sorted and deduplicated.
+    pub(crate) fn get_msr_allow_list(&self) -> Vec<u32> {
+        self.msr_reset.allowed().to_vec()
+    }
+
+    /// Restores snapshot MSRs or the initialization baseline.
+    pub(crate) fn restore_msrs(
+        &mut self,
+        snap_msrs: Option<&Vec<MsrEntry>>,
+        snap_allowed: Option<&[u32]>,
+    ) -> std::result::Result<(), ResetVcpuError> {
+        match snap_msrs {
+            // No captured MSRs. Use this VM's baseline.
+            None => self.vm.set_msrs(self.msr_reset.baseline())?,
+            // Reset the MSRs to the snapshot's captured values. The snapshot's
+            // allow list must be a subset of this VM's, and every captured
+            // index must be in this reset set, so validation rejects a
+            // mismatch first.
+            Some(msrs) => {
+                let entries = self
+                    .msr_reset
+                    .validate_snapshot(msrs, snap_allowed.unwrap_or(&[]))?;
+                self.vm.set_msrs(&entries)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads arbitrary backend MSRs for tests.
+    #[cfg(all(test, mshv3, target_arch = "x86_64"))]
+    pub(crate) fn capture_msrs_for_test(
+        &self,
+        indices: &[u32],
+    ) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
+        self.vm.msrs(indices)
+    }
+
+    /// Attempts one backend MSR write for tests.
+    #[cfg(all(test, mshv3, target_arch = "x86_64"))]
+    pub(crate) fn try_set_msr_for_test(&self, index: u32, value: u64) -> bool {
+        self.vm.set_msrs(&[MsrEntry { index, value }]).is_ok()
     }
 
     /// Dispatch a call from the host to the guest using the given pointer

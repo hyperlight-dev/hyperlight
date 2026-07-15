@@ -33,9 +33,13 @@ use windows_result::HRESULT;
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
-    FP_CONTROL_WORD_DEFAULT, MXCSR_DEFAULT, WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN,
-    WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
-    WHP_SREGS_NAMES_LEN,
+    FP_CONTROL_WORD_DEFAULT, MSR_APERF, MSR_BNDCFGS, MSR_CSTAR, MSR_INTERRUPT_SSP_TABLE_ADDR,
+    MSR_KERNEL_GS_BASE, MSR_LSTAR, MSR_MPERF, MSR_MTRR_CAP, MSR_PAT, MSR_PL0_SSP, MSR_PL1_SSP,
+    MSR_PL2_SSP, MSR_PL3_SSP, MSR_S_CET, MSR_SFMASK, MSR_SPEC_CTRL, MSR_STAR, MSR_SYSENTER_CS,
+    MSR_SYSENTER_EIP, MSR_SYSENTER_ESP, MSR_TSC_DEADLINE, MSR_TSX_CTRL, MSR_U_CET,
+    MSR_UMWAIT_CONTROL, MSR_XFD, MSR_XFD_ERR, MXCSR_DEFAULT, MsrEntry, WHP_DEBUG_REGS_NAMES,
+    WHP_DEBUG_REGS_NAMES_LEN, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN,
+    WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::{
@@ -70,6 +74,143 @@ pub(crate) fn is_hypervisor_present() -> bool {
             tracing::info!("Windows Hypervisor Platform is not available on this system");
             false
         }
+    }
+}
+
+/// Maps an MSR index to the WHP register used for host reset.
+fn msr_to_whv_register_name(index: u32) -> Option<WHV_REGISTER_NAME> {
+    Some(match index {
+        MSR_MTRR_CAP => WHvX64RegisterMsrMtrrCap,
+        MSR_SYSENTER_CS => WHvX64RegisterSysenterCs,
+        MSR_SYSENTER_ESP => WHvX64RegisterSysenterEsp,
+        MSR_SYSENTER_EIP => WHvX64RegisterSysenterEip,
+        MSR_PAT => WHvX64RegisterPat,
+        MSR_STAR => WHvX64RegisterStar,
+        MSR_LSTAR => WHvX64RegisterLstar,
+        MSR_CSTAR => WHvX64RegisterCstar,
+        MSR_SFMASK => WHvX64RegisterSfmask,
+        MSR_KERNEL_GS_BASE => WHvX64RegisterKernelGsBase,
+        MSR_SPEC_CTRL => WHvX64RegisterSpecCtrl,
+        MSR_U_CET => WHvX64RegisterUCet,
+        MSR_S_CET => WHvX64RegisterSCet,
+        MSR_PL0_SSP => WHvX64RegisterPl0Ssp,
+        MSR_PL1_SSP => WHvX64RegisterPl1Ssp,
+        MSR_PL2_SSP => WHvX64RegisterPl2Ssp,
+        MSR_PL3_SSP => WHvX64RegisterPl3Ssp,
+        MSR_INTERRUPT_SSP_TABLE_ADDR => WHvX64RegisterInterruptSspTableAddr,
+        // TSC and TSC offset/aux.
+        0x10 => WHvX64RegisterTsc,
+        0x3B => WHvX64RegisterTscAdjust,
+        0xC000_0103 => WHvX64RegisterTscAux,
+        MSR_MPERF => WHvX64RegisterMCount,
+        MSR_APERF => WHvX64RegisterACount,
+        MSR_TSX_CTRL => WHvX64RegisterTsxCtrl,
+        MSR_XFD => WHvX64RegisterXfd,
+        MSR_XFD_ERR => WHvX64RegisterXfdErr,
+        MSR_UMWAIT_CONTROL => WHvX64RegisterUmwaitControl,
+        MSR_TSC_DEADLINE => WHvX64RegisterTscDeadline,
+        MSR_BNDCFGS => WHvX64RegisterBndcfgs,
+        // XSAVE supervisor state mask (IA32_XSS).
+        0xDA0 => WHvX64RegisterXss,
+        // MTRRs: def type, variable base/mask pairs 0..=9, fixed ranges.
+        0x2FF => WHvX64RegisterMsrMtrrDefType,
+        0x200 => WHvX64RegisterMsrMtrrPhysBase0,
+        0x201 => WHvX64RegisterMsrMtrrPhysMask0,
+        0x202 => WHvX64RegisterMsrMtrrPhysBase1,
+        0x203 => WHvX64RegisterMsrMtrrPhysMask1,
+        0x204 => WHvX64RegisterMsrMtrrPhysBase2,
+        0x205 => WHvX64RegisterMsrMtrrPhysMask2,
+        0x206 => WHvX64RegisterMsrMtrrPhysBase3,
+        0x207 => WHvX64RegisterMsrMtrrPhysMask3,
+        0x208 => WHvX64RegisterMsrMtrrPhysBase4,
+        0x209 => WHvX64RegisterMsrMtrrPhysMask4,
+        0x20A => WHvX64RegisterMsrMtrrPhysBase5,
+        0x20B => WHvX64RegisterMsrMtrrPhysMask5,
+        0x20C => WHvX64RegisterMsrMtrrPhysBase6,
+        0x20D => WHvX64RegisterMsrMtrrPhysMask6,
+        0x20E => WHvX64RegisterMsrMtrrPhysBase7,
+        0x20F => WHvX64RegisterMsrMtrrPhysMask7,
+        0x210 => WHvX64RegisterMsrMtrrPhysBase8,
+        0x211 => WHvX64RegisterMsrMtrrPhysMask8,
+        0x212 => WHvX64RegisterMsrMtrrPhysBase9,
+        0x213 => WHvX64RegisterMsrMtrrPhysMask9,
+        0x214 => WHvX64RegisterMsrMtrrPhysBaseA,
+        0x215 => WHvX64RegisterMsrMtrrPhysMaskA,
+        0x216 => WHvX64RegisterMsrMtrrPhysBaseB,
+        0x217 => WHvX64RegisterMsrMtrrPhysMaskB,
+        0x218 => WHvX64RegisterMsrMtrrPhysBaseC,
+        0x219 => WHvX64RegisterMsrMtrrPhysMaskC,
+        0x21A => WHvX64RegisterMsrMtrrPhysBaseD,
+        0x21B => WHvX64RegisterMsrMtrrPhysMaskD,
+        0x21C => WHvX64RegisterMsrMtrrPhysBaseE,
+        0x21D => WHvX64RegisterMsrMtrrPhysMaskE,
+        0x21E => WHvX64RegisterMsrMtrrPhysBaseF,
+        0x21F => WHvX64RegisterMsrMtrrPhysMaskF,
+        0x250 => WHvX64RegisterMsrMtrrFix64k00000,
+        0x258 => WHvX64RegisterMsrMtrrFix16k80000,
+        0x259 => WHvX64RegisterMsrMtrrFix16kA0000,
+        0x268 => WHvX64RegisterMsrMtrrFix4kC0000,
+        0x269 => WHvX64RegisterMsrMtrrFix4kC8000,
+        0x26A => WHvX64RegisterMsrMtrrFix4kD0000,
+        0x26B => WHvX64RegisterMsrMtrrFix4kD8000,
+        0x26C => WHvX64RegisterMsrMtrrFix4kE0000,
+        0x26D => WHvX64RegisterMsrMtrrFix4kE8000,
+        0x26E => WHvX64RegisterMsrMtrrFix4kF0000,
+        0x26F => WHvX64RegisterMsrMtrrFix4kF8000,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod msr_mapping_tests {
+    use super::*;
+    use crate::hypervisor::regs::{MSR_DEBUGCTL, MSR_VIRT_SPEC_CTRL, core_reset_indices};
+
+    #[test]
+    fn maps_all_stateful_msrs_except_debugctl_and_virt_spec_ctrl() {
+        for index in core_reset_indices() {
+            // WHP models neither DEBUGCTL nor VIRT_SPEC_CTRL as a named register.
+            // Both are safe: WHP does not expose their guest-writable features, so
+            // a guest cannot leave retained state in them.
+            if index != MSR_DEBUGCTL && index != MSR_VIRT_SPEC_CTRL {
+                assert!(
+                    msr_to_whv_register_name(index).is_some(),
+                    "missing MSR mapping for {index:#x}"
+                );
+            }
+        }
+
+        assert!(msr_to_whv_register_name(MSR_DEBUGCTL).is_none());
+        assert!(msr_to_whv_register_name(MSR_VIRT_SPEC_CTRL).is_none());
+        assert_eq!(
+            msr_to_whv_register_name(MSR_MPERF),
+            Some(WHvX64RegisterMCount)
+        );
+        assert_eq!(
+            msr_to_whv_register_name(MSR_APERF),
+            Some(WHvX64RegisterACount)
+        );
+        assert_eq!(
+            msr_to_whv_register_name(MSR_TSX_CTRL),
+            Some(WHvX64RegisterTsxCtrl)
+        );
+        assert_eq!(msr_to_whv_register_name(MSR_XFD), Some(WHvX64RegisterXfd));
+        assert_eq!(
+            msr_to_whv_register_name(MSR_XFD_ERR),
+            Some(WHvX64RegisterXfdErr)
+        );
+        assert_eq!(
+            msr_to_whv_register_name(MSR_UMWAIT_CONTROL),
+            Some(WHvX64RegisterUmwaitControl)
+        );
+        assert_eq!(
+            msr_to_whv_register_name(MSR_TSC_DEADLINE),
+            Some(WHvX64RegisterTscDeadline)
+        );
+        assert_eq!(
+            msr_to_whv_register_name(MSR_BNDCFGS),
+            Some(WHvX64RegisterBndcfgs)
+        );
     }
 }
 
@@ -176,6 +317,9 @@ impl WhpVm {
 
             #[cfg(feature = "hw-interrupts")]
             Self::enable_lapic_emulation(p)?;
+
+            // Hyper-V permits MSR intercepts only for unimplemented indices.
+            // Implemented MSR isolation therefore depends on reset.
 
             WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
             WHvCreateVirtualProcessor(p, 0, 0)
@@ -665,6 +809,59 @@ impl VirtualMachine for WhpVm {
                 .map_err(|e| RegisterError::SetSregs(e.into()))?;
             Ok(())
         }
+    }
+
+    fn msrs(&self, indices: &[u32]) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Callers validate every index before reaching this mapping.
+        let names: Vec<WHV_REGISTER_NAME> = indices
+            .iter()
+            .map(|&i| msr_to_whv_register_name(i).ok_or(RegisterError::MsrsUnsupported))
+            .collect::<std::result::Result<_, _>>()?;
+        // SAFETY: WHV_REGISTER_VALUE is a union of plain-old-data fields, so an
+        // all-zero value is a valid initial state.
+        let mut values: Vec<Align16<WHV_REGISTER_VALUE>> =
+            vec![unsafe { std::mem::zeroed() }; names.len()];
+        // SAFETY: names and values have equal length. The call fills each value
+        // slot from the partition's vp 0 for the given register names.
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )
+            .map_err(|e| RegisterError::GetMsrs(e.into()))?;
+        }
+        Ok(indices
+            .iter()
+            .zip(values)
+            .map(|(&index, v)| MsrEntry {
+                index,
+                // SAFETY: each register was read as a 64-bit MSR value.
+                value: unsafe { v.0.Reg64 },
+            })
+            .collect())
+    }
+
+    fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
+        let regs: Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)> = msrs
+            .iter()
+            .map(|e| {
+                msr_to_whv_register_name(e.index)
+                    .map(|name| (name, Align16(WHV_REGISTER_VALUE { Reg64: e.value })))
+                    .ok_or(RegisterError::MsrsUnsupported)
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        if regs.is_empty() {
+            return Ok(());
+        }
+        self.set_registers(&regs)
+            .map_err(|e| RegisterError::SetMsrs(e.into()))?;
+        Ok(())
     }
 
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {

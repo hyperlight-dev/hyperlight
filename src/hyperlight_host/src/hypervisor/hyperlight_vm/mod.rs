@@ -163,6 +163,16 @@ impl DispatchGuestCallError {
                 region_flags,
             }) => HyperlightError::MemoryAccessViolation(addr, access_type, region_flags),
 
+            #[cfg(all(target_arch = "x86_64", kvm))]
+            DispatchGuestCallError::Run(RunVmError::MsrReadViolation(msr_index)) => {
+                HyperlightError::MsrReadViolation(msr_index)
+            }
+
+            #[cfg(all(target_arch = "x86_64", kvm))]
+            DispatchGuestCallError::Run(RunVmError::MsrWriteViolation { msr_index, value }) => {
+                HyperlightError::MsrWriteViolation(msr_index, value)
+            }
+
             // Leave others as is
             other => HyperlightVmError::DispatchGuestCall(other).into(),
         };
@@ -213,6 +223,12 @@ pub enum RunVmError {
     MmioReadUnmapped(u64),
     #[error("MMIO WRITE access to unmapped address {0:#x}")]
     MmioWriteUnmapped(u64),
+    #[cfg(all(target_arch = "x86_64", kvm))]
+    #[error("Guest read from denied MSR {0:#x}")]
+    MsrReadViolation(u32),
+    #[cfg(all(target_arch = "x86_64", kvm))]
+    #[error("Guest write of {value:#x} to denied MSR {msr_index:#x}")]
+    MsrWriteViolation { msr_index: u32, value: u64 },
     #[error("vCPU run failed: {0}")]
     RunVcpu(#[from] RunVcpuError),
     #[error("Unexpected VM exit: {0}")]
@@ -409,6 +425,9 @@ pub(crate) struct HyperlightVm {
     pub(super) trace_info: MemTraceInfo,
     #[cfg(crashdump)]
     pub(super) rt_cfg: SandboxRuntimeConfig,
+    /// MSRs restored on snapshot restore.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) msr_reset: crate::hypervisor::regs::MsrResetState,
 }
 
 impl HyperlightVm {
@@ -739,6 +758,14 @@ impl HyperlightVm {
                             break Err(RunVmError::MmioWriteUnmapped(addr));
                         }
                     }
+                }
+                #[cfg(all(target_arch = "x86_64", kvm))]
+                Ok(VmExit::MsrRead(msr_index)) => {
+                    break Err(RunVmError::MsrReadViolation(msr_index));
+                }
+                #[cfg(all(target_arch = "x86_64", kvm))]
+                Ok(VmExit::MsrWrite { msr_index, value }) => {
+                    break Err(RunVmError::MsrWriteViolation { msr_index, value });
                 }
                 Ok(VmExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,

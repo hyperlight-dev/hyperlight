@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use super::media_types::SNAPSHOT_ABI_VERSION;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(target_arch = "x86_64")]
+use crate::hypervisor::regs::MsrEntry;
 use crate::mem::layout::SandboxMemoryLayout;
 
 // --- Arch and hypervisor identifiers --------------------------------
@@ -188,6 +190,17 @@ pub(super) struct OciSnapshotConfig {
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
+    /// MSR reset state captured from the paused vCPU. `None` uses the
+    /// destination sandbox's reset set.
+    #[cfg(target_arch = "x86_64")]
+    #[serde(default)]
+    pub(super) msrs: Option<Vec<MsrEntry>>,
+    /// Allow list of the sandbox that captured this snapshot. Present
+    /// exactly when `msrs` is, and checked against the destination allow
+    /// list on load.
+    #[cfg(target_arch = "x86_64")]
+    #[serde(default)]
+    pub(super) allowed_msrs: Option<Vec<u32>>,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -636,6 +649,49 @@ mod tests {
         assert_eq!(restored, expected);
     }
 
+    /// Captured MSRs survive the serde round-trip through the config,
+    /// including index and value for every entry.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn msrs_round_trip_preserves_every_entry() {
+        let original = gating_config_with_msrs(Some(vec![
+            MsrEntry {
+                index: 0xC000_0102,
+                value: 0xDEAD_BEEF,
+            },
+            MsrEntry {
+                index: 0x10,
+                value: 0x1234_5678_9ABC_DEF0,
+            },
+        ]));
+        let json = serde_json::to_vec(&original).unwrap();
+        let restored: OciSnapshotConfig = serde_json::from_slice(&json).unwrap();
+        assert_eq!(restored.msrs, original.msrs);
+    }
+
+    /// A config JSON with no MSR keys deserializes both fields to `None`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn config_without_msr_keys_deserializes_to_none() {
+        let with = gating_config_with_msrs(Some(vec![MsrEntry {
+            index: 0x10,
+            value: 1,
+        }]));
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&with).unwrap()).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("msrs").is_some());
+        assert!(
+            json.as_object_mut()
+                .unwrap()
+                .remove("allowed_msrs")
+                .is_some()
+        );
+
+        let restored: OciSnapshotConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.msrs, None);
+        assert_eq!(restored.allowed_msrs, None);
+    }
+
     /// Every `ParameterType` survives the round-trip through its serde
     /// mirror, guarding against a transposed variant in either match.
     #[test]
@@ -721,6 +777,10 @@ mod tests {
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: 0,
             sregs: distinct_sregs(),
+            #[cfg(target_arch = "x86_64")]
+            msrs: None,
+            #[cfg(target_arch = "x86_64")]
+            allowed_msrs: None,
             layout: MemoryLayout {
                 input_data_size: 0,
                 output_data_size: 0,
@@ -735,6 +795,17 @@ mod tests {
             memory_size: PAGE_SIZE as u64,
             host_functions: Vec::new(),
             snapshot_generation: 0,
+        }
+    }
+
+    /// `gating_config` with a chosen MSR set, for serde tests.
+    #[cfg(target_arch = "x86_64")]
+    fn gating_config_with_msrs(msrs: Option<Vec<MsrEntry>>) -> OciSnapshotConfig {
+        let allowed_msrs = msrs.as_ref().map(|_| Vec::new());
+        OciSnapshotConfig {
+            msrs,
+            allowed_msrs,
+            ..gating_config()
         }
     }
 
@@ -934,6 +1005,20 @@ mod schema_pin {
       11
     ]
   },
+  "msrs": [
+    {
+      "index": 16,
+      "value": 42
+    },
+    {
+      "index": 3221225474,
+      "value": 3735928559
+    }
+  ],
+  "allowed_msrs": [
+    16,
+    3221225474
+  ],
   "layout": {
     "input_data_size": 1,
     "output_data_size": 2,

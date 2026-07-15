@@ -1095,6 +1095,87 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
+#[guest_function("ReadMSR")]
+#[cfg(target_arch = "x86_64")]
+fn read_msr(msr: u32) -> u64 {
+    let (read_eax, read_edx): (u32, u32);
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") read_eax,
+            out("edx") read_edx,
+            options(nostack, nomem)
+        );
+    }
+    ((read_edx as u64) << 32) | (read_eax as u64)
+}
+
+#[guest_function("WriteKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn write_kernel_gs_base_via_swapgs(value: u64) {
+    // SAFETY: The test guest runs at CPL0, and CR4 is restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "wrgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            fsgsbase = const 1 << 16,
+            value = in(reg) value,
+            options(nostack)
+        );
+    }
+}
+
+#[guest_function("ReadKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn read_kernel_gs_base_via_swapgs() -> u64 {
+    let value: u64;
+    // SAFETY: The test guest runs at CPL0, and SWAPGS and CR4 are restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "swapgs",
+            "rdgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            value = lateout(reg) value,
+            fsgsbase = const 1 << 16,
+            options(nostack)
+        );
+    }
+    value
+}
+
+#[guest_function("WriteMSR")]
+#[cfg(target_arch = "x86_64")]
+fn write_msr(msr: u32, value: u64) {
+    let eax = (value & 0xFFFFFFFF) as u32;
+    let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") eax,
+            in("edx") edx,
+            options(nostack, nomem)
+        );
+    }
+}
+
 #[hyperlight_guest_bin::main]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn main() {

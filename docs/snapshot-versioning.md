@@ -56,6 +56,13 @@ made before it was added remain loadable. At the next hard break, make the
 field required, remove `serde(default)`, and reject zero as an invalid entry
 point rather than treating it as unknown.
 
+### Optional MSR fields
+
+The persisted `msrs` and `allowed_msrs` fields are optional so snapshots made
+before MSR capture remain loadable. At the next hard break, make them required
+vectors and remove `serde(default)` and the missing-field fallback. Keep the
+in-memory fields optional while `Snapshot` represents pre-init state.
+
 ## Enforcement
 
 The format is large and easy to change by accident. Two mechanisms

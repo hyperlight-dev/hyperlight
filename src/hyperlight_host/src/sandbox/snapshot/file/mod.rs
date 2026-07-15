@@ -611,6 +611,10 @@ impl Snapshot {
             entrypoint_addr,
             original_entrypoint_addr: self.original_entrypoint,
             sregs: *sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs: self.msrs.clone(),
+            #[cfg(target_arch = "x86_64")]
+            allowed_msrs: self.allowed_msrs.clone(),
             layout: MemoryLayout {
                 input_data_size: l.input_data_size(),
                 output_data_size: l.output_data_size(),
@@ -876,6 +880,15 @@ impl Snapshot {
         // 8. Build the next action + sregs back from the config.
         let next_action = NextAction::Call(cfg.entrypoint_addr);
 
+        // `msrs` and `allowed_msrs` travel together. A config with one but
+        // not the other cannot enforce the allow-list check on restore.
+        #[cfg(target_arch = "x86_64")]
+        if cfg.msrs.is_some() != cfg.allowed_msrs.is_some() {
+            return Err(crate::new_error!(
+                "snapshot config inconsistent: msrs and allowed_msrs must both be present or both absent"
+            ));
+        }
+
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
         let host_funcs_vec: Vec<
@@ -897,6 +910,10 @@ impl Snapshot {
             load_info: crate::mem::exe::LoadInfo::dummy(),
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
+            #[cfg(target_arch = "x86_64")]
+            msrs: cfg.msrs,
+            #[cfg(target_arch = "x86_64")]
+            allowed_msrs: cfg.allowed_msrs,
             next_action,
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,

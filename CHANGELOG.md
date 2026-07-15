@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* **Breaking:** Retained guest MSR state is restored on snapshot restore. KVM
+  denies guest MSR reads and writes by default. MSHV and WHP reset all exposed
+  retained MSR state. `SandboxConfiguration::allow_msrs` permits specific MSRs
+  by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
 
 ### Removed
 

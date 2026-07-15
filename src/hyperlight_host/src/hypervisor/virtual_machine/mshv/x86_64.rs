@@ -31,8 +31,10 @@ use mshv_bindings::{
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
-    mshv_user_mem_region,
+    hv_register_name_HV_X64_REGISTER_MSR_MTRR_PHYS_BASE0,
+    hv_register_name_HV_X64_REGISTER_MSR_MTRR_PHYS_MASK0, hv_register_name_HV_X64_REGISTER_RIP,
+    hv_register_name_HV_X64_REGISTER_U_XSS, hv_register_value, mshv_create_partition_v2,
+    mshv_user_mem_region, msr_to_hv_reg_name as mshv_msr_to_hv_reg_name,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
@@ -50,7 +52,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
-    MXCSR_DEFAULT,
+    MSR_APERF, MSR_BNDCFGS, MSR_MPERF, MSR_TSC_DEADLINE, MSR_TSX_CTRL, MSR_UMWAIT_CONTROL,
+    MSR_VIRT_SPEC_CTRL, MSR_XFD, MSR_XFD_ERR, MSR_XSS, MXCSR_DEFAULT, MsrEntry,
 };
 #[cfg(test)]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
@@ -74,6 +77,84 @@ pub(crate) fn is_hypervisor_present() -> bool {
             tracing::info!("MSHV is not available on this system");
             false
         }
+    }
+}
+
+/// Maps an MSR index to the Hyper-V register used for host reset.
+fn msr_to_hv_register_name(index: u32) -> Result<u32, &'static str> {
+    const HV_X64_REGISTER_BNDCFGS: u32 = 0x0008_007C;
+    const HV_X64_REGISTER_MCOUNT: u32 = 0x0008_007E;
+    const HV_X64_REGISTER_A_COUNT: u32 = 0x0008_007F;
+    const HV_X64_REGISTER_TSX_CTRL: u32 = 0x0008_0088;
+    const HV_X64_REGISTER_TSC_DEADLINE: u32 = 0x0008_0095;
+    const HV_X64_REGISTER_UMWAIT_CONTROL: u32 = 0x0008_0098;
+    const HV_X64_REGISTER_XFD: u32 = 0x0008_0099;
+    const HV_X64_REGISTER_XFD_ERR: u32 = 0x0008_009A;
+    const HV_X64_REGISTER_VIRT_SPEC_CTRL: u32 = 0x0008_0086;
+
+    if (0x200..=0x21F).contains(&index) {
+        let pair = (index - 0x200) / 2;
+        return Ok(if index & 1 == 0 {
+            hv_register_name_HV_X64_REGISTER_MSR_MTRR_PHYS_BASE0 + pair
+        } else {
+            hv_register_name_HV_X64_REGISTER_MSR_MTRR_PHYS_MASK0 + pair
+        });
+    }
+    if index == MSR_XSS {
+        return Ok(hv_register_name_HV_X64_REGISTER_U_XSS);
+    }
+    if index == MSR_MPERF {
+        return Ok(HV_X64_REGISTER_MCOUNT);
+    }
+    if index == MSR_APERF {
+        return Ok(HV_X64_REGISTER_A_COUNT);
+    }
+    if index == MSR_TSX_CTRL {
+        return Ok(HV_X64_REGISTER_TSX_CTRL);
+    }
+    if index == MSR_TSC_DEADLINE {
+        return Ok(HV_X64_REGISTER_TSC_DEADLINE);
+    }
+    if index == MSR_UMWAIT_CONTROL {
+        return Ok(HV_X64_REGISTER_UMWAIT_CONTROL);
+    }
+    if index == MSR_BNDCFGS {
+        return Ok(HV_X64_REGISTER_BNDCFGS);
+    }
+    if index == MSR_XFD {
+        return Ok(HV_X64_REGISTER_XFD);
+    }
+    if index == MSR_XFD_ERR {
+        return Ok(HV_X64_REGISTER_XFD_ERR);
+    }
+    if index == MSR_VIRT_SPEC_CTRL {
+        return Ok(HV_X64_REGISTER_VIRT_SPEC_CTRL);
+    }
+    mshv_msr_to_hv_reg_name(index)
+}
+
+#[cfg(test)]
+mod msr_mapping_tests {
+    use super::*;
+    use crate::hypervisor::regs::core_reset_indices;
+
+    #[test]
+    fn maps_all_stateful_msrs() {
+        for index in core_reset_indices() {
+            assert!(
+                msr_to_hv_register_name(index).is_ok(),
+                "missing MSR mapping for {index:#x}"
+            );
+        }
+        assert_eq!(msr_to_hv_register_name(MSR_MPERF), Ok(0x0008_007E));
+        assert_eq!(msr_to_hv_register_name(MSR_APERF), Ok(0x0008_007F));
+        assert_eq!(msr_to_hv_register_name(MSR_TSX_CTRL), Ok(0x0008_0088));
+        assert_eq!(msr_to_hv_register_name(MSR_TSC_DEADLINE), Ok(0x0008_0095));
+        assert_eq!(msr_to_hv_register_name(MSR_UMWAIT_CONTROL), Ok(0x0008_0098));
+        assert_eq!(msr_to_hv_register_name(MSR_BNDCFGS), Ok(0x0008_007C));
+        assert_eq!(msr_to_hv_register_name(MSR_XFD), Ok(0x0008_0099));
+        assert_eq!(msr_to_hv_register_name(MSR_XFD_ERR), Ok(0x0008_009A));
+        assert_eq!(msr_to_hv_register_name(MSR_VIRT_SPEC_CTRL), Ok(0x0008_0086));
     }
 }
 
@@ -102,13 +183,13 @@ impl MshvVm {
         let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
 
         #[allow(unused_mut)]
-        let mut pr: mshv_create_partition_v2 = Default::default();
+        let mut pr = mshv_create_partition_v2::default();
         // Enable LAPIC for hw-interrupts — required for interrupt delivery
         // via request_virtual_interrupt.
         #[cfg(feature = "hw-interrupts")]
         {
             use mshv_bindings::MSHV_PT_BIT_LAPIC;
-            pr.pt_flags = 1u64 << MSHV_PT_BIT_LAPIC;
+            pr.pt_flags |= 1u64 << MSHV_PT_BIT_LAPIC;
         }
         // It's important to use create_vm_with_args() (not create_vm()),
         // because create_vm() sets up a SynIC partition by default.
@@ -429,6 +510,55 @@ impl VirtualMachine for MshvVm {
         self.vcpu_fd
             .set_debug_regs(&mshv_debug_regs)
             .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn msrs(&self, indices: &[u32]) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut registers: Vec<hv_register_assoc> = indices
+            .iter()
+            .map(|&index| {
+                Ok(hv_register_assoc {
+                    name: msr_to_hv_register_name(index)
+                        .map_err(|_| RegisterError::MsrsUnsupported)?,
+                    ..Default::default()
+                })
+            })
+            .collect::<std::result::Result<_, RegisterError>>()?;
+        self.vcpu_fd
+            .get_reg(&mut registers)
+            .map_err(|e| RegisterError::GetMsrs(e.into()))?;
+        Ok(registers
+            .iter()
+            .zip(indices)
+            .map(|(register, &index)| MsrEntry {
+                index,
+                // SAFETY: get_reg initialized each association as a 64-bit register.
+                value: unsafe { register.value.reg64 },
+            })
+            .collect())
+    }
+
+    fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
+        let registers: Vec<hv_register_assoc> = msrs
+            .iter()
+            .map(|entry| {
+                Ok(hv_register_assoc {
+                    name: msr_to_hv_register_name(entry.index)
+                        .map_err(|_| RegisterError::MsrsUnsupported)?,
+                    value: hv_register_value { reg64: entry.value },
+                    ..Default::default()
+                })
+            })
+            .collect::<std::result::Result<_, RegisterError>>()?;
+        if registers.is_empty() {
+            return Ok(());
+        }
+        self.vcpu_fd
+            .set_reg(&registers)
+            .map_err(|e| RegisterError::SetMsrs(e.into()))?;
         Ok(())
     }
 

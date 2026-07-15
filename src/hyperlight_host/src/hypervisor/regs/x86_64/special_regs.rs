@@ -677,6 +677,16 @@ mod tests {
         assert_eq!(original, roundtrip);
     }
 
+    /// The guest boots in xAPIC mode. `APIC_BASE` bit 10 (`EXTD`) enables
+    /// x2APIC, which would make the `0x800`-`0x8FF` MSR range legal. Keeping it
+    /// clear is why a guest write to an x2APIC MSR faults.
+    #[test]
+    fn standard_defaults_leave_x2apic_disabled() {
+        const X2APIC_ENABLE: u64 = 1 << 10;
+        let sregs = CommonSpecialRegisters::standard_64bit_defaults(0x1000);
+        assert_eq!(sregs.apic_base & X2APIC_ENABLE, 0);
+    }
+
     #[cfg(mshv3)]
     #[test]
     fn round_trip_mshv_sregs() {

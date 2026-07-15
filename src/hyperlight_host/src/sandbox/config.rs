@@ -29,6 +29,18 @@ pub struct DebugInfo {
     pub port: u16,
 }
 
+/// Errors returned when configuring guest MSR access.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum AllowMsrError {
+    /// The requested allow list exceeds its fixed capacity.
+    #[error("MSR allow list exceeds its maximum of {maximum} distinct entries")]
+    CapacityExceeded {
+        /// Maximum number of distinct allowed MSRs.
+        maximum: usize,
+    },
+}
+
 /// The complete set of configuration needed to create a Sandbox
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -74,6 +86,12 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// Requested allow list stored inline to keep this type `Copy`.
+    #[cfg(target_arch = "x86_64")]
+    allowed_msrs: [u32; Self::MAX_ALLOWED_MSRS],
+    /// Number of valid entries in `allowed_msrs`.
+    #[cfg(target_arch = "x86_64")]
+    allowed_msrs_count: usize,
 }
 
 impl SandboxConfiguration {
@@ -93,6 +111,11 @@ impl SandboxConfiguration {
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
+    /// Maximum number of distinct requested MSRs.
+    /// KVM supports at most 16 MSR filter ranges. Each index may require its
+    /// own range, so 16 is the portable limit across backends.
+    #[cfg(target_arch = "x86_64")]
+    pub const MAX_ALLOWED_MSRS: usize = 16;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -118,6 +141,10 @@ impl SandboxConfiguration {
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
+            #[cfg(target_arch = "x86_64")]
+            allowed_msrs: [0; Self::MAX_ALLOWED_MSRS],
+            #[cfg(target_arch = "x86_64")]
+            allowed_msrs_count: 0,
         }
     }
 
@@ -157,6 +184,49 @@ impl SandboxConfiguration {
     #[cfg(target_os = "linux")]
     pub fn get_interrupt_vcpu_sigrtmin_offset(&self) -> u8 {
         self.interrupt_vcpu_sigrtmin_offset
+    }
+
+    /// Adds MSRs to the sandbox allow list.
+    /// VM creation verifies that the backend can restore them.
+    ///
+    /// Duplicate indices, within the slice or against the existing list, are
+    /// ignored and do not count toward capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AllowMsrError::CapacityExceeded`] if the distinct entries
+    /// would exceed [`Self::MAX_ALLOWED_MSRS`]. The allow list is unchanged on
+    /// error.
+    #[cfg(target_arch = "x86_64")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn allow_msrs(&mut self, indices: &[u32]) -> Result<&mut Self, AllowMsrError> {
+        let additional = indices
+            .iter()
+            .enumerate()
+            .filter(|(position, index)| {
+                !self.allowed_msrs[..self.allowed_msrs_count].contains(index)
+                    && !indices[..*position].contains(index)
+            })
+            .count();
+        if additional > Self::MAX_ALLOWED_MSRS - self.allowed_msrs_count {
+            return Err(AllowMsrError::CapacityExceeded {
+                maximum: Self::MAX_ALLOWED_MSRS,
+            });
+        }
+        for &index in indices {
+            if !self.allowed_msrs[..self.allowed_msrs_count].contains(&index) {
+                self.allowed_msrs[self.allowed_msrs_count] = index;
+                self.allowed_msrs_count += 1;
+            }
+        }
+        Ok(self)
+    }
+
+    /// Returns the requested allow list.
+    #[cfg(target_arch = "x86_64")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_allowed_msrs(&self) -> &[u32] {
+        &self.allowed_msrs[..self.allowed_msrs_count]
     }
 
     /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for
@@ -261,7 +331,63 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use super::SandboxConfiguration;
+    use super::{AllowMsrError, SandboxConfiguration};
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn msr_allow_list_reports_overflow() {
+        let mut cfg = SandboxConfiguration::default();
+        for index in 0..SandboxConfiguration::MAX_ALLOWED_MSRS as u32 {
+            cfg.allow_msrs(&[index]).unwrap();
+        }
+
+        cfg.allow_msrs(&[0]).unwrap();
+        assert_eq!(
+            cfg.allow_msrs(&[SandboxConfiguration::MAX_ALLOWED_MSRS as u32]),
+            Err(AllowMsrError::CapacityExceeded {
+                maximum: SandboxConfiguration::MAX_ALLOWED_MSRS,
+            })
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn bulk_msr_allow_list_overflow_is_atomic() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.allow_msrs(&[1, 2]).unwrap();
+        let oversized: Vec<u32> = (3..=SandboxConfiguration::MAX_ALLOWED_MSRS as u32 + 1).collect();
+
+        assert!(matches!(
+            cfg.allow_msrs(&oversized),
+            Err(AllowMsrError::CapacityExceeded { .. })
+        ));
+        assert_eq!(cfg.get_allowed_msrs(), &[1, 2]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn allow_msrs_dedups_and_preserves_order() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.allow_msrs(&[0x10]).unwrap();
+        cfg.allow_msrs(&[0x20, 0x20, 0x10, 0x30, 0x20]).unwrap();
+        // 0x10 already present, 0x20 and 0x30 added once each in first-seen order.
+        assert_eq!(cfg.get_allowed_msrs(), &[0x10, 0x20, 0x30]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn allow_msrs_duplicates_do_not_count_toward_capacity() {
+        let mut cfg = SandboxConfiguration::default();
+        let fill: Vec<u32> = (0..SandboxConfiguration::MAX_ALLOWED_MSRS as u32 - 1).collect();
+        cfg.allow_msrs(&fill).unwrap();
+        // One slot remains. Three copies of one new index count as a single
+        // distinct entry and fit.
+        cfg.allow_msrs(&[u32::MAX, u32::MAX, u32::MAX]).unwrap();
+        assert_eq!(
+            cfg.get_allowed_msrs().len(),
+            SandboxConfiguration::MAX_ALLOWED_MSRS
+        );
+    }
 
     #[test]
     fn overrides() {
