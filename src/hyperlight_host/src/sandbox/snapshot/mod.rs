@@ -23,7 +23,7 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::hypervisor::regs::MsrEntry;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -88,8 +88,13 @@ pub struct Snapshot {
     /// The next action that should be performed on this snapshot
     next_action: NextAction,
 
+    /// Virtual base address of the code region.
+    /// For PIE binaries this equals the physical load address (identity-mapped).
+    /// For non-PIE binaries this is the ELF-declared base VA.
+    pub(crate) code_virt_base: u64,
+
     /// Guest virtual address of the guest binary's ELF entry point
-    /// (`load_addr + e_entry - base_va`). Unlike `next_action`, which
+    /// (`code_virt_base + e_entry - base_va`). Unlike `next_action`, which
     /// transitions to `Call(dispatch_addr)` once the guest has run,
     /// this preserves the original entry across that transition. Used
     /// to fill `AT_ENTRY` in guest core dumps so a debugger can
@@ -324,6 +329,14 @@ impl Snapshot {
         let load_addr = layout.get_guest_code_address() as u64;
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
+        let loaded_size = exe_info.loaded_size() as u64;
+        let is_pie = exe_info.is_pie();
+
+        // Get the memory regions with the Code region's guest_virt_addr
+        // already set to the correct virtual base (identity-mapped for PIE,
+        // ELF-declared VA for non-PIE), and validate no overlap conflicts.
+        let (code_virt_base, regions) =
+            layout.get_guest_regions_with_code_va(is_pie, base_va, loaded_size)?;
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
@@ -341,7 +354,7 @@ impl Snapshot {
         let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
         // 1. Map the (ideally readonly) pages of snapshot data
-        for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
+        for rgn in regions.iter() {
             let readable = rgn.flags.contains(MemoryRegionFlags::READ);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
             let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
@@ -357,9 +370,10 @@ impl Snapshot {
                     executable,
                 })
             };
+
             let mapping = Mapping {
                 phys_base: rgn.guest_region.start as u64,
-                virt_base: rgn.guest_region.start as u64,
+                virt_base: rgn.guest_virt_addr as u64,
                 len: rgn.guest_region.len() as u64,
                 kind,
             };
@@ -377,7 +391,15 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
-        let entrypoint_gva = load_addr + entrypoint_va - base_va;
+        let entrypoint_offset = entrypoint_va.checked_sub(base_va).ok_or_else(|| {
+            crate::new_error!(
+                "ELF entrypoint VA ({:#x}) is below base VA ({:#x})",
+                entrypoint_va,
+                base_va
+            )
+        })?;
+
+        let entrypoint_gva = code_virt_base + entrypoint_offset;
 
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
@@ -388,6 +410,7 @@ impl Snapshot {
             #[cfg(target_arch = "x86_64")]
             msrs: None,
             next_action: NextAction::Initialise(entrypoint_gva),
+            code_virt_base,
             original_entrypoint: entrypoint_gva,
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
@@ -416,6 +439,7 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         #[cfg(target_arch = "x86_64")] msrs: Vec<MsrEntry>,
         next_action: NextAction,
+        code_virt_base: u64,
         original_entrypoint: u64,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
@@ -577,6 +601,7 @@ impl Snapshot {
             #[cfg(target_arch = "x86_64")]
             msrs: Some(msrs),
             next_action,
+            code_virt_base,
             original_entrypoint,
             snapshot_generation,
             host_functions,
@@ -776,6 +801,7 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             Vec::new(),
             super::NextAction::None,
+            0, // code_virt_base
             0,
             1,
             HostFunctionDetails::default(),
@@ -796,6 +822,7 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             Vec::new(),
             super::NextAction::None,
+            0, // code_virt_base
             0,
             2,
             HostFunctionDetails::default(),

@@ -180,6 +180,12 @@ pub(super) struct OciSnapshotConfig {
     /// Initialise->Call transition. Fills `AT_ENTRY` in core dumps so
     /// gdb resolves PIE symbols.
     pub(super) original_entrypoint_addr: u64,
+    /// Virtual base address of the code region. For PIE guests this equals
+    /// the physical load address; for non-PIE guests it is the ELF-declared
+    /// base VA. Optional: older snapshots deserialize to `0`, meaning
+    /// identity-mapped (VA == GPA).
+    #[serde(default)]
+    pub(super) code_virt_base: u64,
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
@@ -477,13 +483,19 @@ impl OciSnapshotConfig {
         }
 
         // The saved dispatch entrypoint must be in the executable code
-        // region. Code occupies the page-rounded prefix of the snapshot.
-        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        // region. For non-PIE or ASLR guests the code region's virtual
+        // base differs from the physical load address.
+        let code_lo = if self.code_virt_base != 0 {
+            self.code_virt_base
+        } else {
+            SandboxMemoryLayout::BASE_ADDRESS as u64
+        };
         let code_hi = code_lo
             .checked_add(self.layout.code_size.next_multiple_of(PAGE_SIZE) as u64)
             .ok_or_else(|| {
                 crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + code_size ({}) does not fit in u64",
+                    "snapshot layout overflow: code_virt_base ({:#x}) + code_size ({}) does not fit in u64",
+                    code_lo,
                     self.layout.code_size
                 )
             })?;
@@ -515,10 +527,10 @@ impl OciSnapshotConfig {
             })?;
         if self.original_entrypoint_addr < code_lo || self.original_entrypoint_addr >= snapshot_hi {
             return Err(crate::new_error!(
-                "snapshot original entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
+                "snapshot original entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
                 self.original_entrypoint_addr,
                 code_lo,
-                snapshot_hi
+                code_hi
             ));
         }
 
@@ -763,6 +775,7 @@ mod tests {
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
+            code_virt_base: 0,
             sregs: distinct_sregs(),
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
@@ -846,9 +859,7 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
-  "sregs": {
-    "cs": {
-      "base": 1,
+  "code_virt_base": 0,
       "limit": 2,
       "selector": 3,
       "type_": 4,
@@ -1032,6 +1043,7 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
+  "code_virt_base": 0,
   "sregs": {
     "tcr_el1": 1,
     "mair_el1": 2,
