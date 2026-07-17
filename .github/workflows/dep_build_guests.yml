@@ -62,6 +62,7 @@ jobs:
         with:
           path: |
             src/tests/rust_guests/target/sysroot
+            src/tests/rust_guests/target-non-pie/sysroot
           key: sysroot-linux-${{ inputs.arch }}-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
@@ -86,6 +87,12 @@ jobs:
         run: |
           just build-rust-guests ${{ inputs.config }}
           just move-rust-guests ${{ inputs.config }}
+
+      - name: Build non-PIE Rust guests
+        if: inputs.arch == 'X64'
+        run: |
+          just build-rust-guests-non-pie ${{ inputs.config }}
+          just move-rust-guests-non-pie ${{ inputs.config }}
 
       - name: Build C guests
         run: |
