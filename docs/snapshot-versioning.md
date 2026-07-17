@@ -44,6 +44,18 @@ The config blob also records `hyperlight_version`, the `CARGO_PKG_VERSION`
 of the host crate at write time. This is informational only. The loader
 records it for diagnostics and does not gate loading on it.
 
+## Compatibility cleanup
+
+Record compatibility paths here when a future hard snapshot break can remove
+them.
+
+### Original ELF entry point
+
+The persisted `original_entrypoint_addr` field defaults to zero so snapshots
+made before it was added remain loadable. At the next hard break, make the
+field required, remove `serde(default)`, and reject zero as an invalid entry
+point rather than treating it as unknown.
+
 ## Enforcement
 
 The format is large and easy to change by accident. Two mechanisms
