@@ -4,6 +4,7 @@
 #[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 
+use goblin::elf::header::ET_DYN;
 #[cfg(target_arch = "aarch64")]
 use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
@@ -33,6 +34,8 @@ pub(crate) struct ElfInfo {
     base_va: u64,
     /// Total loaded span: `max(p_vaddr + p_memsz) - min(p_vaddr)`.
     va_size: u64,
+    /// Whether this is a position-independent executable (ET_DYN).
+    is_pie: bool,
     /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     guest_bin_version: Option<String>,
@@ -184,6 +187,7 @@ impl ElfInfo {
 
         let phdrs = std::mem::take(&mut elf.program_headers);
         let entry = elf.entry;
+        let is_pie = elf.header.e_type == ET_DYN;
         #[cfg(feature = "mem_profile")]
         let shdrs = elf
             .section_headers
@@ -209,6 +213,7 @@ impl ElfInfo {
             shdrs,
             entry,
             relocs,
+            is_pie,
             guest_bin_version,
         })
     }
@@ -232,6 +237,11 @@ impl ElfInfo {
 
     pub(crate) fn entrypoint_va(&self) -> u64 {
         self.entry
+    }
+
+    /// Returns whether this is a position-independent executable (ET_DYN).
+    pub(crate) fn is_pie(&self) -> bool {
+        self.is_pie
     }
 
     /// Returns the hyperlight version string embedded in the guest binary, if
