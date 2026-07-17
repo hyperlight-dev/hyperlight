@@ -16,8 +16,6 @@ limitations under the License.
 
 #[cfg(gdb)]
 use std::collections::HashMap;
-#[cfg(crashdump)]
-use std::path::Path;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
@@ -557,13 +555,6 @@ impl HyperlightVm {
             regs[25] = sregs.fs.selector as u64; // fs
             regs[26] = sregs.gs.selector as u64; // gs
 
-            // Get the filename from the binary path
-            let filename = self.rt_cfg.binary_path.clone().and_then(|path| {
-                Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_os_string().into_string().ok())
-            });
-
             // Use the stored entry point address from the runtime config.
             // This is the original entry point (load_addr + ELF entry offset)
             // which GDB needs for AT_ENTRY to compute the PIE load offset.
@@ -588,7 +579,6 @@ impl HyperlightVm {
                 xsave.to_vec(),
                 initialise,
                 self.rt_cfg.binary_path.clone(),
-                filename,
             )))
         } else {
             Ok(None)

@@ -20,9 +20,7 @@ use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 fn main() -> hyperlight_host::Result<()> {
     // Create an uninitialized sandbox with a guest binary
     let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         None, // default configuration
     )?;
 

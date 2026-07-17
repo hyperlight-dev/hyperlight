@@ -294,7 +294,7 @@ impl Snapshot {
         let blob = env.init_data;
 
         let exe_info = match bin {
-            GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(&bin_path_str)?,
+            GuestBinary::FilePath(bin_path) => ExeInfo::from_file(&bin_path)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 

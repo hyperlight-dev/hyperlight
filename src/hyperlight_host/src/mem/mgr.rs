@@ -751,7 +751,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 #[cfg(target_arch = "x86_64")]
 mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
@@ -760,7 +760,7 @@ mod tests {
     /// Build a Snapshot for the given configuration and verify the
     /// NULL page is not mapped in its page tables.
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
-        let path = simple_guest_as_string().expect("failed to get simple guest path");
+        let path = simple_guest_as_pathbuf();
         let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
             .unwrap_or_else(|e| panic!("{}: failed to create snapshot: {}", name, e));
 

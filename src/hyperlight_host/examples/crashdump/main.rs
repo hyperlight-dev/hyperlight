@@ -73,6 +73,7 @@ limitations under the License.
 
 #[cfg(all(crashdump, target_os = "linux"))]
 use std::io::Write;
+use std::path::Path;
 
 #[cfg(all(crashdump, target_os = "linux"))]
 use hyperlight_host::HyperlightError;
@@ -86,8 +87,7 @@ fn main() -> hyperlight_host::Result<()> {
         env_logger::init();
     }
 
-    let guest_path =
-        hyperlight_testing::simple_guest_as_string().expect("Cannot find simpleguest binary");
+    let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
 
     println!("=== Hyperlight Crash Dump Example ===\n");
 
@@ -139,11 +139,11 @@ fn main() -> hyperlight_host::Result<()> {
 /// 3. The hypervisor rejects the write → `MemoryAccessViolation`
 /// 4. The crash dump is written automatically (no explicit call needed)
 #[cfg(all(crashdump, target_os = "linux"))]
-fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
+fn guest_crash_auto_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
     let cfg = SandboxConfiguration::default();
 
     let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_string()), Some(cfg))?;
+        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
 
     let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
@@ -173,7 +173,7 @@ fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
 
 /// Fallback when crashdump feature or Linux is not available.
 #[cfg(not(all(crashdump, target_os = "linux")))]
-fn guest_crash_auto_dump(_guest_path: &str) -> hyperlight_host::Result<()> {
+fn guest_crash_auto_dump(_guest_path: &Path) -> hyperlight_host::Result<()> {
     println!(
         "This part requires the `crashdump` feature and Linux.\n\
          Re-run with: cargo run --example crashdump --features crashdump"
@@ -204,11 +204,11 @@ fn create_mapping_file() -> std::path::PathBuf {
 /// Because the error is reported through the I/O path (not a VM-level
 /// fault), the automatic crash dump code in the VM run loop is not reached.
 /// To get a crash dump in this case, call `generate_crashdump()` explicitly.
-fn guest_crash_with_on_demand_dump(guest_path: &str) -> hyperlight_host::Result<()> {
+fn guest_crash_with_on_demand_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
     let cfg = SandboxConfiguration::default();
 
     let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_string()), Some(cfg))?;
+        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
 
     let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
@@ -245,13 +245,13 @@ fn guest_crash_with_on_demand_dump(guest_path: &str) -> hyperlight_host::Result<
 /// (e.g., during fuzzing or testing) and you don't want the overhead of
 /// writing core dump files.
 #[cfg(all(crashdump, target_os = "linux"))]
-fn guest_crash_with_dump_disabled(guest_path: &str) -> hyperlight_host::Result<()> {
+fn guest_crash_with_dump_disabled(guest_path: &Path) -> hyperlight_host::Result<()> {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_guest_core_dump(false);
     println!("Core dump disabled for this sandbox.");
 
     let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_string()), Some(cfg))?;
+        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
 
     let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
@@ -277,7 +277,7 @@ fn guest_crash_with_dump_disabled(guest_path: &str) -> hyperlight_host::Result<(
 
 /// Fallback when crashdump feature or Linux is not available.
 #[cfg(not(all(crashdump, target_os = "linux")))]
-fn guest_crash_with_dump_disabled(_guest_path: &str) -> hyperlight_host::Result<()> {
+fn guest_crash_with_dump_disabled(_guest_path: &Path) -> hyperlight_host::Result<()> {
     println!(
         "This part requires the `crashdump` feature and Linux.\n\
          Re-run with: cargo run --example crashdump --features crashdump"
@@ -387,8 +387,7 @@ mod tests {
         let data_file = create_test_data_file(dump_dir);
 
         // Create sandbox with default config (crashdump enabled)
-        let guest_path =
-            hyperlight_testing::simple_guest_as_string().expect("Cannot find simpleguest binary");
+        let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
         let cfg = SandboxConfiguration::default();
         let u_sbox =
             UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg)).unwrap();
@@ -428,7 +427,7 @@ mod tests {
         // IO-based errors (GuestAborted), so we call generate_crashdump()
         // explicitly — this is the recommended workflow for post-mortem
         // debugging anyway.
-        sbox.generate_crashdump_to_dir(dump_dir.to_string_lossy())
+        sbox.generate_crashdump_to_dir(dump_dir)
             .expect("generate_crashdump should succeed");
 
         // Find the generated hl_core_*.elf file
@@ -489,7 +488,7 @@ mod tests {
 
         let dump_dir = tempfile::tempdir().expect("create temp dir");
         let core_path = generate_crashdump_with_content(dump_dir.path());
-        let guest_path = hyperlight_testing::simple_guest_as_string().expect("simpleguest binary");
+        let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
 
         let cmd_file = dump_dir.path().join("gdb_reg_cmds.txt");
         let out_file = dump_dir.path().join("gdb_reg_output.txt");
@@ -508,7 +507,7 @@ set logging enabled off
 quit
 ",
             out = out_file.display(),
-            binary = guest_path,
+            binary = guest_path.display(),
             core = core_path.display(),
         );
 
@@ -536,7 +535,7 @@ quit
     fn test_crashdump_gdb_memory() {
         let dump_dir = tempfile::tempdir().expect("create temp dir");
         let core_path = generate_crashdump_with_content(dump_dir.path());
-        let guest_path = hyperlight_testing::simple_guest_as_string().expect("simpleguest binary");
+        let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
 
         let cmd_file = dump_dir.path().join("gdb_mem_cmds.txt");
         let out_file = dump_dir.path().join("gdb_mem_output.txt");
@@ -557,7 +556,7 @@ set logging enabled off
 quit
 ",
             out = out_file.display(),
-            binary = guest_path,
+            binary = guest_path.display(),
             core = core_path.display(),
             addr = MAP_GUEST_BASE,
         );

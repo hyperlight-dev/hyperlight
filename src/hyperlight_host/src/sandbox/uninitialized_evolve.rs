@@ -183,7 +183,7 @@ pub(crate) fn set_up_hypervisor_partition(
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use super::evolve_impl_multi_use;
     use crate::UninitializedSandbox;
@@ -191,11 +191,10 @@ mod tests {
 
     #[test]
     fn test_evolve() {
-        let guest_bin_paths = vec![simple_guest_as_string().unwrap()];
+        let guest_bin_paths = vec![simple_guest_as_pathbuf()];
         for guest_bin_path in guest_bin_paths {
             let u_sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path.clone()), None)
-                    .unwrap();
+                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path), None).unwrap();
             evolve_impl_multi_use(u_sbox).unwrap();
         }
     }

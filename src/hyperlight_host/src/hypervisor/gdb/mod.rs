@@ -375,14 +375,14 @@ mod tests {
         use std::os::linux::fs::MetadataExt;
         use std::sync::{Arc, Mutex};
 
-        use hyperlight_testing::dummy_guest_as_string;
+        use hyperlight_testing::dummy_guest_as_pathbuf;
 
         use super::*;
+        use crate::log_then_return;
         use crate::mem::layout::SandboxMemoryLayout;
         use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
         use crate::sandbox::UninitializedSandbox;
         use crate::sandbox::uninitialized::GuestBinary;
-        use crate::{log_then_return, new_error};
 
         #[cfg(target_os = "linux")]
         const BASE_VIRT: usize = 0x10000000 + SandboxMemoryLayout::BASE_ADDRESS;
@@ -390,7 +390,7 @@ mod tests {
         /// Dummy memory region to test memory access
         /// This maps a file into memory and uses it as guest memory
         fn get_mem_access() -> crate::Result<DebugMemoryAccess> {
-            let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+            let filename = dummy_guest_as_pathbuf();
 
             let file = std::fs::File::options()
                 .read(true)

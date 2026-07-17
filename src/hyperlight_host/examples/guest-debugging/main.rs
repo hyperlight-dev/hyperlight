@@ -40,17 +40,13 @@ fn main() -> hyperlight_host::Result<()> {
 
     // Create an uninitialized sandbox with a guest binary and debug enabled
     let mut uninitialized_sandbox_dbg = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         cfg, // sandbox configuration
     )?;
 
     // Create an uninitialized sandbox with a guest binary
     let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         None, // sandbox configuration
     )?;
 
@@ -378,9 +374,7 @@ mod tests {
 
         // Build a sandbox the normal way and snapshot it in-memory.
         let mut producer: MultiUseSandbox = UninitializedSandbox::new(
-            hyperlight_host::GuestBinary::FilePath(
-                hyperlight_testing::simple_guest_as_string().unwrap(),
-            ),
+            hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
             None,
         )
         .unwrap()

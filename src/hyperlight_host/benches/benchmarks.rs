@@ -27,7 +27,7 @@ use hyperlight_host::GuestBinary;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
+use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
 /// Sandbox heap size configurations for benchmarking.
 /// Only affects heap size - all other configuration remains at defaults.
@@ -86,7 +86,7 @@ impl SandboxSize {
 }
 
 fn create_uninit_sandbox_with_size(size: SandboxSize) -> UninitializedSandbox {
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     UninitializedSandbox::new(GuestBinary::FilePath(path), size.config()).unwrap()
 }
 
@@ -416,7 +416,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         config.set_scratch_size(6 * SIZE + 4 * (1024 * 1024)); // Big enough for the IO data regions and enough of the heap to be used
 
         let sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+            GuestBinary::FilePath(simple_guest_as_pathbuf()),
             Some(config),
         )
         .unwrap();
@@ -494,7 +494,7 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
 fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
-    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: String) {
+    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_input_data_size(25 * 1024);
 
@@ -514,11 +514,11 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     }
 
     group.bench_function("24K_in_8K_out_c", |b| {
-        bench_24k_in_8k_out(b, c_simple_guest_as_string().unwrap());
+        bench_24k_in_8k_out(b, c_simple_guest_as_pathbuf());
     });
 
     group.bench_function("24K_in_8K_out_rust", |b| {
-        bench_24k_in_8k_out(b, simple_guest_as_string().unwrap());
+        bench_24k_in_8k_out(b, simple_guest_as_pathbuf());
     });
 
     group.finish();

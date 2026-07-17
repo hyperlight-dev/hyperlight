@@ -460,14 +460,14 @@ impl InterruptHandle for WindowsInterruptHandle {
 pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
-    use hyperlight_testing::dummy_guest_as_string;
+    use hyperlight_testing::dummy_guest_as_pathbuf;
 
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{Result, is_hypervisor_present, new_error};
+    use crate::{Result, is_hypervisor_present};
 
     #[cfg_attr(feature = "hw-interrupts", ignore)]
     #[test]
@@ -479,7 +479,7 @@ pub(crate) mod tests {
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
 
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+        let filename = dummy_guest_as_pathbuf();
 
         let config: SandboxConfiguration = Default::default();
         #[cfg(any(crashdump, gdb))]

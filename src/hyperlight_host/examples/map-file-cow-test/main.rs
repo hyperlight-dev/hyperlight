@@ -39,9 +39,7 @@ fn run_once(test_file: &Path, label: &str) -> hyperlight_host::Result<()> {
     config.set_scratch_size(64 * 1024 * 1024);
 
     let mut usbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         Some(config),
     )?;
     eprintln!("[{label}] UninitializedSandbox::new OK");
