@@ -515,6 +515,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.scratch_mem.write::<u64>(base_offset, value)
     }
 
+    pub(crate) fn request_libc_rng_reseed(&mut self, seed: u64) -> Result<()> {
+        self.update_scratch_bookkeeping_item(
+            hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET,
+            seed,
+        )
+    }
+
     fn update_scratch_bookkeeping(&mut self) -> Result<()> {
         use hyperlight_common::layout::*;
         let scratch_size = self.scratch_mem.mem_size();
@@ -539,6 +546,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
         )?;
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_LIBC_RNG_SEED_OFFSET, 0)?;
 
         // Initialise the guest input and output data buffers in
         // scratch memory. TODO: remove the need for this.

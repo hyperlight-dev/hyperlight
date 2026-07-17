@@ -43,8 +43,8 @@ pub(crate) mod trace;
 
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
-/// Re-export for `SandboxConfiguration` type
-pub use config::SandboxConfiguration;
+/// Re-export for sandbox configuration types
+pub use config::{RngRestorePolicy, SandboxConfiguration};
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::{MultiUseSandbox, PtRootFinder};
 /// Re-export for `GuestBinary` type

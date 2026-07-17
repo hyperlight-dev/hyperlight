@@ -20,7 +20,7 @@ limitations under the License.
 
 use std::sync::Arc;
 
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -34,6 +34,24 @@ fn create_test_sandbox() -> MultiUseSandbox {
         .unwrap()
         .evolve()
         .unwrap()
+}
+
+fn create_c_test_sandbox() -> MultiUseSandbox {
+    create_c_test_sandbox_with_config(None)
+}
+
+fn create_c_test_sandbox_with_config(
+    config: Option<crate::sandbox::SandboxConfiguration>,
+) -> MultiUseSandbox {
+    let path = c_simple_guest_as_string().unwrap();
+    UninitializedSandbox::new(GuestBinary::FilePath(path), config)
+        .unwrap()
+        .evolve()
+        .unwrap()
+}
+
+fn random_sequence(sandbox: &mut MultiUseSandbox) -> [i32; 4] {
+    std::array::from_fn(|_| sandbox.call("NextRandom", ()).unwrap())
 }
 
 fn create_snapshot() -> Arc<Snapshot> {
@@ -2859,6 +2877,62 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     assert_eq!(new_snap.layout().output_data_size(), original_output);
     assert_eq!(new_snap.layout().heap_size(), original_heap);
     assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
+}
+
+#[test]
+fn from_snapshot_preserves_guest_libc_rng_by_default() {
+    let mut sandbox = create_c_test_sandbox();
+    let snapshot = sandbox.snapshot().unwrap();
+
+    let mut first =
+        MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), None).unwrap();
+    let mut second =
+        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None).unwrap();
+
+    assert_eq!(random_sequence(&mut first), random_sequence(&mut second));
+}
+
+#[test]
+fn from_snapshot_reseeds_guest_libc_rng_when_requested() {
+    use crate::sandbox::{RngRestorePolicy, SandboxConfiguration};
+
+    let mut sandbox = create_c_test_sandbox();
+    let snapshot = sandbox.snapshot().unwrap();
+    let mut config = SandboxConfiguration::default();
+    config.set_rng_restore_policy(RngRestorePolicy::Refresh);
+    let mut first =
+        MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), Some(config))
+            .unwrap();
+    let mut second =
+        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
+
+    assert_ne!(random_sequence(&mut first), random_sequence(&mut second));
+}
+
+#[test]
+fn restore_preserves_guest_libc_rng_by_default() {
+    let mut sandbox = create_c_test_sandbox();
+    let snapshot = sandbox.snapshot().unwrap();
+    let expected = random_sequence(&mut sandbox);
+
+    sandbox.restore(snapshot).unwrap();
+
+    assert_eq!(random_sequence(&mut sandbox), expected);
+}
+
+#[test]
+fn restore_reseeds_guest_libc_rng_when_requested() {
+    use crate::sandbox::{RngRestorePolicy, SandboxConfiguration};
+
+    let mut config = SandboxConfiguration::default();
+    config.set_rng_restore_policy(RngRestorePolicy::Refresh);
+    let mut sandbox = create_c_test_sandbox_with_config(Some(config));
+    let snapshot = sandbox.snapshot().unwrap();
+    let captured = random_sequence(&mut sandbox);
+
+    sandbox.restore(snapshot).unwrap();
+
+    assert_ne!(random_sequence(&mut sandbox), captured);
 }
 
 /// `from_snapshot` honors `guest_core_dump=true` so that

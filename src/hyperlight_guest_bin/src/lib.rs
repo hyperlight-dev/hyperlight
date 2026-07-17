@@ -210,6 +210,23 @@ unsafe extern "C" {
     fn srand(seed: u32);
 }
 
+#[cfg(feature = "libc")]
+fn fold_libc_seed(seed: u64) -> u32 {
+    (seed ^ (seed >> 32)) as u32
+}
+
+#[cfg(feature = "libc")]
+pub(crate) fn refresh_libc_rng() {
+    let seed_ptr = hyperlight_guest::layout::libc_rng_seed_gva();
+    let seed = unsafe { seed_ptr.read_volatile() };
+    if seed != 0 {
+        unsafe {
+            seed_ptr.write_volatile(0);
+            srand(fold_libc_seed(seed));
+        }
+    }
+}
+
 #[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
 extern "C" fn hyperlight_main_default() {
     // no-op
@@ -254,8 +271,7 @@ pub(crate) extern "C" fn generic_init(
 
     #[cfg(feature = "libc")]
     unsafe {
-        let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
-        srand(srand_seed);
+        srand(fold_libc_seed(_seed));
     }
 
     unsafe {

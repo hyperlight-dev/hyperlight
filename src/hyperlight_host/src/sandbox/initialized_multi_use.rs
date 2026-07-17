@@ -40,6 +40,16 @@ use crate::metrics::{
 };
 use crate::{HyperlightError, Result, log_then_return};
 
+fn libc_rng_seed() -> u64 {
+    loop {
+        let seed = rand::random::<u64>();
+        // Zero means no reseed request in scratch memory.
+        if seed != 0 {
+            return seed;
+        }
+    }
+}
+
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
@@ -93,6 +103,7 @@ pub struct MultiUseSandbox {
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
     /// If not set, only CR3 is used as the single root.
     pt_root_finder: Option<PtRootFinder>,
+    rng_restore_policy: crate::sandbox::RngRestorePolicy,
 }
 
 /// Callback for discovering page table roots from guest memory.
@@ -118,6 +129,7 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
+        rng_restore_policy: crate::sandbox::RngRestorePolicy,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
@@ -129,6 +141,7 @@ impl MultiUseSandbox {
             dbg_mem_access_fn,
             snapshot: None,
             pt_root_finder: None,
+            rng_restore_policy,
         }
     }
 
@@ -205,8 +218,6 @@ impl MultiUseSandbox {
         host_funcs: crate::HostFunctions,
         config: Option<crate::sandbox::SandboxConfiguration>,
     ) -> Result<Self> {
-        use rand::RngExt;
-
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
 
@@ -270,10 +281,7 @@ impl MultiUseSandbox {
             load_info,
         )?;
 
-        let seed = {
-            let mut rng = rand::rng();
-            rng.random::<u64>()
-        };
+        let seed = libc_rng_seed();
         let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
 
         #[cfg(gdb)]
@@ -290,6 +298,12 @@ impl MultiUseSandbox {
             dbg_mem_access_hdl,
         )
         .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
+
+        if config.get_rng_restore_policy() == crate::sandbox::RngRestorePolicy::Refresh
+            && matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_))
+        {
+            hshm.request_libc_rng_reseed(seed)?;
+        }
 
         // If the snapshot was taken from an already-initialized guest
         // (NextAction::Call), apply the captured special registers so
@@ -313,6 +327,7 @@ impl MultiUseSandbox {
             host_funcs,
             hshm,
             vm,
+            config.get_rng_restore_policy(),
             #[cfg(gdb)]
             dbg_mem_wrapper,
         );
@@ -520,6 +535,9 @@ impl MultiUseSandbox {
         }
 
         let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
+        if self.rng_restore_policy == crate::sandbox::RngRestorePolicy::Refresh {
+            self.mem_mgr.request_libc_rng_reseed(libc_rng_seed())?;
+        }
         if let Some(gsnapshot) = gsnapshot {
             self.vm
                 .update_snapshot_mapping(gsnapshot)

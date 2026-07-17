@@ -29,6 +29,19 @@ pub struct DebugInfo {
     pub port: u16,
 }
 
+/// Controls Hyperlight-managed guest randomness across snapshot restores.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum RngRestorePolicy {
+    /// Reseed the guest libc PRNG before execution resumes.
+    ///
+    /// Snapshots taken before Hyperlight v0.17.0 ignore this policy and preserve their PRNG state.
+    Refresh,
+    /// Preserve the guest libc PRNG state captured by the snapshot.
+    #[default]
+    Preserve,
+}
+
 /// The complete set of configuration needed to create a Sandbox
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -74,6 +87,8 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// How snapshot restores handle the guest libc PRNG
+    rng_restore_policy: RngRestorePolicy,
 }
 
 impl SandboxConfiguration {
@@ -114,6 +129,7 @@ impl SandboxConfiguration {
             scratch_size,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
+            rng_restore_policy: RngRestorePolicy::default(),
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
@@ -215,6 +231,16 @@ impl SandboxConfiguration {
         self.scratch_size = scratch_size;
     }
 
+    /// Set how snapshot restores handle the guest libc PRNG.
+    pub fn set_rng_restore_policy(&mut self, policy: RngRestorePolicy) {
+        self.rng_restore_policy = policy;
+    }
+
+    /// Get how snapshot restores handle the guest libc PRNG.
+    pub fn get_rng_restore_policy(&self) -> RngRestorePolicy {
+        self.rng_restore_policy
+    }
+
     #[cfg(crashdump)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_core_dump(&self) -> bool {
@@ -261,7 +287,16 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use super::SandboxConfiguration;
+    use super::{RngRestorePolicy, SandboxConfiguration};
+
+    #[test]
+    fn rng_restore_policy_defaults_to_preserve_and_can_be_refreshed() {
+        let mut config = SandboxConfiguration::default();
+        assert_eq!(config.get_rng_restore_policy(), RngRestorePolicy::Preserve);
+
+        config.set_rng_restore_policy(RngRestorePolicy::Refresh);
+        assert_eq!(config.get_rng_restore_policy(), RngRestorePolicy::Refresh);
+    }
 
     #[test]
     fn overrides() {

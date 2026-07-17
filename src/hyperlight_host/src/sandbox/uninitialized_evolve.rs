@@ -113,6 +113,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         u_sbox.host_funcs,
         hshm,
         vm,
+        u_sbox.config.get_rng_restore_policy(),
         #[cfg(gdb)]
         dbg_mem_wrapper,
     ))

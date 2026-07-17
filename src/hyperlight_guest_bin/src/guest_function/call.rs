@@ -86,6 +86,9 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 }
 
 pub(crate) fn internal_dispatch_function() {
+    #[cfg(feature = "libc")]
+    crate::refresh_libc_rng();
+
     // Read the current TSC to report it to the host with the spans/events
     // This helps calculating the timestamps relative to the guest call
     #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
