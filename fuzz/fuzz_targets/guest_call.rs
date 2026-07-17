@@ -21,7 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use hyperlight_host::func::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_for_fuzzing_as_string;
+use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::fuzz_target;
 static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 
@@ -31,7 +31,7 @@ fuzz_target!(
     init: {
 
         let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
+            GuestBinary::FilePath(simple_guest_for_fuzzing_as_pathbuf()),
             None,
         )
         .unwrap();

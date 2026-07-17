@@ -16,12 +16,12 @@ limitations under the License.
 
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::UninitializedSandbox;
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 
 fn main() {
     // create a new `MultiUseSandbox` configured to run the `simpleguest.exe`
     // test guest binary
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     let mut sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
         .unwrap()
         .evolve()

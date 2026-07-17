@@ -249,7 +249,7 @@ pub(crate) fn handle_outb(
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
@@ -283,7 +283,7 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
 
         let new_mgr = || {
-            let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
+            let bin = GuestBinary::FilePath(simple_guest_as_pathbuf());
             let snapshot = crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
             let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
             let (hmgr, _) = mgr.build().unwrap();
@@ -393,7 +393,7 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
-                let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
+                let bin = GuestBinary::FilePath(simple_guest_as_pathbuf());
                 let snapshot =
                     crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
                 let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use hyperlight_common::resource::BorrowedResourceGuard;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::wit_guest_as_string;
+use hyperlight_testing::wit_guest_as_pathbuf;
 
 extern crate alloc;
 mod bindings {
@@ -285,7 +285,7 @@ impl test::wit::TestImports for Host {
 }
 
 fn sb() -> TestSandbox<Host, MultiUseSandbox> {
-    let path = wit_guest_as_string().unwrap();
+    let path = wit_guest_as_pathbuf();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None).unwrap();
     test::wit::Test::instantiate(uninit, Host {})

@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::cmp::min;
 use std::io::Write;
+use std::path::PathBuf;
 
 use chrono;
 use elfcore::{
@@ -50,8 +51,7 @@ pub(crate) struct CrashDumpContext {
     regs: [u64; 27],
     xsave: Vec<u8>,
     entry: u64,
-    binary: Option<String>,
-    filename: Option<String>,
+    binary: Option<PathBuf>,
 }
 
 impl CrashDumpContext {
@@ -60,8 +60,7 @@ impl CrashDumpContext {
         regs: [u64; 27],
         xsave: Vec<u8>,
         entry: u64,
-        binary: Option<String>,
-        filename: Option<String>,
+        binary: Option<PathBuf>,
     ) -> Self {
         Self {
             regions,
@@ -69,7 +68,6 @@ impl CrashDumpContext {
             xsave,
             entry,
             binary,
-            filename,
         }
     }
 }
@@ -104,14 +102,19 @@ impl GuestView {
             .collect();
 
         let filename = ctx
-            .filename
-            .as_ref()
-            .map_or("<unknown>".to_string(), |s| s.to_string());
+            .binary
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .map_or("<unknown>".to_string(), |name| {
+                name.to_string_lossy().into_owned()
+            });
 
         let cmd = ctx
             .binary
-            .as_ref()
-            .map_or("<unknown>".to_string(), |s| s.to_string());
+            .as_deref()
+            .map_or("<unknown>".to_string(), |path| {
+                path.to_string_lossy().into_owned()
+            });
 
         // The xsave state is checked as it can be empty
         let mut components = vec![];
@@ -271,7 +274,7 @@ impl ReadProcessMemory for GuestMemReader {
 pub(crate) fn generate_crashdump(
     hv: &HyperlightVm,
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-    override_dir: Option<String>,
+    override_dir: Option<PathBuf>,
 ) -> Result<()> {
     // Get crash context from hypervisor
     let ctx = hv
@@ -279,7 +282,8 @@ pub(crate) fn generate_crashdump(
         .map_err(|e| new_error!("Failed to get crashdump context: {:?}", e))?;
 
     // Prefer the explicit override, then the env var, then the system temp dir
-    let core_dump_dir = override_dir.or_else(|| std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok());
+    let core_dump_dir =
+        override_dir.or_else(|| std::env::var_os("HYPERLIGHT_CORE_DUMP_DIR").map(PathBuf::from));
 
     // Compute file path on the filesystem
     let file_path = core_dump_file_path(core_dump_dir);
@@ -294,8 +298,8 @@ pub(crate) fn generate_crashdump(
 
     if let Ok(nbytes) = checked_core_dump(ctx, create_dump_file) {
         if nbytes > 0 {
-            println!("Core dump created successfully: {}", file_path);
-            tracing::error!("Core dump file: {}", file_path);
+            println!("Core dump created successfully: {}", file_path.display());
+            tracing::error!("Core dump file: {}", file_path.display());
         }
     } else {
         tracing::error!("Failed to create core dump file");
@@ -316,8 +320,8 @@ pub(crate) fn generate_crashdump(
 /// * `dump_dir`: The environment variable value to check for the output directory.
 ///
 /// Returns:
-/// * `String`: The file path for the core dump file.
-fn core_dump_file_path(dump_dir: Option<String>) -> String {
+/// * `PathBuf`: The file path for the core dump file.
+fn core_dump_file_path(dump_dir: Option<PathBuf>) -> PathBuf {
     // Generate timestamp string for the filename using chrono
     let timestamp = chrono::Local::now()
         .format("%Y%m%d_T%H%M%S%.3f")
@@ -328,12 +332,12 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
         // Check if the directory exists
         // If it doesn't exist, fall back to the system temp directory
         // This is to ensure that the core dump can be created even if the directory is not set
-        if std::path::Path::new(&dump_dir).exists() {
-            std::path::PathBuf::from(dump_dir)
+        if dump_dir.exists() {
+            dump_dir
         } else {
             tracing::warn!(
                 "Directory \"{}\" does not exist, falling back to temp directory",
-                dump_dir
+                dump_dir.display()
             );
             std::env::temp_dir()
         }
@@ -344,9 +348,7 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
 
     // Create the filename with timestamp
     let filename = format!("hl_core_{}.elf", timestamp);
-    let file_path = output_dir.join(filename);
-
-    file_path.to_string_lossy().to_string()
+    output_dir.join(filename)
 }
 
 /// Create core dump from Hypervisor context if the sandbox is configured to allow core dumps.
@@ -395,16 +397,13 @@ mod test {
     #[test]
     fn test_crashdump_file_path_valid() {
         // Get CWD
-        let valid_dir = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let valid_dir = std::env::current_dir().unwrap();
 
         // Call the function
         let path = core_dump_file_path(Some(valid_dir.clone()));
 
         // Check if the path is correct
-        assert!(path.contains(&valid_dir));
+        assert!(path.starts_with(&valid_dir));
     }
 
     /// Test the core_dump_file_path function when the environment variable is set to an invalid
@@ -412,13 +411,13 @@ mod test {
     #[test]
     fn test_crashdump_file_path_invalid() {
         // Call the function
-        let path = core_dump_file_path(Some("/tmp/not_existing_dir".to_string()));
+        let path = core_dump_file_path(Some(PathBuf::from("/tmp/not_existing_dir")));
 
         // Get the temp directory
-        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        let temp_dir = std::env::temp_dir();
 
         // Check if the path is correct
-        assert!(path.contains(&temp_dir));
+        assert!(path.starts_with(&temp_dir));
     }
 
     /// Test the core_dump_file_path function when the environment is not set
@@ -428,7 +427,7 @@ mod test {
         // Call the function
         let path = core_dump_file_path(None);
 
-        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        let temp_dir = std::env::temp_dir();
 
         // Check if the path is correct
         assert!(path.starts_with(&temp_dir));
@@ -454,8 +453,7 @@ mod test {
             [0; 27],
             vec![],
             0,
-            Some("dummy_binary".to_string()),
-            Some("dummy_filename".to_string()),
+            Some(PathBuf::from("dummy_binary")),
         );
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
@@ -486,8 +484,7 @@ mod test {
             [0; 27],
             vec![],
             0x1000,
-            Some("dummy_binary".to_string()),
-            Some("dummy_filename".to_string()),
+            Some(PathBuf::from("dummy_binary")),
         );
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);

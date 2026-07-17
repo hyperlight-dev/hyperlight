@@ -65,24 +65,39 @@ pub fn rust_guest_as_pathbuf(guest: &str) -> PathBuf {
 }
 
 /// Get a fully qualified OS-specific path to the simpleguest elf binary
+pub fn simple_guest_as_pathbuf() -> PathBuf {
+    rust_guest_as_pathbuf("simpleguest")
+}
+
+/// Get a fully qualified OS-specific path to the simpleguest elf binary as a string
 pub fn simple_guest_as_string() -> Result<String> {
-    let buf = rust_guest_as_pathbuf("simpleguest");
+    let buf = simple_guest_as_pathbuf();
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert simple guest PathBuf to string"))
 }
 
 /// Get a fully-qualified OS-specific path to the witguest elf binary
+pub fn wit_guest_as_pathbuf() -> PathBuf {
+    rust_guest_as_pathbuf("witguest")
+}
+
+/// Get a fully-qualified OS-specific path to the witguest elf binary as a string
 pub fn wit_guest_as_string() -> Result<String> {
-    let buf = rust_guest_as_pathbuf("witguest");
+    let buf = wit_guest_as_pathbuf();
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert wit guest PathBuf to string"))
 }
 
 /// Get a fully qualified OS-specific path to the dummyguest elf binary
+pub fn dummy_guest_as_pathbuf() -> PathBuf {
+    rust_guest_as_pathbuf("dummyguest")
+}
+
+/// Get a fully qualified OS-specific path to the dummyguest elf binary as a string
 pub fn dummy_guest_as_string() -> Result<String> {
-    let buf = rust_guest_as_pathbuf("dummyguest");
+    let buf = dummy_guest_as_pathbuf();
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert dummy guest PathBuf to string"))
@@ -101,8 +116,12 @@ pub fn c_guest_as_pathbuf(guest: &str) -> PathBuf {
     )
 }
 
+pub fn c_simple_guest_as_pathbuf() -> PathBuf {
+    c_guest_as_pathbuf("simpleguest")
+}
+
 pub fn c_simple_guest_as_string() -> Result<String> {
-    let buf = c_guest_as_pathbuf("simpleguest");
+    let buf = c_simple_guest_as_pathbuf();
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert simple guest PathBuf to string"))
@@ -112,7 +131,7 @@ pub fn c_simple_guest_as_string() -> Result<String> {
 /// in the same directory as the parent executable. This will be used in
 /// fuzzing scenarios where pre-built binaries will be built and submitted to
 /// a fuzzing framework.
-pub fn simple_guest_for_fuzzing_as_string() -> Result<String> {
+pub fn simple_guest_for_fuzzing_as_pathbuf() -> PathBuf {
     let exe_dir = env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|p| p.to_path_buf()));
@@ -121,14 +140,22 @@ pub fn simple_guest_for_fuzzing_as_string() -> Result<String> {
         let guest_path = exe_dir.join("simpleguest");
 
         if guest_path.exists() {
-            return Ok(guest_path
-                .to_str()
-                .ok_or(anyhow!("Invalid path string"))?
-                .to_string());
+            return guest_path;
         }
     }
 
-    simple_guest_as_string()
+    simple_guest_as_pathbuf()
+}
+
+/// Get a fully qualified path to a simple guest binary as a string, preferring a binary
+/// in the same directory as the parent executable.
+pub fn simple_guest_for_fuzzing_as_string() -> Result<String> {
+    let guest_path = simple_guest_for_fuzzing_as_pathbuf();
+
+    Ok(guest_path
+        .to_str()
+        .ok_or(anyhow!("Invalid path string"))?
+        .to_string())
 }
 
 /// Standard sandbox heap sizes for benchmarking and testing.

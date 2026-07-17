@@ -14,19 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::path::PathBuf;
+
 use hyperlight_host::func::HostFunction;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
+use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
 /// Returns the path to the Rust simple guest binary.
-fn rust_guest_path() -> String {
-    simple_guest_as_string().unwrap()
+fn rust_guest_path() -> PathBuf {
+    simple_guest_as_pathbuf()
 }
 
 /// Returns the path to the C simple guest binary.
-fn c_guest_path() -> String {
-    c_simple_guest_as_string().unwrap()
+fn c_guest_path() -> PathBuf {
+    c_simple_guest_as_pathbuf()
 }
 
 /// Creates a new Rust guest MultiUseSandbox.

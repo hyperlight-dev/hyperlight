@@ -26,7 +26,7 @@ use std::thread::{JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::{GuestBinary, Result as HyperlightResult};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
@@ -97,8 +97,7 @@ fn init_tracing_subscriber(
 
 fn run_example(wait_input: bool) -> HyperlightResult<()> {
     // Get the path to a simple guest binary.
-    let hyperlight_guest_path =
-        simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
+    let hyperlight_guest_path = simple_guest_as_pathbuf();
 
     let mut join_handles: Vec<JoinHandle<HyperlightResult<()>>> = vec![];
 

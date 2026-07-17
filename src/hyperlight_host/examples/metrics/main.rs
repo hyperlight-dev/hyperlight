@@ -19,7 +19,7 @@ use std::thread::{JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::{GuestBinary, Result};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 
 // Run this rust example with the flag --features "function_call_metrics" to enable more metrics to be emitted
 
@@ -42,8 +42,7 @@ fn main() {
 
 fn do_hyperlight_stuff() {
     // Get the path to a simple guest binary.
-    let hyperlight_guest_path =
-        simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
+    let hyperlight_guest_path = simple_guest_as_pathbuf();
 
     let mut join_handles: Vec<JoinHandle<Result<()>>> = vec![];
 

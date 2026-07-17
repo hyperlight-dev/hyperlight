@@ -94,7 +94,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
     use metrics::{Key, with_local_recorder};
     use metrics_util::CompositeKey;
 
@@ -106,11 +106,9 @@ mod tests {
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let snapshot = with_local_recorder(&recorder, || {
-            let uninit = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-                None,
-            )
-            .unwrap();
+            let uninit =
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                    .unwrap();
 
             let mut multi = uninit.evolve().unwrap();
             let interrupt_handle = multi.interrupt_handle();

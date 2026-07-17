@@ -58,7 +58,7 @@ mod tests {
     use std::thread;
 
     use crossbeam_queue::ArrayQueue;
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
@@ -69,7 +69,7 @@ mod tests {
         let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
 
         for i in 0..10 {
-            let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+            let simple_guest_path = simple_guest_as_pathbuf();
             let unintializedsandbox =
                 UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)
                     .unwrap_or_else(|_| panic!("Failed to create UninitializedSandbox {}", i));

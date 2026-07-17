@@ -19,7 +19,7 @@ use std::sync::{Arc, Barrier};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::{GuestBinary, Result};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 
 fn fn_writer(_msg: String) -> Result<i32> {
     Ok(0)
@@ -33,8 +33,7 @@ fn main() -> Result<()> {
         .parse_filters("none,hyperlight=info")
         .init();
     // Get the path to a simple guest binary.
-    let hyperlight_guest_path =
-        simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
+    let hyperlight_guest_path = simple_guest_as_pathbuf();
 
     for _ in 0..20 {
         let path = hyperlight_guest_path.clone();

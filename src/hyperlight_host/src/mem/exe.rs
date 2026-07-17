@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 #[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 use std::vec::Vec;
@@ -74,7 +75,7 @@ impl LoadInfo {
 }
 
 impl ExeInfo {
-    pub fn from_file(path: &str) -> Result<Self> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         let mut file = File::open(path)?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)?;
@@ -121,13 +122,13 @@ impl ExeInfo {
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_testing::{dummy_guest_as_string, simple_guest_as_string};
+    use hyperlight_testing::{dummy_guest_as_pathbuf, simple_guest_as_pathbuf};
 
     use super::ExeInfo;
 
     /// Read the simpleguest binary and patch the version note descriptor to `"0.0.0"`.
     fn simpleguest_with_patched_version() -> Vec<u8> {
-        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+        let path = simple_guest_as_pathbuf();
         let mut bytes = std::fs::read(path).expect("failed to read simpleguest");
 
         let elf = goblin::elf::Elf::parse(&bytes).expect("failed to parse ELF");
@@ -160,7 +161,7 @@ mod tests {
 
     #[test]
     fn exe_info_exposes_guest_bin_version() {
-        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+        let path = simple_guest_as_pathbuf();
         let info = ExeInfo::from_file(&path).expect("failed to load ELF");
 
         let version = info
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn dummyguest_has_no_version_section() {
-        let path = dummy_guest_as_string().expect("failed to locate dummyguest");
+        let path = dummy_guest_as_pathbuf();
         let info = ExeInfo::from_file(&path).expect("failed to load ELF");
 
         assert!(
@@ -184,7 +185,7 @@ mod tests {
     /// should be accepted (no version check is performed).
     #[test]
     fn from_env_accepts_guest_without_version_note() {
-        let path = dummy_guest_as_string().expect("failed to locate dummyguest");
+        let path = dummy_guest_as_pathbuf();
 
         let result = crate::sandbox::snapshot::Snapshot::from_env(
             crate::GuestBinary::FilePath(path),
@@ -212,7 +213,7 @@ mod tests {
     /// that it succeeds when the embedded version matches the host version.
     #[test]
     fn from_env_accepts_matching_version() {
-        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+        let path = simple_guest_as_pathbuf();
 
         let result = crate::sandbox::snapshot::Snapshot::from_env(
             crate::GuestBinary::FilePath(path),

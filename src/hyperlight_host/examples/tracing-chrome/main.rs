@@ -15,7 +15,7 @@ limitations under the License.
 */
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::{GuestBinary, Result};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
 
@@ -25,8 +25,7 @@ fn main() -> Result<()> {
     let (chrome_layer, _guard) = ChromeLayerBuilder::new().build();
     tracing_subscriber::registry().with(chrome_layer).init();
 
-    let simple_guest_path =
-        simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
+    let simple_guest_path = simple_guest_as_pathbuf();
 
     // Create a new sandbox.
     let usandbox = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)?;
