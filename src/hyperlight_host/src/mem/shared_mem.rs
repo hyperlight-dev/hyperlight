@@ -514,6 +514,7 @@ fn mapping_at(
 
     MemoryRegion {
         guest_region: guest_base..(guest_base + size),
+        guest_virt_addr: guest_base,
         host_region: s.host_region_base()
             ..<HostGuestMemoryRegion as MemoryRegionKind>::add(s.host_region_base(), size),
         region_type,

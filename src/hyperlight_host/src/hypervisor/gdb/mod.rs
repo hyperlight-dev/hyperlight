@@ -426,6 +426,7 @@ mod tests {
                 guest_mmap_regions: vec![MemoryRegion {
                     host_region: mapped_mem as usize..mapped_mem.wrapping_add(size) as usize,
                     guest_region: BASE_VIRT..BASE_VIRT + size,
+                    guest_virt_addr: BASE_VIRT,
                     flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
                     region_type: MemoryRegionType::Heap,
                 }],

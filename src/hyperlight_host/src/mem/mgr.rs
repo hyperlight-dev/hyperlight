@@ -147,6 +147,10 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// preserved across the `Initialise` -> `Call` transition so it
     /// can fill `AT_ENTRY` in guest core dumps. 0 if unknown.
     pub(crate) original_entrypoint: u64,
+    /// Virtual base address of the code region.
+    /// For PIE binaries this equals the physical load address (identity-mapped).
+    /// For non-PIE binaries this is the ELF-declared base VA.
+    pub(crate) code_virt_base: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
     /// Generation counter: how many snapshots have been taken from
@@ -288,6 +292,7 @@ where
             scratch_mem,
             next_action,
             original_entrypoint: 0,
+            code_virt_base: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
         }
@@ -320,6 +325,7 @@ where
             rsp_gva,
             sregs,
             next_action,
+            self.code_virt_base,
             self.original_entrypoint,
             self.snapshot_count,
             host_functions,
@@ -335,6 +341,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
         mgr.original_entrypoint = s.original_entrypoint();
+        mgr.code_virt_base = s.code_virt_base;
         // Inherit the snapshot's generation number for the same
         // reason `restore_snapshot` does: the guest-visible counter
         // reflects "which snapshot is the sandbox currently a clone
@@ -367,6 +374,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             layout: self.layout,
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
+            code_virt_base: self.code_virt_base,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
         };
@@ -376,6 +384,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             layout: self.layout,
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
+            code_virt_base: self.code_virt_base,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
         };
@@ -516,6 +525,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // Carry the guest ELF entry point across restore so crashdumps
         // report the restored image's entry.
         self.original_entrypoint = snapshot.original_entrypoint();
+        self.code_virt_base = snapshot.code_virt_base;
 
         self.update_scratch_bookkeeping()?;
         Ok((gsnapshot, gscratch))
@@ -637,6 +647,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
                         regions.push(CrashDumpRegion {
                             guest_region: virt_base..virt_end,
+                            guest_virt_addr: virt_base,
                             host_region: host_base..host_base + host_len,
                             flags,
                             region_type,

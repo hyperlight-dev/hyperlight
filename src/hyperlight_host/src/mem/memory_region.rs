@@ -291,8 +291,12 @@ impl MemoryRegionKind for GuestMemoryRegion {
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryRegion_<K: MemoryRegionKind> {
-    /// the range of guest memory addresses
+    /// the range of guest physical addresses
     pub guest_region: Range<usize>,
+    /// the guest virtual address at which this region should be mapped.
+    /// For identity-mapped regions this equals `guest_region.start`.
+    /// For non-PIE code it is the ELF's declared virtual address.
+    pub guest_virt_addr: usize,
     /// the range of host memory addresses
     ///
     /// Note that Range<()> = () x () = ().
@@ -356,6 +360,7 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
             let host_end = <K as MemoryRegionKind>::add(self.host_base_virt_addr, size);
             self.regions.push(MemoryRegion_ {
                 guest_region: self.guest_base_phys_addr..guest_end,
+                guest_virt_addr: self.guest_base_phys_addr,
                 host_region: self.host_base_virt_addr..host_end,
                 flags,
                 region_type,
@@ -367,8 +372,10 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
         // we know this is safe because we check if the regions are empty above
         let last_region = self.regions.last().unwrap();
         let host_end = <K as MemoryRegionKind>::add(last_region.host_region.end, size);
+        let guest_start = last_region.guest_region.end;
         let new_region = MemoryRegion_ {
-            guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
+            guest_region: guest_start..guest_start + size,
+            guest_virt_addr: guest_start,
             host_region: last_region.host_region.end..host_end,
             flags,
             region_type,

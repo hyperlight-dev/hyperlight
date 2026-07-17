@@ -1553,6 +1553,7 @@ mod tests {
         MemoryRegion {
             host_region: mem.host_region_base()..mem.host_region_end(),
             guest_region: guest_base..(guest_base + len),
+            guest_virt_addr: guest_base,
             flags,
             region_type: MemoryRegionType::Heap,
         }
