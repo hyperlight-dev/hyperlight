@@ -476,53 +476,31 @@ impl OciSnapshotConfig {
             }
         }
 
-        // The saved dispatch entrypoint must be in the executable code
-        // region. Code occupies the page-rounded prefix of the snapshot.
-        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
-        let code_hi = code_lo
-            .checked_add(self.layout.code_size.next_multiple_of(PAGE_SIZE) as u64)
-            .ok_or_else(|| {
-                crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + code_size ({}) does not fit in u64",
-                    self.layout.code_size
-                )
-            })?;
-        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
+        // Validate the entrypoint GVA.
+        // `entrypoint_addr` is a GVA loaded into RIP. For ASLR or non-PIE
+        // guests the code may be mapped at a non-identity VA, so we only
+        // require the address is non-zero and within the 47-bit canonical
+        // user-space range.
+        let max_gva_entrypoint = 0x7FFF_FFFF_FFFFu64; // 47-bit canonical
+        if self.entrypoint_addr == 0 || self.entrypoint_addr > max_gva_entrypoint {
             return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                "snapshot entrypoint addr {:#x} is outside the valid GVA range (0, {:#x}]",
                 self.entrypoint_addr,
-                code_lo,
-                code_hi
-            ));
-        }
-        #[cfg(target_arch = "aarch64")]
-        if !self.entrypoint_addr.is_multiple_of(4) {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
-                self.entrypoint_addr
+                max_gva_entrypoint
             ));
         }
 
         // ELF entry point GVA for `AT_ENTRY` in core dumps. 0 means
-        // unknown. Any other value must point inside the snapshot
-        // region, like `entrypoint_addr`.
-        let snapshot_hi = code_lo
-            .checked_add(self.layout.snapshot_size as u64)
-            .ok_or_else(|| {
-                crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + snapshot_size ({}) does not fit in u64",
-                    self.layout.snapshot_size
-                )
-            })?;
-        if self.original_entrypoint_addr != 0
-            && (self.original_entrypoint_addr < code_lo
-                || self.original_entrypoint_addr >= snapshot_hi)
+        // unknown. Any other value must be within the 47-bit canonical
+        // user-space range (same as entrypoint_addr), since with ASLR
+        // or non-PIE the entry point may not be inside the snapshot
+        // physical region.
+        if self.original_entrypoint_addr != 0 && self.original_entrypoint_addr > max_gva_entrypoint
         {
             return Err(crate::new_error!(
-                "snapshot original entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
+                "snapshot original entrypoint addr {:#x} is outside the valid GVA range (0, {:#x}]",
                 self.original_entrypoint_addr,
-                code_lo,
-                snapshot_hi
+                max_gva_entrypoint
             ));
         }
 

@@ -76,6 +76,7 @@ build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
 
 # Build non-PIE variants of rust guests for testing ELF VA mapping.
+# NOTE: non-PIE guests are x86_64-only; aarch64 is not yet supported.
 # Phase 1 builds the sysroot without RUSTFLAGS (avoids RUSTFLAGS leaking
 # into the sysroot wrapper build in cargo-hyperlight).
 # Phase 2 uses plain cargo with --sysroot and non-PIE link flags.

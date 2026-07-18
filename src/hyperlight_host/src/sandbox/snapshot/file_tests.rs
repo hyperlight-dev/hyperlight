@@ -25,7 +25,6 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::func::Registerable;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 
@@ -1876,14 +1875,11 @@ fn original_entrypoint_addr_zero_accepted() {
 }
 
 #[test]
-fn entrypoint_addr_outside_code_rejected() {
+fn entrypoint_addr_outside_canonical_range_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
-        let code_size = cfg["layout"]["code_size"].as_u64().unwrap();
-        let page_size = hyperlight_common::vmem::PAGE_SIZE as u64;
-        let peb_addr =
-            SandboxMemoryLayout::BASE_ADDRESS as u64 + code_size.next_multiple_of(page_size);
-        cfg["entrypoint_addr"] = Value::from(peb_addr);
+        // 0x8000_0000_0000 is just above the 47-bit canonical limit
+        cfg["entrypoint_addr"] = Value::from(0x8000_0000_0000u64);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,

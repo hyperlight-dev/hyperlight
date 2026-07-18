@@ -333,7 +333,6 @@ impl Snapshot {
             guest_blob_mem_flags,
         )?;
 
-        let load_addr = layout.get_guest_code_address() as u64;
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
         let loaded_size = exe_info.loaded_size() as u64;
@@ -348,7 +347,7 @@ impl Snapshot {
         let mut memory = vec![0; layout.get_memory_size()?];
 
         let load_info = exe_info.load(
-            load_addr.try_into()?,
+            code_virt_base.try_into()?,
             &mut memory[layout.guest_code_offset()..],
         )?;
 
@@ -406,7 +405,15 @@ impl Snapshot {
             )
         })?;
 
-        let entrypoint_gva = code_virt_base + entrypoint_offset;
+        let entrypoint_gva = code_virt_base
+            .checked_add(entrypoint_offset)
+            .ok_or_else(|| {
+                crate::new_error!(
+                    "Entrypoint overflow: code_virt_base {:#x} + offset {:#x}",
+                    code_virt_base,
+                    entrypoint_offset
+                )
+            })?;
 
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
@@ -651,6 +658,12 @@ impl Snapshot {
     /// to fill `AT_ENTRY` in guest core dumps. 0 if unknown.
     pub(crate) fn original_entrypoint(&self) -> u64 {
         self.original_entrypoint
+    }
+
+    /// Returns the virtual base address of the code region in guest space.
+    #[allow(dead_code)]
+    pub(crate) fn code_virt_base(&self) -> u64 {
+        self.code_virt_base
     }
 
     /// Validate that `provided` is a superset of the host functions
