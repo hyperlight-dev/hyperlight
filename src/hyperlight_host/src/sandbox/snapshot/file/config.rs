@@ -505,13 +505,6 @@ impl OciSnapshotConfig {
                 code_hi
             ));
         }
-        #[cfg(target_arch = "aarch64")]
-        if !self.entrypoint_addr.is_multiple_of(4) {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
-                self.entrypoint_addr
-            ));
-        }
 
         // ELF entry point GVA for `AT_ENTRY` in core dumps. It must point
         // inside the snapshot region, like `entrypoint_addr`.

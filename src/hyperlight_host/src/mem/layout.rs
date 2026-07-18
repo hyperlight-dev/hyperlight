@@ -573,35 +573,95 @@ impl SandboxMemoryLayout {
         Ok(regions)
     }
 
-    /// Set the code GVA after checking that it does not overlap another region.
-    pub(crate) fn set_code_gva(&mut self, code_gva: u64) -> Result<()> {
-        let code_gva = usize::try_from(code_gva)?;
-        let code_end = code_gva
-            .checked_add(self.code_size.next_multiple_of(PAGE_SIZE))
-            .ok_or_else(|| {
-                new_error!(
-                    "code mapping overflow: base {:#x} + size {:#x}",
-                    code_gva,
-                    self.code_size
-                )
-            })?;
-        for region in self.get_memory_regions()? {
-            if region.region_type == Code {
+    /// Compute the virtual base address for the code region, validate
+    /// that it does not overlap any other memory region, and return the
+    /// guest memory regions with the Code region's `guest_virt_addr`
+    /// already set to the computed virtual base.
+    ///
+    /// For PIE binaries, a random page-aligned address is chosen within
+    /// 47-bit canonical user space (ASLR).  For non-PIE binaries, the
+    /// code appears at the ELF's declared virtual address (`elf_base_va`).
+    ///
+    /// In both cases the resulting virtual range is validated against all
+    /// non-Code memory regions to prevent overlap.
+    ///
+    /// Returns `(code_virt_base, regions)`.
+    pub(crate) fn get_guest_regions_with_code_va(
+        &self,
+        is_pie: bool,
+        elf_base_va: u64,
+        loaded_size: u64,
+    ) -> Result<(u64, Vec<MemoryRegion_<GuestMemoryRegion>>)> {
+        let code_size_pages = loaded_size.div_ceil(PAGE_SIZE as u64);
+        let code_virt_base = if !is_pie {
+            elf_base_va
+        } else {
+            // Pick a random page-aligned address within 47-bit canonical user space.
+            // Lower bound: 0x1000000 (16 MiB, above all identity-mapped layout regions)
+            // Upper bound: accounts for code region size so it doesn't overflow
+            use rand::RngExt;
+            let mut rng = rand::rng();
+            let min_page = 0x1000_u64; // 0x1000 * PAGE_SIZE = 0x1000000
+            let max_page = 0x7_FFFF_FFFF_u64
+                .checked_sub(code_size_pages)
+                .ok_or_else(|| {
+                    new_error!(
+                        "PIE code region too large ({} pages) for ASLR randomization",
+                        code_size_pages
+                    )
+                })?;
+            let page_number = rng.random_range(min_page..max_page);
+            page_number
+                .checked_mul(PAGE_SIZE as u64)
+                .ok_or_else(|| new_error!("ASLR page number overflow"))?
+        };
+
+        let mut regions = self.get_memory_regions()?;
+
+        // Verify the code mapping does not conflict with other mappings
+        // (both non-PIE with declared VA and PIE with randomized ASLR base).
+        let code_virt_end = code_virt_base.checked_add(loaded_size).ok_or_else(|| {
+            new_error!(
+                "Code mapping overflow: base {:#x} + size {:#x}",
+                code_virt_base,
+                loaded_size
+            )
+        })?;
+        for rgn in regions.iter() {
+            if rgn.region_type == MemoryRegionType::Code {
                 continue;
             }
-            if code_gva < region.guest_region.end && region.guest_region.start < code_end {
+            let rgn_start = rgn.guest_region.start as u64;
+            let rgn_end = rgn_start.saturating_add(rgn.guest_region.len() as u64);
+            if code_virt_base < rgn_end && rgn_start < code_virt_end {
                 return Err(new_error!(
-                    "code mapping [{:#x}, {:#x}) conflicts with {:?} region [{:#x}, {:#x})",
-                    code_gva,
-                    code_end,
-                    region.region_type,
-                    region.guest_region.start,
-                    region.guest_region.end,
+                    "Code mapping [{:#x}, {:#x}) conflicts with {:?} region [{:#x}, {:#x})",
+                    code_virt_base,
+                    code_virt_end,
+                    rgn.region_type,
+                    rgn_start,
+                    rgn_end,
                 ));
             }
         }
-        self.code_gva = code_gva;
-        Ok(())
+
+        // Override the Code region's GVA (guest_region) to code_virt_base.
+        // host_region retains the GPA from the builder.
+        for rgn in regions.iter_mut() {
+            if rgn.region_type == MemoryRegionType::Code {
+                let len = rgn.guest_region.len();
+                rgn.guest_region = code_virt_base as usize..(code_virt_base as usize + len);
+            }
+        }
+
+        tracing::debug!(
+            code_virt_base = format_args!("{:#x}", code_virt_base),
+            elf_base_va = format_args!("{:#x}", elf_base_va),
+            is_pie,
+            "code region virtual base address"
+        );
+
+        Ok((code_virt_base, regions))
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -727,6 +787,7 @@ impl SandboxMemoryLayout {
     }
 
     /// Guest physical address of the code section.
+    #[allow(dead_code)]
     pub(crate) fn get_guest_code_gpa(&self) -> usize {
         Self::BASE_ADDRESS + self.guest_code_offset()
     }
