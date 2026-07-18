@@ -2348,7 +2348,8 @@ fn symlink_snapshot_blob_rejected() {
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "symbolic link");
+    // "link" is common to the `ELOOP` wording of every C library.
+    assert_err_contains(err, "link");
 }
 
 #[test]
@@ -2366,7 +2367,8 @@ fn symlink_config_blob_rejected() {
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "symbolic link");
+    // "link" is common to the `ELOOP` wording of every C library.
+    assert_err_contains(err, "link");
 }
 
 #[test]
