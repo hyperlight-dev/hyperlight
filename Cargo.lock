@@ -1581,7 +1581,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.1",
 ]
 
 [[package]]
@@ -1592,7 +1592,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.1",
  "tracing",
  "wasmparser 0.253.0",
  "wit-component",
@@ -1645,7 +1645,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.1",
 ]
 
 [[package]]
