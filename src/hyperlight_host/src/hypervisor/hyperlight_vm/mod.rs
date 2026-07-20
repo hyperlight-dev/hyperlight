@@ -509,9 +509,10 @@ impl HyperlightVm {
             .position(|(_, r)| r == region)
             .ok_or(UnmapRegionError::RegionNotFound)?;
 
-        let (slot, _) = self.mmap_regions.remove(pos);
-        self.freed_slots.push(slot);
+        let slot = self.mmap_regions[pos].0;
         self.vm.unmap_memory((slot, region))?;
+        self.mmap_regions.remove(pos);
+        self.freed_slots.push(slot);
         Ok(())
     }
 
