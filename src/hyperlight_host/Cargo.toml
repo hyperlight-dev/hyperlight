@@ -56,6 +56,7 @@ oci-spec = { version = "0.10", default-features = false, features = ["image"] }
 sha2 = "0.11"
 hex = "0.4"
 tempfile = "3.27.0"
+parking_lot = "0.12.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

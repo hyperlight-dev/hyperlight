@@ -1706,6 +1706,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "page_size",
+ "parking_lot",
  "proc-maps",
  "proptest",
  "rand 0.10.2",

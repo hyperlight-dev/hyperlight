@@ -31,6 +31,8 @@ use crate::hypervisor::LinuxInterruptHandle;
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(hvf)]
+use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
 use crate::hypervisor::virtual_machine::{
@@ -74,7 +76,9 @@ impl HyperlightVm {
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
             #[cfg(hvf)]
-            Some(HypervisorType::Hvf) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            Some(HypervisorType::Hvf) => {
+                Box::new(HvfVm::new(interrupt_handle.clone()).map_err(VmError::CreateVm)?)
+            }
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))

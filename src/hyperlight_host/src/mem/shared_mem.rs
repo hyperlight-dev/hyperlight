@@ -2763,7 +2763,12 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::process::ExitStatusExt;
-                status.signal() == Some(libc::SIGSEGV)
+                let expected_signal = if cfg!(target_os = "macos") {
+                    libc::SIGBUS
+                } else {
+                    libc::SIGSEGV
+                };
+                status.signal() == Some(expected_signal)
             }
             #[cfg(windows)]
             {
