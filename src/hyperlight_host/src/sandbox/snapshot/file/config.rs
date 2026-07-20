@@ -177,6 +177,14 @@ pub(super) struct OciSnapshotConfig {
     pub(super) stack_top_gva: u64,
     /// Guest virtual address the loader resumes the paused call at.
     pub(super) entrypoint_addr: u64,
+    /// Guest virtual address of the ELF entry point
+    /// (`load_addr + e_entry - base_va`), preserved across the
+    /// Initialise->Call transition. Fills `AT_ENTRY` in core dumps so
+    /// gdb resolves PIE symbols. Optional: snapshots written before
+    /// this field existed deserialize to `0`, which core-dump code
+    /// treats as unknown.
+    #[serde(default)]
+    pub(super) original_entrypoint_addr: u64,
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
@@ -480,6 +488,20 @@ impl OciSnapshotConfig {
             ));
         }
 
+        // ELF entry point GVA for `AT_ENTRY` in core dumps. 0 means
+        // unknown. Any other value must point inside the snapshot
+        // region, like `entrypoint_addr`.
+        if self.original_entrypoint_addr != 0
+            && (self.original_entrypoint_addr < snap_lo || self.original_entrypoint_addr >= snap_hi)
+        {
+            return Err(crate::new_error!(
+                "snapshot original entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
+                self.original_entrypoint_addr,
+                snap_lo,
+                snap_hi
+            ));
+        }
+
         // `stack_top_gva` is restored into the guest stack pointer.
         // Bound it to the architecture's addressable GVA range so a
         // malformed config cannot install an out-of-range stack
@@ -675,6 +697,7 @@ mod tests {
             cpu_vendor: CpuVendor::current(),
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
+            original_entrypoint_addr: 0,
             sregs: distinct_sregs(),
             layout: MemoryLayout {
                 input_data_size: 0,
@@ -746,6 +769,7 @@ mod schema_pin {
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
+  "original_entrypoint_addr": 0,
   "sregs": {
     "cs": {
       "base": 1,
@@ -921,6 +945,7 @@ mod schema_pin {
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
+  "original_entrypoint_addr": 0,
   "sregs": {
     "tcr_el1": 1,
     "mair_el1": 2,

@@ -243,11 +243,11 @@ impl MultiUseSandbox {
         #[cfg(target_os = "linux")]
         crate::signal_handlers::setup_signal_handlers(&config)?;
 
-        // Build the runtime config from the caller's `SandboxConfiguration`
-        // so that `guest_core_dump` (crashdump) and `guest_debug_info` (gdb)
-        // take effect just like they do in the normal evolve path.
-        // `binary_path` and `entry_point` are not available from a snapshot
-        // and are left unset. This only affects metadata in core dumps.
+        // Runtime config for the restored sandbox. `guest_core_dump`
+        // (crashdump) and `guest_debug_info` (gdb) come from the caller's
+        // config. `binary_path` stays `None`. `set_up_hypervisor_partition`
+        // fills `entry_point` from the manager's entry point so crashdumps
+        // carry the correct `AT_ENTRY`.
         #[cfg(any(crashdump, gdb))]
         let rt_cfg = crate::sandbox::uninitialized::SandboxRuntimeConfig {
             #[cfg(crashdump)]
@@ -294,7 +294,7 @@ impl MultiUseSandbox {
         // If the snapshot was taken from an already-initialized guest
         // (NextAction::Call), apply the captured special registers so
         // the guest resumes in the correct CPU state.
-        if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
+        if matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_)) {
             let sregs = snapshot.sregs().ok_or_else(|| {
                 crate::new_error!("snapshot with NextAction::Call must have captured sregs")
             })?;
@@ -385,7 +385,7 @@ impl MultiUseSandbox {
             .vm
             .get_snapshot_sregs()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        let entrypoint = self.vm.get_entrypoint();
+        let next_action = self.vm.get_next_action();
         let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
         })?)
@@ -396,7 +396,7 @@ impl MultiUseSandbox {
             &root_pt_gpas,
             stack_top_gpa,
             sregs,
-            entrypoint,
+            next_action,
             host_functions,
         )?;
         let snapshot = Arc::new(memory_snapshot);
@@ -544,7 +544,12 @@ impl MultiUseSandbox {
             })?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
-        self.vm.set_entrypoint(snapshot.entrypoint());
+        self.vm.set_next_action(snapshot.next_action());
+        // Carry the guest ELF entry point across restore so a later
+        // crashdump fills `AT_ENTRY` from the restored image.
+        #[cfg(crashdump)]
+        self.vm
+            .set_crashdump_entry_point(snapshot.original_entrypoint());
 
         let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
         for region in &current_regions {

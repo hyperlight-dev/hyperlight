@@ -77,7 +77,7 @@ impl HyperlightVm {
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         _root_pt_addr: u64,
-        entrypoint: NextAction,
+        next_action: NextAction,
         rsp_gva: u64,
         page_size: usize,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
@@ -141,7 +141,7 @@ impl HyperlightVm {
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
-            entrypoint,
+            next_action,
             rsp_gva,
             interrupt_handle,
             page_size,
@@ -183,7 +183,7 @@ impl HyperlightVm {
             // `one_shot_entry_bp` so it does not interfere with later
             // user-installed breakpoints at the same address.
             ret.vm.set_debug(true).map_err(VmError::Debug)?;
-            let entry_addr = match entrypoint {
+            let entry_addr = match next_action {
                 NextAction::Initialise(addr) | NextAction::Call(addr) => Some(addr),
                 #[cfg(test)]
                 NextAction::None => None,
@@ -212,7 +212,7 @@ impl HyperlightVm {
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), InitializeError> {
-        let NextAction::Initialise(initialise) = self.entrypoint else {
+        let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
         };
 
@@ -251,7 +251,7 @@ impl HyperlightVm {
             return Err(InitializeError::InvalidStackPointer(regs.rsp));
         }
         self.rsp_gva = regs.rsp;
-        self.entrypoint = NextAction::Call(regs.rax);
+        self.next_action = NextAction::Call(regs.rax);
 
         Ok(())
     }
@@ -284,7 +284,7 @@ impl HyperlightVm {
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), DispatchGuestCallError> {
-        let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
+        let NextAction::Call(dispatch_func_addr) = self.next_action else {
             return Err(DispatchGuestCallError::Uninitialized);
         };
         let mut rflags = 1 << 1; // RFLAGS.1 is RES1
@@ -567,7 +567,7 @@ impl HyperlightVm {
             // Use the stored entry point address from the runtime config.
             // This is the original entry point (load_addr + ELF entry offset)
             // which GDB needs for AT_ENTRY to compute the PIE load offset.
-            // We cannot use self.entrypoint here because it transitions from
+            // We cannot use self.next_action here because it transitions from
             // Initialise(addr) to Call(dispatch_addr) after guest init.
             let initialise = self.rt_cfg.entry_point.unwrap_or_else(|| {
                 tracing::warn!(
@@ -2060,7 +2060,7 @@ mod tests {
 
             // Re-run from entrypoint (flag=1 means guest skips dirty phase, just does FXSAVE)
             // Use stack_top - 8 to match initialise()'s behavior (simulates call pushing return addr)
-            let NextAction::Call(rip) = ctx.ctx.vm.entrypoint else {
+            let NextAction::Call(rip) = ctx.ctx.vm.next_action else {
                 panic!("entrypoint should be call");
             };
             let regs = CommonRegisters {

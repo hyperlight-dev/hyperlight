@@ -140,8 +140,13 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
-    /// Offset for the execution entrypoint from `load_addr`
-    pub(crate) entrypoint: NextAction,
+    /// The next action to perform when this sandbox resumes:
+    /// `Initialise` before the guest has run, `Call` afterwards.
+    pub(crate) next_action: NextAction,
+    /// Guest virtual address of the guest binary's ELF entry point,
+    /// preserved across the `Initialise` -> `Call` transition so it
+    /// can fill `AT_ENTRY` in guest core dumps. 0 if unknown.
+    pub(crate) original_entrypoint: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
     /// Generation counter: how many snapshots have been taken from
@@ -275,13 +280,14 @@ where
         layout: SandboxMemoryLayout,
         shared_mem: SnapshotSharedMemory<S>,
         scratch_mem: S,
-        entrypoint: NextAction,
+        next_action: NextAction,
     ) -> Self {
         Self {
             layout,
             shared_mem,
             scratch_mem,
-            entrypoint,
+            next_action,
+            original_entrypoint: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
         }
@@ -300,7 +306,7 @@ where
         root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
-        entrypoint: NextAction,
+        next_action: NextAction,
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
         self.snapshot_count += 1;
@@ -313,7 +319,8 @@ where
             root_pt_gpas,
             rsp_gva,
             sregs,
-            entrypoint,
+            next_action,
+            self.original_entrypoint,
             self.snapshot_count,
             host_functions,
         )
@@ -325,8 +332,9 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let layout = *s.layout();
         let shared_mem = s.memory().to_mgr_snapshot_mem()?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
-        let entrypoint = s.entrypoint();
-        let mut mgr = Self::new(layout, shared_mem, scratch_mem, entrypoint);
+        let next_action = s.next_action();
+        let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
+        mgr.original_entrypoint = s.original_entrypoint();
         // Inherit the snapshot's generation number for the same
         // reason `restore_snapshot` does: the guest-visible counter
         // reflects "which snapshot is the sandbox currently a clone
@@ -357,7 +365,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem: hshm,
             scratch_mem: hscratch,
             layout: self.layout,
-            entrypoint: self.entrypoint,
+            next_action: self.next_action,
+            original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
         };
@@ -365,7 +374,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem: gshm,
             scratch_mem: gscratch,
             layout: self.layout,
-            entrypoint: self.entrypoint,
+            next_action: self.next_action,
+            original_entrypoint: self.original_entrypoint,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
         };
@@ -503,6 +513,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // sandbox currently a clone of", not "how many restores have
         // happened into this (possibly-reused) partition".
         self.snapshot_count = snapshot.snapshot_generation();
+        // Carry the guest ELF entry point across restore so crashdumps
+        // report the restored image's entry.
+        self.original_entrypoint = snapshot.original_entrypoint();
 
         self.update_scratch_bookkeeping()?;
         Ok((gsnapshot, gscratch))
