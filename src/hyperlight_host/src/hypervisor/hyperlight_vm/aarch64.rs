@@ -17,7 +17,6 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
@@ -71,13 +70,9 @@ impl HyperlightVm {
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
             .map_err(VmError::Register)?;
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
+        #[cfg(any(kvm, mshv3))]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(LinuxInterruptHandle::new(config));
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;

@@ -138,14 +138,20 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
     /// Mark the handle as dropped
     fn set_dropped(&self);
+}
 
+pub(crate) trait InterruptHandleInternal {
     /// Local access the shared state, which does not perform any
     /// operations other than updating the state machine
     fn state(&self) -> &InterruptHandleStateMachine;
+    /// Trigger the actual kill-like operation without
+    /// modifying the state
+    fn common_kill(&self) -> bool;
 }
 
 /// A trait for handling interrupts to a sandbox's vcpu
-pub trait InterruptHandle: Send + Sync + Debug {
+#[allow(private_bounds)]
+pub trait InterruptHandle: Send + Sync + Debug + InterruptHandleInternal {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// - If this is called while the the sandbox currently executing a guest function call, it will interrupt the sandbox and return `true`.
@@ -153,7 +159,10 @@ pub trait InterruptHandle: Send + Sync + Debug {
     ///
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
-    fn kill(&self) -> bool;
+    fn kill(&self) -> bool {
+        self.state().set_cancel();
+        self.common_kill()
+    }
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
     ///
@@ -165,15 +174,63 @@ pub trait InterruptHandle: Send + Sync + Debug {
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
     #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool;
+    fn kill_from_debugger(&self) -> bool {
+        self.state().set_debug_interrupt();
+        self.common_kill()
+    }
 
     /// Returns true if the corresponding sandbox has been dropped
     fn dropped(&self) -> bool;
 }
 
+#[cfg(any(kvm, mshv3, hvf))]
+#[derive(Debug)]
+pub(super) struct RetryingInterruptHandle<T: InterruptHandleImpl> {
+    retry_delay: Duration,
+    inner: T,
+}
+
+impl<T: InterruptHandleImpl> InterruptHandleImpl for RetryingInterruptHandle<T> {
+    #[cfg(any(kvm, mshv3))]
+    fn set_tid(&self) {
+        self.inner.set_tid();
+    }
+
+
+    fn set_dropped(&self) {
+        self.inner.set_dropped();
+    }
+}
+impl<T: InterruptHandleImpl> InterruptHandle for RetryingInterruptHandle<T> {
+    fn dropped(&self) -> bool {
+        self.inner.dropped()
+    }
+}
+impl<T: InterruptHandleImpl> InterruptHandleInternal for RetryingInterruptHandle<T> {
+    fn state(&self) -> &InterruptHandleStateMachine {
+        self.inner.state()
+    }
+    fn common_kill(&self) -> bool {
+        let mut succeeded = false;
+        loop {
+            let (running, cancel, debug) = self.state().get_running_cancel_debug();
+            // Check if we should continue sending signals
+            // Exit if not running OR if neither cancel nor debug_interrupt is set
+            let should_continue = running && (cancel || debug);
+            if !should_continue {
+                break;
+            }
+            tracing::info!("Trying to kill vcpu thread...");
+            succeeded |= self.inner.common_kill();
+            std::thread::sleep(self.retry_delay);
+        }
+        succeeded
+    }
+}
+
 #[cfg(any(kvm, mshv3))]
 #[derive(Debug)]
-pub(super) struct LinuxInterruptHandle {
+pub(super) struct LinuxInterruptHandleState {
     state: InterruptHandleStateMachine,
 
     /// Thread ID where the vcpu is running.
@@ -185,52 +242,42 @@ pub(super) struct LinuxInterruptHandle {
     /// Whether the corresponding VM has been dropped.
     dropped: AtomicBool,
 
-    /// Delay between retry attempts when sending signals to interrupt the vcpu.
-    retry_delay: Duration,
-
     /// Offset from SIGRTMIN for the signal used to interrupt the vcpu thread.
     sig_rt_min_offset: u8,
 }
+#[cfg(any(kvm, mshv3))]
+pub(super) type LinuxInterruptHandle = RetryingInterruptHandle<LinuxInterruptHandleState>;
 
 #[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
-    /// Get the running, cancel and debug flags atomically.
-    ///
-    /// # Memory Ordering
-    /// Uses `Acquire` ordering to synchronize with the `Release` in `set_running()` and `kill()`.
-    /// This ensures that when we observe running=true, we also see the correct `tid` value.
-
-    fn send_signal(&self) -> bool {
-        let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
-        let mut sent_signal = false;
-
-        loop {
-            let (running, cancel, debug) = self.state.get_running_cancel_debug();
-
-            // Check if we should continue sending signals
-            // Exit if not running OR if neither cancel nor debug_interrupt is set
-            let should_continue = running && (cancel || debug);
-
-            if !should_continue {
-                break;
-            }
-
-            tracing::info!("Sending signal to kill vcpu thread...");
-            sent_signal = true;
-            // Acquire ordering to synchronize with the Release store in set_tid()
-            // This ensures we see the correct tid value for the currently running vcpu
-            unsafe {
-                libc::pthread_kill(self.tid.load(Ordering::Acquire) as _, signal_number);
-            }
-            std::thread::sleep(self.retry_delay);
+    fn new(config: &crate::sandbox::SandboxConfiguration) -> Self {
+        RetryingInterruptHandle {
+            retry_delay: config.get_interrupt_retry_delay(),
+            inner: LinuxInterruptHandleState {
+                state: InterruptHandleStateMachine::new(),
+                #[cfg(all(
+                    target_arch = "x86_64",
+                    target_vendor = "unknown",
+                    target_os = "linux",
+                    target_env = "musl"
+                ))]
+                tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+                #[cfg(not(all(
+                    target_arch = "x86_64",
+                    target_vendor = "unknown",
+                    target_os = "linux",
+                    target_env = "musl"
+                )))]
+                tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+                dropped: AtomicBool::new(false),
+            },
         }
-
-        sent_signal
     }
 }
 
 #[cfg(any(kvm, mshv3))]
-impl InterruptHandleImpl for LinuxInterruptHandle {
+impl InterruptHandleImpl for LinuxInterruptHandleState {
     fn set_tid(&self) {
         // Release ordering to synchronize with the Acquire load of `running` in send_signal()
         // This ensures that when send_signal() observes RUNNING_BIT=true (via Acquire),
@@ -244,28 +291,28 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
         // to any thread that checks dropped() via Acquire
         self.dropped.store(true, Ordering::Release);
     }
-
-    fn state(&self) -> &InterruptHandleStateMachine {
-        &self.state
-    }
 }
 
 #[cfg(any(kvm, mshv3))]
-impl InterruptHandle for LinuxInterruptHandle {
-    fn kill(&self) -> bool {
-        self.state.set_cancel();
-        self.send_signal()
-    }
-
-    #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.state.set_debug_interrupt();
-        self.send_signal()
-    }
+impl InterruptHandle for LinuxInterruptHandleState {
     fn dropped(&self) -> bool {
         // Acquire ordering to synchronize with the Release in set_dropped()
         // This ensures we see all VM cleanup operations that happened before drop
         self.dropped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(any(kvm, mshv3))]
+impl InterruptHandleInternal for LinuxInterruptHandleState {
+    fn state(&self) -> &InterruptHandleStateMachine {
+        &self.state
+    }
+    fn common_kill(&self) -> bool {
+        let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
+        unsafe {
+            libc::pthread_kill(self.tid.load(Ordering::Acquire) as _, signal_number);
+        }
+        true
     }
 }
 
@@ -294,6 +341,7 @@ pub(super) struct SynchronousInterruptHandle<T: SynchronousInterruptState> {
     ///   runs, ensuring no `kill()` is accessing the partition when `WHvDeletePartition` is called.
     dropped_state: std::sync::RwLock<(bool, T)>,
 }
+#[cfg(any(target_os = "windows", hvf))]
 trait SynchronousInterruptState: Debug + Send + Sync {
     ///  The inside-the-lock part of the common part of both kill()
     ///  and kill_from_debugger()
@@ -318,14 +366,27 @@ impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptH
             }
         }
     }
+}
 
+#[cfg(any(target_os = "windows", hvf))]
+impl<T: SynchronousInterruptState> InterruptHandle for SynchronousInterruptHandle<T> {
+    fn dropped(&self) -> bool {
+        // Take read lock to check dropped state consistently
+        match self.dropped_state.read() {
+            Ok(guard) => guard.0,
+            Err(e) => {
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
+                true // Assume dropped if we can't acquire lock
+            }
+        }
+    }
+}
+#[cfg(any(target_os = "windows", hvf))]
+impl<T: SynchronousInterruptState> InterruptHandleInternal for SynchronousInterruptHandle<T> {
     fn state(&self) -> &InterruptHandleStateMachine {
         &self.state
     }
-}
-#[allow(private_bounds)]
-impl<T: SynchronousInterruptState> SynchronousInterruptHandle<T> {
-    fn lock_and_actually_cancel(&self) -> bool {
+    fn common_kill(&self) -> bool {
         if !self.state.get_running_cancel_debug().0 {
             return false;
         }
@@ -346,29 +407,6 @@ impl<T: SynchronousInterruptState> SynchronousInterruptHandle<T> {
         }
 
         guard.1.actually_cancel()
-    }
-}
-
-#[cfg(any(target_os = "windows", hvf))]
-impl<T: SynchronousInterruptState> InterruptHandle for SynchronousInterruptHandle<T> {
-    fn kill(&self) -> bool {
-        self.state.set_cancel();
-        self.lock_and_actually_cancel()
-    }
-    #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.state.set_debug_interrupt();
-        self.lock_and_actually_cancel()
-    }
-    fn dropped(&self) -> bool {
-        // Take read lock to check dropped state consistently
-        match self.dropped_state.read() {
-            Ok(guard) => guard.0,
-            Err(e) => {
-                tracing::error!("Failed to acquire partition_state read lock: {}", e);
-                true // Assume dropped if we can't acquire lock
-            }
-        }
     }
 }
 

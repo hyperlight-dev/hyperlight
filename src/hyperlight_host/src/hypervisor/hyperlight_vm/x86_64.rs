@@ -106,26 +106,8 @@ impl HyperlightVm {
         .map_err(VmError::Register)?;
 
         #[cfg(any(kvm, mshv3))]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            #[cfg(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            ))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            #[cfg(not(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            )))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(LinuxInterruptHandle::new(config));
 
         #[cfg(target_os = "windows")]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
