@@ -128,7 +128,7 @@ impl CpuVendor {
             bytes[8..12].copy_from_slice(&r.ecx.to_le_bytes());
             Self(String::from_utf8_lossy(&bytes).into_owned())
         }
-        #[cfg(all(target_arch = "aarch64"))]
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         {
             let midr: u64;
             // SAFETY: Linux emulates MIDR_EL1 reads from EL0.
@@ -136,6 +136,10 @@ impl CpuVendor {
             let implementer = (midr >> 24) & 0xff;
             // `0x` prefix padded to width 4, e.g. Apple `0x61`, Arm `0x41`.
             Self(format!("{implementer:#04x}"))
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            Self("0x61".to_string())
         }
     }
 
@@ -678,6 +682,8 @@ mod tests {
         );
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         // MIDR_EL1 implementer byte for Apple silicon.
+        assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
     }
 
