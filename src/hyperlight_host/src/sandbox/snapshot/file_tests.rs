@@ -2809,6 +2809,50 @@ fn round_trip_preserves_non_default_scratch_size() {
 }
 
 #[test]
+fn persisted_non_default_layout_loads_and_runs() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut config = SandboxConfiguration::default();
+    config.set_input_data_size(0x8000);
+    config.set_output_data_size(0x8000);
+    config.set_heap_size(0x40_000);
+    config.set_scratch_size(0x90_000);
+    let mut source = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_pathbuf()),
+        Some(config),
+    )
+    .unwrap()
+    .evolve()
+    .unwrap();
+    source.call::<i32>("AddToStatic", 42i32).unwrap();
+    let snapshot = source.snapshot().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+    let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
+    assert_eq!(loaded.layout().input_data_size(), 0x8000);
+    assert_eq!(loaded.layout().output_data_size(), 0x8000);
+    assert_eq!(loaded.layout().heap_size(), 0x40_000);
+    assert_eq!(loaded.layout().get_scratch_size(), 0x90_000);
+
+    let mut restored =
+        MultiUseSandbox::from_snapshot(loaded, HostFunctions::default(), None).unwrap();
+    assert_eq!(restored.call::<i32>("GetStatic", ()).unwrap(), 42);
+    let large = "x".repeat(0x5000);
+    assert_eq!(
+        restored.call::<String>("Echo", large.clone()).unwrap(),
+        large
+    );
+    assert_eq!(
+        restored.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
+        0x10_000
+    );
+}
+
+#[test]
 fn snapshot_config_records_entrypoint_and_sregs() {
     let snap = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
@@ -2870,9 +2914,8 @@ fn snapshot_with_no_host_functions_round_trips() {
         MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
 }
 
-// Snapshot lineage and restore semantics. `restore` accepts any
-// snapshot whose memory layout and host-function set match the sandbox.
-// Snapshots within a compatible set are interchangeable.
+// Snapshot lineage and restore semantics. `restore` accepts snapshots
+// whose required host functions match the sandbox.
 
 #[test]
 fn linear_chain_restore_in_order() {
