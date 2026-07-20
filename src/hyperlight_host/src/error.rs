@@ -211,12 +211,6 @@ pub enum HyperlightError {
     /// Error creating or operating on memory shared with the guest
     #[error("Failed to execute shared memory operation: {0}")]
     SharedMemory(#[from] crate::mem::shared_mem::SharedMemoryError),
-
-    /// Tried to restore a snapshot into a sandbox whose memory
-    /// layout is not compatible with the snapshot's.
-    #[error("Snapshot memory layout is not compatible with this sandbox")]
-    SnapshotLayoutMismatch,
-
     /// Tried to restore a snapshot into a sandbox whose registered
     /// host functions do not satisfy the snapshot's required set.
     #[error(
@@ -367,7 +361,6 @@ impl HyperlightError {
             | HyperlightError::RefCellBorrowFailed(_)
             | HyperlightError::RefCellMutBorrowFailed(_)
             | HyperlightError::ReturnValueConversionFailure(_, _)
-            | HyperlightError::SnapshotLayoutMismatch
             | HyperlightError::SnapshotHostFunctionMismatch { .. }
             | HyperlightError::SystemTimeError(_)
             | HyperlightError::TryFromSliceError(_)

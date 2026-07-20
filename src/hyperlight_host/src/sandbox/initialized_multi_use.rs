@@ -331,10 +331,9 @@ impl MultiUseSandbox {
     /// Creates a snapshot of the sandbox's current memory state.
     ///
     /// The returned snapshot can be applied to any
-    /// [`MultiUseSandbox`] whose memory layout is structurally
-    /// compatible with this sandbox's layout and whose registered
-    /// host functions are a superset of those registered here at the
-    /// time of capture. See [`MultiUseSandbox::restore`] and
+    /// [`MultiUseSandbox`] whose registered host functions are a
+    /// superset of those registered here at the time of capture. See
+    /// [`MultiUseSandbox::restore`] and
     /// [`MultiUseSandbox::from_snapshot`] for the exact compatibility
     /// rules and the error variants returned on mismatch.
     ///
@@ -436,10 +435,6 @@ impl MultiUseSandbox {
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
-    ///
-    /// The snapshot's memory layout must be structurally compatible
-    /// with this sandbox's layout, otherwise this returns
-    /// [`SnapshotLayoutMismatch`](crate::HyperlightError::SnapshotLayoutMismatch).
     ///
     /// The sandbox's registered host functions must be a superset of
     /// those required by the snapshot (matched by name and
@@ -561,22 +556,28 @@ impl MultiUseSandbox {
                 .host_funcs
                 .try_lock()
                 .map_err(|e| crate::new_error!("Error locking host_funcs: {}", e))?;
-            snapshot.validate_compatibility(&self.mem_mgr.layout, &host_funcs)?;
+            snapshot.validate_host_functions(&host_funcs)?;
         }
 
         let sregs = snapshot.sregs().ok_or_else(|| {
             HyperlightError::Error("snapshot from running sandbox should have sregs".to_string())
         })?;
 
-        if let Err(error) = self.restore_memory_and_mappings(&snapshot) {
-            self.status = SandboxStatus::Unrecoverable;
-            self.snapshot = None;
-            return Err(error);
-        }
-
-        // Errors below here leave the sandbox poisoned (restore must be retried to unpoison).
+        // Errors below leave the sandbox poisoned unless base mapping updates make it unrecoverable.
         self.status = SandboxStatus::Poisoned;
         self.snapshot = None;
+
+        let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
+        for region in &current_regions {
+            self.vm
+                .unmap_region(region)
+                .map_err(HyperlightVmError::UnmapRegion)?;
+        }
+
+        if let Err(error) = self.restore_memory_and_mappings(&snapshot) {
+            self.status = SandboxStatus::Unrecoverable;
+            return Err(error);
+        }
 
         self.vm
             .reset_vcpu(snapshot.root_pt_gpa(), sregs)
@@ -593,18 +594,15 @@ impl MultiUseSandbox {
         // Carry the guest ELF entry point across restore so a later
         // crashdump fills `AT_ENTRY` from the restored image.
         #[cfg(crashdump)]
-        self.vm
-            .set_crashdump_entry_point(snapshot.original_entrypoint());
-
-        let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
-        for region in &current_regions {
+        {
             self.vm
-                .unmap_region(region)
-                .map_err(HyperlightVmError::UnmapRegion)?;
+                .set_crashdump_entry_point(snapshot.original_entrypoint());
+            self.vm.clear_crashdump_binary_path();
         }
 
         self.mem_mgr
             .request_libc_rng_reseed(rand::random::<u32>())?;
+        self.pt_root_finder = None;
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
@@ -1166,6 +1164,7 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_pathbuf;
 
+    use crate::func::host_functions::Registerable;
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -2021,41 +2020,257 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_rejects_incompatible_layout() {
-        let mut sandbox = SandboxBuilder::new()
-            .heap_size(0x10_000)
-            .build_from_file(simple_guest_as_pathbuf())
+    fn snapshot_restore_accepts_different_configured_layout() {
+        type Configure = fn(&mut SandboxConfiguration);
+        type LayoutValue = fn(&crate::mem::layout::SandboxMemoryLayout) -> usize;
+        let cases: &[(&str, Configure, LayoutValue)] = &[
+            (
+                "input",
+                |cfg| cfg.set_input_data_size(0x8000),
+                |layout| layout.input_data_size(),
+            ),
+            (
+                "output",
+                |cfg| cfg.set_output_data_size(0x8000),
+                |layout| layout.output_data_size(),
+            ),
+            (
+                "heap",
+                |cfg| cfg.set_heap_size(0x40_000),
+                |layout| layout.heap_size(),
+            ),
+            (
+                "scratch",
+                |cfg| cfg.set_scratch_size(0x90_000),
+                |layout| layout.get_scratch_size(),
+            ),
+        ];
+
+        for (name, configure, layout_value) in cases {
+            for incoming_is_larger in [true, false] {
+                let mut custom_cfg = SandboxConfiguration::default();
+                configure(&mut custom_cfg);
+                let (source_cfg, target_cfg) = if incoming_is_larger {
+                    (custom_cfg, SandboxConfiguration::default())
+                } else {
+                    (SandboxConfiguration::default(), custom_cfg)
+                };
+
+                let path = simple_guest_as_pathbuf();
+                let mut source =
+                    UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+                        .unwrap()
+                        .evolve()
+                        .unwrap();
+
+                let path = simple_guest_as_pathbuf();
+                let mut target =
+                    UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
+                        .unwrap()
+                        .evolve()
+                        .unwrap();
+
+                let source_value = layout_value(&source.mem_mgr.layout);
+                assert_ne!(source_value, layout_value(&target.mem_mgr.layout));
+
+                source.call::<i32>("AddToStatic", 42i32).unwrap();
+                target
+                    .restore(source.snapshot().unwrap())
+                    .unwrap_or_else(|err| panic!("restore with different {name} layout: {err}"));
+                assert_eq!(layout_value(&target.mem_mgr.layout), source_value);
+                assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 42);
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_restore_recovers_oom_with_larger_heap() {
+        let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_heap_size(0x20_000);
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target_cfg = SandboxConfiguration::default();
+        target_cfg.set_heap_size(0x8000);
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
+            .unwrap()
+            .evolve()
             .unwrap();
 
-        let mut sandbox2 = SandboxBuilder::new()
-            .heap_size(0x20_000)
-            .build_from_file(simple_guest_as_pathbuf())
+        assert!(target.call::<()>("ExhaustHeap", ()).is_err());
+        assert!(target.status().is_poisoned());
+
+        target.restore(snapshot).unwrap();
+        assert!(!target.status().is_poisoned());
+        assert_eq!(
+            target.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
+            0x10_000
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_applies_smaller_heap_limit() {
+        let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_heap_size(0x8000);
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target_cfg = SandboxConfiguration::default();
+        target_cfg.set_heap_size(0x20_000);
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
+            .unwrap()
+            .evolve()
             .unwrap();
 
-        let snapshot = sandbox.snapshot().unwrap();
-        let err = sandbox2.restore(snapshot);
-        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+        assert_eq!(
+            target.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
+            0x10_000
+        );
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert!(target.call::<i32>("CallMalloc", 0x10_000i32).is_err());
+        assert!(target.status().is_poisoned());
+    }
+
+    #[test]
+    fn snapshot_restore_applies_smaller_io_limits() {
+        let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_input_data_size(0x2000);
+        source_cfg.set_output_data_size(0x2000);
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let mut target_cfg = SandboxConfiguration::default();
+        target_cfg.set_input_data_size(0x8000);
+        target_cfg.set_output_data_size(0x8000);
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let large = "x".repeat(0x3000);
+
+        assert_eq!(target.call::<String>("Echo", large.clone()).unwrap(), large);
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.mem_mgr.layout.input_data_size(), 0x2000);
+        assert_eq!(target.mem_mgr.layout.output_data_size(), 0x2000);
+        assert!(target.call::<String>("Echo", large).is_err());
+        assert!(!target.status().is_poisoned());
+        assert_eq!(
+            target.call::<String>("Echo", "small".to_string()).unwrap(),
+            "small"
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_alternates_different_layouts() {
+        let mut small_cfg = SandboxConfiguration::default();
+        small_cfg.set_input_data_size(0x2000);
+        small_cfg.set_output_data_size(0x2000);
+        small_cfg.set_heap_size(0x8000);
+        let path = simple_guest_as_pathbuf();
+        let mut small = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(small_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        small.call::<i32>("AddToStatic", 11i32).unwrap();
+        let small_snapshot = small.snapshot().unwrap();
+
+        let mut large_cfg = SandboxConfiguration::default();
+        large_cfg.set_input_data_size(0x8000);
+        large_cfg.set_output_data_size(0x8000);
+        large_cfg.set_heap_size(0x40_000);
+        large_cfg.set_scratch_size(0x90_000);
+        let path = simple_guest_as_pathbuf();
+        let mut large = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(large_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        large.call::<i32>("AddToStatic", 22i32).unwrap();
+        let large_snapshot = large.snapshot().unwrap();
+
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        target.restore(small_snapshot.clone()).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+
+        target.restore(large_snapshot).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 22);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x40_000);
+
+        target.restore(small_snapshot).unwrap();
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
     }
 
     /// Validation runs before any memory or vCPU mutation, so a
     /// rejected `restore` leaves the target usable.
     #[test]
     fn snapshot_restore_failure_leaves_target_usable() {
-        let mut source = SandboxBuilder::new()
-            .heap_size(0x10_000)
-            .build_from_file(simple_guest_as_pathbuf())
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        source
+            .register_host_function("Add", |a: i32, b: i32| Ok(a + b))
             .unwrap();
+        let mut source = source.evolve().unwrap();
 
-        let mut target = SandboxBuilder::new()
-            .heap_size(0x20_000)
-            .build_from_file(simple_guest_as_pathbuf())
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
             .unwrap();
 
         target.call::<i32>("AddToStatic", 5i32).unwrap();
+        let map_mem = allocate_guest_memory();
+        let guest_base = 0x200000000_usize;
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` is page-aligned and outlives every use of `target`.
+        unsafe { target.map_region(&region).unwrap() };
+        target
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    guest_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    true,
+                ),
+            )
+            .unwrap();
+        let cached_snapshot = target.snapshot().unwrap();
         let bad_snapshot = source.snapshot().unwrap();
         let err = target.restore(bad_snapshot);
-        assert!(matches!(err, Err(HyperlightError::SnapshotLayoutMismatch)));
+        assert!(matches!(
+            err,
+            Err(HyperlightError::SnapshotHostFunctionMismatch { missing, .. })
+                if missing.iter().any(|name| name == "Add")
+        ));
 
+        assert!(Arc::ptr_eq(&target.snapshot().unwrap(), &cached_snapshot));
+        assert_eq!(target.vm.get_mapped_regions().count(), 1);
+        assert!(
+            target
+                .call::<bool>("CheckMapped", guest_base as u64)
+                .unwrap()
+        );
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 5);
         target.call::<i32>("AddToStatic", 3i32).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 8);
@@ -2085,6 +2300,71 @@ mod tests {
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
         unsafe { target.map_region(&region).unwrap() };
         assert_eq!(target.vm.get_mapped_regions().count(), 1);
+
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 23);
+    }
+
+    #[test]
+    fn snapshot_restore_unmaps_regions_overlapping_incoming_layout() {
+        let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_scratch_size(0x90_000);
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        source.call::<i32>("AddToStatic", 23i32).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        assert!(snapshot.memory().mem_size() > target.mem_mgr.shared_mem.mem_size());
+
+        let map_mem = allocate_guest_memory();
+        let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS
+            + target.mem_mgr.shared_mem.mem_size();
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` is page-aligned and outlives every use of `target`.
+        unsafe { target.map_region(&region).unwrap() };
+
+        target.restore(snapshot).unwrap();
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
+        assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 23);
+    }
+
+    #[test]
+    fn snapshot_restore_unmaps_region_overlapping_incoming_scratch() {
+        let incoming_scratch_size = 0x90_000;
+        let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_scratch_size(incoming_scratch_size);
+        let path = simple_guest_as_pathbuf();
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+        source.call::<i32>("AddToStatic", 23i32).unwrap();
+        let snapshot = source.snapshot().unwrap();
+
+        let path = simple_guest_as_pathbuf();
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let guest_base =
+            hyperlight_common::layout::scratch_base_gpa(incoming_scratch_size) as usize;
+        let target_scratch_base =
+            hyperlight_common::layout::scratch_base_gpa(SandboxConfiguration::DEFAULT_SCRATCH_SIZE)
+                as usize;
+        let map_mem = allocate_guest_memory();
+        assert!(guest_base + map_mem.mem_size() <= target_scratch_base);
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` is page-aligned and outlives every use of `target`.
+        unsafe { target.map_region(&region).unwrap() };
 
         target.restore(snapshot).unwrap();
         assert_eq!(target.vm.get_mapped_regions().count(), 0);

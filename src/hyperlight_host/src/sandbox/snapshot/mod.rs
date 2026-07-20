@@ -697,26 +697,6 @@ impl Snapshot {
             signature_mismatches,
         })
     }
-
-    /// Validate that this snapshot can be applied to a sandbox with
-    /// the given memory layout and host-function registry.
-    ///
-    /// The layout must be structurally compatible with the snapshot's
-    /// layout (see
-    /// [`SandboxMemoryLayout::is_compatible_with`](crate::mem::layout::SandboxMemoryLayout::is_compatible_with)),
-    /// and the registry must be a superset of the host functions the
-    /// snapshot requires (see
-    /// [`validate_host_functions`](Self::validate_host_functions)).
-    pub(crate) fn validate_compatibility(
-        &self,
-        layout: &crate::mem::layout::SandboxMemoryLayout,
-        host_funcs: &crate::sandbox::host_funcs::FunctionRegistry,
-    ) -> Result<()> {
-        if !self.layout().is_compatible_with(layout) {
-            return Err(crate::HyperlightError::SnapshotLayoutMismatch);
-        }
-        self.validate_host_functions(host_funcs)
-    }
 }
 
 #[cfg(test)]
