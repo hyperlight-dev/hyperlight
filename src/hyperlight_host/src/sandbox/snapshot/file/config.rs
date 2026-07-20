@@ -254,6 +254,7 @@ enum ParameterTypeRepr {
     String,
     Bool,
     VecBytes,
+    ByteChunks,
 }
 
 /// JSON-friendly mirror of
@@ -271,6 +272,7 @@ enum ReturnTypeRepr {
     Bool,
     Void,
     VecBytes,
+    ByteChunks,
 }
 
 impl From<&ParameterType> for ParameterTypeRepr {
@@ -285,6 +287,7 @@ impl From<&ParameterType> for ParameterTypeRepr {
             ParameterType::String => Self::String,
             ParameterType::Bool => Self::Bool,
             ParameterType::VecBytes => Self::VecBytes,
+            ParameterType::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -301,6 +304,7 @@ impl From<ParameterTypeRepr> for ParameterType {
             ParameterTypeRepr::String => Self::String,
             ParameterTypeRepr::Bool => Self::Bool,
             ParameterTypeRepr::VecBytes => Self::VecBytes,
+            ParameterTypeRepr::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -318,6 +322,7 @@ impl From<&ReturnType> for ReturnTypeRepr {
             ReturnType::Bool => Self::Bool,
             ReturnType::Void => Self::Void,
             ReturnType::VecBytes => Self::VecBytes,
+            ReturnType::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -335,6 +340,7 @@ impl From<ReturnTypeRepr> for ReturnType {
             ReturnTypeRepr::Bool => Self::Bool,
             ReturnTypeRepr::Void => Self::Void,
             ReturnTypeRepr::VecBytes => Self::VecBytes,
+            ReturnTypeRepr::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -693,6 +699,7 @@ mod tests {
             ParameterType::String,
             ParameterType::Bool,
             ParameterType::VecBytes,
+            ParameterType::ByteChunks,
         ];
         for p in variants {
             let back: ParameterType = ParameterTypeRepr::from(&p).into();
@@ -715,6 +722,7 @@ mod tests {
             ReturnType::Bool,
             ReturnType::Void,
             ReturnType::VecBytes,
+            ReturnType::ByteChunks,
         ];
         for r in variants {
             let back: ReturnType = ReturnTypeRepr::from(&r).into();

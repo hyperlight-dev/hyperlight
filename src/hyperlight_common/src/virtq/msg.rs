@@ -16,11 +16,10 @@ limitations under the License.
 
 //! Wire format header for all virtqueue messages.
 //!
-//! Every payload on both the G2H and H2G queues starts with this
-//! fixed 8-byte header, enabling message type discrimination and
-//! request/response correlation.
-
-use bitflags::bitflags;
+//! Every message chain on both the G2H and H2G queues starts with this fixed
+//! 8-byte header, enabling message type discrimination and request/response
+//! correlation. Payload lengths come from the size-prefixed FlatBuffer and its
+//! external-byte declarations.
 
 /// Message types for the virtqueue wire protocol.
 #[repr(u8)]
@@ -56,49 +55,27 @@ impl TryFrom<u8> for MsgKind {
     }
 }
 
-bitflags! {
-    #[repr(transparent)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct MsgFlags: u8 {
-        /// More descriptors follow for this message.
-        const MORE = 1 << 0;
-    }
-}
-
-/// Wire header for all virtqueue messages
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+/// Wire header for all virtqueue messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct VirtqMsgHeader {
     /// Discriminates the message type.
     pub kind: u8,
-    /// Per-message flags (see [`MsgFlags`]).
-    pub flags: u8,
+    /// keep the header 8 bytes long and aligned to 4 bytes.
+    reserved: [u8; 3],
     /// Caller-assigned correlation ID. Responses echo the request's ID.
-    pub req_id: u16,
-    /// Byte length of the payload following this header in this descriptor.
-    pub payload_len: u32,
+    pub cid: u32,
 }
 
 impl VirtqMsgHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
-    /// Create a new message header with no flags set.
-    pub const fn new(kind: MsgKind, req_id: u16, payload_len: u32) -> Self {
+    /// Create a message header.
+    pub const fn new(kind: MsgKind, cid: u32) -> Self {
         Self {
             kind: kind as u8,
-            flags: 0,
-            req_id,
-            payload_len,
-        }
-    }
-
-    /// Create a new header with flags.
-    pub const fn with_flags(kind: MsgKind, flags: MsgFlags, req_id: u16, payload_len: u32) -> Self {
-        Self {
-            kind: kind as u8,
-            flags: flags.bits(),
-            req_id,
-            payload_len,
+            reserved: [0; 3],
+            cid,
         }
     }
 
@@ -107,14 +84,47 @@ impl VirtqMsgHeader {
         MsgKind::try_from(self.kind)
     }
 
-    /// Interpret the raw flags field as [`MsgFlags`].
-    pub fn msg_flags(&self) -> MsgFlags {
-        MsgFlags::from_bits_truncate(self.flags)
+    /// Return the wire representation.
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
     }
 
-    /// Returns true if [`MsgFlags::MORE`] is set, indicating more
-    /// descriptors follow for this message.
-    pub const fn has_more(&self) -> bool {
-        self.flags & MsgFlags::MORE.bits() != 0
+    /// Parse and validate a wire header.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::SIZE {
+            return None;
+        }
+        let header: Self = bytemuck::pod_read_unaligned(bytes);
+        (header.reserved == [0; 3] && header.msg_kind().is_ok()).then_some(header)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_contains_only_kind_and_cid() {
+        let header = VirtqMsgHeader::new(MsgKind::Response, 0x1234_5678);
+
+        assert_eq!(VirtqMsgHeader::SIZE, 8);
+        assert_eq!(header.msg_kind(), Ok(MsgKind::Response));
+        assert_eq!(header.cid, 0x1234_5678);
+        assert_eq!(header.reserved, [0; 3]);
+    }
+
+    #[test]
+    fn rejects_invalid_wire_headers() {
+        let header = VirtqMsgHeader::new(MsgKind::Request, 1);
+        let mut bytes = [0; VirtqMsgHeader::SIZE];
+        bytes.copy_from_slice(header.as_bytes());
+
+        bytes[1] = 1;
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes), None);
+
+        bytes[1] = 0;
+        bytes[0] = u8::MAX;
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes), None);
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes[..7]), None);
     }
 }

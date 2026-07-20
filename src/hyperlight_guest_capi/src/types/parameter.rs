@@ -18,6 +18,7 @@ use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
+use hyperlight_common::flatbuffer_wrappers::util::{byte_chunks_from_vec, byte_chunks_to_vec};
 use hyperlight_guest::error::Result;
 
 use crate::types::FfiVec;
@@ -38,6 +39,7 @@ pub union FfiParameterValue {
     pub Bool: bool,
     pub String: *mut c_char,
     pub VecBytes: FfiVec,
+    pub ByteChunks: FfiVec,
 }
 
 /// An owned FFI version Of `ParameterValue`
@@ -71,6 +73,13 @@ impl FfiParameter {
                     FfiParameterValue { VecBytes: leaked },
                 )
             }
+            ParameterValue::ByteChunks(v) => {
+                let leaked = unsafe { FfiVec::from_vec(byte_chunks_to_vec(&v)) };
+                (
+                    ParameterType::ByteChunks,
+                    FfiParameterValue { ByteChunks: leaked },
+                )
+            }
         };
         Ok(FfiParameter { tag, value: union })
     }
@@ -95,6 +104,9 @@ impl FfiParameter {
             ParameterType::VecBytes => {
                 ParameterValue::VecBytes(unsafe { self.value.VecBytes.copy_to_vec() })
             }
+            ParameterType::ByteChunks => ParameterValue::ByteChunks(byte_chunks_from_vec(unsafe {
+                self.value.ByteChunks.copy_to_vec()
+            })),
         }
     }
 }
@@ -107,6 +119,9 @@ impl Drop for FfiParameter {
             },
             ParameterType::VecBytes => unsafe {
                 drop(self.value.VecBytes.into_vec());
+            },
+            ParameterType::ByteChunks => unsafe {
+                drop(self.value.ByteChunks.into_vec());
             },
             _ => {}
         }

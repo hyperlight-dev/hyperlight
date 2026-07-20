@@ -20,7 +20,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
+use hyperlight_common::flatbuffer_wrappers::util::{
+    byte_chunks_from_vec, byte_chunks_to_vec, get_flatbuffer_result,
+};
 use hyperlight_guest_bin::host_comm::get_host_return_value;
 
 use crate::types::FfiVec;
@@ -96,6 +99,14 @@ pub extern "C" fn hl_flatbuffer_result_from_Bytes(data: *const u8, len: usize) -
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn hl_flatbuffer_result_from_ByteChunks(data: *const u8, len: usize) -> Box<FfiVec> {
+    let slice = unsafe { core::slice::from_raw_parts(data, len) };
+    let vec = get_flatbuffer_result(byte_chunks_from_vec(slice.to_vec()));
+
+    Box::new(unsafe { FfiVec::from_vec(vec) })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn hl_flatbuffer_result_from_Bool(value: bool) -> Box<FfiVec> {
     let vec = get_flatbuffer_result(value);
 
@@ -155,4 +166,12 @@ pub extern "C" fn hl_get_host_return_value_as_VecBytes() -> Box<FfiVec> {
         get_host_return_value().expect("Unable to get host return value as vec bytes");
 
     Box::new(unsafe { FfiVec::from_vec(vec_value) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_ByteChunks() -> Box<FfiVec> {
+    let chunks: Vec<Bytes> =
+        get_host_return_value().expect("Unable to get host return value as byte chunks");
+
+    Box::new(unsafe { FfiVec::from_vec(byte_chunks_to_vec(&chunks)) })
 }

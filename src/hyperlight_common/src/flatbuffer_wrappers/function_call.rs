@@ -23,12 +23,13 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset, size_prefixed_root};
 use tracing::{Span, instrument};
 
 use super::function_types::{ParameterValue, ReturnType};
+use super::util::byte_chunks_to_bytes;
 use crate::flatbuffers::hyperlight::generated::{
     FunctionCall as FbFunctionCall, FunctionCallArgs as FbFunctionCallArgs,
     FunctionCallType as FbFunctionCallType, Parameter, ParameterArgs,
-    ParameterValue as FbParameterValue, hlbool, hlboolArgs, hldouble, hldoubleArgs, hlfloat,
-    hlfloatArgs, hlint, hlintArgs, hllong, hllongArgs, hlstring, hlstringArgs, hluint, hluintArgs,
-    hlulong, hlulongArgs, hlvecbytes, hlvecbytesArgs,
+    ParameterValue as FbParameterValue, hlbool, hlboolArgs, hlbytechunks, hlbytechunksArgs,
+    hldouble, hldoubleArgs, hlfloat, hlfloatArgs, hlint, hlintArgs, hllong, hllongArgs, hlstring,
+    hlstringArgs, hluint, hluintArgs, hlulong, hlulongArgs, hlvecbytes, hlvecbytesArgs,
 };
 
 /// The type of function call.
@@ -193,6 +194,23 @@ impl FunctionCall {
                                 },
                             )
                         }
+                        ParameterValue::ByteChunks(v) => {
+                            let value = byte_chunks_to_bytes(v);
+                            let vec_bytes = builder.create_vector(value.as_ref());
+                            let hlbytechunks = hlbytechunks::create(
+                                builder,
+                                &hlbytechunksArgs {
+                                    value: Some(vec_bytes),
+                                },
+                            );
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlbytechunks,
+                                    value: Some(hlbytechunks.as_union_value()),
+                                },
+                            )
+                        }
                     })
                     .collect();
                 Some(builder.create_vector(&parameter_offsets))
@@ -277,7 +295,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::flatbuffer_wrappers::function_types::ReturnType;
+    use crate::flatbuffer_wrappers::function_types::{Bytes, ReturnType};
 
     #[test]
     fn read_from_flatbuffer() -> Result<()> {
@@ -326,5 +344,30 @@ mod tests {
         assert_eq!(function_call.function_call_type, FunctionCallType::Guest);
 
         Ok(())
+    }
+
+    #[test]
+    fn embedded_byte_parameters_round_trip_as_distinct_logical_types() {
+        let mut builder = FlatBufferBuilder::new();
+        let parameters = vec![
+            ParameterValue::VecBytes(vec![1, 2, 3]),
+            ParameterValue::ByteChunks(vec![Bytes::from_static(&[4, 5]), Bytes::from_static(&[6])]),
+        ];
+        let encoded = FunctionCall::new(
+            "bytes".to_string(),
+            Some(parameters),
+            FunctionCallType::Host,
+            ReturnType::VecBytes,
+        )
+        .encode(&mut builder);
+
+        let decoded = FunctionCall::try_from(encoded).unwrap();
+        assert_eq!(
+            decoded.parameters,
+            Some(vec![
+                ParameterValue::VecBytes(vec![1, 2, 3]),
+                ParameterValue::ByteChunks(vec![Bytes::from_static(&[4, 5, 6])]),
+            ])
+        );
     }
 }

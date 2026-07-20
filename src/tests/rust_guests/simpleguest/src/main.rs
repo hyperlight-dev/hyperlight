@@ -1544,6 +1544,7 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
             ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
             ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
             ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
+            ReturnValue::ByteChunks(chunks) => Ok(get_flatbuffer_result(chunks)),
         },
         Err(e) => Err(e),
     }

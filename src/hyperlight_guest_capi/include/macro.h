@@ -8,7 +8,7 @@
 //
 // Parameters: 1. A function name
 //             2. The return type of the function. This must be one of the variant names in hl_ReturnType
-//                  Note: This macro does not work for functions that return VecBytes. Instead,
+//                  Note: This macro does not work for functions that return VecBytes or ByteChunks. Instead,
 //                  use `hl_register_function_definition` directly. You'll also need to return
 //                  a flatbuffer-encoded hl_Vec* using the various hl_flatbuffer_result_from_* functions.
 //                  See c_simpleguest/main.c for an example.
