@@ -14,12 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::component::{Negative, Positive};
 use hyperlight_common::resource::BorrowedResourceGuard;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::wit_guest_as_pathbuf;
+use hyperlight_testing::{
+    c_simple_guest_as_pathbuf, simple_guest_as_pathbuf, wit_guest_as_pathbuf,
+};
 
 extern crate alloc;
 mod bindings {
@@ -286,19 +289,176 @@ impl test::wit::TestImports<Negative> for Host {
 }
 
 fn sb() -> TestSandbox<Host, MultiUseSandbox> {
-    let path = wit_guest_as_pathbuf();
+    sb_from_guest(wit_guest_as_pathbuf())
+}
+
+fn sb_from_guest(path: PathBuf) -> TestSandbox<Host, MultiUseSandbox> {
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None).unwrap();
     test::wit::Test::instantiate(uninit, Host {}).unwrap()
 }
 
 mod wit_test {
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+    use hyperlight_host::HyperlightError;
     use proptest::prelude::*;
 
     use crate::bindings::test::wit::{
         Failable, Roundtrip, TestExports, TestHostResource, roundtrip,
     };
-    use crate::sb;
+    use crate::{
+        GuestBinary, UninitializedSandbox, c_simple_guest_as_pathbuf, sb, sb_from_guest,
+        simple_guest_as_pathbuf,
+    };
+
+    #[test]
+    fn restore_wit_snapshot_replaces_rust_and_c_guests() {
+        let mut source = sb();
+        assert_eq!(
+            source
+                .roundtrip()
+                .roundtrip_string("before snapshot".to_string())
+                .unwrap(),
+            "before snapshot"
+        );
+        let snapshot = source.sb.snapshot().unwrap();
+
+        let mut rust_target = sb_from_guest(simple_guest_as_pathbuf());
+        assert_eq!(
+            rust_target.sb.call::<i32>("AddToStatic", 17i32).unwrap(),
+            17
+        );
+        rust_target.sb.restore(snapshot.clone()).unwrap();
+        assert_eq!(
+            rust_target
+                .roundtrip()
+                .roundtrip_string("restored over Rust".to_string())
+                .unwrap(),
+            "restored over Rust"
+        );
+        assert!(matches!(
+            rust_target.sb.call::<i32>("GetStatic", ()),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "GetStatic"
+        ));
+
+        let mut c_target = sb_from_guest(c_simple_guest_as_pathbuf());
+        assert_eq!(
+            c_target.sb.call::<i32>("StackAllocate", 256i32).unwrap(),
+            256
+        );
+        c_target.sb.restore(snapshot).unwrap();
+        assert_eq!(
+            c_target
+                .roundtrip()
+                .roundtrip_string("restored over C".to_string())
+                .unwrap(),
+            "restored over C"
+        );
+        assert!(matches!(
+            c_target.sb.call::<i32>("StackAllocate", 512i32),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "StackAllocate"
+        ));
+    }
+
+    #[test]
+    fn restore_rust_and_c_snapshots_replace_wit_guest() {
+        let mut rust_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(rust_source.call::<i32>("AddToStatic", 42i32).unwrap(), 42);
+        let rust_snapshot = rust_source.snapshot().unwrap();
+
+        let mut rust_target = sb();
+        assert_eq!(
+            rust_target
+                .roundtrip()
+                .roundtrip_string("WIT before Rust".to_string())
+                .unwrap(),
+            "WIT before Rust"
+        );
+        rust_target.sb.restore(rust_snapshot).unwrap();
+        assert_eq!(rust_target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+
+        let mut c_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(c_simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(c_source.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
+        let c_snapshot = c_source.snapshot().unwrap();
+
+        let mut c_target = sb();
+        assert_eq!(
+            c_target
+                .roundtrip()
+                .roundtrip_string("WIT before C".to_string())
+                .unwrap(),
+            "WIT before C"
+        );
+        c_target.sb.restore(c_snapshot).unwrap();
+        assert_eq!(
+            c_target.sb.call::<i32>("StackAllocate", 512i32).unwrap(),
+            512
+        );
+    }
+
+    #[test]
+    fn restore_chain_replaces_each_guest() {
+        let mut rust_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(rust_source.call::<i32>("AddToStatic", 42i32).unwrap(), 42);
+        let rust_snapshot = rust_source.snapshot().unwrap();
+
+        let mut wit_source = sb();
+        assert_eq!(
+            wit_source
+                .roundtrip()
+                .roundtrip_string("WIT source".to_string())
+                .unwrap(),
+            "WIT source"
+        );
+        let wit_snapshot = wit_source.sb.snapshot().unwrap();
+
+        let mut target = sb_from_guest(c_simple_guest_as_pathbuf());
+        assert_eq!(target.sb.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
+
+        target.sb.restore(rust_snapshot).unwrap();
+        assert_eq!(target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+        assert!(matches!(
+            target.sb.call::<i32>("StackAllocate", 512i32),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "StackAllocate"
+        ));
+
+        target.sb.restore(wit_snapshot).unwrap();
+        assert_eq!(
+            target
+                .roundtrip()
+                .roundtrip_string("WIT restored".to_string())
+                .unwrap(),
+            "WIT restored"
+        );
+        assert!(matches!(
+            target.sb.call::<i32>("GetStatic", ()),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "GetStatic"
+        ));
+    }
 
     prop_compose! {
         fn arb_testrecord()(contents in ".*", length in any::<u64>()) -> roundtrip::Testrecord {
