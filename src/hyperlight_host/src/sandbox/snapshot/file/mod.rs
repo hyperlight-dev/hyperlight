@@ -167,10 +167,26 @@ fn load_manifest(
         .map_err(|e| crate::new_error!("failed to read index.json: {}", e))?;
     let index: ImageIndex = serde_json::from_slice(&index_bytes)
         .map_err(|e| crate::new_error!("failed to parse index.json: {}", e))?;
+    if index.schema_version() != SCHEMA_VERSION {
+        return Err(crate::new_error!(
+            "unsupported OCI index schemaVersion {} (expected {})",
+            index.schema_version(),
+            SCHEMA_VERSION
+        ));
+    }
+    if let Some(media_type) = index.media_type()
+        && !matches!(media_type, MediaType::ImageIndex)
+    {
+        return Err(crate::new_error!(
+            "OCI index has unexpected media type {} (expected {})",
+            media_type.to_string(),
+            MediaType::ImageIndex.to_string()
+        ));
+    }
     let manifest_desc = select_manifest(&index, reference, path)?;
     if !matches!(manifest_desc.media_type(), MediaType::ImageManifest) {
         return Err(crate::new_error!(
-            "manifest descriptor for {} has unexpected media type {:?} (expected {:?})",
+            "manifest descriptor for {} has unexpected media type {} (expected {})",
             reference,
             manifest_desc.media_type().to_string(),
             MediaType::ImageManifest.to_string()
@@ -196,6 +212,15 @@ fn load_manifest(
             "unsupported OCI manifest schemaVersion {} (expected {})",
             manifest.schema_version(),
             SCHEMA_VERSION
+        ));
+    }
+    if let Some(media_type) = manifest.media_type()
+        && !matches!(media_type, MediaType::ImageManifest)
+    {
+        return Err(crate::new_error!(
+            "OCI manifest has unexpected media type {} (expected {})",
+            media_type.to_string(),
+            MediaType::ImageManifest.to_string()
         ));
     }
     Ok(manifest)

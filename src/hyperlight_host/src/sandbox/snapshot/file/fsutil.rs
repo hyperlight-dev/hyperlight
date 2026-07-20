@@ -115,7 +115,7 @@ pub(super) fn open_no_follow(path: &Path) -> crate::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
     };
     #[cfg(not(unix))]
@@ -123,13 +123,21 @@ pub(super) fn open_no_follow(path: &Path) -> crate::Result<std::fs::File> {
         reject_symlink(path)?;
         std::fs::File::open(path)
     };
-    opened.map_err(|e| {
+    let file = opened.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             crate::new_error!("blob file {:?} not found", path)
         } else {
             crate::new_error!("failed to open {:?}: {}", path, e)
         }
-    })
+    })?;
+    let file_type = file
+        .metadata()
+        .map_err(|e| crate::new_error!("failed to stat {:?}: {}", path, e))?
+        .file_type();
+    if !file_type.is_file() {
+        return Err(crate::new_error!("{:?} is not a regular file", path));
+    }
+    Ok(file)
 }
 
 /// Read a file in full, refusing if the file is bigger than `max_size`.
@@ -154,4 +162,32 @@ pub(super) fn read_bounded(path: &Path, max_size: u64) -> crate::Result<Vec<u8>>
         ));
     }
     Ok(buf)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    use super::*;
+
+    #[test]
+    fn open_no_follow_rejects_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fifo");
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is a valid NUL-terminated path and mode has valid permission bits.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let _guard = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .unwrap();
+
+        let err = open_no_follow(&path).unwrap_err();
+        assert!(format!("{err}").contains("regular file"));
+    }
 }

@@ -25,6 +25,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::func::Registerable;
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 
@@ -930,6 +931,36 @@ fn snapshot_layout_pt_size_unaligned_rejected() {
 }
 
 #[test]
+fn snapshot_layout_missing_pt_size_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        let memory_size = cfg["memory_size"].as_u64().unwrap();
+        cfg["layout"]["snapshot_size"] = Value::from(memory_size);
+        cfg["layout"]["pt_size"] = Value::Null;
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "pt_size");
+}
+
+#[test]
+fn snapshot_layout_zero_pt_size_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        let memory_size = cfg["memory_size"].as_u64().unwrap();
+        cfg["layout"]["snapshot_size"] = Value::from(memory_size);
+        cfg["layout"]["pt_size"] = Value::from(0u64);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "pt_size");
+}
+
+#[test]
 fn missing_snapshot_blob_rejected() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
@@ -1471,6 +1502,63 @@ fn malformed_index_json_rejected() {
 }
 
 #[test]
+fn wrong_index_schema_version_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_index(&path, |idx| {
+        idx["schemaVersion"] = Value::from(99u32);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "schemaVersion");
+}
+
+#[test]
+fn wrong_index_media_type_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_index(&path, |idx| {
+        idx["mediaType"] = Value::from("application/vnd.oci.image.manifest.v1+json");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "media type");
+}
+
+#[test]
+fn missing_index_media_type_accepted() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_index(&path, |idx| {
+        idx.as_object_mut().unwrap().remove("mediaType");
+    });
+    Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+}
+
+#[test]
+fn wrong_manifest_media_type_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |manifest| {
+        manifest["mediaType"] = Value::from("application/vnd.oci.image.index.v1+json");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "media type");
+}
+
+#[test]
+fn missing_manifest_media_type_accepted() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |manifest| {
+        manifest.as_object_mut().unwrap().remove("mediaType");
+    });
+    Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+}
+
+#[test]
 fn empty_index_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_index(&path, |idx| {
@@ -1785,6 +1873,38 @@ fn original_entrypoint_addr_zero_accepted() {
         cfg["original_entrypoint_addr"] = Value::from(0u64);
     });
     Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+}
+
+#[test]
+fn entrypoint_addr_outside_code_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        let code_size = cfg["layout"]["code_size"].as_u64().unwrap();
+        let page_size = hyperlight_common::vmem::PAGE_SIZE as u64;
+        let peb_addr =
+            SandboxMemoryLayout::BASE_ADDRESS as u64 + code_size.next_multiple_of(page_size);
+        cfg["entrypoint_addr"] = Value::from(peb_addr);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "entrypoint addr");
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn unaligned_entrypoint_addr_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        let entrypoint = cfg["entrypoint_addr"].as_u64().unwrap();
+        cfg["entrypoint_addr"] = Value::from(entrypoint + 1);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "entrypoint addr");
 }
 
 // `load`: skips blob digest verification, runs every
@@ -2347,6 +2467,20 @@ fn stack_top_gva_out_of_range_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
         cfg["stack_top_gva"] = Value::from(u64::MAX);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "stack_top_gva");
+}
+
+#[test]
+fn stack_top_gva_misaligned_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        let stack_top = cfg["stack_top_gva"].as_u64().unwrap();
+        cfg["stack_top_gva"] = Value::from(stack_top - 1);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
