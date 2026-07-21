@@ -426,7 +426,13 @@ impl OciSnapshotConfig {
                 self.layout.snapshot_size
             ));
         }
-        let pt = self.layout.pt_size.unwrap_or(0);
+        let pt = self
+            .layout
+            .pt_size
+            .ok_or_else(|| crate::new_error!("snapshot pt_size is missing"))?;
+        if pt == 0 {
+            return Err(crate::new_error!("snapshot pt_size must be nonzero"));
+        }
         if !pt.is_multiple_of(PAGE_SIZE) {
             return Err(crate::new_error!(
                 "snapshot pt_size ({}) is not a multiple of PAGE_SIZE",
@@ -464,14 +470,37 @@ impl OciSnapshotConfig {
             }
         }
 
-        // Entrypoint address must point inside the guest snapshot
-        // region `[BASE_ADDRESS, BASE_ADDRESS + snapshot_size)`. The
-        // address is a GVA, bounded by the same range because guests
-        // identity-map the snapshot region at low VAs. A guest
-        // dispatching from a non-identity-mapped VA must relax this
-        // check.
-        let snap_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
-        let snap_hi = snap_lo
+        // The saved dispatch entrypoint must be in the executable code
+        // region. Code occupies the page-rounded prefix of the snapshot.
+        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let code_hi = code_lo
+            .checked_add(self.layout.code_size.next_multiple_of(PAGE_SIZE) as u64)
+            .ok_or_else(|| {
+                crate::new_error!(
+                    "snapshot layout overflow: BASE_ADDRESS + code_size ({}) does not fit in u64",
+                    self.layout.code_size
+                )
+            })?;
+        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                self.entrypoint_addr,
+                code_lo,
+                code_hi
+            ));
+        }
+        #[cfg(target_arch = "aarch64")]
+        if !self.entrypoint_addr.is_multiple_of(4) {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
+                self.entrypoint_addr
+            ));
+        }
+
+        // ELF entry point GVA for `AT_ENTRY` in core dumps. 0 means
+        // unknown. Any other value must point inside the snapshot
+        // region, like `entrypoint_addr`.
+        let snapshot_hi = code_lo
             .checked_add(self.layout.snapshot_size as u64)
             .ok_or_else(|| {
                 crate::new_error!(
@@ -479,39 +508,32 @@ impl OciSnapshotConfig {
                     self.layout.snapshot_size
                 )
             })?;
-        if self.entrypoint_addr < snap_lo || self.entrypoint_addr >= snap_hi {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
-                self.entrypoint_addr,
-                snap_lo,
-                snap_hi
-            ));
-        }
-
-        // ELF entry point GVA for `AT_ENTRY` in core dumps. 0 means
-        // unknown. Any other value must point inside the snapshot
-        // region, like `entrypoint_addr`.
         if self.original_entrypoint_addr != 0
-            && (self.original_entrypoint_addr < snap_lo || self.original_entrypoint_addr >= snap_hi)
+            && (self.original_entrypoint_addr < code_lo
+                || self.original_entrypoint_addr >= snapshot_hi)
         {
             return Err(crate::new_error!(
                 "snapshot original entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
                 self.original_entrypoint_addr,
-                snap_lo,
-                snap_hi
+                code_lo,
+                snapshot_hi
             ));
         }
 
-        // `stack_top_gva` is restored into the guest stack pointer.
-        // Bound it to the architecture's addressable GVA range so a
-        // malformed config cannot install an out-of-range stack
-        // pointer. The range is `(0, MAX_GVA]`.
+        // `stack_top_gva` is restored directly into the guest stack
+        // pointer. It must be aligned and in the guest address range.
         let max_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64;
         if self.stack_top_gva == 0 || self.stack_top_gva > max_gva {
             return Err(crate::new_error!(
                 "snapshot stack_top_gva {:#x} is outside the valid range (0, {:#x}]",
                 self.stack_top_gva,
                 max_gva
+            ));
+        }
+        if !self.stack_top_gva.is_multiple_of(16) {
+            return Err(crate::new_error!(
+                "snapshot stack_top_gva {:#x} is not 16-byte aligned",
+                self.stack_top_gva
             ));
         }
         Ok(())

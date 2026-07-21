@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 * Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
+* Reject malformed OCI snapshot metadata and non-regular artifact files during load.
 
 ## [v0.16.0] - 2026-06-26
 
