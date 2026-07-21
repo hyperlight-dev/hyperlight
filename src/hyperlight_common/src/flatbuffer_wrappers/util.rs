@@ -321,6 +321,13 @@ pub(crate) fn byte_chunks_len(value: &[Bytes]) -> usize {
     value.iter().map(Bytes::len).sum()
 }
 
+/// Return the complete logical length, or `None` if the sum overflows.
+pub(crate) fn try_byte_chunks_len(value: &[Bytes]) -> Option<usize> {
+    value
+        .iter()
+        .try_fold(0usize, |length, chunk| length.checked_add(chunk.len()))
+}
+
 /// Materialize byte chunks as contiguous [`Bytes`].
 ///
 /// This is O(1) for zero or one chunk and copies once for multiple chunks.
