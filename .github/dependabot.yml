@@ -7,6 +7,8 @@ updates:
       time: "03:00"
     labels:
       - "kind/dependencies"
+    cooldown:
+      default-days: 7
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -15,6 +17,8 @@ updates:
     labels:
       - "kind/dependencies"
     open-pull-requests-limit: 20
+    cooldown:
+      default-days: 7
   - package-ecosystem: "cargo"
     directory: "/src/tests/rust_guests"
     schedule:
@@ -24,3 +28,5 @@ updates:
       - "kind/dependencies"
       - "area/guest"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
