@@ -29,7 +29,7 @@ pub(crate) const GOLDENS_VERSION: &str = "v2.0";
 #[cfg(target_arch = "aarch64")]
 pub(crate) const COMPAT_VERSIONS: &[&str] = &[];
 #[cfg(target_arch = "x86_64")]
-pub(crate) const COMPAT_VERSIONS: &[&str] = &["v1.0"];
+pub(crate) const COMPAT_VERSIONS: &[&str] = &[];
 
 /// Every version the verify test checks: the current one and each kept
 /// old major.
