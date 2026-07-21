@@ -1039,6 +1039,10 @@ impl<M: MemOps> RingConsumer<M> {
         let head_desc = Descriptor::read_body(&self.mem, head_addr, flags)
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, head_addr))?;
 
+        if flags.contains(DescFlags::INDIRECT) {
+            return Err(RingError::BadChain);
+        }
+
         // Build chain (head + tails), tracking readable/writable split inline.
         let mut elements = SmallVec::<[BufferElement; 16]>::new();
         let mut pos = self.avail_cursor;
@@ -1066,6 +1070,10 @@ impl<M: MemOps> RingConsumer<M> {
                 .mem
                 .read_val(addr)
                 .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
+            if desc.flags().contains(DescFlags::INDIRECT) {
+                return Err(RingError::BadChain);
+            }
+
             let elem = BufferElement::from(&desc);
 
             if elem.writable {
@@ -1359,6 +1367,10 @@ fn should_notify(evt: EventSuppression, ring_len: u16, old: RingCursor, new: Rin
         EventFlags::ENABLE => true,
         EventFlags::DESC => {
             let mut off = evt.desc_event_off();
+            if off >= ring_len {
+                return false;
+            }
+
             let wrap = evt.desc_event_wrap();
 
             if wrap != new.wrap() {
@@ -3418,6 +3430,795 @@ pub(crate) mod tests {
         let desc = Descriptor::read_body(reader.mem(), addr, flags).unwrap();
         assert!(desc.is_used(true));
         assert!(!desc.is_avail(true));
+    }
+}
+
+// Adopted from https://github.com/weltling/virtio-villain/tree/main/tests/packed
+#[cfg(test)]
+mod virtio_villain {
+    use super::tests::{OwnedRing, make_consumer, make_producer, make_ring};
+    use super::*;
+
+    fn raw_desc(id: u16, len: u32, flags: DescFlags) -> Descriptor {
+        Descriptor::new(0x1000 + u64::from(id) * 0x10, len, id, flags)
+    }
+
+    fn avail_desc(id: u16, len: u32, flags: DescFlags) -> Descriptor {
+        let mut desc = raw_desc(id, len, flags);
+        desc.mark_avail(true);
+        desc
+    }
+
+    fn write_avail(ring: &OwnedRing, idx: u16, id: u16, flags: DescFlags) {
+        write_avail_len(ring, idx, id, 16, flags);
+    }
+
+    fn write_avail_len(ring: &OwnedRing, idx: u16, id: u16, len: u32, flags: DescFlags) {
+        ring.write_desc(idx, avail_desc(id, len, flags));
+    }
+
+    fn write_driver_event(ring: &OwnedRing, off_wrap: u16, flags: u16) {
+        write_event(ring, ring.layout().drv_evt_addr(), off_wrap, flags);
+    }
+
+    fn write_device_event(ring: &OwnedRing, off_wrap: u16, flags: u16) {
+        write_event(ring, ring.layout().dev_evt_addr(), off_wrap, flags);
+    }
+
+    fn write_event(ring: &OwnedRing, addr: u64, off_wrap: u16, flags: u16) {
+        ring.mem()
+            .write(
+                addr,
+                &[
+                    (off_wrap & 0xff) as u8,
+                    (off_wrap >> 8) as u8,
+                    (flags & 0xff) as u8,
+                    (flags >> 8) as u8,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn p0003_chain_with_next_past_ring_is_rejected() {
+        let ring = make_ring(4);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..ring.len() as u16 {
+            write_avail(&ring, idx, 0, DescFlags::NEXT);
+        }
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0005_indirect_without_feature_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0006_indirect_with_bad_flags_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT | DescFlags::WRITE);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0007_indirect_tail_in_mixed_chain_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::NEXT);
+        write_avail(&ring, 1, 0, DescFlags::INDIRECT | DescFlags::WRITE);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0008_long_chain_is_consumable_at_ring_layer() {
+        let ring = make_ring(16);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..12u16 {
+            let flags = if idx == 11 {
+                DescFlags::WRITE
+            } else {
+                DescFlags::NEXT | DescFlags::WRITE
+            };
+            write_avail(&ring, idx, 0, flags);
+        }
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.len(), 12);
+    }
+
+    #[test]
+    fn p0009_unaligned_descriptor_address_is_preserved() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = Descriptor::new(0x1003, 16, 0, DescFlags::empty());
+        desc.mark_avail(true);
+        ring.write_desc(0, desc);
+
+        let (_, chain) = consumer.poll_available().unwrap();
+        assert_eq!(chain.elems()[0].addr, 0x1003);
+    }
+
+    #[test]
+    fn p0010_writable_before_readable_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::NEXT);
+        write_avail(&ring, 1, 0, DescFlags::NEXT | DescFlags::WRITE);
+        write_avail(&ring, 2, 0, DescFlags::NEXT);
+        write_avail(&ring, 3, 0, DescFlags::WRITE);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0011_stale_wrap_descriptor_is_ignored() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = raw_desc(0, 16, DescFlags::empty());
+        desc.mark_avail(false);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0012_multidescriptor_oob_id_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+        let bad_id = ring.len() as u16;
+
+        write_avail(&ring, 0, bad_id, DescFlags::NEXT);
+        write_avail(&ring, 1, bad_id, DescFlags::WRITE);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn p0013_duplicate_inflight_buffer_id_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::NEXT);
+        write_avail(&ring, 1, 0, DescFlags::WRITE);
+        write_avail(&ring, 2, 0, DescFlags::NEXT);
+        write_avail(&ring, 3, 0, DescFlags::WRITE);
+
+        let (first_id, first_chain) = consumer.poll_available().unwrap();
+        assert_eq!(first_id, 0);
+        assert_eq!(first_chain.len(), 2);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn p0014_reserved_driver_event_flags_do_not_block_processing() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 0, 3);
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.len(), 1);
+    }
+
+    #[test]
+    fn p0015_wrap_at_zero_is_consumed_correctly() {
+        let ring = make_ring(2);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        producer.submit_one(0x1000, 16, false).unwrap();
+        producer.submit_one(0x2000, 16, false).unwrap();
+
+        assert_eq!(producer.avail_cursor().head(), 0);
+        assert!(!producer.avail_cursor().wrap());
+
+        assert_eq!(consumer.poll_available().unwrap().1.elems()[0].addr, 0x1000);
+        assert_eq!(consumer.poll_available().unwrap().1.elems()[0].addr, 0x2000);
+        assert_eq!(consumer.avail_cursor().head(), 0);
+        assert!(!consumer.avail_cursor().wrap());
+    }
+
+    #[test]
+    fn p0016_queue_size_one_next_chain_is_rejected() {
+        let ring = make_ring(1);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::NEXT);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0017_stale_driver_event_wrap_suppresses_notification() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 0, EventFlags::DESC.bits());
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(!consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0018_pre_used_descriptor_is_ignored() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = raw_desc(0, 16, DescFlags::empty());
+        desc.mark_used(true);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0019_driver_event_wrap_mismatch_suppresses_notification() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 1, EventFlags::DESC.bits());
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(!consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0020_ring_full_reports_backpressure() {
+        let ring = make_ring(4);
+        let mut producer = make_producer(&ring);
+
+        for idx in 0..4 {
+            producer.submit_one(0x1000 + idx * 0x10, 16, false).unwrap();
+        }
+
+        assert!(matches!(
+            producer.submit_one(0x2000, 16, false),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0022_indirect_reused_id_is_rejected_before_id_reuse() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT);
+        write_avail(&ring, 1, 0, DescFlags::empty());
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0023_desc_event_mode_suppresses_before_later_slot() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 0x8001, EventFlags::DESC.bits());
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(!consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0024_single_slot_indirect_is_rejected() {
+        let ring = make_ring(1);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0025_used_completions_can_arrive_out_of_order() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        let id0 = producer.submit_one(0x1000, 16, true).unwrap();
+        let id1 = producer.submit_one(0x2000, 16, true).unwrap();
+        let id2 = producer.submit_one(0x3000, 16, true).unwrap();
+
+        let (dev0, _) = consumer.poll_available().unwrap();
+        let (dev1, _) = consumer.poll_available().unwrap();
+        let (dev2, _) = consumer.poll_available().unwrap();
+
+        consumer.submit_used(dev2, 32).unwrap();
+        consumer.submit_used(dev0, 16).unwrap();
+        consumer.submit_used(dev1, 24).unwrap();
+
+        assert_eq!(producer.poll_used().unwrap().id, id2);
+        assert_eq!(producer.poll_used().unwrap().id, id0);
+        assert_eq!(producer.poll_used().unwrap().id, id1);
+    }
+
+    #[test]
+    fn p0026_all_descriptor_flags_set_is_not_available() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        ring.write_desc(0, raw_desc(0, 16, DescFlags::from_bits_truncate(u16::MAX)));
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0028_multi_wrap_round_trip_remains_ordered() {
+        let ring = make_ring(2);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..8u64 {
+            let id = producer.submit_one(0x1000 + idx * 0x10, 16, false).unwrap();
+            let (dev_id, _) = consumer.poll_available().unwrap();
+            assert_eq!(dev_id, id);
+            consumer.submit_used(dev_id, idx as u32).unwrap();
+            assert_eq!(producer.poll_used().unwrap().id, id);
+        }
+    }
+
+    #[test]
+    fn p0029_desc_event_idx_zero_notifies() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 0x8000, EventFlags::DESC.bits());
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0031_reserved_driver_event_flags_suppress_notification() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, 0, 3);
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(!consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0032_unaligned_indirect_descriptor_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = Descriptor::new(0x1003, 16, 0, DescFlags::INDIRECT);
+        desc.mark_avail(true);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0033_scatter_gather_chain_is_preserved() {
+        let ring = make_ring(16);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..8u16 {
+            let flags = if idx == 7 {
+                DescFlags::WRITE
+            } else {
+                DescFlags::NEXT
+            };
+            write_avail(&ring, idx, 0, flags);
+        }
+
+        let (_, chain) = consumer.poll_available().unwrap();
+        assert_eq!(chain.len(), 8);
+        assert_eq!(chain.readables().len(), 7);
+        assert_eq!(chain.writables().len(), 1);
+    }
+
+    #[test]
+    fn p0034_page_boundary_indirect_descriptor_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = Descriptor::new(0x1ff0, 16, 0, DescFlags::INDIRECT);
+        desc.mark_avail(true);
+        ring.write_desc(0, desc);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0035_both_avail_and_used_clear_is_ignored() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        ring.write_desc(0, raw_desc(0, 16, DescFlags::empty()));
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0037_event_flags_can_cycle_between_batches() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        for (idx, (flags, expect_notify)) in [
+            (EventFlags::ENABLE.bits(), true),
+            (EventFlags::DISABLE.bits(), false),
+            (EventFlags::ENABLE.bits(), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_driver_event(&ring, 0, flags);
+            write_avail(&ring, idx as u16, idx as u16, DescFlags::empty());
+            let (id, _) = consumer.poll_available().unwrap();
+            assert_eq!(
+                consumer.submit_used_with_notify(id, 0).unwrap(),
+                expect_notify
+            );
+        }
+    }
+
+    #[test]
+    fn p0038_many_wraps_on_minimum_queue_size() {
+        let ring = make_ring(1);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..8u64 {
+            let id = producer.submit_one(0x1000 + idx * 0x10, 16, false).unwrap();
+            let (dev_id, _) = consumer.poll_available().unwrap();
+            assert_eq!(dev_id, id);
+            consumer.submit_used(dev_id, 0).unwrap();
+            assert_eq!(producer.poll_used().unwrap().id, id);
+        }
+    }
+
+    #[test]
+    fn p0039_reserved_device_event_flags_suppress_avail_notification() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+
+        write_device_event(&ring, 0, 3);
+
+        assert!(
+            !producer
+                .submit_one_with_notify(0x1000, 16, false)
+                .unwrap()
+                .notify
+        );
+    }
+
+    #[test]
+    fn p0040_indirect_with_next_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT | DescFlags::NEXT);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0041_driver_event_offset_at_queue_size_suppresses_notification() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_driver_event(&ring, ring.len() as u16, EventFlags::DESC.bits());
+        write_avail(&ring, 0, 0, DescFlags::empty());
+
+        let (id, _) = consumer.poll_available().unwrap();
+
+        assert!(!consumer.submit_used_with_notify(id, 0).unwrap());
+    }
+
+    #[test]
+    fn p0042_empty_ring_has_no_available_work() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0043_id_equal_to_queue_size_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, ring.len() as u16, DescFlags::empty());
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn p0044_avail_and_used_set_is_not_available() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        ring.write_desc(0, raw_desc(0, 16, DescFlags::AVAIL | DescFlags::USED));
+
+        assert!(!consumer.peek_available().unwrap());
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0045_zero_length_descriptor_is_consumable() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail_len(&ring, 0, 0, 0, DescFlags::WRITE);
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.writables()[0].len, 0);
+    }
+
+    #[test]
+    fn p0046_max_length_descriptor_is_consumable_at_ring_layer() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail_len(&ring, 0, 0, u32::MAX, DescFlags::WRITE);
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.writables()[0].len, u32::MAX);
+    }
+
+    #[test]
+    fn p0047_zero_descriptor_address_is_preserved_at_ring_layer() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        let mut desc = Descriptor::new(0, 16, 0, DescFlags::WRITE);
+        desc.mark_avail(true);
+        ring.write_desc(0, desc);
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.writables()[0].addr, 0);
+    }
+
+    #[test]
+    fn p0049_indirect_entry_with_phase_bits_is_rejected() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        ring.write_desc(
+            0,
+            raw_desc(
+                0,
+                16,
+                DescFlags::INDIRECT | DescFlags::AVAIL | DescFlags::USED,
+            ),
+        );
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0050_nested_indirect_is_rejected_at_head() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::INDIRECT);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::BadChain)
+        ));
+    }
+
+    #[test]
+    fn p0051_write_flag_controls_readable_writable_split() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::NEXT);
+        write_avail(&ring, 1, 0, DescFlags::WRITE);
+
+        let (_, chain) = consumer.poll_available().unwrap();
+        assert_eq!(chain.readables().len(), 1);
+        assert_eq!(chain.writables().len(), 1);
+    }
+
+    #[test]
+    fn p0052_batch_completion_signals_each_chain_head() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        let id0 = producer.submit_one(0x1000, 16, true).unwrap();
+        let id1 = producer.submit_one(0x2000, 16, true).unwrap();
+
+        let (dev0, _) = consumer.poll_available().unwrap();
+        let (dev1, _) = consumer.poll_available().unwrap();
+        consumer.submit_used(dev0, 16).unwrap();
+        consumer.submit_used(dev1, 32).unwrap();
+
+        assert_eq!(producer.poll_used().unwrap().id, id0);
+        assert_eq!(producer.poll_used().unwrap().id, id1);
+    }
+
+    #[test]
+    fn p0053_descriptor_without_avail_bit_is_ignored() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        ring.write_desc(0, raw_desc(0, 16, DescFlags::WRITE));
+
+        assert!(!consumer.peek_available().unwrap());
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn p0054_event_suppression_struct_layout_matches_packed_ring() {
+        assert_eq!(EventSuppression::SIZE, 4);
+        assert_eq!(EventSuppression::WRAP_OFFSET, 0);
+        assert_eq!(EventSuppression::FLAGS_OFFSET, 2);
+    }
+
+    #[test]
+    fn p0055_descriptor_after_chain_tail_is_ignored() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        write_avail(&ring, 0, 0, DescFlags::empty());
+        write_avail(&ring, 1, 1, DescFlags::WRITE);
+
+        let (id, chain) = consumer.poll_available().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(chain.len(), 1);
+    }
+
+    #[test]
+    fn p0056_next_chain_order_is_preserved() {
+        let ring = make_ring(8);
+        let mut consumer = make_consumer(&ring);
+
+        for idx in 0..3u16 {
+            let mut desc = Descriptor::new(
+                0x1000 + u64::from(idx) * 0x100,
+                16,
+                0,
+                if idx == 2 {
+                    DescFlags::WRITE
+                } else {
+                    DescFlags::NEXT
+                },
+            );
+            desc.mark_avail(true);
+            ring.write_desc(idx, desc);
+        }
+
+        let (_, chain) = consumer.poll_available().unwrap();
+        assert_eq!(chain.elems()[0].addr, 0x1000);
+        assert_eq!(chain.elems()[1].addr, 0x1100);
+        assert_eq!(chain.elems()[2].addr, 0x1200);
+    }
+
+    #[test]
+    fn p0057_device_event_enable_requests_avail_notification() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+
+        write_device_event(&ring, 0, EventFlags::ENABLE.bits());
+
+        assert!(
+            producer
+                .submit_one_with_notify(0x1000, 16, false)
+                .unwrap()
+                .notify
+        );
+    }
+
+    #[test]
+    fn p0058_used_descriptor_carries_id_and_len() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        let id = producer.submit_one(0x1000, 16, true).unwrap();
+        let (dev_id, _) = consumer.poll_available().unwrap();
+        consumer.submit_used(dev_id, 42).unwrap();
+
+        let used = producer.poll_used().unwrap();
+        assert_eq!(used.id, id);
+        assert_eq!(used.len, 42);
     }
 }
 

@@ -29,7 +29,7 @@ bitflags! {
     /// Descriptor flags as defined by VIRTIO specification.
     ///
     /// Note: The implementation never follows the indirect-table interpretation,
-    /// so INDIRECT bit is effectively ignored.
+    /// so descriptors carrying INDIRECT are rejected as malformed.
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct DescFlags: u16 {
