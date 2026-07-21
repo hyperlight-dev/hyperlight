@@ -174,6 +174,34 @@ impl Segments {
         self.0.iter()
     }
 
+    /// Split off an owned byte prefix without copying payload data.
+    ///
+    /// Returns `None` and leaves `self` unchanged when `len` exceeds the
+    /// remaining payload length. A split within a segment creates shared
+    /// [`Bytes`] slices backed by the same owner.
+    pub fn split_to(&mut self, len: usize) -> Option<Self> {
+        if len > self.len() {
+            return None;
+        }
+
+        let mut prefix = SmallVec::<[Bytes; 4]>::new();
+        let mut remaining = len;
+
+        while remaining != 0 {
+            let mut segment = self.0.remove(0);
+            if segment.len() <= remaining {
+                remaining -= segment.len();
+                prefix.push(segment);
+            } else {
+                prefix.push(segment.split_to(remaining));
+                self.0.insert(0, segment);
+                remaining = 0;
+            }
+        }
+
+        Some(Self(prefix))
+    }
+
     /// Borrow this payload as a [`Buf`] cursor.
     pub fn as_buf(&self) -> SegmentsBuf<'_> {
         SegmentsBuf::new(&self.0, self.len())
@@ -457,6 +485,32 @@ mod tests {
         assert_eq!(prefix.as_ref(), b"hello ");
         assert_eq!(cursor.remaining(), 5);
         assert_eq!(cursor.chunk(), b"world");
+    }
+
+    #[test]
+    fn segments_split_to_shares_boundary_segment() {
+        let boundary = Bytes::from(vec![b'd', b'e', b'f']);
+        let boundary_ptr = boundary.as_ptr();
+        let mut segments = Segments::new([
+            Bytes::from_static(b"abc"),
+            boundary,
+            Bytes::from_static(b"ghi"),
+        ]);
+
+        let prefix = segments.split_to(5).unwrap();
+
+        assert_eq!(prefix.segment_count(), 2);
+        assert_eq!(prefix.to_bytes().as_ref(), b"abcde");
+        assert_eq!(prefix.as_slice()[1].as_ptr(), boundary_ptr);
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.to_bytes().as_ref(), b"fghi");
+        assert_eq!(
+            segments.as_slice()[0].as_ptr(),
+            boundary_ptr.wrapping_add(2)
+        );
+
+        assert!(segments.split_to(5).is_none());
+        assert_eq!(segments.to_bytes().as_ref(), b"fghi");
     }
 
     #[test]
