@@ -66,7 +66,7 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       needs_publish: ${{ steps.decide.outputs.needs_publish }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install oras
         uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2.0.1
@@ -173,7 +173,7 @@ jobs:
                  github.run_attempt)
             || ', "kvm", "ubuntu-24.04"')) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
         with:
