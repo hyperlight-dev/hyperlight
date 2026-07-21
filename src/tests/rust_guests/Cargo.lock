@@ -255,7 +255,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 3.0.1",
 ]
 
 [[package]]
@@ -266,7 +266,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 3.0.1",
  "tracing",
  "wasmparser 0.253.0",
  "wit-component",
@@ -667,6 +667,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5edbec4ed188954a10c12c038215f8ce7606b2d5c973cd8dc43e8795065c5f2f"
 dependencies = [
  "proc-macro2",
+ "quote",
  "unicode-ident",
 ]
 

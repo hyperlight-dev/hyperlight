@@ -121,10 +121,10 @@ pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
 /// macroexpansion) to the debug file and then return the token stream
 pub fn emit_decls(decls: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     if let Ok(dbg_out) = std::env::var("HYPERLIGHT_COMPONENT_MACRO_DEBUG") {
-        if let Ok(file) = syn::parse2(decls.clone()) {
+        let decls = decls.to_string();
+        if let Ok(file) = syn::parse_file(&decls) {
             std::fs::write(&dbg_out, prettyplease::unparse(&file)).unwrap();
         } else {
-            let decls = format!("{}", &decls);
             std::fs::write(&dbg_out, &decls).unwrap();
         }
         quote::quote! { include!(#dbg_out); }

@@ -57,7 +57,7 @@ fn wasmtime_guest_codegen_emits_wasmtime_flags_macro() {
             })
         },
     );
-    let generated: syn::File = syn::parse2(generated).expect("generated Rust should parse");
+    let generated = syn::parse_file(&generated.to_string()).expect("generated Rust should parse");
     let generated = prettyplease::unparse(&generated);
 
     assert!(generated.contains("::wasmtime::component::flags! {"));
