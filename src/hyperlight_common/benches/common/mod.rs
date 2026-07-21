@@ -219,8 +219,8 @@ where
     let token = pair.producer.submit(chain).unwrap();
 
     let (recv, reply) = pair.consumer.poll(payload.len()).unwrap().unwrap();
-    black_box(recv.segments().segment_count());
-    pair.consumer.complete(reply).unwrap();
+    black_box(recv.len());
+    pair.consumer.complete(recv, reply).unwrap();
 
     let used = pair.producer.poll().unwrap().unwrap();
     debug_assert_eq!(used.token(), token);
@@ -245,13 +245,13 @@ where
     let token = pair.producer.submit(chain).unwrap();
 
     let (recv, reply) = pair.consumer.poll(request.len()).unwrap().unwrap();
-    black_box(recv.segments().segment_count());
+    black_box(recv.len());
     let ReplyChain::Writable(mut writable) = reply else {
         panic!("expected writable reply");
     };
 
     writable.write_all(response).unwrap();
-    pair.consumer.complete(writable).unwrap();
+    pair.consumer.complete(recv, writable).unwrap();
 
     let used = pair.producer.poll().unwrap().unwrap();
     debug_assert_eq!(used.token(), token);
