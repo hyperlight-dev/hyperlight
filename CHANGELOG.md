@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
 * Deprecate `MultiUseSandbox::poisoned` in favor of `MultiUseSandbox::status().is_poisoned()`.
 * `MultiUseSandbox::restore` has been made more flexible and now accepts snapshots from any guest binary or memory layout when host functions are compatible.
+* **Breaking:** `PtRootFinder` now uses `Arc` and requires `Sync`.
 
 Certain fixed guest addresses were changed on AArch64 to more easily
 accommodate 16k pages without wasting memory. Snapshots taken from
