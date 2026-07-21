@@ -20,7 +20,7 @@ wit-component = { version = "0.252.0" }
 wit-parser = { version = "0.252.0" }
 quote = { version = "1.0.45" }
 proc-macro2 = { version = "1.0.106" }
-syn = { version = "2.0.117" }
+syn = { version = "3.0.1" }
 itertools = { version = "0.15.0" }
-prettyplease = { version = "0.2.37" }
+prettyplease = { version = "0.3.0" }
 tracing = { version = "0.1.44", features = ["log"]}

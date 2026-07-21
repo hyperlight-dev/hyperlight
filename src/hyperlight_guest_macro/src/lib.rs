@@ -313,6 +313,7 @@ pub fn host_function(attr: TokenStream, item: TokenStream) -> TokenStream {
         vis,
         sig,
         semi_token: _,
+        modifiers: _,
     } = fn_declaration;
 
     // Obtain the name of the function being decorated.
