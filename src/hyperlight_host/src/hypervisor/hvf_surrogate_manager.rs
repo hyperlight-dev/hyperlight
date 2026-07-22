@@ -107,6 +107,7 @@ pub(crate) struct HvfSurrogateProcess {
 impl HvfSurrogateProcess {
     /// The control socket connected to the surrogate server (clone it with
     /// `try_clone` to share it across threads).
+    #[allow(clippy::expect_used)] // `inner` is only `None` after Drop has taken it
     pub(crate) fn socket(&self) -> &UnixStream {
         &self
             .inner
