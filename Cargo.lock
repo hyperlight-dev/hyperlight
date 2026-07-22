@@ -114,6 +114,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "applevisor-sys"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14ae37676989768c5b21414857b782a5e513d93129cda34854f5f78c423a63be"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1672,7 @@ name = "hyperlight-host"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "applevisor-sys",
  "bitflags 2.13.1",
  "blake3",
  "built",
@@ -1685,6 +1695,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-component-macro",
  "hyperlight-guest-tracing",
+ "hyperlight-hvf",
  "hyperlight-testing",
  "iced-x86",
  "kvm-bindings",
@@ -1730,6 +1741,18 @@ dependencies = [
  "windows-result",
  "windows-sys",
  "windows-version",
+]
+
+[[package]]
+name = "hyperlight-hvf"
+version = "0.16.0"
+dependencies = [
+ "applevisor-sys",
+ "hyperlight-common",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
