@@ -27,15 +27,15 @@ use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
 use bytemuck::Pod;
 use hyperlight_common::virtq::{
-    BufferPool, BufferProvider, Descriptor, Layout, MemOps, Notifier, QueueStats, RecyclePool,
-    ReplyChain, UsedChain, VirtqConsumer, VirtqProducer,
+    BufferProvider, Descriptor, Layout, MemOps, Notifier, QueueStats, ReplyChain, RunPool,
+    SlotLayout, SlotPool, UsedChain, VirtqConsumer, VirtqProducer,
 };
 
 pub const LOWER_SLOT: usize = 256;
 pub const UPPER_SLOT: usize = 4096;
 pub const POOL_SIZE: usize = 8 * 1024 * 1024;
 
-pub type RunBufferPool = BufferPool<LOWER_SLOT, UPPER_SLOT>;
+pub type BenchRunPool = RunPool<LOWER_SLOT, UPPER_SLOT>;
 
 #[derive(Clone)]
 struct BenchMem {
@@ -176,12 +176,12 @@ where
     BenchPair { producer, consumer }
 }
 
-pub fn run_buffer_pool(base: u64, size: usize) -> RunBufferPool {
-    BufferPool::new(base, size).unwrap()
+pub fn run_pool(base: u64, size: usize) -> BenchRunPool {
+    RunPool::new(base, size).unwrap()
 }
 
-pub fn fragmented_run_buffer_pool(base: u64, size: usize, payload_size: usize) -> RunBufferPool {
-    let pool = run_buffer_pool(base, size);
+pub fn fragmented_run_pool(base: u64, size: usize, payload_size: usize) -> BenchRunPool {
+    let pool = run_pool(base, size);
     let payload_slots = payload_size.div_ceil(UPPER_SLOT);
     let prefix_slots = 32;
     let suffix_slots = 32;
@@ -197,12 +197,13 @@ pub fn fragmented_run_buffer_pool(base: u64, size: usize, payload_size: usize) -
     pool
 }
 
-pub fn recycle_pool(base: u64, size: usize) -> RecyclePool {
-    RecyclePool::new(base, size, UPPER_SLOT).unwrap()
+pub fn slot_pool(base: u64, size: usize) -> SlotPool {
+    let layout = SlotLayout::new(base, UPPER_SLOT, size / UPPER_SLOT);
+    SlotPool::new(layout).unwrap()
 }
 
-pub fn fragmented_recycle_pool(base: u64, size: usize, payload_size: usize) -> RecyclePool {
-    let pool = recycle_pool(base, size);
+pub fn fragmented_slot_pool(base: u64, size: usize, payload_size: usize) -> SlotPool {
+    let pool = slot_pool(base, size);
     let payload_slots = payload_size.div_ceil(UPPER_SLOT);
     let allocated: Vec<_> = (0..payload_slots * 2 + 16)
         .map(|_| pool.alloc(UPPER_SLOT).unwrap())
