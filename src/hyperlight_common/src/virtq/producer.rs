@@ -1537,7 +1537,8 @@ mod tests {
     fn test_chain_build_rolls_back_unrepresentable_allocations() {
         let ring = make_ring(16);
         let slot_size = u32::MAX as usize + 1;
-        let pool = RecyclePool::new(0, slot_size, slot_size).unwrap();
+        let layout = SlotLayout::new(0, slot_size, 1);
+        let pool = SlotPool::new(layout).unwrap();
         let mem = ring.mem();
         let producer = VirtqProducer::new(ring.layout(), mem, TestNotifier::new(), pool.clone());
 
