@@ -30,11 +30,11 @@ limitations under the License.
 //! this module adapts it to the [`VirtualMachine`] trait and hosts the
 //! register/exit conversions shared by both backends.
 
-use hyperlight_hvf::core::{self, FpuState, HvfError, Regs, Sregs};
+use hyperlight_hvf::core::{self, FpuState, Regs, Sregs};
 use tracing::{Span, instrument};
 
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::hypervisor::virtual_machine::{HypervisorError, VmExit};
+use crate::hypervisor::virtual_machine::VmExit;
 
 pub(crate) mod direct;
 pub(crate) mod surrogate;
@@ -51,17 +51,19 @@ pub(crate) fn is_hypervisor_present() -> bool {
     core::is_hypervisor_present()
 }
 
-impl From<HvfError> for HypervisorError {
-    fn from(e: HvfError) -> Self {
-        match e {
-            HvfError::Hv(code) => HypervisorError::HvfError(code),
-            HvfError::NoInstructionSyndrome => HypervisorError::HvfError(0),
+impl From<Regs> for CommonRegisters {
+    fn from(r: Regs) -> Self {
+        CommonRegisters {
+            x: r.x,
+            sp: r.sp,
+            pc: r.pc,
+            pstate: r.pstate,
         }
     }
 }
 
-impl From<Regs> for CommonRegisters {
-    fn from(r: Regs) -> Self {
+impl From<&Regs> for CommonRegisters {
+    fn from(r: &Regs) -> Self {
         CommonRegisters {
             x: r.x,
             sp: r.sp,
@@ -84,6 +86,16 @@ impl From<&CommonRegisters> for Regs {
 
 impl From<FpuState> for CommonFpu {
     fn from(f: FpuState) -> Self {
+        CommonFpu {
+            v: f.v,
+            fpsr: f.fpsr,
+            fpcr: f.fpcr,
+        }
+    }
+}
+
+impl From<&FpuState> for CommonFpu {
+    fn from(f: &FpuState) -> Self {
         CommonFpu {
             v: f.v,
             fpsr: f.fpsr,

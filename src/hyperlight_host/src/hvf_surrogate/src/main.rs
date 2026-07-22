@@ -300,13 +300,15 @@ fn handle_request(
             let Some(vm) = vm.as_ref() else {
                 return err_no_vm();
             };
-            vm.regs().map(Response::Regs).unwrap_or_else(err)
+            vm.regs()
+                .map(|r| Response::Regs(Box::new(r)))
+                .unwrap_or_else(err)
         }
         Request::SetRegs(regs) => {
             let Some(vm) = vm.as_ref() else {
                 return err_no_vm();
             };
-            vm.set_regs(&regs)
+            vm.set_regs(regs.as_ref())
                 .map(|()| Response::Ok)
                 .unwrap_or_else(err)
         }
@@ -314,13 +316,17 @@ fn handle_request(
             let Some(vm) = vm.as_ref() else {
                 return err_no_vm();
             };
-            vm.fpu().map(Response::Fpu).unwrap_or_else(err)
+            vm.fpu()
+                .map(|f| Response::Fpu(Box::new(f)))
+                .unwrap_or_else(err)
         }
         Request::SetFpu(fpu) => {
             let Some(vm) = vm.as_ref() else {
                 return err_no_vm();
             };
-            vm.set_fpu(&fpu).map(|()| Response::Ok).unwrap_or_else(err)
+            vm.set_fpu(fpu.as_ref())
+                .map(|()| Response::Ok)
+                .unwrap_or_else(err)
         }
         Request::GetSregs => {
             let Some(vm) = vm.as_ref() else {

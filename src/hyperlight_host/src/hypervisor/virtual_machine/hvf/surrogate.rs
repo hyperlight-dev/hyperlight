@@ -221,7 +221,7 @@ impl VirtualMachine for HvfSurrogateVm {
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         match self.request(&Request::GetRegs) {
-            Ok(Response::Regs(regs)) => Ok(regs.into()),
+            Ok(Response::Regs(regs)) => Ok(regs.as_ref().into()),
             Ok(Response::Err(e)) => Err(RegisterError::GetRegs(
                 HypervisorError::HvfSurrogateError(e),
             )),
@@ -233,14 +233,14 @@ impl VirtualMachine for HvfSurrogateVm {
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
-        self.request(&Request::SetRegs(regs.into()))
+        self.request(&Request::SetRegs(Box::new(regs.into())))
             .and_then(expect_ok)
             .map_err(RegisterError::SetRegs)
     }
 
     fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError> {
         match self.request(&Request::GetFpu) {
-            Ok(Response::Fpu(fpu)) => Ok(fpu.into()),
+            Ok(Response::Fpu(fpu)) => Ok(fpu.as_ref().into()),
             Ok(Response::Err(e)) => {
                 Err(RegisterError::GetFpu(HypervisorError::HvfSurrogateError(e)))
             }
@@ -252,7 +252,7 @@ impl VirtualMachine for HvfSurrogateVm {
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
-        self.request(&Request::SetFpu(fpu.into()))
+        self.request(&Request::SetFpu(Box::new(fpu.into())))
             .and_then(expect_ok)
             .map_err(RegisterError::SetFpu)
     }

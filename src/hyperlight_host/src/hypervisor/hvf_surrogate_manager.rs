@@ -574,7 +574,7 @@ mod tests {
         use hyperlight_hvf::proto::Backing;
 
         let mgr = get_hvf_surrogate_process_manager().unwrap();
-        let mut proc = mgr.get_surrogate_process().unwrap();
+        let proc = mgr.get_surrogate_process().unwrap();
         let sock = connect(proc.socket());
         handshake(&sock);
         assert!(matches!(request(&sock, &Request::CreateVm), Response::Ok));
@@ -645,7 +645,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            request(&sock, &Request::SetRegs(regs)),
+            request(&sock, &Request::SetRegs(Box::new(regs))),
             Response::Ok
         ));
 

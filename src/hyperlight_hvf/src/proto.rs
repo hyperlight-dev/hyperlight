@@ -32,7 +32,8 @@ limitations under the License.
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::core::{FpuState, Perms, Regs, Sregs, VmExit};
 
@@ -106,11 +107,11 @@ pub enum Request {
     /// Read the general-purpose registers. Responds with [`Response::Regs`].
     GetRegs,
     /// Write the general-purpose registers. Responds with [`Response::Ok`].
-    SetRegs(Regs),
+    SetRegs(Box<Regs>),
     /// Read the SIMD/FP registers. Responds with [`Response::Fpu`].
     GetFpu,
     /// Write the SIMD/FP registers. Responds with [`Response::Ok`].
-    SetFpu(FpuState),
+    SetFpu(Box<FpuState>),
     /// Read the system registers. Responds with [`Response::Sregs`].
     GetSregs,
     /// Write the system registers. Responds with [`Response::Ok`].
@@ -136,9 +137,9 @@ pub enum Response {
     /// The request succeeded with no payload.
     Ok,
     /// Answer to [`Request::GetRegs`].
-    Regs(Regs),
+    Regs(Box<Regs>),
     /// Answer to [`Request::GetFpu`].
-    Fpu(FpuState),
+    Fpu(Box<FpuState>),
     /// Answer to [`Request::GetSregs`].
     Sregs(Sregs),
     /// Answer to [`Request::RunVcpu`].

@@ -55,6 +55,11 @@ pub enum HvfError {
     /// syndrome, so the access details (register, size) cannot be decoded.
     #[error("HVF data abort without valid instruction syndrome")]
     NoInstructionSyndrome,
+    /// The 4 KiB IPA granule could not be configured. Hyperlight requires
+    /// it (the default 16 KiB granule is incompatible with 4 KiB-aligned
+    /// guest regions); the granule API is available since macOS 26.
+    #[error("HVF 4 KiB IPA granule is not supported (requires macOS 26 or later)")]
+    IpaGranuleUnsupported,
 }
 
 /// Convert an `hv_return_t` into a `Result`.
@@ -226,8 +231,9 @@ pub enum VmExit {
 
 /// Create the process-wide VM, requesting the 4 KiB IPA granule so that
 /// 4 KiB-aligned guest regions can be mapped (the granule API requires
-/// macOS 26; the default granule is 16 KiB). Falls back to the default
-/// configuration if the config path fails for any reason.
+/// macOS 26; the default granule is 16 KiB, which Hyperlight's 4 KiB
+/// guest page granule is incompatible with). Falls back to the default
+/// configuration if the config object itself cannot be created.
 fn create_vm() -> Result<(), HvfError> {
     // SAFETY: `hv_vm_config_create` returns a retained config object (or
     // null), which is released below.
@@ -244,9 +250,11 @@ fn create_vm() -> Result<(), HvfError> {
         };
         // SAFETY: `config` is no longer needed.
         unsafe { os_release(config) };
-        if ret == hv_error_t::HV_SUCCESS as i32 {
-            return Ok(());
-        }
+        return check_hv(ret).map_err(|e| match e {
+            // Most likely a pre-macOS 26 system without the granule API.
+            HvfError::Hv(_) => HvfError::IpaGranuleUnsupported,
+            e => e,
+        });
     }
     // SAFETY: a null config creates a VM with the default configuration.
     check_hv(unsafe { hv_vm_create(std::ptr::null_mut()) })
