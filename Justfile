@@ -250,15 +250,20 @@ test-isolated target=default-target features="" :
 # Ad-hoc codesigns hyperlight test binaries with the Hypervisor.framework
 # entitlement and runs the host test suite with the HVF backend (macOS/aarch64).
 # Guest binaries must already be built (see build-rust-guests).
+# NOTE: the binaries are executed directly, not via `cargo test` — codesigning
+# modifies them, which cargo would treat as a rebuild trigger, discarding the
+# signature (and unsigned binaries get HV_DENIED from Hypervisor.framework).
 test-hvf target=default-target:
     #!/usr/bin/env bash
     set -euo pipefail
     profile={{ if target == "debug" { "dev" } else { target } }}
-    dir={{ if target == "debug" { "debug" } else { "release" } }}
-    {{ cargo-cmd }} test -p hyperlight-host --no-default-features -F hvf --profile=$profile --no-run
-    find {{ justfile_directory() }}/target/$dir/deps -maxdepth 1 -type f -perm +111 \
-        -exec codesign --sign - --entitlements {{ justfile_directory() }}/dev/hvf-entitlements.plist --force {} \;
-    {{ cargo-cmd }} test -p hyperlight-host --no-default-features -F hvf --profile=$profile
+    out=$({{ cargo-cmd }} test -p hyperlight-host --no-default-features -F hvf --profile=$profile --no-run 2>&1)
+    bins=$(echo "$out" | sed -n 's/^ *Executable .*(\(.*\))$/\1/p')
+    for bin in $bins; do
+        codesign --sign - --entitlements {{ justfile_directory() }}/dev/hvf-entitlements.plist --force "$bin"
+        echo "=== $bin"
+        "$bin"
+    done
 
 # runs integration tests
 test-integration target=default-target features="":
