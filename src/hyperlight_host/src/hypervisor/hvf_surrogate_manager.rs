@@ -29,8 +29,8 @@ limitations under the License.
 //! Sizing is controlled by `HYPERLIGHT_INITIAL_SURROGATES` (default 0 —
 //! unlike the suspended Windows shells these are real running server
 //! processes, so they are spawned on demand) and `HYPERLIGHT_MAX_SURROGATES`
-//! (default 64; `0` disables surrogates entirely, see
-//! [`surrogates_disabled`]).
+//! (default 128, matched to the platform's concurrent-VM cap; `0` disables
+//! surrogates entirely, see [`surrogates_disabled`]).
 
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
@@ -77,10 +77,13 @@ const INITIAL_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_INITIAL_SURROGATES";
 /// surrogates entirely.
 const MAX_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_MAX_SURROGATES";
 
-/// Default maximum number of surrogate processes (macOS imposes no hard
-/// per-process limit like WHP's 512 handles, but each surrogate is a real
-/// running process, so keep the default modest).
-const DEFAULT_MAX_SURROGATE_PROCESSES: usize = 64;
+/// Default maximum number of surrogate processes. Sized to the platform's
+/// concurrent-VM limit: macOS caps HVF VMs system-wide (measured 127 on
+/// macOS 26, arm64), so a larger pool only stockpiles idle processes, and
+/// a smaller one can deadlock threads that hold one surrogate while
+/// acquiring another (pool backpressure is the correct behavior near the
+/// cap; exceeding it yields a clean `HV_NO_RESOURCES` error).
+const DEFAULT_MAX_SURROGATE_PROCESSES: usize = 128;
 
 /// A pooled surrogate process: the child handle plus our end of the
 /// control socketpair.
@@ -375,7 +378,7 @@ fn compute_surrogate_counts(raw_initial: Option<usize>, raw_max: Option<usize>) 
 /// variables, applying validation and clamping.
 ///
 /// - `HYPERLIGHT_INITIAL_SURROGATES`: clamped to `0..=max`, default 0.
-/// - `HYPERLIGHT_MAX_SURROGATES`: default 64; `0` disables surrogates.
+/// - `HYPERLIGHT_MAX_SURROGATES`: default 128; `0` disables surrogates.
 fn surrogate_process_counts() -> (usize, usize) {
     let raw_initial = std::env::var(INITIAL_SURROGATES_ENV_VAR)
         .ok()
