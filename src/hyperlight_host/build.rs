@@ -108,6 +108,7 @@ fn main() -> Result<()> {
         gdb: { all(feature = "gdb", debug_assertions, target_arch = "x86_64") },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv3: { all(feature = "mshv3", target_os = "linux") },
+        hvf: { all(feature = "hvf", target_os = "macos", target_arch = "aarch64") },
         crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
