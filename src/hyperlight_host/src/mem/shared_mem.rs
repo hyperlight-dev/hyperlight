@@ -665,6 +665,7 @@ pub trait SharedMemory {
                 name: self.region().shm.name.clone(),
                 offset: guard_page_size(),
                 base: self.base_addr(),
+                path: None,
             }
         }
         #[cfg(windows)]

@@ -313,7 +313,8 @@ impl Vm {
         let mut exit: *const hv_vcpu_exit_t = std::ptr::null();
         // SAFETY: `vcpu` and `exit` are valid out-pointers; a null config
         // creates a vCPU with the default configuration on the current thread.
-        if let Err(e) = check_hv(unsafe { hv_vcpu_create(&mut vcpu, &mut exit, std::ptr::null_mut()) })
+        if let Err(e) =
+            check_hv(unsafe { hv_vcpu_create(&mut vcpu, &mut exit, std::ptr::null_mut()) })
         {
             // Don't leak the process-wide VM on failure.
             // SAFETY: the VM was just created above and has no vCPUs.
@@ -479,12 +480,7 @@ impl Vm {
         check_hv(unsafe { hv_vcpu_get_reg(self.vcpu, hv_reg_t::PC, &mut pc) })?;
         let mut pstate = 0;
         check_hv(unsafe { hv_vcpu_get_reg(self.vcpu, hv_reg_t::CPSR, &mut pstate) })?;
-        Ok(Regs {
-            x,
-            sp,
-            pc,
-            pstate,
-        })
+        Ok(Regs { x, sp, pc, pstate })
     }
 
     /// Write the general-purpose registers.
@@ -563,6 +559,26 @@ impl Vm {
         set(hv_sys_reg_t::CPACR_EL1, sregs.cpacr_el1)?;
         set(hv_sys_reg_t::VBAR_EL1, sregs.vbar_el1)?;
         set(hv_sys_reg_t::SP_EL1, sregs.sp_el1)?;
+        Ok(())
+    }
+
+    /// Reset the vCPU to a clean state, emulating KVM's `KVM_ARM_VCPU_INIT`
+    /// (HVF has no equivalent operation): GP and FP registers are zeroed,
+    /// and the debug breakpoint/watchpoint pair 0 is cleared so no stale
+    /// breakpoints survive a snapshot restore. Only pair 0 is cleared —
+    /// Hyperlight guests use no other debug registers. Translation system
+    /// registers (TCR/TTBR/…) are NOT touched; the caller applies them
+    /// from the snapshot after the reset.
+    pub fn reset_vcpu(&self) -> Result<(), HvfError> {
+        self.set_regs(&Regs::default())?;
+        self.set_fpu(&FpuState::default())?;
+        // SAFETY: called on the vCPU thread.
+        unsafe {
+            check_hv(hv_vcpu_set_sys_reg(self.vcpu, hv_sys_reg_t::DBGBVR0_EL1, 0))?;
+            check_hv(hv_vcpu_set_sys_reg(self.vcpu, hv_sys_reg_t::DBGBCR0_EL1, 0))?;
+            check_hv(hv_vcpu_set_sys_reg(self.vcpu, hv_sys_reg_t::DBGWVR0_EL1, 0))?;
+            check_hv(hv_vcpu_set_sys_reg(self.vcpu, hv_sys_reg_t::DBGWCR0_EL1, 0))?;
+        }
         Ok(())
     }
 }

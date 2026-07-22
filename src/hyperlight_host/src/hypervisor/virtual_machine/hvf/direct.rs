@@ -14,123 +14,51 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Direct HVF (Hypervisor.framework) backend for macOS on aarch64.
+//! Direct (in-process) HVF backend.
 //!
-//! This is the single-VM-per-process backend: HVF binds a VM to its creating
-//! process, so only one sandbox backed by [`HvfVm`] can exist in a process at
-//! a time. Multi-sandbox support uses the surrogate-process backend instead
-//! (see `super::hvf_surrogate`), which delegates each sandbox's VM to a
-//! helper process. The actual HVF logic lives in the shared
-//! [`hyperlight_hvf::core`] crate; this file adapts it to the
-//! [`VirtualMachine`] trait.
+//! Used when surrogates are disabled (`HYPERLIGHT_MAX_SURROGATES=0`). Only
+//! one [`HvfVm`] can exist per process — HVF's one-VM-per-process limit —
+//! which is enforced by [`NoSurrogateGuard`] so a second VM fails with a
+//! clean error instead of a raw `HV_BUSY`.
 
-use hyperlight_hvf::core::{self, FpuState, HvfError, Perms, Regs, Sregs};
-use tracing::{Span, instrument};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use hyperlight_hvf::core::{self, HvfError, Perms};
 
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::virtual_machine::{
-    CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
+    CreateVmError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError, UnmapMemoryError,
     VirtualMachine, VmExit,
 };
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
-/// Return `true` if Hypervisor.framework is available.
-///
-/// Requires the calling binary to hold the `com.apple.security.hypervisor`
-/// entitlement; unsigned test binaries must be ad-hoc codesigned with it.
-#[instrument(skip_all, parent = Span::current(), level = "Trace")]
-pub(crate) fn is_hypervisor_present() -> bool {
-    core::is_hypervisor_present()
-}
+/// Set while a direct-mode VM exists in this process; cleared when the
+/// [`NoSurrogateGuard`] stored on the [`HvfVm`] is dropped.
+static DIRECT_VM_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-impl From<HvfError> for HypervisorError {
-    fn from(e: HvfError) -> Self {
-        match e {
-            HvfError::Hv(code) => HypervisorError::HvfError(code),
-            HvfError::NoInstructionSyndrome => HypervisorError::HvfError(0),
+/// RAII guard that sets [`DIRECT_VM_ACTIVE`] on creation and clears it on
+/// drop. Stored as a field on [`HvfVm`] so the flag stays set for exactly
+/// the lifetime of the VM (mirrors WHP's `NoSurrogateGuard`).
+#[derive(Debug)]
+struct NoSurrogateGuard;
+
+impl NoSurrogateGuard {
+    fn acquire() -> std::result::Result<Self, CreateVmError> {
+        if DIRECT_VM_ACTIVE.swap(true, Ordering::SeqCst) {
+            return Err(CreateVmError::SurrogateProcess(
+                "HYPERLIGHT_MAX_SURROGATES=0 limits the process to a single VM; \
+                 a VM is already active"
+                    .into(),
+            ));
         }
+        Ok(Self)
     }
 }
 
-impl From<Regs> for CommonRegisters {
-    fn from(r: Regs) -> Self {
-        CommonRegisters {
-            x: r.x,
-            sp: r.sp,
-            pc: r.pc,
-            pstate: r.pstate,
-        }
-    }
-}
-
-impl From<&CommonRegisters> for Regs {
-    fn from(r: &CommonRegisters) -> Self {
-        Regs {
-            x: r.x,
-            sp: r.sp,
-            pc: r.pc,
-            pstate: r.pstate,
-        }
-    }
-}
-
-impl From<FpuState> for CommonFpu {
-    fn from(f: FpuState) -> Self {
-        CommonFpu {
-            v: f.v,
-            fpsr: f.fpsr,
-            fpcr: f.fpcr,
-        }
-    }
-}
-
-impl From<&CommonFpu> for FpuState {
-    fn from(f: &CommonFpu) -> Self {
-        FpuState {
-            v: f.v,
-            fpsr: f.fpsr,
-            fpcr: f.fpcr,
-        }
-    }
-}
-
-impl From<Sregs> for CommonSpecialRegisters {
-    fn from(s: Sregs) -> Self {
-        CommonSpecialRegisters {
-            ttbr0_el1: s.ttbr0_el1,
-            tcr_el1: s.tcr_el1,
-            mair_el1: s.mair_el1,
-            sctlr_el1: s.sctlr_el1,
-            cpacr_el1: s.cpacr_el1,
-            vbar_el1: s.vbar_el1,
-            sp_el1: s.sp_el1,
-        }
-    }
-}
-
-impl From<&CommonSpecialRegisters> for Sregs {
-    fn from(s: &CommonSpecialRegisters) -> Self {
-        Sregs {
-            ttbr0_el1: s.ttbr0_el1,
-            tcr_el1: s.tcr_el1,
-            mair_el1: s.mair_el1,
-            sctlr_el1: s.sctlr_el1,
-            cpacr_el1: s.cpacr_el1,
-            vbar_el1: s.vbar_el1,
-            sp_el1: s.sp_el1,
-        }
-    }
-}
-
-impl From<core::VmExit> for VmExit {
-    fn from(e: core::VmExit) -> Self {
-        match e {
-            core::VmExit::Halt => VmExit::Halt(),
-            core::VmExit::IoOut(port, data) => VmExit::IoOut(port, data),
-            core::VmExit::MmioRead(addr) => VmExit::MmioRead(addr),
-            core::VmExit::MmioWrite(addr) => VmExit::MmioWrite(addr),
-            core::VmExit::Cancelled => VmExit::Cancelled(),
-            core::VmExit::Unknown(msg) => VmExit::Unknown(msg),
-        }
+impl Drop for NoSurrogateGuard {
+    fn drop(&mut self) {
+        DIRECT_VM_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
 
@@ -138,13 +66,23 @@ impl From<core::VmExit> for VmExit {
 #[derive(Debug)]
 pub(crate) struct HvfVm {
     inner: core::Vm,
+    /// Clears [`DIRECT_VM_ACTIVE`] when this VM is dropped.
+    _no_surrogate_guard: NoSurrogateGuard,
 }
 
 impl HvfVm {
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
+        let guard = NoSurrogateGuard::acquire()?;
         Ok(Self {
             inner: core::Vm::new().map_err(|e| CreateVmError::CreateVmFd(e.into()))?,
+            _no_surrogate_guard: guard,
         })
+    }
+
+    /// The raw HVF vCPU ID, used to construct the local interrupt handle
+    /// (`hv_vcpus_exit` may be called from any thread).
+    pub(crate) fn vcpu_id(&self) -> u64 {
+        self.inner.vcpu_id()
     }
 }
 
@@ -195,6 +133,8 @@ impl VirtualMachine for HvfVm {
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
     ) -> std::result::Result<VmExit, RunVcpuError> {
+        #[cfg(feature = "trace_guest")]
+        let _ = tc;
         match self.inner.run_vcpu() {
             Ok(exit) => Ok(exit.into()),
             Err(HvfError::NoInstructionSyndrome) => Err(RunVcpuError::ParseGpaAccessInfo),
@@ -254,7 +194,16 @@ impl VirtualMachine for HvfVm {
         todo!("debug registers are not supported on aarch64")
     }
 
-    fn vcpu_id(&self) -> u64 {
-        self.inner.vcpu_id()
+    fn can_reset_vcpu(&self) -> bool {
+        true
+    }
+
+    fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
+        // HVF has no "vcpu init" operation like KVM's KVM_ARM_VCPU_INIT;
+        // `core::Vm::reset_vcpu` emulates it. Special registers are
+        // applied separately by the caller (`apply_sregs`).
+        self.inner
+            .reset_vcpu()
+            .map_err(|e| ResetVcpuError::Hypervisor(e.into()))
     }
 }

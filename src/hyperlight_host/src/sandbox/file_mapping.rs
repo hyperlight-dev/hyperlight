@@ -62,6 +62,10 @@ pub(crate) struct PreparedFileMapping {
     /// Host-side OS resources. `None` after successful consumption
     /// by the apply step (ownership transferred to the VM layer).
     pub(crate) host_resources: Option<HostFileResources>,
+    /// The path of the mapped file. Retained on macOS so the HVF
+    /// surrogate process can map the same file read-only by path.
+    #[cfg(target_os = "macos")]
+    pub(crate) path: std::path::PathBuf,
 }
 
 /// Platform-specific host-side file mapping resources.
@@ -210,6 +214,7 @@ impl PreparedFileMapping {
                     name: String::new(),
                     offset: 0,
                     base: *mmap_base as usize,
+                    path: Some(self.path.clone()),
                 };
                 let host_end =
                     <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base.clone(), *mmap_size);
@@ -384,6 +389,8 @@ pub(crate) fn prepare_file_cow(file_path: &Path, guest_base: u64) -> Result<Prep
                 mmap_base: base,
                 mmap_size: size,
             }),
+            #[cfg(target_os = "macos")]
+            path: file_path.to_path_buf(),
         })
     }
 }

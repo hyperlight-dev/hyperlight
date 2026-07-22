@@ -43,12 +43,16 @@ pub(crate) mod crashdump;
 pub(crate) mod hyperlight_vm;
 
 use std::fmt::Debug;
+#[cfg(hvf)]
+use std::os::unix::net::UnixStream;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(any(target_os = "windows", hvf))]
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU8, Ordering};
+#[cfg(hvf)]
+use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
 
@@ -471,22 +475,35 @@ pub(super) struct MacOSInterruptHandle {
     /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
     /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
     ///
-    /// `hv_vcpus_exit()` forces an immediate exit of a running vCPU and is a
-    /// no-op-safe call otherwise, but we still track the RUNNING_BIT to
+    /// Cancelling forces an immediate exit of a running vCPU and is a
+    /// no-op-safe operation otherwise, but we still track the RUNNING_BIT to
     /// report whether the vCPU was actually interrupted.
     ///
     /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
     /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
     pub(super) state: AtomicU8,
 
-    /// The HVF vCPU ID to interrupt. `hv_vcpus_exit` is documented as
-    /// callable from any thread, and vCPU IDs are kernel-validated (a stale
-    /// cancel of a destroyed vCPU simply fails), so no lock is needed to
-    /// guard against concurrent vCPU destruction.
-    pub(super) vcpu: u64,
+    /// How to reach the vCPU to cancel a run.
+    pub(super) target: HvfInterruptTarget,
 
     /// Whether the corresponding VM has been dropped.
     pub(super) dropped: AtomicBool,
+}
+
+/// How a [`MacOSInterruptHandle`] reaches the vCPU to cancel a run.
+#[cfg(hvf)]
+#[derive(Debug)]
+pub(super) enum HvfInterruptTarget {
+    /// Direct mode: the vCPU lives in this process and is cancelled with
+    /// `hv_vcpus_exit`. The call is documented as callable from any thread,
+    /// and vCPU IDs are kernel-validated (a stale cancel of a destroyed
+    /// vCPU simply fails), so no lock is needed to guard against concurrent
+    /// vCPU destruction.
+    Local(u64),
+    /// Surrogate mode: the vCPU lives in a surrogate process and is
+    /// cancelled by sending a `Cancel` frame over the shared writer (the
+    /// same mutex serializes request frames, so frames cannot interleave).
+    Remote(Arc<Mutex<UnixStream>>),
 }
 
 #[cfg(hvf)]
@@ -508,12 +525,26 @@ impl MacOSInterruptHandle {
             return false;
         }
 
-        // SAFETY: `hv_vcpus_exit` may be called from any thread, and the
-        // vCPU ID is kernel-validated, so a stale cancel after the vCPU was
-        // destroyed fails harmlessly.
-        unsafe {
-            applevisor_sys::hv_vcpus_exit(&self.vcpu, 1)
-                == applevisor_sys::hv_error_t::HV_SUCCESS as i32
+        match &self.target {
+            HvfInterruptTarget::Local(vcpu) => {
+                // SAFETY: `hv_vcpus_exit` may be called from any thread, and
+                // the vCPU ID is kernel-validated, so a stale cancel after
+                // the vCPU was destroyed fails harmlessly.
+                unsafe {
+                    applevisor_sys::hv_vcpus_exit(vcpu, 1)
+                        == applevisor_sys::hv_error_t::HV_SUCCESS as i32
+                }
+            }
+            HvfInterruptTarget::Remote(writer) => {
+                let Ok(mut writer) = writer.lock() else {
+                    return false;
+                };
+                hyperlight_hvf::proto::write_frame(
+                    &mut *writer,
+                    &hyperlight_hvf::proto::Request::Cancel,
+                )
+                .is_ok()
+            }
         }
     }
 }

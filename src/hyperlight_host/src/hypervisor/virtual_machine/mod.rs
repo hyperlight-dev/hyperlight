@@ -197,7 +197,7 @@ pub enum CreateVmError {
     InitializeVm(HypervisorError),
     #[error("Set Partition Property failed: {0}")]
     SetPartitionProperty(HypervisorError),
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", hvf))]
     #[error("Surrogate process creation failed: {0}")]
     SurrogateProcess(String),
 }
@@ -320,6 +320,9 @@ pub enum HypervisorError {
     #[cfg(hvf)]
     #[error("HVF error: {0:#x}")]
     HvfError(u32),
+    #[cfg(hvf)]
+    #[error("HVF surrogate error: {0}")]
+    HvfSurrogateError(String),
 }
 
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
@@ -398,10 +401,6 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
-    /// Get the HVF vCPU ID, used to construct the interrupt handle
-    /// (`hv_vcpus_exit` may be called from any thread)
-    #[cfg(hvf)]
-    fn vcpu_id(&self) -> u64;
 }
 
 #[cfg(test)]

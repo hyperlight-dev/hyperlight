@@ -95,8 +95,9 @@ fn main() {
 
     std::thread::spawn(move || writer_thread(writer_socket, resp_rx));
 
-    // The current vCPU id, shared with the reader thread so it can cancel
-    // a running vCPU. 0 means "no vCPU".
+    // The current vCPU id **plus one**, shared with the reader thread so it
+    // can cancel a running vCPU. 0 means "no vCPU" (HVF vCPU ids are
+    // zero-based, so the raw id cannot double as the sentinel).
     let vcpu_id = Arc::new(AtomicU64::new(0));
     let reader_vcpu_id = Arc::clone(&vcpu_id);
     std::thread::spawn(move || reader_thread(socket, req_tx, reader_vcpu_id));
@@ -131,7 +132,7 @@ fn reader_thread(mut socket: UnixStream, req_tx: Sender<Request>, vcpu_id: Arc<A
                 if id != 0 {
                     // A stale cancel of an idle/destroyed vCPU fails
                     // harmlessly (ids are kernel-validated).
-                    let _ = core::cancel(id);
+                    let _ = core::cancel(id - 1);
                 }
             }
             Ok(Some(req)) => {
@@ -243,7 +244,9 @@ fn handle_request(
             }
             match Vm::new() {
                 Ok(v) => {
-                    vcpu_id.store(v.vcpu_id(), Ordering::Release);
+                    // +1: vCPU ids are zero-based, 0 is the "no vCPU"
+                    // sentinel.
+                    vcpu_id.store(v.vcpu_id() + 1, Ordering::Release);
                     *vm = Some(v);
                     Response::Ok
                 }
@@ -333,6 +336,12 @@ fn handle_request(
                 .map(|()| Response::Ok)
                 .unwrap_or_else(err)
         }
+        Request::ResetVcpu => {
+            let Some(vm) = vm.as_ref() else {
+                return err_no_vm();
+            };
+            vm.reset_vcpu().map(|()| Response::Ok).unwrap_or_else(err)
+        }
     }
 }
 
@@ -387,13 +396,12 @@ fn mmap_backing(backing: &Backing, size: usize) -> io::Result<usize> {
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
-            // Unlink immediately: the host keeps its own fd and mapping and
-            // we now have ours, so the name is no longer needed. Errors are
-            // ignored (the host also unlinks on drop).
-            // SAFETY: `c_name` is a valid NUL-terminated string.
-            unsafe {
-                libc::shm_unlink(c_name.as_ptr());
-            }
+            // NOTE: the name is NOT unlinked here. The host owns the
+            // object's name lifecycle (it unlinks when its own backing
+            // drops) and may legitimately ask us to map the same object
+            // again (e.g. snapshot restore remaps); unlinking at map time
+            // would make those later `shm_open`s fail with ENOENT. Our
+            // mmap keeps the object alive even after the name is gone.
             // SAFETY: `fd` is a live shm object descriptor and `offset`
             // lies within it; the result is checked against MAP_FAILED.
             let va = unsafe {
@@ -419,6 +427,11 @@ fn mmap_backing(backing: &Backing, size: usize) -> io::Result<usize> {
         Backing::File { path, offset } => {
             use std::os::unix::io::AsRawFd;
             let file = std::fs::File::open(path)?;
+            // MAP_PRIVATE on purpose: `hv_vm_map` rejects read-only
+            // MAP_SHARED file mappings (measured: HV error 0xfae94001),
+            // while MAP_PRIVATE works and matches the host's own view of
+            // the file. These regions are read-only+exec, so the
+            // copy-on-read private view is coherent.
             // SAFETY: `file` is a live read-only descriptor and `offset`
             // lies within it; the result is checked against MAP_FAILED.
             let va = unsafe {
@@ -426,7 +439,7 @@ fn mmap_backing(backing: &Backing, size: usize) -> io::Result<usize> {
                     std::ptr::null_mut(),
                     size,
                     libc::PROT_READ,
-                    libc::MAP_SHARED,
+                    libc::MAP_PRIVATE,
                     file.as_raw_fd(),
                     *offset as libc::off_t,
                 )

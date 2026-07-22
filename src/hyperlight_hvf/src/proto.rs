@@ -115,6 +115,11 @@ pub enum Request {
     GetSregs,
     /// Write the system registers. Responds with [`Response::Ok`].
     SetSregs(Sregs),
+    /// Reset the vCPU to a clean state (GP/FP registers zeroed, debug
+    /// breakpoint/watchpoint pair 0 cleared). Responds with
+    /// [`Response::Ok`]. Translation system registers are untouched; the
+    /// client applies them from the snapshot afterwards.
+    ResetVcpu,
     /// Force the running vCPU out of `hv_vcpu_run`. May be sent while a
     /// [`Request::RunVcpu`] is outstanding; receives no response.
     Cancel,
@@ -142,15 +147,19 @@ pub enum Response {
     Err(String),
 }
 
-/// Write one length-prefixed frame.
+/// Write one length-prefixed frame. The whole frame is serialized into a
+/// single buffer and written with one `write_all`, so that frames written
+/// from different threads sharing one writer cannot interleave on the wire.
 pub fn write_frame<T: Serialize>(w: &mut impl Write, msg: &T) -> io::Result<()> {
     let body = serde_json::to_vec(msg).map_err(io::Error::other)?;
     let len: u32 = body
         .len()
         .try_into()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
-    w.write_all(&len.to_le_bytes())?;
-    w.write_all(&body)?;
+    let mut frame = Vec::with_capacity(4 + body.len());
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&body);
+    w.write_all(&frame)?;
     w.flush()
 }
 

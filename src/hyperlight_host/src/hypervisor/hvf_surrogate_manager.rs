@@ -32,10 +32,6 @@ limitations under the License.
 //! (default 64; `0` disables surrogates entirely, see
 //! [`surrogates_disabled`]).
 
-// Consumed by the surrogate VM backend (a later phase); until then only
-// the unit tests use this API.
-#![allow(dead_code)]
-
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -117,6 +113,7 @@ impl HvfSurrogateProcess {
     }
 
     /// Returns `true` if the surrogate process is still running.
+    #[allow(dead_code)] // used by tests; kept for diagnostics
     pub(crate) fn is_alive(&mut self) -> bool {
         self.inner
             .as_mut()
@@ -561,6 +558,119 @@ mod tests {
         let s = sock.try_clone().unwrap();
         s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         s
+    }
+
+    /// Protocol-level cancellation probe: map a shm region containing an
+    /// infinite loop (`b .`), run the vCPU, and cancel it from another
+    /// thread. The run must exit with `VmExit::Cancelled`.
+    #[test]
+    fn surrogate_cancel_interrupts_run() {
+        use std::ffi::CString;
+
+        use hyperlight_hvf::core::{Perms, Regs, VmExit};
+        use hyperlight_hvf::proto::Backing;
+
+        let mgr = get_hvf_surrogate_process_manager().unwrap();
+        let mut proc = mgr.get_surrogate_process().unwrap();
+        let sock = connect(proc.socket());
+        handshake(&sock);
+        assert!(matches!(request(&sock, &Request::CreateVm), Response::Ok));
+
+        // Guest memory: one page with `b .` (0x14000000) at the start.
+        const SIZE: usize = 0x4000;
+        const GPA: u64 = 0x4000_0000;
+        let name = format!("/hl-{}-cancel", std::process::id());
+        let c_name = CString::new(name.as_str()).unwrap();
+        // SAFETY: `c_name` is a valid NUL-terminated string; flags/mode are
+        // valid. On success the fd is ours.
+        let fd = unsafe {
+            libc::shm_open(
+                c_name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                0o600,
+            )
+        };
+        assert!(
+            fd >= 0,
+            "shm_open failed: {:?}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: `fd` is a live shm descriptor we just created.
+        assert_eq!(unsafe { libc::ftruncate(fd, SIZE as libc::off_t) }, 0);
+        // SAFETY: `fd` is a live shm descriptor of SIZE bytes.
+        let va = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_ne!(va, libc::MAP_FAILED);
+        // `b .` — branch to self, an infinite loop.
+        // SAFETY: `va` points to a live writable mapping of SIZE bytes.
+        unsafe { (va as *mut u32).write(0x1400_0000) };
+
+        assert!(matches!(
+            request(
+                &sock,
+                &Request::MapMemory {
+                    slot: 0,
+                    gpa: GPA,
+                    size: SIZE as u64,
+                    perms: Perms {
+                        read: true,
+                        write: false,
+                        exec: true,
+                    },
+                    backing: Backing::Shm {
+                        name: name.clone(),
+                        offset: 0,
+                    },
+                }
+            ),
+            Response::Ok
+        ));
+
+        // Run with MMU off (fresh vCPU: SCTLR_EL1 reset value), PC at GPA,
+        // EL1t with interrupts masked — same pstate the host uses.
+        let regs = Regs {
+            pc: GPA,
+            pstate: 0b11 << 6 | 0b100,
+            ..Default::default()
+        };
+        assert!(matches!(
+            request(&sock, &Request::SetRegs(regs)),
+            Response::Ok
+        ));
+
+        // Cancel from another thread after 200ms (a cloned fd, mirroring
+        // the interrupt handle's shared writer).
+        let cancel_sock = sock.try_clone().unwrap();
+        let cancel_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let mut s = &cancel_sock;
+            write_frame(&mut s, &Request::Cancel).unwrap();
+        });
+
+        let resp = request(&sock, &Request::RunVcpu);
+        cancel_thread.join().unwrap();
+        assert!(
+            matches!(resp, Response::Exit(VmExit::Cancelled)),
+            "expected Exit(Cancelled), got {resp:?}"
+        );
+
+        assert!(matches!(request(&sock, &Request::DestroyVm), Response::Ok));
+
+        // SAFETY: `va`/`fd`/`name` are the live mapping, descriptor and
+        // object created above.
+        unsafe {
+            libc::munmap(va, SIZE);
+            libc::close(fd);
+            libc::shm_unlink(c_name.as_ptr());
+        }
     }
 
     /// Smoke test: acquire a surrogate, complete the handshake, create a

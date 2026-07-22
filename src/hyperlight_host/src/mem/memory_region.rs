@@ -291,12 +291,17 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
 #[cfg(target_os = "macos")]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct HostRegionBase {
-    /// Name of the backing POSIX shm object, as passed to `shm_open`
+    /// Name of the backing POSIX shm object, as passed to `shm_open`.
+    /// Empty for file-backed regions (see `path`).
     pub name: String,
-    /// Offset of the region start within the shm object
+    /// Offset of the region start within the shm object or file
     pub offset: usize,
     /// Host virtual address of the region start
     pub base: usize,
+    /// For file-backed regions ([`MemoryRegionType::MappedFile`]): the
+    /// filesystem path the surrogate process maps read-only instead of a
+    /// shm object.
+    pub path: Option<std::path::PathBuf>,
 }
 #[cfg(target_os = "macos")]
 impl From<HostRegionBase> for usize {
@@ -313,6 +318,7 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
             name: base.name,
             offset: base.offset + size,
             base: base.base + size,
+            path: base.path,
         }
     }
 }
@@ -349,19 +355,27 @@ pub type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 
 #[cfg(hvf)]
 impl MemoryRegion {
-    /// Extract the surrogate-IPC view of this region: the shm backing
-    /// (object name + offset of the region within the object), the
-    /// region size, and its guest physical address.
+    /// Extract the surrogate-IPC view of this region: the memory object
+    /// backing it (a POSIX shm object name, or a filesystem path for
+    /// file-backed regions), the region size, and its guest physical
+    /// address.
     ///
     /// Used when delegating the mapping to the HVF surrogate process;
     /// see [`hyperlight_hvf::proto::Request::MapMemory`].
-    #[allow(dead_code)] // consumed by the surrogate-process backend (a later phase)
     pub(crate) fn surrogate_backing(&self) -> (hyperlight_hvf::proto::Backing, u64, u64) {
-        (
-            hyperlight_hvf::proto::Backing::Shm {
-                name: self.host_region.start.name.clone(),
-                offset: self.host_region.start.offset as u64,
+        let start = &self.host_region.start;
+        let backing = match &start.path {
+            Some(path) => hyperlight_hvf::proto::Backing::File {
+                path: path.clone(),
+                offset: start.offset as u64,
             },
+            None => hyperlight_hvf::proto::Backing::Shm {
+                name: start.name.clone(),
+                offset: start.offset as u64,
+            },
+        };
+        (
+            backing,
             (self.guest_region.end - self.guest_region.start) as u64,
             self.guest_region.start as u64,
         )

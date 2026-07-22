@@ -29,14 +29,14 @@ use super::{
 use crate::hypervisor::InterruptHandleImpl;
 #[cfg(any(kvm, mshv3))]
 use crate::hypervisor::LinuxInterruptHandle;
-#[cfg(hvf)]
-use crate::hypervisor::MacOSInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
+#[cfg(hvf)]
+use crate::hypervisor::hvf_surrogate_manager;
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(hvf)]
-use crate::hypervisor::virtual_machine::hvf::HvfVm;
+use crate::hypervisor::virtual_machine::hvf::{HvfSurrogateVm, HvfVm};
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(any(kvm, mshv3, hvf))]
@@ -44,6 +44,8 @@ use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
     RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
 };
+#[cfg(hvf)]
+use crate::hypervisor::{HvfInterruptTarget, MacOSInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -70,36 +72,62 @@ impl HyperlightVm {
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
         // TODO: support gdb on aarch64
         type VmType = Box<dyn VirtualMachine>;
-        let vm: VmType = match get_available_hypervisor() {
-            #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
-            // TODO: mshv support
-            #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
-            #[cfg(hvf)]
-            Some(HypervisorType::Hvf) => Box::new(HvfVm::new().map_err(VmError::CreateVm)?),
-            None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+        #[cfg(any(kvm, mshv3))]
+        let (vm, interrupt_handle): (VmType, Arc<dyn InterruptHandleImpl>) = {
+            let vm: VmType = match get_available_hypervisor() {
+                #[cfg(kvm)]
+                Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+                // TODO: mshv support
+                #[cfg(mshv3)]
+                Some(HypervisorType::Mshv) => {
+                    return Err(CreateHyperlightVmError::NoHypervisorFound);
+                }
+                None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            };
+            let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
+                state: AtomicU8::new(0),
+                tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+                retry_delay: config.get_interrupt_retry_delay(),
+                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+                dropped: AtomicBool::new(false),
+            });
+            (vm, interrupt_handle)
+        };
+        #[cfg(hvf)]
+        let (vm, interrupt_handle): (VmType, Arc<dyn InterruptHandleImpl>) = {
+            // `config` only carries Linux signal settings today.
+            let _ = config;
+            match get_available_hypervisor() {
+                Some(HypervisorType::Hvf) => {
+                    if hvf_surrogate_manager::surrogates_disabled() {
+                        // Direct in-process backend: single VM per process.
+                        let vm = HvfVm::new().map_err(VmError::CreateVm)?;
+                        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+                            Arc::new(MacOSInterruptHandle {
+                                state: AtomicU8::new(0),
+                                target: HvfInterruptTarget::Local(vm.vcpu_id()),
+                                dropped: AtomicBool::new(false),
+                            });
+                        (Box::new(vm) as VmType, interrupt_handle)
+                    } else {
+                        // Surrogate backend: the VM lives in a pooled
+                        // surrogate process; cancellation goes over the
+                        // shared socket writer.
+                        let vm = HvfSurrogateVm::new().map_err(VmError::CreateVm)?;
+                        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+                            Arc::new(MacOSInterruptHandle {
+                                state: AtomicU8::new(0),
+                                target: HvfInterruptTarget::Remote(vm.cancel_writer()),
+                                dropped: AtomicBool::new(false),
+                            });
+                        (Box::new(vm) as VmType, interrupt_handle)
+                    }
+                }
+                None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            }
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
             .map_err(VmError::Register)?;
-        #[cfg(any(kvm, mshv3))]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
-        #[cfg(hvf)]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = {
-            // `config` only carries Linux signal settings today.
-            let _ = config;
-            Arc::new(MacOSInterruptHandle {
-                state: AtomicU8::new(0),
-                vcpu: vm.vcpu_id(),
-                dropped: AtomicBool::new(false),
-            })
-        };
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
