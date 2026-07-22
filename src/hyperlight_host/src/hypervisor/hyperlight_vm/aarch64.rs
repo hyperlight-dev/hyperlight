@@ -17,24 +17,33 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
+#[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicU64;
+#[cfg(any(kvm, mshv3, hvf))]
+use std::sync::atomic::{AtomicBool, AtomicU8};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
 };
+use crate::hypervisor::InterruptHandleImpl;
+#[cfg(any(kvm, mshv3))]
+use crate::hypervisor::LinuxInterruptHandle;
+#[cfg(hvf)]
+use crate::hypervisor::MacOSInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(hvf)]
+use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
-#[cfg(kvm)]
+#[cfg(any(kvm, mshv3, hvf))]
 use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
     RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
 };
-use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -67,10 +76,13 @@ impl HyperlightVm {
             // TODO: mshv support
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            #[cfg(hvf)]
+            Some(HypervisorType::Hvf) => Box::new(HvfVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
             .map_err(VmError::Register)?;
+        #[cfg(any(kvm, mshv3))]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
             state: AtomicU8::new(0),
             tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
@@ -78,6 +90,16 @@ impl HyperlightVm {
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
             dropped: AtomicBool::new(false),
         });
+        #[cfg(hvf)]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = {
+            // `config` only carries Linux signal settings today.
+            let _ = config;
+            Arc::new(MacOSInterruptHandle {
+                state: AtomicU8::new(0),
+                vcpu: vm.vcpu_id(),
+                dropped: AtomicBool::new(false),
+            })
+        };
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;

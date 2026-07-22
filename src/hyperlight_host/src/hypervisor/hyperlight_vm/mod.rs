@@ -422,13 +422,15 @@ impl HyperlightVm {
         &mut self,
         region: &MemoryRegion,
     ) -> std::result::Result<(), MapRegionError> {
+        #[allow(clippy::useless_conversion, clippy::clone_on_copy)]
+        let host_region_start: usize = region.host_region.start.clone().into();
+        #[allow(clippy::useless_conversion, clippy::clone_on_copy)]
+        let host_region_end: usize = region.host_region.end.clone().into();
         if [
             region.guest_region.start,
             region.guest_region.end,
-            #[allow(clippy::useless_conversion)]
-            region.host_region.start.into(),
-            #[allow(clippy::useless_conversion)]
-            region.host_region.end.into(),
+            host_region_start,
+            host_region_end,
         ]
         .iter()
         .any(|x| x % self.page_size != 0)

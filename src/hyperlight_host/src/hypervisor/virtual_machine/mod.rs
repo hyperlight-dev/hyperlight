@@ -28,6 +28,9 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
+/// HVF (Hypervisor.framework) functionality (macOS, aarch64)
+#[cfg(hvf)]
+pub(crate) mod hvf;
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
 pub(crate) mod kvm;
@@ -77,6 +80,12 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 } else {
                     None
                 }
+            } else if #[cfg(hvf)] {
+                if hvf::is_hypervisor_present() {
+                    Some(HypervisorType::Hvf)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -102,6 +111,9 @@ pub(crate) enum HypervisorType {
 
     #[cfg(target_os = "windows")]
     Whp,
+
+    #[cfg(hvf)]
+    Hvf,
 }
 
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
@@ -145,10 +157,10 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        any(target_os = "windows", feature = "hw-interrupts"),
+        any(target_os = "windows", feature = "hw-interrupts", hvf),
         expect(
             dead_code,
-            reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
+            reason = "Retry() is never constructed on Windows, with hw-interrupts (EAGAIN causes continue instead), or on HVF"
         )
     )]
     Retry(),
@@ -305,6 +317,9 @@ pub enum HypervisorError {
     #[cfg(target_os = "windows")]
     #[error("Windows error: {0}")]
     WindowsError(#[from] windows_result::Error),
+    #[cfg(hvf)]
+    #[error("HVF error: {0:#x}")]
+    HvfError(u32),
 }
 
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
@@ -383,6 +398,10 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
+    /// Get the HVF vCPU ID, used to construct the interrupt handle
+    /// (`hv_vcpus_exit` may be called from any thread)
+    #[cfg(hvf)]
+    fn vcpu_id(&self) -> u64;
 }
 
 #[cfg(test)]

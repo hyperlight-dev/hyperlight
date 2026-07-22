@@ -41,6 +41,8 @@ pub(crate) mod hyperlight_vm;
 use std::fmt::Debug;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+#[cfg(any(target_os = "windows", hvf))]
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(kvm, mshv3))]
@@ -456,7 +458,135 @@ impl InterruptHandle for WindowsInterruptHandle {
     }
 }
 
-#[cfg(all(test, any(target_os = "windows", kvm)))]
+#[cfg(hvf)]
+#[derive(Debug)]
+pub(super) struct MacOSInterruptHandle {
+    /// Atomic value packing vcpu execution state.
+    ///
+    /// Bit layout:
+    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
+    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
+    ///
+    /// `hv_vcpus_exit()` forces an immediate exit of a running vCPU and is a
+    /// no-op-safe call otherwise, but we still track the RUNNING_BIT to
+    /// report whether the vCPU was actually interrupted.
+    ///
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
+    pub(super) state: AtomicU8,
+
+    /// The HVF vCPU ID to interrupt. `hv_vcpus_exit` is documented as
+    /// callable from any thread, and vCPU IDs are kernel-validated (a stale
+    /// cancel of a destroyed vCPU simply fails), so no lock is needed to
+    /// guard against concurrent vCPU destruction.
+    pub(super) vcpu: u64,
+
+    /// Whether the corresponding VM has been dropped.
+    pub(super) dropped: AtomicBool,
+}
+
+#[cfg(hvf)]
+impl MacOSInterruptHandle {
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
+
+    /// Force the vCPU out of `hv_vcpu_run` if it is currently running.
+    fn interrupt(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in set_running()
+        let state = self.state.load(Ordering::Acquire);
+        if state & Self::RUNNING_BIT == 0 {
+            return false;
+        }
+
+        if self.dropped.load(Ordering::Acquire) {
+            return false;
+        }
+
+        // SAFETY: `hv_vcpus_exit` may be called from any thread, and the
+        // vCPU ID is kernel-validated, so a stale cancel after the vCPU was
+        // destroyed fails harmlessly.
+        unsafe {
+            applevisor_sys::hv_vcpus_exit(&self.vcpu, 1)
+                == applevisor_sys::hv_error_t::HV_SUCCESS as i32
+        }
+    }
+}
+
+#[cfg(hvf)]
+impl InterruptHandleImpl for MacOSInterruptHandle {
+    fn set_running(&self) {
+        // Release ordering to ensure prior memory operations are visible when another thread observes running=true
+        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in kill()
+        // This ensures we see the CANCEL_BIT set by the interrupt thread
+        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
+    }
+
+    fn clear_cancel(&self) {
+        // Release ordering to ensure that any operations from the previous run()
+        // are visible to other threads. While this is typically called by the vcpu thread
+        // at the start of run(), the VM itself can move between threads across guest calls.
+        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    fn clear_running(&self) {
+        // Release ordering to ensure all vcpu operations are visible before clearing running
+        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    fn is_debug_interrupted(&self) -> bool {
+        #[cfg(gdb)]
+        {
+            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
+        }
+        #[cfg(not(gdb))]
+        {
+            false
+        }
+    }
+
+    #[cfg(gdb)]
+    fn clear_debug_interrupt(&self) {
+        self.state
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+    }
+
+    fn set_dropped(&self) {
+        // Release ordering to ensure all VM cleanup operations are visible
+        // to any thread that checks dropped() via Acquire
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(hvf)]
+impl InterruptHandle for MacOSInterruptHandle {
+    fn kill(&self) -> bool {
+        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
+        // when it checks is_cancelled() with Acquire ordering
+        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+        self.interrupt()
+    }
+
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        self.state
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+        self.interrupt()
+    }
+
+    fn dropped(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in set_dropped()
+        // This ensures we see all VM cleanup operations that happened before drop
+        self.dropped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(all(test, any(target_os = "windows", kvm, hvf)))]
 pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
