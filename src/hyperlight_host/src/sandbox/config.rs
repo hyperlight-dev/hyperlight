@@ -142,19 +142,19 @@ impl SandboxConfiguration {
     }
 
     /// Sets the interrupt retry delay
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn set_interrupt_retry_delay(&mut self, delay: Duration) {
         self.interrupt_retry_delay = delay;
     }
 
     /// Get the delay between retries for interrupts
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn get_interrupt_retry_delay(&self) -> Duration {
         self.interrupt_retry_delay
     }
 
     /// Get the signal offset from `SIGRTMIN` used to determine the signal number for interrupting the VCPU thread
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn get_interrupt_vcpu_sigrtmin_offset(&self) -> u8 {
         self.interrupt_vcpu_sigrtmin_offset
     }

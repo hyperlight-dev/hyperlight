@@ -36,6 +36,8 @@ use tracing::{Span, instrument};
 use crate::HyperlightError;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
+#[cfg(target_os = "macos")]
+use crate::mem::memory_region::{HostGuestMemoryRegion, HostRegionBase, MemoryRegionKind};
 #[cfg(target_os = "windows")]
 use crate::mem::memory_region::{HostRegionBase, MemoryRegionKind};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -44,7 +46,7 @@ use crate::{Result, log_then_return};
 /// A prepared (host-side) file mapping ready to be applied to a VM.
 ///
 /// Created by [`prepare_file_cow`]. The host-side OS resources (file
-/// mapping handle + view on Windows, mmap on Linux) are held here
+/// mapping handle + view on Windows, mmap on Unix) are held here
 /// until consumed by the VM-side apply step.
 ///
 /// If dropped without being consumed, the `Drop` impl releases all
@@ -70,9 +72,9 @@ pub(crate) enum HostFileResources {
         mapping_handle: HandleWrapper,
         view_base: *mut c_void,
     },
-    /// Linux: `mmap` base pointer.
-    #[cfg(target_os = "linux")]
-    Linux {
+    /// Unix: `mmap` base pointer.
+    #[cfg(unix)]
+    Unix {
         mmap_base: *mut c_void,
         mmap_size: usize,
     },
@@ -103,8 +105,8 @@ impl Drop for PreparedFileMapping {
                         tracing::error!("PreparedFileMapping::drop: CloseHandle failed: {:?}", e);
                     }
                 },
-                #[cfg(target_os = "linux")]
-                HostFileResources::Linux {
+                #[cfg(unix)]
+                HostFileResources::Unix {
                     mmap_base,
                     mmap_size,
                 } => unsafe {
@@ -121,7 +123,7 @@ impl Drop for PreparedFileMapping {
 }
 
 // SAFETY: The raw pointers in HostFileResources point to kernel-managed
-// mappings (Windows file mapping views / Linux mmap regions), not aliased
+// mappings (Windows file mapping views / Unix mmap regions), not aliased
 // user-allocated heap memory. Ownership is fully contained within the
 // struct, and cleanup APIs (UnmapViewOfFile, CloseHandle, munmap) are
 // thread-safe.
@@ -168,8 +170,8 @@ impl PreparedFileMapping {
                     region_type: MemoryRegionType::MappedFile,
                 })
             }
-            #[cfg(target_os = "linux")]
-            HostFileResources::Linux {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            HostFileResources::Unix {
                 mmap_base,
                 mmap_size,
             } => {
@@ -183,6 +185,36 @@ impl PreparedFileMapping {
                 Ok(MemoryRegion {
                     host_region: *mmap_base as usize
                         ..(*mmap_base as usize).wrapping_add(*mmap_size),
+                    guest_region: guest_start..guest_end,
+                    flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+                    region_type: MemoryRegionType::MappedFile,
+                })
+            }
+            #[cfg(target_os = "macos")]
+            HostFileResources::Unix {
+                mmap_base,
+                mmap_size,
+            } => {
+                let guest_start = self.guest_base as usize;
+                let guest_end = guest_start.checked_add(self.size).ok_or_else(|| {
+                    crate::HyperlightError::Error(format!(
+                        "guest_region overflow: {:#x} + {:#x}",
+                        guest_start, self.size
+                    ))
+                })?;
+                // MappedFile regions stay file-backed (the surrogate
+                // maps them by path, not by shm object), so there is no
+                // shm name to carry here; `base` is the host VA of the
+                // mapping, used by the in-process HVF backend.
+                let host_base = HostRegionBase {
+                    name: String::new(),
+                    offset: 0,
+                    base: *mmap_base as usize,
+                };
+                let host_end =
+                    <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base.clone(), *mmap_size);
+                Ok(MemoryRegion {
+                    host_region: host_base..host_end,
                     guest_region: guest_start..guest_end,
                     flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
                     region_type: MemoryRegionType::MappedFile,
@@ -348,7 +380,7 @@ pub(crate) fn prepare_file_cow(file_path: &Path, guest_base: u64) -> Result<Prep
         Ok(PreparedFileMapping {
             guest_base,
             size,
-            host_resources: Some(HostFileResources::Linux {
+            host_resources: Some(HostFileResources::Unix {
                 mmap_base: base,
                 mmap_size: size,
             }),

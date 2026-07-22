@@ -120,10 +120,10 @@ impl<'a> BaseGpaRegion<&'a [u8], &'a [u8]> {
             BaseGpaRegion::Snapshot(sn) => sn,
             BaseGpaRegion::Scratch(sc) => sc,
             BaseGpaRegion::Mmap(r) => unsafe {
-                #[allow(clippy::useless_conversion)]
-                let host_region_base: usize = r.host_region.start.into();
-                #[allow(clippy::useless_conversion)]
-                let host_region_end: usize = r.host_region.end.into();
+                #[allow(clippy::useless_conversion, clippy::clone_on_copy)]
+                let host_region_base: usize = r.host_region.start.clone().into();
+                #[allow(clippy::useless_conversion, clippy::clone_on_copy)]
+                let host_region_end: usize = r.host_region.end.clone().into();
                 let len = host_region_end - host_region_base;
                 std::slice::from_raw_parts(host_region_base as *const u8, len)
             },

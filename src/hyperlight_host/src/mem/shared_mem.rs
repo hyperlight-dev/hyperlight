@@ -18,7 +18,7 @@ use std::any::type_name;
 use std::ffi::c_void;
 use std::io::Error;
 use std::mem::{align_of, size_of};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
@@ -99,6 +99,20 @@ macro_rules! generate_writer {
 pub struct HostMapping {
     #[cfg(not(target_os = "windows"))]
     mmap: Mmap,
+    /// Number of usable bytes between the guard regions, i.e. the
+    /// size reported by [`SharedMemory::mem_size`]. This is the
+    /// originally requested size; the mapped span between the guards
+    /// may be larger, since it is rounded up to the host page size so
+    /// that the trailing guard starts on a host-page boundary (see
+    /// [`guard_page_size`]).
+    #[cfg(not(target_os = "windows"))]
+    usable_size: usize,
+    /// The POSIX shm object backing `mmap`. Kept open (and named) for
+    /// as long as the mapping exists so a surrogate process can map the
+    /// same memory by name. Declared after `mmap` so that drop order is
+    /// `munmap` first, then `close` + `shm_unlink`.
+    #[cfg(target_os = "macos")]
+    shm: ShmBacking,
     #[cfg(target_os = "windows")]
     mapping: WindowsMapping,
 }
@@ -177,15 +191,96 @@ impl HostMapping {
     }
 }
 
+/// RAII guard for a POSIX shm object created with `shm_open`. Closes
+/// the fd and unlinks the name on drop.
+///
+/// macOS only: all guest memory is backed by named shm objects so that
+/// the HVF surrogate process (which owns the VM when multiple sandboxes
+/// coexist; HVF allows only one VM per process) can map the same memory
+/// by name.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ShmBacking {
+    /// Object name as passed to `shm_open` (e.g. `/hl-<pid>-<hex>`)
+    name: String,
+    /// Open descriptor for the object
+    fd: std::os::fd::RawFd,
+}
+
+#[cfg(target_os = "macos")]
+impl ShmBacking {
+    /// Create a new, uniquely-named shm object of `size` bytes.
+    ///
+    /// The name has the form `/hl-<pid>-<random-hex>`; macOS limits shm
+    /// names to `PSHMNAMELEN` (31) characters, so keep it short.
+    fn create(size: usize) -> Result<Self> {
+        use std::ffi::CString;
+
+        use rand::RngExt;
+
+        let pid = std::process::id();
+        let mut rng = rand::rng();
+        // Retry on the (unlikely) name collision with an existing object.
+        loop {
+            let name = format!("/hl-{pid:x}-{:016x}", rng.random::<u64>());
+            debug_assert!(name.len() <= 31, "shm name too long: {name}");
+            let c_name = CString::new(name.as_str())
+                .map_err(|e| new_error!("shm name contains NUL byte: {}", e))?;
+            // SAFETY: `c_name` is a valid NUL-terminated string and the
+            // flags/mode are valid; on success the returned fd is ours.
+            let fd = unsafe {
+                libc::shm_open(
+                    c_name.as_ptr(),
+                    libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                let err = Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST) {
+                    continue;
+                }
+                log_then_return!(HyperlightError::MemoryAllocationFailed(err.raw_os_error()));
+            }
+            // SAFETY: `fd` is a valid descriptor for the object we just
+            // created. On failure, clean up the object before returning.
+            if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
+                let err = Error::last_os_error();
+                unsafe {
+                    libc::close(fd);
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+                log_then_return!(HyperlightError::MemoryAllocationFailed(err.raw_os_error()));
+            }
+            return Ok(Self { name, fd });
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ShmBacking {
+    fn drop(&mut self) {
+        // Errors are ignored: the surrogate process may have unlinked
+        // the name first, and there is nothing useful to do about a
+        // failed close here anyway.
+        unsafe {
+            libc::close(self.fd);
+            if let Ok(c_name) = std::ffi::CString::new(self.name.as_str()) {
+                libc::shm_unlink(c_name.as_ptr());
+            }
+        }
+    }
+}
+
 /// RAII guard for an `mmap` reservation. Calls `munmap` on drop.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[derive(Debug)]
 struct Mmap {
     base: *mut c_void,
     len: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl Drop for Mmap {
     fn drop(&mut self) {
         // SAFETY: `self.base` and `self.len` are exactly what was
@@ -200,6 +295,102 @@ impl Drop for Mmap {
             }
         }
     }
+}
+
+/// Size of each guard region surrounding a shared memory mapping.
+///
+/// `mprotect` requires host-page-aligned addresses and lengths, so a
+/// guard region must span a whole host page. The host page size can
+/// exceed the guest page size ([`PAGE_SIZE_USIZE`]) — e.g. 16 KiB on
+/// Apple silicon, or 64 KiB on some aarch64 Linux kernels — so use
+/// the larger of the two.
+#[cfg(unix)]
+fn guard_page_size() -> usize {
+    page_size::get().max(PAGE_SIZE_USIZE)
+}
+
+/// macOS: create a `[guard][usable][guard]` mapping backed by a named
+/// POSIX shm object, so that the HVF surrogate process can map the same
+/// memory by name.
+///
+/// The layout matches the anonymous-mapping unix path: the shm object
+/// (and the mapping) spans both guard pages, the usable region starts
+/// one host page ([`guard_page_size`]) into the object, and the span
+/// between the guards is rounded up to the host page size. Only
+/// `usable_size` bytes are exposed as usable memory (via
+/// [`HostMapping::usable_size`]); the padding is mapped read-write but
+/// is otherwise invisible.
+#[cfg(target_os = "macos")]
+fn shm_backed_host_mapping(usable_size: usize) -> Result<HostMapping> {
+    use libc::{MAP_FAILED, MAP_SHARED, PROT_NONE, PROT_READ, PROT_WRITE, mmap, mprotect};
+
+    let guard_size = guard_page_size();
+    let mapped_size = usable_size
+        .checked_next_multiple_of(guard_size)
+        .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
+    let total_size = mapped_size
+        .checked_add(2 * guard_size) // guard region around the memory
+        .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
+
+    // usize and isize are guaranteed to be the same size, and
+    // isize::MAX should be positive, so this cast should be safe.
+    if total_size > isize::MAX as usize {
+        return Err(HyperlightError::MemoryRequestTooBig(
+            total_size,
+            isize::MAX as usize,
+        ));
+    }
+
+    let shm = ShmBacking::create(total_size)?;
+
+    // SAFETY: `shm.fd` is a valid descriptor for a shm object of
+    // `total_size` bytes, and mapping it in full with `MAP_SHARED` has
+    // no other preconditions; the kernel picks the address.
+    let addr = unsafe {
+        mmap(
+            null_mut(),
+            total_size as libc::size_t,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            shm.fd,
+            0 as libc::off_t,
+        )
+    };
+    if addr == MAP_FAILED {
+        log_then_return!(HyperlightError::MmapFailed(
+            Error::last_os_error().raw_os_error()
+        ));
+    }
+    let mmap = Mmap {
+        base: addr,
+        len: total_size,
+    };
+
+    // protect the guard regions (one host page each)
+    let res = unsafe { mprotect(mmap.base, guard_size, PROT_NONE) };
+    if res != 0 {
+        return Err(HyperlightError::MprotectFailed(
+            Error::last_os_error().raw_os_error(),
+        ));
+    }
+    let res = unsafe {
+        mprotect(
+            (mmap.base as *const u8).add(total_size - guard_size) as *mut c_void,
+            guard_size,
+            PROT_NONE,
+        )
+    };
+    if res != 0 {
+        return Err(HyperlightError::MprotectFailed(
+            Error::last_os_error().raw_os_error(),
+        ));
+    }
+
+    Ok(HostMapping {
+        mmap,
+        usable_size,
+        shm,
+    })
 }
 
 /// RAII guard for a Win32 mapped view. Calls `UnmapViewOfFile` on drop.
@@ -401,7 +592,14 @@ pub trait SharedMemory {
     /// need to be marked as `unsafe` because doing anything with this
     /// pointer itself requires `unsafe`.
     fn base_addr(&self) -> usize {
-        self.region().ptr() as usize + PAGE_SIZE_USIZE
+        #[cfg(not(windows))]
+        {
+            self.region().ptr() as usize + guard_page_size()
+        }
+        #[cfg(windows)]
+        {
+            self.region().ptr() as usize + PAGE_SIZE_USIZE
+        }
     }
 
     /// Return the base address of the host mapping of this region as
@@ -409,14 +607,30 @@ pub trait SharedMemory {
     /// not need to be marked as `unsafe` because doing anything with
     /// this pointer itself requires `unsafe`.
     fn base_ptr(&self) -> *mut u8 {
-        self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
+        #[cfg(not(windows))]
+        {
+            self.region().ptr().wrapping_add(guard_page_size())
+        }
+        #[cfg(windows)]
+        {
+            self.region().ptr().wrapping_add(PAGE_SIZE_USIZE)
+        }
     }
 
     /// Return the length of usable memory contained in `self`.
     /// The returned size does not include the size of the surrounding
-    /// guard pages.
+    /// guard regions, nor (on unix) any padding inserted to align the
+    /// trailing guard to the host page size: it is exactly the size
+    /// requested when the region was created.
     fn mem_size(&self) -> usize {
-        self.region().size() - 2 * PAGE_SIZE_USIZE
+        #[cfg(not(windows))]
+        {
+            self.region().usable_size
+        }
+        #[cfg(windows)]
+        {
+            self.region().size() - 2 * PAGE_SIZE_USIZE
+        }
     }
 
     /// Return the raw base address of the host mapping, including the
@@ -437,10 +651,21 @@ pub trait SharedMemory {
     /// On Linux this returns a raw `usize` pointer. On Windows it
     /// returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
     /// that carries the file-mapping handle metadata needed by WHP.
+    /// On macOS it returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
+    /// that carries the shm object name + offset needed by the HVF
+    /// surrogate process.
     fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         {
             self.base_addr()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            super::memory_region::HostRegionBase {
+                name: self.region().shm.name.clone(),
+                offset: guard_page_size(),
+                base: self.base_addr(),
+            }
         }
         #[cfg(windows)]
         {
@@ -537,7 +762,7 @@ impl ExclusiveSharedMemory {
     /// size in bytes. The region will be surrounded by guard pages.
     ///
     /// Return `Err` if shared memory could not be allocated.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
         use libc::{
@@ -551,16 +776,31 @@ impl ExclusiveSharedMemory {
             return Err(new_error!("Cannot create shared memory with size 0"));
         }
 
-        let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE) // guard page around the memory
-            .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
-
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if min_size_bytes % PAGE_SIZE_USIZE != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
                 PAGE_SIZE_USIZE
             ));
         }
+
+        // The guard regions must each span a whole host page:
+        // `mprotect` requires host-page-aligned addresses and lengths,
+        // and the host page size may exceed the guest page size (see
+        // `guard_page_size`).
+        let guard_size = guard_page_size();
+
+        // Round the mapped span between the guards up to a host-page
+        // multiple so that the trailing guard starts on a host-page
+        // boundary. Only the requested `min_size_bytes` is exposed as
+        // usable memory (via `HostMapping::usable_size`); the padding
+        // is mapped read-write but is otherwise invisible.
+        let mapped_size = min_size_bytes
+            .checked_next_multiple_of(guard_size)
+            .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
+
+        let total_size = mapped_size
+            .checked_add(2 * guard_size) // guard region around the memory
+            .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
 
         // usize and isize are guaranteed to be the same size, and
         // isize::MAX should be positive, so this cast should be safe.
@@ -597,10 +837,10 @@ impl ExclusiveSharedMemory {
             len: total_size,
         };
 
-        // protect the guard pages
+        // protect the guard regions (one host page each)
         #[cfg(not(miri))]
         {
-            let res = unsafe { mprotect(mmap.base, PAGE_SIZE_USIZE, PROT_NONE) };
+            let res = unsafe { mprotect(mmap.base, guard_size, PROT_NONE) };
             if res != 0 {
                 return Err(HyperlightError::MprotectFailed(
                     Error::last_os_error().raw_os_error(),
@@ -608,8 +848,8 @@ impl ExclusiveSharedMemory {
             }
             let res = unsafe {
                 mprotect(
-                    (mmap.base as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
-                    PAGE_SIZE_USIZE,
+                    (mmap.base as *const u8).add(total_size - guard_size) as *mut c_void,
+                    guard_size,
                     PROT_NONE,
                 )
             };
@@ -630,7 +870,46 @@ impl ExclusiveSharedMemory {
             // type does have Send and Sync manually impl'd, the Arc
             // is not pointless as the lint suggests.
             #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping { mmap }),
+            region: Arc::new(HostMapping {
+                mmap,
+                usable_size: min_size_bytes,
+            }),
+        })
+    }
+
+    /// Create a new region of shared memory with the given minimum
+    /// size in bytes. The region will be surrounded by guard pages.
+    ///
+    /// On macOS the region is backed by a named POSIX shm object (see
+    /// [`shm_backed_host_mapping`]) so that the HVF surrogate process
+    /// can map the same memory by name.
+    ///
+    /// Return `Err` if shared memory could not be allocated.
+    #[cfg(target_os = "macos")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn new(min_size_bytes: usize) -> Result<Self> {
+        if min_size_bytes == 0 {
+            return Err(new_error!("Cannot create shared memory with size 0"));
+        }
+
+        if min_size_bytes % PAGE_SIZE_USIZE != 0 {
+            return Err(new_error!(
+                "shared memory must be a multiple of {}",
+                PAGE_SIZE_USIZE
+            ));
+        }
+
+        Ok(Self {
+            // HostMapping is only non-Send/Sync because raw pointers
+            // are not ("as a lint", as the Rust docs say). We don't
+            // want to mark HostMapping Send/Sync immediately, because
+            // that could socially imply that it's "safe" to use
+            // unsafe accesses from multiple threads at once. Instead, we
+            // directly impl Send and Sync on this type. Since this
+            // type does have Send and Sync manually impl'd, the Arc
+            // is not pointless as the lint suggests.
+            #[allow(clippy::arc_with_non_send_sync)]
+            region: Arc::new(shm_backed_host_mapping(min_size_bytes)?),
         })
     }
 
@@ -1560,10 +1839,11 @@ impl ReadonlySharedMemory {
         })
     }
 
-    /// Linux: reserve `[guard][blob][guard]` as one anonymous
+    /// Unix: reserve `[guard][blob][guard]` as one anonymous
     /// `PROT_NONE` mapping, then `MAP_FIXED` the file over the
-    /// middle slot.
-    #[cfg(target_os = "linux")]
+    /// middle slot. Each guard spans one host page (see
+    /// [`guard_page_size`]).
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
         use std::os::unix::io::AsRawFd;
 
@@ -1574,7 +1854,17 @@ impl ReadonlySharedMemory {
             mmap, off_t, size_t,
         };
 
-        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+        // The guard regions must each span a whole host page (see
+        // `guard_page_size`), so round the middle slot up to a
+        // host-page multiple to keep the trailing guard host-page
+        // aligned. Only `len` bytes are exposed as usable memory; any
+        // padding between the end of the file and the trailing guard
+        // keeps the reservation's `PROT_NONE`.
+        let guard_size = guard_page_size();
+        let mapped_size = len.checked_next_multiple_of(guard_size).ok_or_else(|| {
+            new_error!("Memory required for file-backed mapping exceeded usize::MAX")
+        })?;
+        let total_size = mapped_size.checked_add(2 * guard_size).ok_or_else(|| {
             new_error!("Memory required for file-backed mapping exceeded usize::MAX")
         })?;
 
@@ -1617,9 +1907,9 @@ impl ReadonlySharedMemory {
         let file_prot = PROT_READ | PROT_WRITE;
         #[cfg(not(mshv3))]
         let file_prot = PROT_READ;
-        // SAFETY: `total_size = len + 2 * PAGE_SIZE_USIZE`, so
-        // `base + PAGE_SIZE_USIZE` is in-bounds of the reservation.
-        let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
+        // SAFETY: `total_size = mapped_size + 2 * guard_size`, so
+        // `base + guard_size` is in-bounds of the reservation.
+        let usable_ptr = unsafe { (base as *mut u8).add(guard_size) };
         // SAFETY: `usable_ptr..usable_ptr + len` lies entirely within
         // the reservation owned by `reservation`. `MAP_FIXED`
         // replaces that sub-range in place; on failure the
@@ -1641,11 +1931,34 @@ impl ReadonlySharedMemory {
             ));
         }
 
-        // 3. The first and last pages keep their `PROT_NONE` from the
-        //    anonymous reservation, so no extra `mprotect` is needed.
+        // 3. The first and last host pages keep their `PROT_NONE` from
+        //    the anonymous reservation, so no extra `mprotect` is
+        //    needed.
 
         #[allow(clippy::arc_with_non_send_sync)]
-        Ok(Arc::new(HostMapping { mmap: reservation }))
+        Ok(Arc::new(HostMapping {
+            mmap: reservation,
+            usable_size: len,
+        }))
+    }
+
+    /// macOS: read the file contents into a fresh named POSIX shm
+    /// object with the usual `[guard][blob][guard]` layout (the same
+    /// layout as the mmap'd file has on other unix platforms).
+    ///
+    /// The surrogate process maps guest memory by shm object name — it
+    /// cannot be handed an fd — so mapping the file directly is not an
+    /// option; snapshot files are small, so copying is fine. This is
+    /// exactly the `from_bytes` pattern: allocate shm-backed memory,
+    /// then copy the contents in.
+    #[cfg(target_os = "macos")]
+    fn map_file(file: &std::fs::File, len: usize) -> Result<Arc<HostMapping>> {
+        use std::os::unix::fs::FileExt;
+
+        let mut anon = ExclusiveSharedMemory::new(len)?;
+        file.read_exact_at(anon.as_mut_slice(), 0)
+            .map_err(|e| new_error!("Failed to read file into shared memory: {}", e))?;
+        Ok(anon.region)
     }
 
     /// Windows: reserve `[guard][blob][guard]` as one
@@ -2001,7 +2314,7 @@ mod tests {
     /// Test that verifies memory is properly unmapped when all SharedMemory
     /// references are dropped.
     #[test]
-    #[cfg(all(target_os = "linux", not(miri)))]
+    #[cfg(all(unix, not(miri)))]
     fn test_drop() {
         use proc_maps::get_process_maps;
 
@@ -2022,9 +2335,12 @@ mod tests {
         let (hshm1, gshm) = eshm.build();
         let hshm2 = hshm1.clone();
 
-        // Use the usable memory region (not raw), since mprotect splits the mapping
+        // Use the usable memory region (not raw), since mprotect splits the mapping.
+        // The span between the guards is rounded up to the host page
+        // size, which may exceed PAGE_SIZE_USIZE (e.g. 16 KiB on Apple
+        // silicon); `mem_size()` only reports the requested size.
         let base_ptr = hshm1.base_ptr() as usize;
-        let mem_size = hshm1.mem_size();
+        let mem_size = hshm1.mem_size().next_multiple_of(super::guard_page_size());
 
         // Helper to check if exact mapping exists (matching both address and size)
         let has_exact_mapping = |ptr: usize, size: usize| -> bool {
@@ -2458,7 +2774,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     mod guard_page_crash_test {
         use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 
@@ -2470,6 +2786,14 @@ mod tests {
         fn setup_signal_handler() {
             unsafe {
                 signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
+                    std::process::exit(TEST_EXIT_CODE.into());
+                })
+                .unwrap();
+                // macOS reports accesses to PROT_NONE pages as
+                // EXC_BAD_ACCESS/KERN_PROTECTION_FAILURE, which is
+                // delivered as SIGBUS rather than SIGSEGV.
+                #[cfg(target_os = "macos")]
+                signal_hook_registry::register_signal_unchecked(libc::SIGBUS, || {
                     std::process::exit(TEST_EXIT_CODE.into());
                 })
                 .unwrap();
@@ -2514,18 +2838,17 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
         fn guard_page_testing_shim() {
-            let tests = vec!["read", "write", "exec"];
+            let tests = [test_path(read), test_path(write), test_path(exec)];
+            // Re-execute the current test binary so the subprocess
+            // runs with the same feature set as this test run. A
+            // nested `cargo test` would rebuild with default
+            // features, which do not compile on every supported host
+            // (e.g. the default `kvm`/`mshv3` features fail to build
+            // on macOS).
+            let exe = std::env::current_exe().expect("current_exe");
             for test in tests {
-                let triple = std::env::var("TARGET_TRIPLE").ok();
-                let target_args = if let Some(triple) = triple.filter(|t| !t.is_empty()) {
-                    vec!["--target".to_string(), triple.to_string()]
-                } else {
-                    vec![]
-                };
-                let output = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host", "--lib"])
-                    .args(target_args)
-                    .args(["--", "--ignored", test])
+                let output = std::process::Command::new(&exe)
+                    .args(["--ignored", "--exact", "--test-threads=1", test])
                     .stdin(std::process::Stdio::null())
                     .output()
                     .expect("Unable to launch tests");
@@ -2543,6 +2866,17 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// Derive a libtest filter path for a test function from its
+        /// type name. Strips the leading crate-name segment that
+        /// `type_name` includes but libtest does not.
+        fn test_path<F: Fn()>(_: F) -> &'static str {
+            let full = std::any::type_name::<F>();
+            let (_, rest) = full
+                .split_once("::")
+                .expect("type_name of a function item is always qualified by the crate name");
+            rest
         }
     }
 
@@ -2654,14 +2988,25 @@ mod tests {
                 println!("survived_guard");
             }
 
-            /// Loads from the byte immediately after the mapping.
+            /// Loads from the byte immediately after the mapped span.
             #[test]
             #[ignore]
             pub(super) fn trailing_guard_page_traps() {
                 let tmp = make_temp_file(PAGE_SIZE_USIZE);
                 let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), PAGE_SIZE_USIZE)
                     .expect("from_file should succeed");
-                let guard_ptr = unsafe { rsm.base_ptr().add(rsm.mem_size()) };
+                // The mapped span between the guards is `mem_size()`
+                // rounded up to the guard size, so the trailing guard
+                // starts past the padding. The guard spans one host
+                // page on unix, which may exceed PAGE_SIZE_USIZE
+                // (e.g. 16 KiB on Apple silicon).
+                #[cfg(unix)]
+                let mapped_span = rsm
+                    .mem_size()
+                    .next_multiple_of(crate::mem::shared_mem::guard_page_size());
+                #[cfg(windows)]
+                let mapped_span = rsm.mem_size();
+                let guard_ptr = unsafe { rsm.base_ptr().add(mapped_span) };
                 println!("reached_guard");
                 let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
                 println!("survived_guard");
@@ -2761,13 +3106,22 @@ mod tests {
         }
 
         /// Returns true if `status` indicates the process died from a
-        /// memory access fault (SIGSEGV on unix, STATUS_ACCESS_VIOLATION
-        /// (or 0xDEAD) on Windows).
+        /// memory access fault (SIGSEGV on unix, SIGBUS on macOS —
+        /// which reports faults on PROT_NONE pages as
+        /// EXC_BAD_ACCESS/KERN_PROTECTION_FAILURE delivered as SIGBUS —
+        /// or STATUS_ACCESS_VIOLATION (or 0xDEAD) on Windows).
         fn killed_by_access_violation(status: &std::process::ExitStatus) -> bool {
             #[cfg(unix)]
             {
                 use std::os::unix::process::ExitStatusExt;
-                status.signal() == Some(libc::SIGSEGV)
+                let access_violation_signals = if cfg!(target_os = "macos") {
+                    [libc::SIGSEGV, libc::SIGBUS].as_slice()
+                } else {
+                    [libc::SIGSEGV].as_slice()
+                };
+                status
+                    .signal()
+                    .is_some_and(|s| access_violation_signals.contains(&s))
             }
             #[cfg(windows)]
             {
