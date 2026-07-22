@@ -134,6 +134,7 @@ compile_error!(
 );
 
 /// The various reasons a VM's vCPU can exit
+#[cfg_attr(not(any(kvm, mshv3, target_os = "windows", hvf)), allow(dead_code))]
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
@@ -318,8 +319,8 @@ pub enum HypervisorError {
     #[error("Windows error: {0}")]
     WindowsError(#[from] windows_result::Error),
     #[cfg(hvf)]
-    #[error("HVF error: {0:#x}")]
-    HvfError(u32),
+    #[error("{0}")]
+    HvfError(#[from] hyperlight_hvf::core::HvfError),
     #[cfg(hvf)]
     #[error("HVF surrogate error: {0}")]
     HvfSurrogateError(String),
@@ -391,10 +392,12 @@ pub(crate) trait VirtualMachine: Debug + Send {
 
     /// Single-operation vCPU reset
     #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(not(any(kvm, mshv3, hvf)), allow(dead_code))]
     fn can_reset_vcpu(&self) -> bool {
         false
     }
     #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(not(any(kvm, mshv3, hvf)), allow(dead_code))]
     fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
         Err(ResetVcpuError::NotSupported)
     }

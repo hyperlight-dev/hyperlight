@@ -893,7 +893,7 @@ impl ExclusiveSharedMemory {
             return Err(new_error!("Cannot create shared memory with size 0"));
         }
 
-        if min_size_bytes % PAGE_SIZE_USIZE != 0 {
+        if !min_size_bytes.is_multiple_of(PAGE_SIZE_USIZE) {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
                 PAGE_SIZE_USIZE
