@@ -1,122 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Buffer allocation traits and shared types for virtqueue buffer management.
+//! Owned and segmented virtqueue buffer representations.
 
-use alloc::rc::Rc;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use bytes::{Buf, Bytes};
 use smallvec::{SmallVec, smallvec};
-use thiserror::Error;
 
 use super::access::MemOps;
-
-#[derive(Debug, Error, Copy, Clone)]
-pub enum AllocError {
-    #[error("Invalid region addr {0}")]
-    InvalidAlign(u64),
-    #[error("Invalid free addr {0} and size {1}")]
-    InvalidFree(u64, usize),
-    #[error("Invalid argument")]
-    InvalidArg,
-    #[error("Empty region")]
-    EmptyRegion,
-    #[error("No space available")]
-    NoSpace,
-    #[error("Requested size exceeds pool capacity")]
-    OutOfMemory,
-    #[error("Overflow")]
-    Overflow,
-}
-
-/// Allocation result
-#[derive(Debug, Clone, Copy)]
-pub struct Allocation {
-    /// Starting address of the allocation
-    pub addr: u64,
-    /// Capacity of the allocation in bytes, rounded up to the allocator's slot size.
-    pub len: usize,
-}
-
-/// Trait for buffer providers.
-pub trait BufferProvider {
-    /// Preferred maximum size of one allocation segment.
-    fn max_alloc_len(&self) -> usize {
-        usize::MAX
-    }
-
-    /// Allocate one buffer that can hold at least `len` bytes.
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError>;
-
-    /// Free a previously allocated segment by start address.
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError>;
-
-    /// Allocate scatter/gather segments for a logical payload of `total_len` bytes.
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        if total_len == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let seg_cap = self.max_alloc_len();
-        if seg_cap == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let mut rem = total_len;
-        let mut sgs = SmallVec::<[Allocation; 4]>::new();
-
-        while rem > 0 {
-            let len = rem.min(seg_cap);
-            match self.alloc(len) {
-                Ok(alloc) => {
-                    sgs.push(alloc);
-                    rem -= len;
-                }
-                Err(err) => {
-                    for sg in sgs {
-                        let _res = self.dealloc(sg.addr);
-                        debug_assert!(_res.is_ok(), "dealloc failed: {_res:?}");
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(sgs)
-    }
-}
-
-impl<T: BufferProvider> BufferProvider for Rc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
-    }
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-        (**self).dealloc(addr)
-    }
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
-    }
-}
-
-impl<T: BufferProvider> BufferProvider for Arc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
-    }
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-        (**self).dealloc(addr)
-    }
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
-    }
-}
+use super::pool::{AllocError, Allocation, BufferProvider};
 
 /// Ordered byte segments that make up one virtqueue payload.
 ///
