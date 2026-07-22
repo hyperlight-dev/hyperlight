@@ -33,6 +33,10 @@ pub(crate) mod surrogate_process_manager;
 #[cfg(target_os = "windows")]
 pub mod wrappers;
 
+#[cfg(hvf)]
+/// Pool of HVF surrogate server processes (one HVF VM per process)
+pub(crate) mod hvf_surrogate_manager;
+
 #[cfg(crashdump)]
 pub(crate) mod crashdump;
 
