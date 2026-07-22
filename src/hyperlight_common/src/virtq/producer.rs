@@ -162,7 +162,11 @@ where
         }
     }
 
-    fn dealloc_elems(
+    /// Retire allocations from a completed descriptor chain.
+    ///
+    /// Every element is attempted so one deallocation failure does not strand
+    /// later allocations; the first failure is returned after cleanup.
+    fn retire_elems(
         &self,
         elems: impl IntoIterator<Item = BufferElement>,
     ) -> Result<(), VirtqError> {
@@ -302,39 +306,6 @@ where
         }
         Ok(())
     }
-
-    /// Reset ring, inflight, and pool state to initial values.
-    ///
-    /// # Safety
-    ///
-    /// No outstanding [`UsedChain::Data`] buffers, borrowed segment views, or
-    /// peer accesses to previously submitted descriptors may exist. Resetting
-    /// recycles the same backing addresses, so outstanding zero-copy buffers or
-    /// stale descriptor users could alias memory that is handed out again.
-    ///
-    /// TODO(virtq): find a way to allow guest to keep used chains across resets.
-    pub unsafe fn reset(&mut self) {
-        self.inflight.iter_mut().for_each(|slot| *slot = None);
-        self.pending.clear();
-        self.inner.reset();
-        self.pool.reset();
-    }
-
-    /// Replace the pool and reset ring, inflight, and pending state.
-    ///
-    /// # Safety
-    ///
-    /// No outstanding [`UsedChain::Data`] buffers, borrowed segment views, or
-    /// peer accesses to previously submitted descriptors may exist. The new pool
-    /// may manage the same shared-memory addresses as the old pool, so old
-    /// zero-copy buffers must not outlive this transition.
-    pub unsafe fn reset_with_pool(&mut self, pool: P) {
-        self.pending.clear();
-        self.inflight.iter_mut().for_each(|slot| *slot = None);
-        self.inner.reset();
-        self.pool = pool;
-        self.pool.reset();
-    }
 }
 
 impl<M, N, P> VirtqProducer<M, N, P>
@@ -406,7 +377,7 @@ where
         let written = used.len as usize;
         let Inflight { token, chain } = inf;
 
-        self.dealloc_elems(chain.readables().iter().copied())?;
+        self.retire_elems(chain.readables().iter().copied())?;
 
         let used = if chain.writables().is_empty() {
             UsedChain::Ack(token)
@@ -439,14 +410,14 @@ where
 
         if remaining != 0 {
             let elems = owned.iter().map(|(elem, _)| *elem).chain(free);
-            self.dealloc_elems(elems)?;
+            self.retire_elems(elems)?;
             return Err(VirtqError::InvalidState);
         }
 
         for (elem, len) in &owned {
             if unsafe { self.inner.mem().as_slice(elem.addr, *len) }.is_err() {
                 let elems = owned.iter().map(|(elem, _)| *elem).chain(free);
-                let _ = self.dealloc_elems(elems);
+                let _ = self.retire_elems(elems);
                 return Err(VirtqError::MemoryReadError);
             }
         }
@@ -469,7 +440,7 @@ where
             sgs.push(Bytes::from_owner(owner));
         }
 
-        self.dealloc_elems(free)?;
+        self.retire_elems(free)?;
 
         Ok(Segments::from_smallvec(sgs))
     }
@@ -608,7 +579,8 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
             return Err(VirtqError::InvalidState);
         }
 
-        let mut rollback = Rollback::new(&self.pool);
+        let rd_capacity = self.rd_caps.iter().sum();
+        let mut allocs = AllocTxn::new(&self.pool);
         let mut rd_caps = SmallVec::<[usize; 4]>::new();
         let mut rd_elems = SmallVec::<[BufferElement; 4]>::new();
         let mut wr_elems = SmallVec::<[BufferElement; 4]>::new();
@@ -617,7 +589,7 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
         // The buffer element lengths are initialized to zero and updated as the
         // `SendChain` writes.
         for &cap in &self.rd_caps {
-            let sgs = self.pool.alloc_sg(cap)?;
+            let sgs = allocs.alloc_sg(cap)?;
             let mut remaining = cap;
 
             for alloc in sgs {
@@ -631,7 +603,6 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
                     writable: false,
                 });
                 remaining -= seg_cap;
-                rollback.allocs.push(alloc);
             }
 
             if remaining != 0 {
@@ -643,7 +614,7 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
         // Writable buffer elements are initialized with their full capacity for the device to
         // write into.
         for &cap in &self.wr_caps {
-            let sgs = self.pool.alloc_sg(cap)?;
+            let sgs = allocs.alloc_sg(cap)?;
             for alloc in sgs {
                 let len = checked_descriptor_len(alloc.len)?;
                 wr_elems.push(BufferElement {
@@ -651,7 +622,6 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
                     len,
                     writable: true,
                 });
-                rollback.allocs.push(alloc);
             }
         }
 
@@ -660,43 +630,61 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
             .writables(wr_elems)
             .build()?;
 
-        rollback.release();
+        allocs.commit();
 
         Ok(SendChain {
             mem: self.mem,
             pool: self.pool,
             chain: Some(chain),
             rd_caps,
-            rd_capacity: self.rd_caps.iter().sum(),
+            rd_capacity,
             rd_written: 0,
             write_mode: WriteMode::Unset,
         })
     }
 }
 
-struct Rollback<'a, P: BufferProvider> {
+/// Build-scoped allocation transaction.
+///
+/// `SendChain` and `Inflight` intentionally retain lightweight descriptor
+/// metadata instead of one allocation guard and cloned pool handle per
+/// descriptor. While a valid `BufferChain` is being built, this transaction
+/// provides aggregate RAII: it records every allocated address before the
+/// caller can perform fallible validation and returns them all on drop.
+/// [`commit`](Self::commit) disarms rollback once `SendChain` can take
+/// responsibility for reclaiming the completed chain.
+struct AllocTxn<'a, P: BufferProvider> {
     pool: &'a P,
-    allocs: SmallVec<[Allocation; 8]>,
+    addrs: SmallVec<[u64; 8]>,
 }
 
-impl<'a, P: BufferProvider> Rollback<'a, P> {
+impl<'a, P: BufferProvider> AllocTxn<'a, P> {
     fn new(pool: &'a P) -> Self {
         Self {
             pool,
-            allocs: SmallVec::new(),
+            addrs: SmallVec::new(),
         }
     }
 
-    fn release(mut self) {
-        self.allocs.clear();
+    fn alloc_sg(&mut self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
+        let allocs = self.pool.alloc_sg(total_len)?;
+        self.addrs.extend(allocs.iter().map(|alloc| alloc.addr));
+        Ok(allocs)
+    }
+
+    fn commit(mut self) {
+        self.addrs.clear();
     }
 }
 
-impl<P: BufferProvider> Drop for Rollback<'_, P> {
+impl<P: BufferProvider> Drop for AllocTxn<'_, P> {
     fn drop(&mut self) {
-        for alloc in self.allocs.drain(..) {
-            let result = self.pool.dealloc(alloc.addr);
-            debug_assert!(result.is_ok(), "rollback dealloc failed: {result:?}");
+        for addr in self.addrs.drain(..) {
+            let result = self.pool.dealloc(addr);
+            debug_assert!(
+                result.is_ok(),
+                "allocation rollback dealloc failed: {result:?}"
+            );
         }
     }
 }
@@ -1557,6 +1545,30 @@ mod tests {
         assert!(tok.id < 16);
     }
 
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn test_chain_build_rolls_back_unrepresentable_allocations() {
+        let ring = make_ring(16);
+        let slot_size = u32::MAX as usize + 1;
+        let pool = RecyclePool::new(0, slot_size, slot_size).unwrap();
+        let mem = ring.mem();
+        let producer = VirtqProducer::new(ring.layout(), mem, TestNotifier::new(), pool.clone());
+
+        assert!(matches!(
+            producer.chain().readable(1).build(),
+            Err(VirtqError::PayloadTooLarge { recv, limit })
+                if recv == slot_size && limit == u32::MAX as usize
+        ));
+        assert_eq!(pool.num_free(), 1);
+
+        assert!(matches!(
+            producer.chain().writable(1).build(),
+            Err(VirtqError::PayloadTooLarge { recv, limit })
+                if recv == slot_size && limit == u32::MAX as usize
+        ));
+        assert_eq!(pool.num_free(), 1);
+    }
+
     #[test]
     fn test_submit_notifies() {
         let ring = make_ring(16);
@@ -1797,51 +1809,4 @@ mod tests {
         assert_eq!(producer.inner.num_inflight(), 1);
     }
 
-    #[test]
-    fn test_virtq_producer_reset() {
-        let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit and complete a round trip
-        let mut se = producer.chain().readable(32).writable(64).build().unwrap();
-        se.write_all(b"hello").unwrap();
-        producer.submit(se).unwrap();
-
-        let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
-        consumer.complete(recv, reply).unwrap();
-        let _ = producer.poll().unwrap().unwrap();
-
-        // Now reset
-        // SAFETY: the used chain was dropped before reset and no peer can
-        // access the reset test ring concurrently.
-        unsafe {
-            producer.reset();
-        }
-
-        // All inflight slots should be cleared
-        assert_eq!(producer.inner.num_inflight(), 0);
-        // Ring state should be back to initial
-        assert_eq!(producer.inner.num_free(), producer.inner.len());
-    }
-
-    #[test]
-    fn test_virtq_producer_reset_clears_inflight() {
-        let ring = make_ring(16);
-        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit without completing
-        let se = producer.chain().writable(64).build().unwrap();
-        producer.submit(se).unwrap();
-
-        assert_eq!(producer.inner.num_inflight(), 1);
-
-        // SAFETY: no peer can access the reset test ring concurrently.
-        unsafe {
-            producer.reset();
-        }
-
-        assert_eq!(producer.inner.num_inflight(), 0);
-        assert_eq!(producer.inner.num_free(), producer.inner.len());
-    }
 }

@@ -246,12 +246,6 @@ impl<const N: usize> Slab<N> {
     fn contains(&self, addr: u64) -> bool {
         self.range().contains(&addr)
     }
-
-    fn reset(&mut self) {
-        self.used_slots.clear();
-        self.run_starts.clear();
-        self.last_free_run = None;
-    }
 }
 
 #[cfg(test)]
@@ -404,12 +398,6 @@ impl<const L: usize, const U: usize> BufferProvider for BufferPool<L, U> {
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
         self.inner.borrow_mut().dealloc_addr(addr)
     }
-
-    fn reset(&self) {
-        let mut inner = self.inner.borrow_mut();
-        inner.lower.reset();
-        inner.upper.reset();
-    }
 }
 
 impl<const L: usize, const U: usize> BufferPool<L, U> {
@@ -557,24 +545,19 @@ impl RecycleList {
     /// Rebuild state so that exactly the addresses in `allocated` are marked
     /// live and every other slot is free.
     ///
-    /// On error the pool is left in an indeterminate state and should be
-    /// [`reset`](Self::reset) before reuse.
+    /// On error the pool is left unchanged.
     fn restore_allocated(&mut self, allocated: &[u64]) -> Result<(), AllocError> {
-        self.allocated.clear();
+        let mut restored = FixedBitSet::with_capacity(self.count);
         for &addr in allocated {
             let slot = self.slot_of(addr)?;
-            if self.allocated.contains(slot) {
+            if restored.contains(slot) {
                 return Err(AllocError::InvalidFree(addr, self.slot_size));
             }
-            self.allocated.insert(slot);
+            restored.insert(slot);
         }
+        self.allocated = restored;
         self.rebuild_free();
         Ok(())
-    }
-
-    fn reset(&mut self) {
-        self.allocated.clear();
-        self.rebuild_free();
     }
 
     /// Repopulate the free list with every slot whose allocated bit is clear.
@@ -632,7 +615,8 @@ impl RecyclePool {
     }
 
     /// Rebuild pool state so that every address in `allocated` is removed from
-    /// the free list, matching externally known inflight state.
+    /// the free list, matching externally known inflight state. Validation is
+    /// transactional: an error leaves the existing pool state unchanged.
     pub fn restore_allocated(&self, allocated: &[u64]) -> Result<(), AllocError> {
         self.inner.borrow_mut().restore_allocated(allocated)
     }
@@ -686,10 +670,6 @@ impl BufferProvider for RecyclePool {
 
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
         self.inner.borrow_mut().dealloc_addr(addr)
-    }
-
-    fn reset(&self) {
-        self.inner.borrow_mut().reset()
     }
 }
 
@@ -873,40 +853,6 @@ mod tests {
     }
 
     #[test]
-    fn test_buffer_pool_reset_returns_to_initial_state() {
-        let pool = make_pool::<256, 4096>(0x20000);
-
-        // Allocate from both tiers
-        let a1 = pool.inner.borrow_mut().alloc(128).unwrap();
-        let a2 = pool.inner.borrow_mut().alloc(4096).unwrap();
-        assert!(a1.len > 0);
-        assert!(a2.len > 0);
-
-        pool.reset();
-
-        let inner = pool.inner.borrow();
-        assert_eq!(inner.lower.free_bytes(), inner.lower.capacity());
-        assert_eq!(inner.upper.free_bytes(), inner.upper.capacity());
-    }
-
-    #[test]
-    fn test_buffer_pool_reset_allows_reallocation() {
-        let pool = make_pool::<256, 4096>(0x20000);
-
-        // Fill up some allocations
-        let mut allocs = Vec::new();
-        for _ in 0..5 {
-            allocs.push(pool.inner.borrow_mut().alloc(256).unwrap());
-        }
-
-        pool.reset();
-
-        // Should be able to allocate as if fresh
-        let a = pool.inner.borrow_mut().alloc(256).unwrap();
-        assert!(a.len > 0);
-    }
-
-    #[test]
     fn test_pool_dealloc_addr_routes_to_correct_tier() {
         let pool = make_pool::<256, 4096>(0x20000);
         let lower = pool.alloc(128).unwrap();
@@ -983,8 +929,13 @@ mod tests {
     #[test]
     fn test_recycle_pool_restore_allocated_invalid_addr_returns_error() {
         let pool = make_recycle_pool(4, 4096);
-        let result = pool.restore_allocated(&[0xDEAD]);
+        pool.restore_allocated(&[0x80000]).unwrap();
+
+        let result = pool.restore_allocated(&[0x81000, 0xDEAD]);
         assert!(result.is_err());
+        assert_eq!(pool.num_free(), 3);
+        assert_eq!(pool.allocation_len(0x80000).unwrap(), 4096);
+        assert!(pool.allocation_len(0x81000).is_err());
     }
 
     #[test]
@@ -1018,15 +969,13 @@ mod tests {
     }
 
     #[test]
-    fn test_recycle_pool_restore_allocated_resets_first() {
+    fn test_recycle_pool_restore_allocated_replaces_state() {
         let pool = make_recycle_pool(4, 4096);
 
-        // Allocate some slots
         let _ = pool.alloc(4096).unwrap();
         let _ = pool.alloc(4096).unwrap();
         assert_eq!(pool.num_free(), 2);
 
-        // restore_allocated resets then removes - so 4 - 1 = 3
         pool.restore_allocated(&[0x80000]).unwrap();
         assert_eq!(pool.num_free(), 3);
     }

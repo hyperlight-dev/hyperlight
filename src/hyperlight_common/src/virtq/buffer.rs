@@ -66,9 +66,6 @@ pub trait BufferProvider {
     /// Free a previously allocated segment by start address.
     fn dealloc(&self, addr: u64) -> Result<(), AllocError>;
 
-    /// Reset the pool to initial state.
-    fn reset(&self) {}
-
     /// Allocate scatter/gather segments for a logical payload of `total_len` bytes.
     fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
         if total_len == 0 {
@@ -114,9 +111,6 @@ impl<T: BufferProvider> BufferProvider for Rc<T> {
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
         (**self).dealloc(addr)
     }
-    fn reset(&self) {
-        (**self).reset()
-    }
     fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
         (**self).alloc_sg(total_len)
     }
@@ -131,9 +125,6 @@ impl<T: BufferProvider> BufferProvider for Arc<T> {
     }
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
         (**self).dealloc(addr)
-    }
-    fn reset(&self) {
-        (**self).reset()
     }
     fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
         (**self).alloc_sg(total_len)
@@ -350,16 +341,8 @@ impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
 }
 
 /// Pool-owned allocation that is returned to the pool on drop.
-///
-/// Use [`into_raw`](Self::into_raw) to transfer ownership to a descriptor
-/// state that will deallocate the raw [`Allocation`] through another path.
 #[derive(Debug)]
 pub struct OwnedAlloc<P: BufferProvider> {
-    inner: Option<Inner<P>>,
-}
-
-#[derive(Debug)]
-struct Inner<P: BufferProvider> {
     pool: P,
     alloc: Allocation,
 }
@@ -367,9 +350,7 @@ struct Inner<P: BufferProvider> {
 impl<P: BufferProvider> OwnedAlloc<P> {
     /// Wrap an existing allocation with its owning pool.
     pub fn new(pool: P, alloc: Allocation) -> Self {
-        Self {
-            inner: Some(Inner { pool, alloc }),
-        }
+        Self { pool, alloc }
     }
 
     /// Allocate from `pool` and return an owning guard.
@@ -379,35 +360,15 @@ impl<P: BufferProvider> OwnedAlloc<P> {
     }
 
     /// The raw allocation currently owned by this guard.
-    // `inner` is `Some` for the whole lifetime of a live guard: it is only
-    // taken by `into_raw` which consumes `self` or on drop, so this access
-    // cannot fail.
-    #[allow(clippy::expect_used)]
     pub fn allocation(&self) -> Allocation {
-        self.inner
-            .as_ref()
-            .map(|inner| inner.alloc)
-            .expect("OwnedAlloc::allocation called after ownership transfer")
-    }
-
-    /// Release ownership and return the raw allocation.
-    // `inner` is `Some` until ownership is released, and `into_raw` consumes
-    // `self`, so it can only ever observe `Some` here.
-    #[allow(clippy::expect_used)]
-    pub fn into_raw(mut self) -> Allocation {
-        self.inner
-            .take()
-            .map(|inner| inner.alloc)
-            .expect("OwnedAlloc::into_raw called after ownership transfer")
+        self.alloc
     }
 }
 
 impl<P: BufferProvider> Drop for OwnedAlloc<P> {
     fn drop(&mut self) {
-        if let Some(Inner { pool, alloc }) = self.inner.take() {
-            let result = pool.dealloc(alloc.addr);
-            debug_assert!(result.is_ok(), "OwnedAlloc drop dealloc failed: {result:?}");
-        }
+        let result = self.pool.dealloc(self.alloc.addr);
+        debug_assert!(result.is_ok(), "OwnedAlloc drop dealloc failed: {result:?}");
     }
 }
 
