@@ -499,6 +499,7 @@ fn cfg_current_hypervisor() -> &'static str {
         "kvm" => "kvm",
         "mshv" => "mshv",
         "whp" => "whp",
+        "hvf" => "hvf",
         other => panic!("unknown hypervisor tag {other}"),
     }
 }
@@ -1076,7 +1077,7 @@ fn save_appends_into_existing_layout_with_new_tag() {
         );
         let hv = anns["dev.hyperlight.snapshot.hypervisor"].as_str().unwrap();
         assert!(
-            ["kvm", "mshv", "whp"].contains(&hv),
+            ["kvm", "mshv", "whp", "hvf"].contains(&hv),
             "unexpected hypervisor annotation: {}",
             hv
         );

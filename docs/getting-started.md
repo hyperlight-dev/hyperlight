@@ -9,6 +9,7 @@ These are the minimum requirements to use Hyperlight as a library in your own pr
 - **A supported hypervisor:**
   - Linux: [KVM](https://help.ubuntu.com/community/KVM/Installation) or Microsoft Hypervisor (MSHV)
   - Windows: [Windows Hypervisor Platform](https://docs.microsoft.com/en-us/virtualization/api/#windows-hypervisor-platform) (WHP)
+  - macOS (Apple silicon): [Hypervisor.framework](https://developer.apple.com/documentation/hypervisor) (HVF)
 - **[Rust](https://www.rust-lang.org/tools/install)**, installed via `rustup`.
 - **Platform build tools** (provides the C linker required by Rust):
   - Ubuntu/Debian: `sudo apt install build-essential`
@@ -91,6 +92,65 @@ Requires Windows 11 Pro/Enterprise/Education or Windows Server 2025 or later.
 
     ```sh
     sudo dnf install clang
+    ```
+
+### macOS
+
+Requires macOS 26 or later on Apple silicon. Hyperlight uses
+[Hypervisor.framework](https://developer.apple.com/documentation/hypervisor) (HVF)
+via the `hvf` cargo feature of `hyperlight-host`, which is not enabled by default:
+
+```toml
+hyperlight-host = { version = "0.16.0", features = ["hvf"] }
+```
+
+Two macOS-specific things to know:
+
+1. **Entitlement.** Every executable that creates a VM — your application, and
+   Hyperlight's per-sandbox surrogate processes — must be signed with the
+   `com.apple.security.hypervisor` entitlement. Ad-hoc signing is sufficient for
+   development. Save this as `hvf-entitlements.plist`:
+
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>com.apple.security.hypervisor</key>
+        <true/>
+    </dict>
+    </plist>
+    ```
+
+    and sign your binary after every build:
+
+    ```sh
+    codesign --sign - --entitlements hvf-entitlements.plist --force target/debug/your-app
+    ```
+
+    Hyperlight's surrogate binaries are extracted and ad-hoc signed automatically
+    at runtime; only your own executables need manual signing. Without the
+    entitlement, sandbox creation fails with `NoHypervisorFound`.
+
+2. **One VM per process.** Hypervisor.framework allows only a single VM per
+   process, so Hyperlight runs each sandbox's VM in a small surrogate helper
+   process (see [Hyperlight Surrogate](./hyperlight-surrogate-development-notes.md)).
+   This is transparent in normal use. Setting `HYPERLIGHT_MAX_SURROGATES=0`
+   disables surrogates and selects the in-process backend, which limits the
+   process to one live sandbox at a time.
+
+If building guest binaries on macOS:
+
+- Use `rustup` for your Rust installation — guest builds require the toolchain
+  pinned in `rust-toolchain.toml`, and distributions that shadow it (e.g.
+  Homebrew Rust) do not work.
+- Install LLVM (`brew install llvm`); Xcode's `ar` cannot archive the ELF
+  objects used when linking C guests.
+- Until a `cargo-hyperlight` release newer than 0.1.13 is published, install it
+  from git (0.1.13 does not compile on macOS):
+
+    ```sh
+    cargo install --locked --git https://github.com/hyperlight-dev/cargo-hyperlight cargo-hyperlight
     ```
 
 ### WSL2

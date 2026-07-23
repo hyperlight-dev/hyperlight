@@ -64,6 +64,7 @@ pub(super) enum Hypervisor {
     Kvm,
     Mshv,
     Whp,
+    Hvf,
 }
 
 impl Hypervisor {
@@ -79,6 +80,12 @@ impl Hypervisor {
             Some(HypervisorType::Mshv) => Some(Self::Mshv),
             #[cfg(target_os = "windows")]
             Some(HypervisorType::Whp) => Some(Self::Whp),
+            #[cfg(hvf)]
+            Some(HypervisorType::Hvf) => Some(Self::Hvf),
+            // `HypervisorType` has no variants when no backend is compiled
+            // (e.g. aarch64 without any hypervisor feature).
+            #[cfg(not(any(kvm, mshv3, target_os = "windows", hvf)))]
+            Some(_) => None,
             None => None,
         }
     }
@@ -88,6 +95,7 @@ impl Hypervisor {
             Self::Kvm => "KVM",
             Self::Mshv => "MSHV",
             Self::Whp => "WHP",
+            Self::Hvf => "HVF",
         }
     }
 
@@ -99,6 +107,7 @@ impl Hypervisor {
             Self::Kvm => "kvm",
             Self::Mshv => "mshv",
             Self::Whp => "whp",
+            Self::Hvf => "hvf",
         }
     }
 }
@@ -131,6 +140,12 @@ impl CpuVendor {
             let implementer = (midr >> 24) & 0xff;
             // `0x` prefix padded to width 4, e.g. Apple `0x61`, Arm `0x41`.
             Self(format!("{implementer:#04x}"))
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            // macOS does not emulate MIDR_EL1 reads from EL0, but every
+            // aarch64 macOS host is Apple silicon (implementer `0x61`).
+            Self("0x61".to_string())
         }
     }
 
@@ -693,7 +708,7 @@ mod tests {
             matches!(v, "GenuineIntel" | "AuthenticAMD"),
             "unrecognized x86_64 CPU vendor: {v:?}"
         );
-        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        #[cfg(all(target_arch = "aarch64", any(target_os = "linux", target_os = "macos")))]
         // MIDR_EL1 implementer byte for Apple silicon.
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
     }
@@ -1008,7 +1023,8 @@ mod schema_pin {
     const PINNED_HYPERVISOR: &str = r#"[
   "kvm",
   "mshv",
-  "whp"
+  "whp",
+  "hvf"
 ]"#;
 
     fn assert_round_trip(pinned: &str) {

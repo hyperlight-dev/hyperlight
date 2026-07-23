@@ -8,7 +8,7 @@ bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
 nightly-toolchain := "nightly-2026-02-27"
 # Pinned cargo-hyperlight version used to build the guest sysroot. Keep this in
 # lockstep with the version pinned in flake.nix.
-cargo-hyperlight-version := "0.1.12"
+cargo-hyperlight-version := "0.1.13"
 
 ################
 ### cross-rs ###
@@ -246,6 +246,24 @@ test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::snapshot::file::config::tests::cpu_vendor_current_is_recognized --exact --ignored
     @# metrics tests
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
+
+# Ad-hoc codesigns hyperlight test binaries with the Hypervisor.framework
+# entitlement and runs the host test suite with the HVF backend (macOS/aarch64).
+# Guest binaries must already be built (see build-rust-guests).
+# NOTE: the binaries are executed directly, not via `cargo test` — codesigning
+# modifies them, which cargo would treat as a rebuild trigger, discarding the
+# signature (and unsigned binaries get HV_DENIED from Hypervisor.framework).
+test-hvf target=default-target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile={{ if target == "debug" { "dev" } else { target } }}
+    out=$({{ cargo-cmd }} test -p hyperlight-host --no-default-features -F hvf --profile=$profile --no-run 2>&1)
+    bins=$(echo "$out" | sed -n 's/^ *Executable .*(\(.*\))$/\1/p')
+    for bin in $bins; do
+        codesign --sign - --entitlements {{ justfile_directory() }}/dev/hvf-entitlements.plist --force "$bin"
+        echo "=== $bin"
+        "$bin"
+    done
 
 # runs integration tests
 test-integration target=default-target features="":

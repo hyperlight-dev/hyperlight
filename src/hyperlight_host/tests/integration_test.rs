@@ -1472,7 +1472,13 @@ fn interrupt_infinite_moving_loop_stress_test() {
     use std::thread;
 
     // We have a high thread count to stress test and to have interesting interleavings
+    #[cfg(not(target_os = "macos"))]
     const NUM_THREADS: usize = 200;
+    // macOS (HVF) caps concurrent VMs system-wide (measured 127 on macOS
+    // 26, arm64) and each thread holds two sandboxes; 48 threads (96 VMs)
+    // keeps the same interleavings comfortably below the platform cap.
+    #[cfg(target_os = "macos")]
+    const NUM_THREADS: usize = 48;
 
     let mut handles = vec![];
 
@@ -1833,12 +1839,31 @@ fn memory_region_types_are_publicly_accessible() {
 
     // MemoryRegion_ struct and all its fields are pub (struct literal
     // construction requires every field to be pub).
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let base: <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType = 0x1000;
         let _region = MemoryRegion_::<HostGuestMemoryRegion> {
             guest_region: 0x1000..0x2000,
             host_region: base..<HostGuestMemoryRegion as MemoryRegionKind>::add(base, 0x1000),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Code,
+        };
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use hyperlight_host::mem::memory_region::HostRegionBase;
+
+        let host_base = HostRegionBase {
+            name: String::new(),
+            offset: 0,
+            base: 0x1000,
+            path: None,
+        };
+        let _region = MemoryRegion_::<HostGuestMemoryRegion> {
+            guest_region: 0x1000..0x2000,
+            host_region: host_base.clone()
+                ..<HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, 0x1000),
             flags: MemoryRegionFlags::READ,
             region_type: MemoryRegionType::Code,
         };

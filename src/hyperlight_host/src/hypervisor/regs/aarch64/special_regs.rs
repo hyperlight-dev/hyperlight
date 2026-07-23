@@ -32,26 +32,42 @@ pub(crate) struct CommonSpecialRegisters {
     pub(crate) sp_el1: u64,
 }
 
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_PS_48: u64 = 0b101u64 << 32;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_TG0_4K: u64 = 0b00u64 << 14;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_TG1_4K: u64 = 0b10u64 << 30;
+#[cfg(any(kvm, mshv3, hvf))]
 #[allow(clippy::identity_op)]
 pub(crate) const TCR_EL1_T0SZ_48: u64 = 16u64 << 0;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_T1SZ_48: u64 = 16u64 << 16;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_IRGN0_WB_AA: u64 = 0b01 << 8;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_ORGN0_WB_AA: u64 = 0b01 << 10;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const TCR_EL1_SH0_ISH: u64 = 0b11 << 12;
 
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const MAIR_NORMAL_OWB_NT_AA: u64 = 0b1111_1111;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const MAIR_ITEM_WIDTH: u8 = 8;
 
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const SCTLR_EL1_RES1: u64 = 0b11u64 << 28 | 0b11u64 << 22 | 0b1u64 << 20 | 0b1u64 << 11;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const SCTLR_EL1_M: u64 = 0b1u64 << 0;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const SCTLR_EL1_C: u64 = 0b1u64 << 2;
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const SCTLR_EL1_I: u64 = 0b1u64 << 12;
 
+#[cfg(any(kvm, mshv3, hvf))]
 pub(crate) const CPACR_EL1_FPEN_NO_TRAP: u64 = 0b11 << 20;
 
+#[cfg(any(kvm, mshv3, hvf))]
 impl CommonSpecialRegisters {
     pub(crate) fn defaults(root_pt_addr: u64) -> Self {
         CommonSpecialRegisters {

@@ -1532,9 +1532,10 @@ mod tests {
     }
 
     fn page_aligned_memory(src: &[u8]) -> GuestSharedMemory {
-        use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
-        let len = src.len().div_ceil(PAGE_SIZE_USIZE) * PAGE_SIZE_USIZE;
+        // Round up to the *host* page size: `map_region` requires
+        // host-page-aligned regions (4K on x86 hosts, 16K on arm64
+        // macOS), so tests must not assume 4K pages.
+        let len = src.len().div_ceil(page_size::get()) * page_size::get();
 
         let mut mem = ExclusiveSharedMemory::new(len).unwrap();
         mem.copy_from_slice(src, 0).unwrap();
@@ -2642,16 +2643,18 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
 
-        // Use multi-page regions so partial overlap is geometrically possible
-        let mem1 = page_aligned_memory(&[0xAA; 8192]); // 2 pages
-        let mem2 = page_aligned_memory(&[0xBB; 8192]); // 2 pages
+        // Use multi-page regions so partial overlap is geometrically
+        // possible (2 pages each, in host page units)
+        let ps = page_size::get();
+        let mem1 = page_aligned_memory(&vec![0xAA; 2 * ps]);
+        let mem2 = page_aligned_memory(&vec![0xBB; 2 * ps]);
         let guest_base: usize = 0x200000000;
         let region1 = region_for_memory(&mem1, guest_base, MemoryRegionFlags::READ);
 
         unsafe { sbox.map_region(&region1).unwrap() };
 
-        // region2 starts one page before region1, overlapping by one page
-        let overlap_base = guest_base - 0x1000;
+        // region2 starts one host page before region1, overlapping by one page
+        let overlap_base = guest_base - ps;
         let region2 = region_for_memory(&mem2, overlap_base, MemoryRegionFlags::READ);
         let err = unsafe { sbox.map_region(&region2) }.unwrap_err();
         assert!(
@@ -2690,13 +2693,14 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
 
-        // Try to map at BASE_ADDRESS (0x1000) which overlaps the snapshot region
+        // Try to map inside the snapshot region (which starts at
+        // BASE_ADDRESS = 0x1000). BASE_ADDRESS itself is not necessarily
+        // host-page-aligned (16K hosts), so map at the next host-page
+        // boundary — still inside the snapshot region.
+        let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS
+            .next_multiple_of(page_size::get());
         let mem = allocate_guest_memory();
-        let region = region_for_memory(
-            &mem,
-            crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS,
-            MemoryRegionFlags::READ,
-        );
+        let region = region_for_memory(&mem, guest_base, MemoryRegionFlags::READ);
         let err = unsafe { sbox.map_region(&region) }.unwrap_err();
         assert!(
             format!("{err:?}").contains("Overlapping"),
@@ -2712,12 +2716,16 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
 
-        // The scratch region occupies the top of the GPA space
+        // The scratch region occupies the top of the GPA space. Its base
+        // is not necessarily host-page-aligned (16K hosts), so align down
+        // to the host page boundary; the region still overlaps the scratch
+        // region's first page.
         let scratch_addr = hyperlight_common::layout::scratch_base_gpa(
             crate::sandbox::SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
         ) as usize;
+        let guest_base = scratch_addr / page_size::get() * page_size::get();
         let mem = allocate_guest_memory();
-        let region = region_for_memory(&mem, scratch_addr, MemoryRegionFlags::READ);
+        let region = region_for_memory(&mem, guest_base, MemoryRegionFlags::READ);
         let err = unsafe { sbox.map_region(&region) }.unwrap_err();
         assert!(
             format!("{err:?}").contains("verlap"),

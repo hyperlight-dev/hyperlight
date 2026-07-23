@@ -11,7 +11,7 @@
 
 Hyperlight lets you safely run untrusted code inside hypervisor-isolated micro VMs that spin up in milliseconds, with guest function calls completing in microseconds. You embed it as a library in your Rust application, hand it a guest binary, and call functions across the VM boundary as naturally as calling a local function. To minimize startup time and memory footprint, there's no guest kernel or OS. Guests are purpose-built using the Hyperlight guest library.
 
-- Supports [KVM](https://linux-kvm.org/page/Main_Page), [MSHV](https://github.com/rust-vmm/mshv), and [Windows Hypervisor Platform](https://docs.microsoft.com/en-us/virtualization/api/#windows-hypervisor-platform)
+- Supports [KVM](https://linux-kvm.org/page/Main_Page), [MSHV](https://github.com/rust-vmm/mshv), [Windows Hypervisor Platform](https://docs.microsoft.com/en-us/virtualization/api/#windows-hypervisor-platform), and [Hypervisor.framework](https://developer.apple.com/documentation/hypervisor) (macOS on Apple silicon)
 - No kernel or OS in the VM. Guests are regular ELF binaries written in `no_std` Rust or C
 - Host and guest communicate through typed function calls
 - Guests are sandboxed by default with no access to the host filesystem, network, etc.

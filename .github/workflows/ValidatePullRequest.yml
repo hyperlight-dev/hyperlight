@@ -179,6 +179,61 @@ jobs:
       config: ${{ matrix.config }}
       should_regen_goldens: ${{ needs.check-golden-label.outputs.should_regen_goldens }}
 
+  # Build and test the macOS HVF (Hypervisor.framework) backend on Apple silicon.
+  # Self-contained: guests are built and tested on the same GitHub-hosted arm64
+  # runner (no artifact sharing with the other build-test jobs). Requires
+  # macOS 26 for the 4 KiB IPA granule API.
+  build-test-macos-hvf:
+    needs: [docs-pr, update-guest-locks]
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
+    timeout-minutes: 45
+    runs-on: macos-26
+    env:
+      # cargo-hyperlight builds a custom target/sysroot; run everything through
+      # the rustup proxy with the pinned toolchain (newer rustc rejects custom
+      # target specs, Homebrew rustc shadows the proxy otherwise).
+      RUSTUP_TOOLCHAIN: "1.94"
+      RUSTC: ~/.cargo/bin/rustc
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          submodules: true
+
+      - uses: hyperlight-dev/ci-setup-workflow@f6bd9cc86d0737976d2128c8b8ced8edc017cbb4  # v1.9.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # crates.io cargo-hyperlight 0.1.13 does not compile on macOS (the ar
+      # detection fix is only on main). Pin the git rev; switch back to the
+      # crates.io pin (just ensure-cargo-hyperlight) once a release > 0.1.13
+      # ships. The Justfile's ensure-cargo-hyperlight accepts this binary
+      # because it reports version 0.1.13.
+      - name: Install cargo-hyperlight from git
+        run: cargo install --locked --git https://github.com/hyperlight-dev/cargo-hyperlight --rev 33384c0c4ed9dea4f0525943809fc444c41a27df cargo-hyperlight
+
+      # llvm-ar/llvm-ranlib are needed to archive the picolibc objects for C
+      # guests; Xcode's ar silently drops ELF members.
+      - name: Install LLVM
+        run: brew install llvm
+
+      - name: Build Rust and C guests
+        run: |
+          just build-and-move-rust-guests
+          just build-c-guests debug
+          just move-c-guests debug
+
+      # Builds, ad-hoc codesigns (com.apple.security.hypervisor) and runs the
+      # hyperlight-host lib + integration test binaries with the hvf feature.
+      # Snapshot-golden verification is a no-op here until the hvf goldens are
+      # published to the golden registry (see RegenSnapshotGoldens.yml).
+      - name: Test with the HVF backend
+        run: just test-hvf debug
+
   # Run examples - needs guest artifacts, runs in parallel with build-test
   run-examples:
     needs:
@@ -255,6 +310,7 @@ jobs:
       - code-checks
       - check-golden-label
       - build-test
+      - build-test-macos-hvf
       - run-examples
       - fuzzing
       - spelling
