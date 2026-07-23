@@ -1112,6 +1112,18 @@ fn read_msr(msr: u32) -> u64 {
     ((read_edx as u64) << 32) | (read_eax as u64)
 }
 
+#[guest_function("NestedVirtualizationCpuid")]
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn nested_virtualization_cpuid() -> u32 {
+    // SAFETY: CPUID leaves 0, 1, and 0x80000000 are always available on x86_64.
+    let vmx = unsafe { core::arch::x86_64::__cpuid(1) }.ecx & (1 << 5) != 0;
+    let max_extended = unsafe { core::arch::x86_64::__cpuid(0x8000_0000) }.eax;
+    let svm = max_extended >= 0x8000_0001
+        && unsafe { core::arch::x86_64::__cpuid(0x8000_0001) }.ecx & (1 << 2) != 0;
+    u32::from(vmx) | (u32::from(svm) << 1)
+}
+
 #[guest_function("WriteKernelGsBaseViaSwapgs")]
 #[cfg(target_arch = "x86_64")]
 fn write_kernel_gs_base_via_swapgs(value: u64) {

@@ -164,11 +164,11 @@ fn msr_to_whv_register_name(index: u32) -> Option<WHV_REGISTER_NAME> {
 #[cfg(test)]
 mod msr_mapping_tests {
     use super::*;
-    use crate::hypervisor::regs::{MSR_DEBUGCTL, MSR_VIRT_SPEC_CTRL, core_reset_indices};
+    use crate::hypervisor::regs::{MSR_DEBUGCTL, MSR_VIRT_SPEC_CTRL, resettable_msr_indices};
 
     #[test]
     fn maps_all_stateful_msrs_except_debugctl_and_virt_spec_ctrl() {
-        for index in core_reset_indices() {
+        for index in resettable_msr_indices() {
             // WHP models neither DEBUGCTL nor VIRT_SPEC_CTRL as a named register.
             // Both are safe: WHP does not expose their guest-writable features, so
             // a guest cannot leave retained state in them.
@@ -350,6 +350,25 @@ impl WhpVm {
             #[cfg(feature = "hw-interrupts")]
             timer: None,
         })
+    }
+
+    fn get_registers(
+        &self,
+        names: &[WHV_REGISTER_NAME],
+        values: &mut [Align16<WHV_REGISTER_VALUE>],
+    ) -> windows_result::Result<()> {
+        assert_eq!(names.len(), values.len());
+        // SAFETY: The slices have equal lengths, and `values` is aligned output
+        // storage for each requested register on virtual processor 0.
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )
+        }
     }
 
     /// Helper for setting arbitrary registers. Makes sure the same number
@@ -628,16 +647,8 @@ impl VirtualMachine for WhpVm {
                         let names = [WHvX64RegisterDr6];
                         let mut out: [Align16<WHV_REGISTER_VALUE>; 1] =
                             unsafe { std::mem::zeroed() };
-                        unsafe {
-                            WHvGetVirtualProcessorRegisters(
-                                self.partition,
-                                0,
-                                names.as_ptr(),
-                                1,
-                                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-                            )
+                        self.get_registers(&names, &mut out)
                             .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
-                        }
                         unsafe { out[0].0.Reg64 }
                     };
 
@@ -683,16 +694,8 @@ impl VirtualMachine for WhpVm {
         let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_REGS_NAMES.as_ptr(),
-                whv_regs_values.len() as u32,
-                whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )
+        self.get_registers(&WHP_REGS_NAMES, &mut whv_regs_values)
             .map_err(|e| RegisterError::GetRegs(e.into()))?;
-        }
 
         WHP_REGS_NAMES
             .into_iter()
@@ -720,16 +723,8 @@ impl VirtualMachine for WhpVm {
         let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_FPU_NAMES.as_ptr(),
-                whp_fpu_values.len() as u32,
-                whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )
+        self.get_registers(&WHP_FPU_NAMES, &mut whp_fpu_values)
             .map_err(|e| RegisterError::GetFpu(e.into()))?;
-        }
 
         WHP_FPU_NAMES
             .into_iter()
@@ -757,16 +752,8 @@ impl VirtualMachine for WhpVm {
         let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_SREGS_NAMES.as_ptr(),
-                whp_sregs_values.len() as u32,
-                whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )
+        self.get_registers(&WHP_SREGS_NAMES, &mut whp_sregs_values)
             .map_err(|e| RegisterError::GetSregs(e.into()))?;
-        }
 
         WHP_SREGS_NAMES
             .into_iter()
@@ -824,18 +811,8 @@ impl VirtualMachine for WhpVm {
         // all-zero value is a valid initial state.
         let mut values: Vec<Align16<WHV_REGISTER_VALUE>> =
             vec![unsafe { std::mem::zeroed() }; names.len()];
-        // SAFETY: names and values have equal length. The call fills each value
-        // slot from the partition's vp 0 for the given register names.
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                names.len() as u32,
-                values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )
+        self.get_registers(&names, &mut values)
             .map_err(|e| RegisterError::GetMsrs(e.into()))?;
-        }
         Ok(indices
             .iter()
             .zip(values)
@@ -864,20 +841,16 @@ impl VirtualMachine for WhpVm {
         Ok(())
     }
 
+    fn msr_reset_indices(&self, allowed: &[u32]) -> std::result::Result<Vec<u32>, CreateVmError> {
+        crate::hypervisor::virtual_machine::hyperv_msr_reset_indices(self, allowed)
+    }
+
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
         let mut whp_debug_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_DEBUG_REGS_NAMES_LEN] =
             Default::default();
 
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_DEBUG_REGS_NAMES.as_ptr(),
-                whp_debug_regs_values.len() as u32,
-                whp_debug_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )
+        self.get_registers(&WHP_DEBUG_REGS_NAMES, &mut whp_debug_regs_values)
             .map_err(|e| RegisterError::GetDebugRegs(e.into()))?;
-        }
 
         let whp_debug_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>);
             WHP_DEBUG_REGS_NAMES_LEN] =

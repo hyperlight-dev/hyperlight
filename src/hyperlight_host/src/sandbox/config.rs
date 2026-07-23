@@ -187,7 +187,20 @@ impl SandboxConfiguration {
     }
 
     /// Adds MSRs to the sandbox allow list.
-    /// VM creation verifies that the backend can restore them.
+    ///
+    /// Adds MSRs to the state captured by
+    /// [`MultiUseSandbox::snapshot`](crate::MultiUseSandbox::snapshot) and restored
+    /// by [`MultiUseSandbox::restore`](crate::MultiUseSandbox::restore).
+    ///
+    /// If this method is not called, only the platform's standard MSR set is
+    /// captured and restored.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// * KVM also uses this list to control guest MSR access. Access to unlisted
+    ///   MSRs is denied.
+    /// * MSHV and WHP cannot restrict guest MSR access. An unlisted MSR is not
+    ///   restored unless it belongs to the platform's standard MSR set.
     ///
     /// Duplicate indices, within the slice or against the existing list, are
     /// ignored and do not count toward capacity.

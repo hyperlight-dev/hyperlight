@@ -42,12 +42,7 @@ use crate::hypervisor::gdb::{
 use crate::hypervisor::gdb::{DebugError, DebugMemoryAccessError};
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, MsrEntry, MsrResetState,
-    core_reset_indices, is_mtrr_reset_index,
 };
-#[cfg(kvm)]
-use crate::hypervisor::regs::{MSR_KERNEL_GS_BASE, MSR_TSC};
-#[cfg(any(not(gdb), mshv3, target_os = "windows"))]
-use crate::hypervisor::virtual_machine::VirtualMachine;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(mshv3)]
@@ -77,21 +72,6 @@ type BoxedVm = Box<dyn DebuggableVm>;
 #[cfg(not(gdb))]
 type BoxedVm = Box<dyn VirtualMachine>;
 
-/// Determines the MTRR reset indices for an MSHV or WHP backend and validates
-/// its allow list. Both hosts lack an MSR filter, so the allow list adds reset
-/// state.
-#[cfg(any(mshv3, target_os = "windows"))]
-fn determine_reset_msrs(
-    vm: &dyn VirtualMachine,
-    allowed: &[u32],
-) -> std::result::Result<Vec<u32>, VmError> {
-    use crate::hypervisor::virtual_machine::{mtrr_reset_indices, validate_allowed_msrs};
-
-    let required_mtrrs = mtrr_reset_indices(vm).map_err(VmError::CreateVm)?;
-    validate_allowed_msrs(vm, allowed).map_err(VmError::CreateVm)?;
-    Ok(required_mtrrs)
-}
-
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -108,27 +88,19 @@ impl HyperlightVm {
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        let (vm, required_mtrrs): (BoxedVm, Vec<u32>) = match get_available_hypervisor() {
+        let vm: BoxedVm = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => {
                 let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
                 kvm_vm
                     .configure_msr_access(config.get_allowed_msrs())
                     .map_err(VmError::CreateVm)?;
-                (Box::new(kvm_vm), Vec::new())
+                Box::new(kvm_vm)
             }
             #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => {
-                let vm: BoxedVm = Box::new(MshvVm::new().map_err(VmError::CreateVm)?);
-                let required_mtrrs = determine_reset_msrs(vm.as_ref(), config.get_allowed_msrs())?;
-                (vm, required_mtrrs)
-            }
+            Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
             #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => {
-                let vm: BoxedVm = Box::new(WhpVm::new().map_err(VmError::CreateVm)?);
-                let required_mtrrs = determine_reset_msrs(vm.as_ref(), config.get_allowed_msrs())?;
-                (vm, required_mtrrs)
-            }
+            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
@@ -168,9 +140,14 @@ impl HyperlightVm {
             }),
         });
 
-        // The MSRs reset on restore and captured in snapshots.
+        let reset_indices = vm
+            .msr_reset_indices(config.get_allowed_msrs())
+            .map_err(VmError::CreateVm)?;
         let msr_reset =
-            Self::capture_msr_reset_state(&vm, required_mtrrs, config.get_allowed_msrs())?;
+            MsrResetState::capture(reset_indices, config.get_allowed_msrs(), |indices| {
+                vm.msrs(indices)
+            })
+            .map_err(VmError::Register)?;
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
@@ -234,50 +211,6 @@ impl HyperlightVm {
         }
 
         Ok(ret)
-    }
-
-    /// Determines this VM's MSR reset set: the MSRs reset on restore and
-    /// captured in snapshots. `required_mtrrs` is the VCNT-driven MTRR set
-    /// gathered at creation. `allowed` is the validated allow list.
-    fn capture_msr_reset_state(
-        vm: &BoxedVm,
-        required_mtrrs: Vec<u32>,
-        allowed: &[u32],
-    ) -> std::result::Result<MsrResetState, VmError> {
-        let core: Vec<u32> = match get_available_hypervisor() {
-            #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => vec![MSR_KERNEL_GS_BASE, MSR_TSC], // GS_BASE is needed for correctness. TSC is to match mshv/whp behavior
-            #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => Self::probe_core_reset_indices(vm),
-            #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => Self::probe_core_reset_indices(vm),
-            // The VM already exists, so a hypervisor was found. The `None`
-            // arm in `new` returned before this point.
-            None => unreachable!(),
-        };
-        let mut indices: Vec<u32> = core
-            .into_iter()
-            .chain(required_mtrrs)
-            .chain(allowed.iter().copied())
-            .collect();
-        indices.sort_unstable();
-        indices.dedup();
-        let baseline = vm.msrs(&indices).map_err(VmError::Register)?;
-        let mut allowed = allowed.to_vec();
-        allowed.sort_unstable();
-        allowed.dedup();
-        Ok(MsrResetState::new(baseline, allowed))
-    }
-
-    /// Core stateful MSRs a filterless host can read.
-    ///
-    /// MTRRs come from the VCNT-driven required set, so they are excluded.
-    #[cfg(any(mshv3, target_os = "windows"))]
-    fn probe_core_reset_indices(vm: &BoxedVm) -> Vec<u32> {
-        core_reset_indices()
-            .filter(|i| !is_mtrr_reset_index(*i))
-            .filter(|i| vm.msrs(&[*i]).is_ok())
-            .collect()
     }
 
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -490,6 +423,12 @@ impl HyperlightVm {
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
+        if sregs.apic_base & crate::hypervisor::regs::APIC_BASE_X2APIC_ENABLE != 0 {
+            return Err(RegisterError::InvalidSnapshotApicBase {
+                value: sregs.apic_base,
+            });
+        }
+
         // Restore the full special registers from snapshot, but update CR3
         // to point to the new (relocated) page tables
         let mut sregs = *sregs;

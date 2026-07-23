@@ -31,8 +31,6 @@ use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
 use crate::hypervisor::regs::CommonSpecialRegisters;
-#[cfg(target_arch = "x86_64")]
-use crate::hypervisor::regs::MsrEntry;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
@@ -308,8 +306,7 @@ where
         root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
-        #[cfg(target_arch = "x86_64")] msrs: Option<Vec<MsrEntry>>,
-        #[cfg(target_arch = "x86_64")] allowed_msrs: Option<Vec<u32>>,
+        #[cfg(target_arch = "x86_64")] msr_state: crate::sandbox::snapshot::SnapshotMsrState,
         next_action: NextAction,
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
@@ -324,9 +321,7 @@ where
             rsp_gva,
             sregs,
             #[cfg(target_arch = "x86_64")]
-            msrs,
-            #[cfg(target_arch = "x86_64")]
-            allowed_msrs,
+            msr_state,
             next_action,
             self.original_entrypoint,
             self.snapshot_count,

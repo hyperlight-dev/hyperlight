@@ -33,6 +33,7 @@ const CR0_PE: u64 = 1;
 const CR0_ET: u64 = 1 << 4;
 const CR0_WP: u64 = 1 << 16;
 const CR0_PG: u64 = 1 << 31;
+pub(crate) const APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 
 mod amd64_consts {
     pub(crate) const CR4_PAE: u64 = 1 << 5;

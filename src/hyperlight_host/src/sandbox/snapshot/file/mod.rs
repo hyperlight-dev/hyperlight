@@ -32,6 +32,8 @@ use oci_spec::image::{
     ImageManifestBuilder, MediaType, SCHEMA_VERSION,
 };
 
+#[cfg(target_arch = "x86_64")]
+use self::config::OciSnapshotMsrState;
 use self::config::{Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
@@ -42,6 +44,8 @@ pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
+#[cfg(target_arch = "x86_64")]
+use super::SnapshotMsrState;
 use super::{NextAction, Snapshot};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
@@ -612,9 +616,16 @@ impl Snapshot {
             original_entrypoint_addr: self.original_entrypoint,
             sregs: *sregs,
             #[cfg(target_arch = "x86_64")]
-            msrs: self.msrs.clone(),
-            #[cfg(target_arch = "x86_64")]
-            allowed_msrs: self.allowed_msrs.clone(),
+            msr_state: {
+                let state = self
+                    .msr_state
+                    .as_ref()
+                    .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?;
+                OciSnapshotMsrState {
+                    msrs: state.msrs.clone(),
+                    allowed_msrs: state.allowed_msrs.clone(),
+                }
+            },
             layout: MemoryLayout {
                 input_data_size: l.input_data_size(),
                 output_data_size: l.output_data_size(),
@@ -880,15 +891,6 @@ impl Snapshot {
         // 8. Build the next action + sregs back from the config.
         let next_action = NextAction::Call(cfg.entrypoint_addr);
 
-        // `msrs` and `allowed_msrs` travel together. A config with one but
-        // not the other cannot enforce the allow-list check on restore.
-        #[cfg(target_arch = "x86_64")]
-        if cfg.msrs.is_some() != cfg.allowed_msrs.is_some() {
-            return Err(crate::new_error!(
-                "snapshot config inconsistent: msrs and allowed_msrs must both be present or both absent"
-            ));
-        }
-
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
         let host_funcs_vec: Vec<
@@ -911,9 +913,10 @@ impl Snapshot {
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
             #[cfg(target_arch = "x86_64")]
-            msrs: cfg.msrs,
-            #[cfg(target_arch = "x86_64")]
-            allowed_msrs: cfg.allowed_msrs,
+            msr_state: Some(SnapshotMsrState::new(
+                cfg.msr_state.msrs,
+                cfg.msr_state.allowed_msrs,
+            )),
             next_action,
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,

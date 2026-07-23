@@ -190,17 +190,12 @@ pub(super) struct OciSnapshotConfig {
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
-    /// MSR reset state captured from the paused vCPU. `None` uses the
-    /// destination sandbox's reset set.
+    /// Complete MSR reset state and capture-time guest access policy.
+    /// `msrs` contains every reset value. `allowed_msrs` is the policy subset.
     #[cfg(target_arch = "x86_64")]
+    // Legacy configs omit this field. Empty state restores the destination baseline.
     #[serde(default)]
-    pub(super) msrs: Option<Vec<MsrEntry>>,
-    /// Allow list of the sandbox that captured this snapshot. Present
-    /// exactly when `msrs` is, and checked against the destination allow
-    /// list on load.
-    #[cfg(target_arch = "x86_64")]
-    #[serde(default)]
-    pub(super) allowed_msrs: Option<Vec<u32>>,
+    pub(super) msr_state: OciSnapshotMsrState,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -213,6 +208,14 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OciSnapshotMsrState {
+    pub(super) msrs: Vec<MsrEntry>,
+    pub(super) allowed_msrs: Vec<u32>,
 }
 
 /// Sizes and permissions of the regions inside the snapshot blob,
@@ -666,30 +669,28 @@ mod tests {
         ]));
         let json = serde_json::to_vec(&original).unwrap();
         let restored: OciSnapshotConfig = serde_json::from_slice(&json).unwrap();
-        assert_eq!(restored.msrs, original.msrs);
+        assert_eq!(restored.msr_state.msrs, original.msr_state.msrs);
+        assert_eq!(
+            restored.msr_state.allowed_msrs,
+            original.msr_state.allowed_msrs
+        );
     }
 
-    /// A config JSON with no MSR keys deserializes both fields to `None`.
+    /// A config JSON with no MSR state deserializes empty state.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn config_without_msr_keys_deserializes_to_none() {
+    fn config_without_msr_state_deserializes_to_empty_state() {
         let with = gating_config_with_msrs(Some(vec![MsrEntry {
             index: 0x10,
             value: 1,
         }]));
         let mut json: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&with).unwrap()).unwrap();
-        assert!(json.as_object_mut().unwrap().remove("msrs").is_some());
-        assert!(
-            json.as_object_mut()
-                .unwrap()
-                .remove("allowed_msrs")
-                .is_some()
-        );
+        assert!(json.as_object_mut().unwrap().remove("msr_state").is_some());
 
         let restored: OciSnapshotConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(restored.msrs, None);
-        assert_eq!(restored.allowed_msrs, None);
+        assert!(restored.msr_state.msrs.is_empty());
+        assert!(restored.msr_state.allowed_msrs.is_empty());
     }
 
     /// Every `ParameterType` survives the round-trip through its serde
@@ -778,9 +779,7 @@ mod tests {
             original_entrypoint_addr: 0,
             sregs: distinct_sregs(),
             #[cfg(target_arch = "x86_64")]
-            msrs: None,
-            #[cfg(target_arch = "x86_64")]
-            allowed_msrs: None,
+            msr_state: OciSnapshotMsrState::default(),
             layout: MemoryLayout {
                 input_data_size: 0,
                 output_data_size: 0,
@@ -801,10 +800,11 @@ mod tests {
     /// `gating_config` with a chosen MSR set, for serde tests.
     #[cfg(target_arch = "x86_64")]
     fn gating_config_with_msrs(msrs: Option<Vec<MsrEntry>>) -> OciSnapshotConfig {
-        let allowed_msrs = msrs.as_ref().map(|_| Vec::new());
         OciSnapshotConfig {
-            msrs,
-            allowed_msrs,
+            msr_state: OciSnapshotMsrState {
+                msrs: msrs.unwrap_or_default(),
+                allowed_msrs: Vec::new(),
+            },
             ..gating_config()
         }
     }
@@ -1005,20 +1005,22 @@ mod schema_pin {
       11
     ]
   },
-  "msrs": [
-    {
-      "index": 16,
-      "value": 42
+    "msr_state": {
+        "msrs": [
+            {
+                "index": 16,
+                "value": 42
+            },
+            {
+                "index": 3221225474,
+                "value": 3735928559
+            }
+        ],
+        "allowed_msrs": [
+            16,
+            3221225474
+        ]
     },
-    {
-      "index": 3221225474,
-      "value": 3735928559
-    }
-  ],
-  "allowed_msrs": [
-    16,
-    3221225474
-  ],
   "layout": {
     "input_data_size": 1,
     "output_data_size": 2,
@@ -1097,12 +1099,15 @@ mod schema_pin {
 ]"#;
 
     fn assert_round_trip(pinned: &str) {
+        let pinned_value: serde_json::Value =
+            serde_json::from_str(pinned).expect("pinned JSON must deserialize as a value");
         let parsed: OciSnapshotConfig =
-            serde_json::from_str(pinned).expect("pinned JSON must deserialize");
+            serde_json::from_value(pinned_value.clone()).expect("pinned JSON must deserialize");
         let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        let actual_value: serde_json::Value =
+            serde_json::from_str(&actual).expect("serialized config must deserialize");
         assert_eq!(
-            actual.trim(),
-            pinned.trim(),
+            actual_value, pinned_value,
             "Snapshot config JSON schema changed. If the change can break \
              existing snapshots on disk, bump `MT_CONFIG_V1` in \
              `super::media_types` and follow `docs/snapshot-versioning.md`. \

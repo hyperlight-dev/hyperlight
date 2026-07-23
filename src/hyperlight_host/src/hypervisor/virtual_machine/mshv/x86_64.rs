@@ -136,11 +136,11 @@ fn msr_to_hv_register_name(index: u32) -> Result<u32, &'static str> {
 #[cfg(test)]
 mod msr_mapping_tests {
     use super::*;
-    use crate::hypervisor::regs::core_reset_indices;
+    use crate::hypervisor::regs::resettable_msr_indices;
 
     #[test]
     fn maps_all_stateful_msrs() {
-        for index in core_reset_indices() {
+        for index in resettable_msr_indices() {
             assert!(
                 msr_to_hv_register_name(index).is_ok(),
                 "missing MSR mapping for {index:#x}"
@@ -183,13 +183,13 @@ impl MshvVm {
         let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
 
         #[allow(unused_mut)]
-        let mut pr = mshv_create_partition_v2::default();
-        // Enable LAPIC for hw-interrupts — required for interrupt delivery
-        // via request_virtual_interrupt.
+        let mut pr: mshv_create_partition_v2 = Default::default();
+        // The default has no partition flags. Hardware interrupts add only the
+        // LAPIC required by request_virtual_interrupt.
         #[cfg(feature = "hw-interrupts")]
         {
             use mshv_bindings::MSHV_PT_BIT_LAPIC;
-            pr.pt_flags |= 1u64 << MSHV_PT_BIT_LAPIC;
+            pr.pt_flags = 1u64 << MSHV_PT_BIT_LAPIC;
         }
         // It's important to use create_vm_with_args() (not create_vm()),
         // because create_vm() sets up a SynIC partition by default.
@@ -562,6 +562,10 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
+    fn msr_reset_indices(&self, allowed: &[u32]) -> std::result::Result<Vec<u32>, CreateVmError> {
+        crate::hypervisor::virtual_machine::hyperv_msr_reset_indices(self, allowed)
+    }
+
     #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
         let xsave = self
@@ -743,7 +747,7 @@ impl DebuggableVm for MshvVm {
 /// for use with the shared LAPIC helpers.
 #[cfg(feature = "hw-interrupts")]
 fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
-    // Safety: c_char (i8) and u8 have the same size and alignment;
+    // SAFETY: c_char (i8) and u8 have the same size and alignment;
     // LAPIC register values are treated as raw bytes.
     unsafe { &*(regs as *const [::std::os::raw::c_char; 1024] as *const [u8; 1024]) }
 }
@@ -752,7 +756,7 @@ fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
 /// for use with the shared LAPIC helpers.
 #[cfg(feature = "hw-interrupts")]
 fn lapic_regs_as_u8_mut(regs: &mut [::std::os::raw::c_char; 1024]) -> &mut [u8] {
-    // Safety: same as above.
+    // SAFETY: same as above.
     unsafe { &mut *(regs as *mut [::std::os::raw::c_char; 1024] as *mut [u8; 1024]) }
 }
 

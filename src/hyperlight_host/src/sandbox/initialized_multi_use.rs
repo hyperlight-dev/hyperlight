@@ -340,6 +340,10 @@ impl MultiUseSandbox {
     /// [`MultiUseSandbox::from_snapshot`] for the exact compatibility
     /// rules and the error variants returned on mismatch.
     ///
+    /// On x86_64, the snapshot includes the platform's standard MSR set and
+    /// each MSR selected with
+    /// [`SandboxConfiguration::allow_msrs`](crate::sandbox::SandboxConfiguration::allow_msrs).
+    ///
     /// ## Poisoned Sandbox
     ///
     /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
@@ -403,6 +407,8 @@ impl MultiUseSandbox {
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         #[cfg(target_arch = "x86_64")]
         let allowed_msrs = self.vm.get_msr_allow_list();
+        #[cfg(target_arch = "x86_64")]
+        let msr_state = crate::sandbox::snapshot::SnapshotMsrState::new(msrs, allowed_msrs);
         let next_action = self.vm.get_next_action();
         let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
@@ -415,9 +421,7 @@ impl MultiUseSandbox {
             stack_top_gpa,
             sregs,
             #[cfg(target_arch = "x86_64")]
-            Some(msrs),
-            #[cfg(target_arch = "x86_64")]
-            Some(allowed_msrs),
+            msr_state,
             next_action,
             host_functions,
         )?;
@@ -438,6 +442,11 @@ impl MultiUseSandbox {
     /// itself is left unchanged. A mismatch returns
     /// [`SnapshotHostFunctionMismatch`](crate::HyperlightError::SnapshotHostFunctionMismatch)
     /// carrying the missing names and signature differences.
+    ///
+    /// On x86_64, this restores the MSR state captured by
+    /// [`MultiUseSandbox::snapshot`].
+    /// [`SandboxConfiguration::allow_msrs`](crate::sandbox::SandboxConfiguration::allow_msrs)
+    /// selects additional MSRs to capture and restore.
     ///
     /// On x86_64 this sandbox's MSR allow list must be a superset of the one
     /// the snapshot was taken with, or the restore poisons with an MSR
@@ -2765,13 +2774,19 @@ mod tests {
         use super::*;
         use crate::HostFunctions;
         use crate::hypervisor::hyperlight_vm::{CreateHyperlightVmError, HyperlightVmError};
+        use crate::hypervisor::regs::{
+            APIC_BASE_X2APIC_ENABLE, MSR_APERF, MSR_BNDCFGS, MSR_CSTAR, MSR_DEBUGCTL,
+            MSR_INTERRUPT_SSP_TABLE_ADDR, MSR_KERNEL_GS_BASE as KERNEL_GS_BASE, MSR_LSTAR,
+            MSR_MPERF, MSR_MTRR_DEF_TYPE, MSR_MTRR_FIX64K_00000, MSR_PAT, MSR_PL0_SSP, MSR_PL1_SSP,
+            MSR_PL2_SSP, MSR_PL3_SSP, MSR_S_CET, MSR_SFMASK, MSR_SPEC_CTRL, MSR_STAR,
+            MSR_SYSENTER_CS as SYSENTER_CS, MSR_SYSENTER_EIP, MSR_SYSENTER_ESP, MSR_TSC,
+            MSR_TSC_ADJUST, MSR_TSC_AUX, MSR_TSC_DEADLINE, MSR_TSX_CTRL, MSR_U_CET,
+            MSR_UMWAIT_CONTROL, MSR_VIRT_SPEC_CTRL, MSR_XFD, MSR_XFD_ERR, MSR_XSS,
+        };
         use crate::hypervisor::virtual_machine::{
             CreateVmError, RegisterError, ResetVcpuError, VmError,
         };
         use crate::sandbox::snapshot::Snapshot;
-
-        const KERNEL_GS_BASE: u32 = 0xC000_0102;
-        const SYSENTER_CS: u32 = 0x174;
 
         fn assert_msr_not_allowable(error: &HyperlightError, expected: u32) {
             assert!(
@@ -2784,18 +2799,6 @@ mod tests {
                     )) if *msr == expected
                 ),
                 "expected MsrNotAllowable for {expected:#x}, got: {error:?}"
-            );
-        }
-
-        fn assert_invalid_snapshot_msr(error: &HyperlightError) {
-            assert!(
-                matches!(
-                    error,
-                    HyperlightError::HyperlightVmError(HyperlightVmError::Restore(
-                        ResetVcpuError::Register(RegisterError::InvalidSnapshotMsrIndex { .. })
-                    ))
-                ),
-                "expected InvalidSnapshotMsrIndex, got: {error:?}"
             );
         }
 
@@ -3128,126 +3131,43 @@ mod tests {
         }
 
         #[test]
-        #[cfg(target_arch = "x86_64")]
-        fn snapshot_without_msrs_uses_destination_reset_set() {
-            let mut source = UninitializedSandbox::new(
+        #[cfg(kvm)]
+        fn guest_cannot_enable_x2apic_through_apic_base() {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                return;
+            }
+
+            const MSR_IA32_APIC_BASE: u32 = 0x1B;
+            const MSR_X2APIC_BASE: u32 = 0x800;
+            const APIC_BASE_DEFAULT: u64 = 0xFEE0_0900;
+
+            let mut sandbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
             )
             .unwrap()
             .evolve()
             .unwrap();
-            let snapshot = source.snapshot().unwrap();
-            source.snapshot = None;
-            let Ok(mut snap) = Arc::try_unwrap(snapshot) else {
-                panic!("snapshot should be uniquely owned");
-            };
-            // A snapshot without MSRs uses the destination baseline.
-            snap.set_msrs(None);
-            snap.set_allowed_msrs(None);
-            let snapshot = Arc::new(snap);
+            let snapshot = sandbox.snapshot().unwrap();
 
-            let mut config = SandboxConfiguration::default();
-            config.allow_msrs(&[KERNEL_GS_BASE]).unwrap();
-            let mut target = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                Some(config),
-            )
-            .unwrap()
-            .evolve()
-            .unwrap();
-            let baseline: u64 = target.call("ReadMSR", KERNEL_GS_BASE).unwrap();
-            target
-                .call::<()>("WriteMSR", (KERNEL_GS_BASE, baseline ^ 0x55))
-                .unwrap();
-            assert_eq!(
-                target.call::<u64>("ReadMSR", KERNEL_GS_BASE).unwrap(),
-                baseline ^ 0x55
+            let x2apic_base = APIC_BASE_DEFAULT | APIC_BASE_X2APIC_ENABLE;
+            let result = sandbox.call::<()>("WriteMSR", (MSR_IA32_APIC_BASE, x2apic_base));
+            assert!(
+                matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                "guest enabled x2APIC through APIC_BASE: {result:?}"
             );
-            target.restore(snapshot.clone()).unwrap();
-            assert_eq!(
-                target.call::<u64>("ReadMSR", KERNEL_GS_BASE).unwrap(),
-                baseline
+            assert!(sandbox.poisoned());
+            sandbox.restore(snapshot).unwrap();
+            assert!(!sandbox.poisoned());
+
+            let result = sandbox.call::<()>("WriteMSR", (MSR_X2APIC_BASE, 1u64));
+            assert!(
+                matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                "x2APIC MSR access succeeded after restore: {result:?}"
             );
-            target
-                .call::<()>("WriteMSR", (KERNEL_GS_BASE, baseline ^ 0xAA))
-                .unwrap();
-            assert_eq!(
-                target.call::<u64>("ReadMSR", KERNEL_GS_BASE).unwrap(),
-                baseline ^ 0xAA
-            );
-
-            let mut clone =
-                MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config))
-                    .unwrap();
-            let clone_baseline: u64 = clone.call("ReadMSR", KERNEL_GS_BASE).unwrap();
-            clone
-                .call::<()>("WriteMSR", (KERNEL_GS_BASE, clone_baseline ^ 0xCC))
-                .unwrap();
-            assert_eq!(
-                clone.call::<u64>("ReadMSR", KERNEL_GS_BASE).unwrap(),
-                clone_baseline ^ 0xCC
-            );
-        }
-
-        #[test]
-        fn malformed_snapshot_msrs_poison_and_trusted_restore_recovers() {
-            let indices = [SYSENTER_CS, KERNEL_GS_BASE];
-            let mut config = SandboxConfiguration::default();
-            config.allow_msrs(&indices).unwrap();
-            let mut source = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                Some(config),
-            )
-            .unwrap()
-            .evolve()
-            .unwrap();
-            let snapshot = source.snapshot().unwrap();
-            source.snapshot = None;
-            let Ok(mut snapshot) = Arc::try_unwrap(snapshot) else {
-                panic!("snapshot should be uniquely owned");
-            };
-            let mut msrs = snapshot.msrs().unwrap().clone();
-            msrs[0].index = 0xDEAD;
-            snapshot.set_msrs(Some(msrs));
-            let snapshot = Arc::new(snapshot);
-
-            let error = MultiUseSandbox::from_snapshot(
-                snapshot.clone(),
-                HostFunctions::default(),
-                Some(config),
-            )
-            .expect_err("from_snapshot must reject malformed snapshot MSRs");
-            assert_invalid_snapshot_msr(&error);
-
-            let mut target = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                Some(config),
-            )
-            .unwrap()
-            .evolve()
-            .unwrap();
-            let trusted_value: u64 = target.call("ReadMSR", KERNEL_GS_BASE).unwrap();
-            let recovery_snapshot = target.snapshot().unwrap();
-            target
-                .call::<()>("WriteMSR", (KERNEL_GS_BASE, trusted_value ^ 0x55))
-                .unwrap();
-            let error = target
-                .restore(snapshot)
-                .expect_err("restore must reject malformed snapshot MSRs");
-            assert_invalid_snapshot_msr(&error);
-            assert!(target.poisoned());
-            assert!(matches!(
-                target.call::<String>("Echo", "hi".to_string()),
-                Err(HyperlightError::PoisonedSandbox)
-            ));
-
-            target.restore(recovery_snapshot).unwrap();
-            assert!(!target.poisoned());
-            assert_eq!(
-                target.call::<u64>("ReadMSR", KERNEL_GS_BASE).unwrap(),
-                trusted_value
-            );
+            assert!(sandbox.poisoned());
         }
 
         #[test]
@@ -3275,11 +3195,8 @@ mod tests {
 
             let result = sbox.call::<u64>("ReadMSR", msr_index);
             assert!(
-                matches!(
-                    &result,
-                    Err(HyperlightError::MsrReadViolation(idx)) if *idx == msr_index
-                ),
-                "RDMSR 0x{:X}: expected MsrReadViolation, got: {:?}",
+                matches!(&result, Err(HyperlightError::GuestAborted(_, _))),
+                "RDMSR 0x{:X}: expected direct #GP, got: {:?}",
                 msr_index,
                 result
             );
@@ -3289,15 +3206,67 @@ mod tests {
 
             let result = sbox.call::<()>("WriteMSR", (msr_index, 0x5u64));
             assert!(
-                matches!(
-                    &result,
-                    Err(HyperlightError::MsrWriteViolation(idx, _)) if *idx == msr_index
-                ),
-                "WRMSR 0x{:X}: expected MsrWriteViolation, got: {:?}",
+                matches!(&result, Err(HyperlightError::GuestAborted(_, _))),
+                "WRMSR 0x{:X}: expected direct #GP, got: {:?}",
                 msr_index,
                 result
             );
             assert!(sbox.poisoned());
+        }
+
+        #[test]
+        #[cfg(kvm)]
+        fn nested_virtualization_is_hidden_from_guest() {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                return;
+            }
+
+            let mut sandbox = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+            let features: u32 = sandbox.call("NestedVirtualizationCpuid", ()).unwrap();
+            assert_eq!(features & 0b11, 0, "guest CPUID exposes VMX or SVM");
+        }
+
+        #[test]
+        #[cfg(kvm)]
+        fn nested_vmx_setup_msrs_are_denied() {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                return;
+            }
+
+            let mut sandbox = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+            let snapshot = sandbox.snapshot().unwrap();
+            let vmx_basic: u32 = 0x480;
+            let result = sandbox.call::<u64>("ReadMSR", vmx_basic);
+            assert!(
+                matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                "RDMSR 0x{vmx_basic:X}: expected direct #GP, got: {result:?}"
+            );
+
+            sandbox.restore(snapshot).unwrap();
+            let feature_control: u32 = 0x3A;
+            let result = sandbox.call::<()>("WriteMSR", (feature_control, 0x5u64));
+            assert!(
+                matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                "WRMSR 0x{feature_control:X}: expected direct #GP, got: {result:?}"
+            );
         }
 
         /// A write-only command cannot enter the reset set.
@@ -3424,8 +3393,7 @@ mod tests {
                 return;
             }
 
-            let cases: [(u32, bool); 2] = [(0x1D9, true), (0x800, false)];
-            for (msr_index, expect_filter_violation) in cases {
+            for msr_index in [0x1D9_u32, 0x800] {
                 let mut sbox = UninitializedSandbox::new(
                     GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                     None,
@@ -3435,20 +3403,10 @@ mod tests {
                 .unwrap();
 
                 let result = sbox.call::<()>("WriteMSR", (msr_index, 0x1u64));
-                if expect_filter_violation {
-                    assert!(
-                        matches!(
-                            &result,
-                            Err(HyperlightError::MsrWriteViolation(idx, _)) if *idx == msr_index
-                        ),
-                        "WRMSR 0x{msr_index:X}: expected MsrWriteViolation, got: {result:?}"
-                    );
-                } else {
-                    assert!(
-                        matches!(&result, Err(HyperlightError::GuestAborted(_, _))),
-                        "WRMSR 0x{msr_index:X}: expected direct #GP, got: {result:?}"
-                    );
-                }
+                assert!(
+                    matches!(&result, Err(HyperlightError::GuestAborted(_, _))),
+                    "WRMSR 0x{msr_index:X}: expected direct #GP, got: {result:?}"
+                );
                 assert!(
                     sbox.poisoned(),
                     "sandbox should be poisoned after a denied WRMSR to 0x{msr_index:X}"
@@ -3456,54 +3414,42 @@ mod tests {
             }
         }
 
-        /// A rejected MSR restore poisons the sandbox on every backend.
-        ///
-        /// The host register set rejects the noncanonical KERNEL_GS_BASE value
-        /// on KVM, MSHV, and WHP alike, leaving the sandbox poisoned.
         #[test]
-        #[cfg(target_arch = "x86_64")]
-        fn rejected_msr_restore_poisons_sandbox() {
-            let mut sbox = UninitializedSandbox::new(
+        #[cfg(all(kvm, target_arch = "x86_64"))]
+        fn all_kvm_custom_msrs_are_denied() {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                return;
+            }
+
+            const KVM_CUSTOM_MSR_START: u32 = 0x4B56_4D00;
+            const KVM_CUSTOM_MSR_END: u32 = 0x4B56_4DFF;
+
+            let mut sandbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
             )
             .unwrap()
             .evolve()
             .unwrap();
+            let snapshot = sandbox.snapshot().unwrap();
 
-            let baseline = sbox.snapshot().unwrap();
-            sbox.snapshot = None;
-            let Ok(mut snap) = Arc::try_unwrap(baseline) else {
-                panic!("snapshot should be uniquely owned after clearing the cache");
-            };
-            // A noncanonical KERNEL_GS_BASE value the host set rejects.
-            let mut msrs = snap.msrs().unwrap().clone();
-            let kernel_gs_base = msrs
-                .iter_mut()
-                .find(|entry| entry.index == 0xC000_0102)
-                .expect("KERNEL_GS_BASE should be in the reset set");
-            kernel_gs_base.value = 0xDEAD_0000_0000_0000;
-            snap.set_msrs(Some(msrs));
-            let snap = Arc::new(snap);
+            for index in KVM_CUSTOM_MSR_START..=KVM_CUSTOM_MSR_END {
+                let result = sandbox.call::<u64>("ReadMSR", index);
+                assert!(
+                    matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                    "RDMSR {index:#x} was not denied: {result:?}"
+                );
+                sandbox.restore(snapshot.clone()).unwrap();
 
-            let err = sbox
-                .restore(snap)
-                .expect_err("restore should fail on a rejected MSR set");
-            assert!(
-                format!("{err:?}").to_lowercase().contains("msr")
-                    || format!("{err:?}").to_lowercase().contains("restore"),
-                "expected an MSR restore error, got: {err:?}"
-            );
-            assert!(
-                sbox.poisoned(),
-                "sandbox should be poisoned after failed restore"
-            );
-
-            let call = sbox.call::<String>("Echo", "hi".to_string());
-            assert!(
-                matches!(call, Err(HyperlightError::PoisonedSandbox)),
-                "poisoned sandbox should reject guest calls, got: {call:?}"
-            );
+                let result = sandbox.call::<()>("WriteMSR", (index, 1u64));
+                assert!(
+                    matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                    "WRMSR {index:#x} was not denied: {result:?}"
+                );
+                sandbox.restore(snapshot.clone()).unwrap();
+            }
         }
 
         /// Unresettable feature-class MSRs must not retain guest writes. PMU,
@@ -3555,15 +3501,15 @@ mod tests {
         #[test]
         #[cfg(target_arch = "x86_64")]
         fn runtime_msr_table_entries_are_justified() {
-            use crate::hypervisor::regs::core_reset_indices;
+            use crate::hypervisor::regs::resettable_msr_indices;
 
             #[cfg(kvm)]
-            let kernel_gs_uses_instruction_side_effect = matches!(
+            let is_kvm = matches!(
                 crate::hypervisor::virtual_machine::get_available_hypervisor(),
                 Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
             );
             #[cfg(not(kvm))]
-            let kernel_gs_uses_instruction_side_effect = false;
+            let is_kvm = false;
 
             let mut sbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3582,18 +3528,16 @@ mod tests {
                 .map(|entry| entry.index)
                 .collect();
 
-            for index in core_reset_indices() {
+            for index in resettable_msr_indices() {
                 if !reset_indices.contains(&index) {
                     assert_omitted_msr_does_not_retain(&mut sbox, index);
-                } else if kernel_gs_uses_instruction_side_effect && index == KERNEL_GS_BASE {
+                } else if is_kvm && index == KERNEL_GS_BASE {
                     // Direct WRMSR is denied. The dedicated SWAPGS test proves
                     // the instruction-side mutation is restored.
-                } else if (index == 0x10 && !kernel_gs_uses_instruction_side_effect)
-                    || matches!(index, 0xE7 | 0xE8)
-                {
+                } else if (index == MSR_TSC && !is_kvm) || matches!(index, MSR_MPERF | MSR_APERF) {
                     assert_guest_counter_is_writable_and_restored(&mut sbox, index);
-                } else if let Some(sentinel) = positive_write_sentinel(index) {
-                    assert_guest_msr_is_writable_and_restored(&mut sbox, index, sentinel);
+                } else if let Some(test_value) = guest_write_test_value(index) {
+                    assert_guest_msr_is_writable_and_restored(&mut sbox, index, test_value);
                 } else {
                     assert!(
                         reset_exception_reason(index).is_some(),
@@ -3613,7 +3557,7 @@ mod tests {
                     return;
                 }
             };
-            let preferred = positive_write_sentinel(index).unwrap_or(original ^ 1);
+            let preferred = guest_write_test_value(index).unwrap_or(original ^ 1);
             let candidates = [preferred, original ^ 1, original ^ 2, 0, 1, 0x1000];
 
             for candidate in candidates {
@@ -3641,40 +3585,52 @@ mod tests {
             }
         }
 
-        fn positive_write_sentinel(index: u32) -> Option<u64> {
+        fn guest_write_test_value(index: u32) -> Option<u64> {
             match index {
-                0x174 => Some(0x10),                          // SYSENTER_CS
-                0x175 | 0x176 => Some(0x1000),                // SYSENTER_ESP/EIP
-                0x277 => Some(0x0007_0406_0007_0406),         // PAT
-                0xC000_0081 => Some(0x001B_0008_0000_0000),   // STAR
-                0xC000_0082 | 0xC000_0083 => Some(0x1000),    // LSTAR/CSTAR
-                0xC000_0084 => Some(0x200),                   // SFMASK
-                0xC000_0102 => Some(0x1000),                  // KERNEL_GS_BASE
-                0x3B => Some(0x1000),                         // TSC_ADJUST
-                0xC000_0103 => Some(0x5),                     // TSC_AUX
-                0x2FF => Some(0xC00),                         // MTRR_DEF_TYPE
+                SYSENTER_CS => Some(0x10),
+                MSR_SYSENTER_ESP | MSR_SYSENTER_EIP => Some(0x1000),
+                MSR_PAT => Some(0x0007_0406_0007_0406),
+                MSR_STAR => Some(0x001B_0008_0000_0000),
+                MSR_LSTAR | MSR_CSTAR => Some(0x1000),
+                MSR_SFMASK => Some(0x200),
+                KERNEL_GS_BASE => Some(0x1000),
+                MSR_TSC_ADJUST => Some(0x1000),
+                MSR_TSC_AUX => Some(0x5),
+                MSR_MTRR_DEF_TYPE => Some(0xC00),
                 0x200..=0x21F if index & 1 == 0 => Some(0x6), // MTRR_PHYSBASEn
                 0x200..=0x21F => Some(0x800),                 // MTRR_PHYSMASKn
-                0x250 | 0x258 | 0x259 | 0x268..=0x26F => Some(0x0606_0606_0606_0606),
+                MSR_MTRR_FIX64K_00000 | 0x258 | 0x259 | 0x268..=0x26F => {
+                    Some(0x0606_0606_0606_0606)
+                }
                 _ => None,
             }
         }
 
         fn reset_exception_reason(index: u32) -> Option<&'static str> {
             match index {
-                0x10 => Some("KVM denies direct guest TSC MSR access"),
-                0x1D9 => Some("DEBUGCTL support depends on exposed debug features"),
-                0x48 => Some("SPEC_CTRL writable bits depend on mitigation features"),
-                0x6A0 | 0x6A2 | 0x6A4..=0x6A8 => {
+                MSR_TSC => Some("KVM denies direct guest TSC MSR access"),
+                MSR_DEBUGCTL => Some("DEBUGCTL support depends on exposed debug features"),
+                MSR_SPEC_CTRL => Some("SPEC_CTRL writable bits depend on mitigation features"),
+                MSR_U_CET
+                | MSR_S_CET
+                | MSR_PL0_SSP
+                | MSR_PL1_SSP
+                | MSR_PL2_SSP
+                | MSR_PL3_SSP
+                | MSR_INTERRUPT_SSP_TABLE_ADDR => {
                     Some("CET writable state depends on exposed CET features")
                 }
-                0x122 => Some("TSX_CTRL writable bits depend on exposed TSX features"),
-                0x1C4 | 0x1C5 => Some("XFD writable bits depend on exposed XSAVE features"),
-                0xE1 => Some("UMWAIT_CONTROL writable bits depend on exposed WAITPKG features"),
-                0x6E0 => Some("TSC_DEADLINE writable bits depend on exposed APIC-timer features"),
-                0xD90 => Some("BNDCFGS writable bits depend on exposed MPX features"),
-                0xDA0 => Some("XSS writable bits depend on exposed XSAVE features"),
-                0xC001_011F => {
+                MSR_TSX_CTRL => Some("TSX_CTRL writable bits depend on exposed TSX features"),
+                MSR_XFD | MSR_XFD_ERR => Some("XFD writable bits depend on exposed XSAVE features"),
+                MSR_UMWAIT_CONTROL => {
+                    Some("UMWAIT_CONTROL writable bits depend on exposed WAITPKG features")
+                }
+                MSR_TSC_DEADLINE => {
+                    Some("TSC_DEADLINE writable bits depend on exposed APIC-timer features")
+                }
+                MSR_BNDCFGS => Some("BNDCFGS writable bits depend on exposed MPX features"),
+                MSR_XSS => Some("XSS writable bits depend on exposed XSAVE features"),
+                MSR_VIRT_SPEC_CTRL => {
                     Some("VIRT_SPEC_CTRL writable bits depend on exposed AMD SSBD virtualization")
                 }
                 _ => None,
@@ -3950,22 +3906,22 @@ mod tests {
             .evolve()
             .unwrap();
 
-            let base = sbox.vm.capture_msrs_for_test(&[0x10]).unwrap()[0].value;
+            let base = sbox.vm.capture_msrs_for_test(&[MSR_TSC]).unwrap()[0].value;
 
             let jump = base.wrapping_add(1 << 60);
-            sbox.call::<()>("WriteMSR", (0x10u32, jump)).unwrap();
-            let planted: u64 = sbox.call("ReadMSR", 0x10u32).unwrap();
+            sbox.call::<()>("WriteMSR", (MSR_TSC, jump)).unwrap();
+            let planted: u64 = sbox.call("ReadMSR", MSR_TSC).unwrap();
             assert!(
                 planted >= jump,
                 "guest TSC write did not take (planted=0x{planted:X} jump=0x{jump:X})"
             );
 
             assert!(
-                sbox.vm.try_set_msr_for_test(0x10, base),
+                sbox.vm.try_set_msr_for_test(MSR_TSC, base),
                 "host set of HV_X64_REGISTER_TSC failed"
             );
 
-            let after: u64 = sbox.call("ReadMSR", 0x10u32).unwrap();
+            let after: u64 = sbox.call("ReadMSR", MSR_TSC).unwrap();
             eprintln!(
                 "mshv TSC writeback probe: base=0x{base:X} jump=0x{jump:X} planted=0x{planted:X} after=0x{after:X}"
             );

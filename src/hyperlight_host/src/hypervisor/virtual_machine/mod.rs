@@ -21,13 +21,15 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebugError;
-#[cfg(target_arch = "x86_64")]
-use crate::hypervisor::regs::MsrEntry;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
 #[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
-use crate::hypervisor::regs::{MSR_MTRR_CAP, hyperv_mtrr_reset_indices, is_resettable_msr};
+use crate::hypervisor::regs::{
+    MSR_MTRR_CAP, filterless_core_reset_candidates, hyperv_mtrr_reset_indices,
+};
+#[cfg(target_arch = "x86_64")]
+use crate::hypervisor::regs::{MsrEntry, is_resettable_msr};
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
@@ -143,12 +145,6 @@ pub(crate) enum VmExit {
     MmioRead(u64),
     /// The vCPU tried to write to the given (unmapped) addr
     MmioWrite(u64),
-    /// The vCPU tried to read from the given MSR
-    #[cfg(all(target_arch = "x86_64", kvm))]
-    MsrRead(u32),
-    /// The vCPU tried to write to the given MSR with the given value
-    #[cfg(all(target_arch = "x86_64", kvm))]
-    MsrWrite { msr_index: u32, value: u64 },
     /// The vCPU execution has been cancelled
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
@@ -194,7 +190,7 @@ pub enum CreateVmError {
     #[error("Initialize VM failed: {0}")]
     InitializeVm(HypervisorError),
     #[cfg(all(kvm, target_arch = "x86_64"))]
-    #[error("KVM MSR filtering requires KVM_CAP_X86_USER_SPACE_MSR and KVM_CAP_X86_MSR_FILTER")]
+    #[error("KVM MSR filtering requires KVM_CAP_X86_MSR_FILTER")]
     MsrFilterNotSupported,
     #[cfg(target_arch = "x86_64")]
     #[error("MSR {msr:#x} cannot be allowed: {reason}")]
@@ -258,6 +254,12 @@ pub enum RegisterError {
     GetSregs(HypervisorError),
     #[error("Failed to set special registers: {0}")]
     SetSregs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Snapshot APIC_BASE {value:#x} enables unsupported x2APIC mode")]
+    InvalidSnapshotApicBase {
+        /// APIC_BASE value supplied by the snapshot.
+        value: u64,
+    },
     #[error("Failed to get debug registers: {0}")]
     GetDebugRegs(HypervisorError),
     #[error("Failed to set debug registers: {0}")]
@@ -431,6 +433,9 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Writes the supplied MSRs.
     #[cfg(target_arch = "x86_64")]
     fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError>;
+    /// Returns the MSRs whose state this backend must reset.
+    #[cfg(target_arch = "x86_64")]
+    fn msr_reset_indices(&self, allowed: &[u32]) -> std::result::Result<Vec<u32>, CreateVmError>;
 
     /// Get xsave
     #[allow(dead_code)]
@@ -458,10 +463,10 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 }
 
-/// Validates that each allowed MSR is restorable on a filterless (MSHV/WHP)
-/// host: reset replays a captured value, so the host must read and write it.
+/// Validates that each allowed MSR is restorable: reset replays a captured
+/// value, so the host must read and write it.
 /// Rejects e.g. a variable MTRR above the host VCNT.
-#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn validate_allowed_msrs(
     vm: &dyn VirtualMachine,
     allowed: &[u32],
@@ -500,6 +505,23 @@ pub(crate) fn mtrr_reset_indices(
     let indices = hyperv_mtrr_reset_indices(mtrr_cap)?;
     vm.msrs(&indices)
         .map_err(CreateVmError::RequiredMtrrsNotResettable)?;
+    Ok(indices)
+}
+
+/// Builds the reset index set required by a filterless Hyper-V backend.
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+pub(crate) fn hyperv_msr_reset_indices(
+    vm: &dyn VirtualMachine,
+    allowed: &[u32],
+) -> std::result::Result<Vec<u32>, CreateVmError> {
+    validate_allowed_msrs(vm, allowed)?;
+    let mut indices: Vec<u32> = filterless_core_reset_candidates()
+        .filter(|index| vm.msrs(&[*index]).is_ok())
+        .chain(mtrr_reset_indices(vm)?)
+        .chain(allowed.iter().copied())
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
     Ok(indices)
 }
 

@@ -46,10 +46,22 @@ pub(crate) struct MsrResetState {
 }
 
 impl MsrResetState {
-    /// Builds the reset state from the creation-time baseline entries and the
-    /// requested allow list.
-    pub fn new(baseline: Vec<MsrEntry>, allowed: Vec<u32>) -> Self {
-        Self { baseline, allowed }
+    /// Captures and normalizes the reset state for a backend-provided index set.
+    pub fn capture(
+        mut indices: Vec<u32>,
+        allowed: &[u32],
+        read: impl FnOnce(
+            &[u32],
+        )
+            -> Result<Vec<MsrEntry>, crate::hypervisor::virtual_machine::RegisterError>,
+    ) -> Result<Self, crate::hypervisor::virtual_machine::RegisterError> {
+        indices.sort_unstable();
+        indices.dedup();
+        let baseline = read(&indices)?;
+        let mut allowed = allowed.to_vec();
+        allowed.sort_unstable();
+        allowed.dedup();
+        Ok(Self { baseline, allowed })
     }
 
     /// The creation-time baseline entries.
@@ -152,7 +164,7 @@ const HYPERV_VARIABLE_MTRR_COUNT: u8 = 16;
 // PRED_CMD (0x49) and FLUSH_CMD (0x10B) are intentionally absent: they are
 // write-only commands with no retained state, so they cannot be reset and
 // therefore cannot be allowed.
-const MSR_TABLE: &[u32] = &[
+const NON_MTRR_RESETTABLE_MSRS: &[u32] = &[
     // Guest and host access use the matching SYSENTER state.
     MSR_SYSENTER_CS,
     MSR_SYSENTER_ESP,
@@ -176,7 +188,6 @@ const MSR_TABLE: &[u32] = &[
     // Host probing omits CET state when CET is unavailable.
     MSR_U_CET,
     MSR_S_CET,
-    // Host probing omits shadow-stack state when it is unavailable.
     MSR_PL0_SSP,
     MSR_PL1_SSP,
     MSR_PL2_SSP,
@@ -203,6 +214,9 @@ const MSR_TABLE: &[u32] = &[
     MSR_UMWAIT_CONTROL,
     MSR_TSC_DEADLINE,
     MSR_BNDCFGS,
+];
+
+const MTRR_RESET_INDICES: &[u32] = &[
     // Hyper-V accepts fixed-MTRR writes even when MTRRCAP.FIX is clear.
     MSR_MTRR_DEF_TYPE,
     0x200,                 // PHYSBASE0
@@ -252,12 +266,20 @@ const MSR_TABLE: &[u32] = &[
 
 /// Whether an MSR carries retained state eligible for the reset set.
 pub(crate) fn is_resettable_msr(index: u32) -> bool {
-    MSR_TABLE.contains(&index)
+    NON_MTRR_RESETTABLE_MSRS.contains(&index) || is_mtrr_reset_index(index)
 }
 
-/// Returns core stateful indices for host filtering.
-pub(crate) fn core_reset_indices() -> impl Iterator<Item = u32> {
-    MSR_TABLE.iter().copied()
+/// Returns non-MTRR candidates probed by filterless Hyper-V backends.
+pub(crate) fn filterless_core_reset_candidates() -> impl Iterator<Item = u32> {
+    NON_MTRR_RESETTABLE_MSRS.iter().copied()
+}
+
+#[cfg(test)]
+pub(crate) fn resettable_msr_indices() -> impl Iterator<Item = u32> {
+    NON_MTRR_RESETTABLE_MSRS
+        .iter()
+        .chain(MTRR_RESET_INDICES)
+        .copied()
 }
 
 pub(crate) fn hyperv_mtrr_reset_indices(
@@ -293,22 +315,7 @@ pub(crate) fn hyperv_mtrr_reset_indices(
 }
 
 pub(crate) fn is_mtrr_reset_index(index: u32) -> bool {
-    index == MSR_MTRR_DEF_TYPE
-        || (0x200..=0x21F).contains(&index)
-        || matches!(
-            index,
-            MSR_MTRR_FIX64K_00000
-                | 0x258
-                | 0x259
-                | 0x268
-                | 0x269
-                | 0x26A
-                | 0x26B
-                | 0x26C
-                | 0x26D
-                | 0x26E
-                | 0x26F
-        )
+    MTRR_RESET_INDICES.contains(&index)
 }
 
 #[cfg(test)]

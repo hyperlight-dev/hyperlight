@@ -154,16 +154,6 @@ pub enum HyperlightError {
     #[error("Memory Access Violation at address {0:#x} of type {1}, but memory is marked as {2}")]
     MemoryAccessViolation(u64, MemoryRegionFlags, MemoryRegionFlags),
 
-    /// A denied guest MSR read.
-    #[cfg(all(target_arch = "x86_64", kvm))]
-    #[error("Guest read from denied MSR {0:#x}")]
-    MsrReadViolation(u32),
-
-    /// A denied guest MSR write.
-    #[cfg(all(target_arch = "x86_64", kvm))]
-    #[error("Guest write of {1:#x} to denied MSR {0:#x}")]
-    MsrWriteViolation(u32, u64),
-
     /// Memory Allocation Failed.
     #[error("Memory Allocation Failed with OS Error {0:?}.")]
     MemoryAllocationFailed(Option<i32>),
@@ -361,10 +351,6 @@ impl HyperlightError {
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
             // as poisoning here too for defense in depth.
             | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
-
-            #[cfg(all(target_arch = "x86_64", kvm))]
-            HyperlightError::MsrReadViolation(_)
-            | HyperlightError::MsrWriteViolation(_, _) => true,
 
             // These errors poison the sandbox because they can leave
             // it in an inconsistent state due to snapshot restore

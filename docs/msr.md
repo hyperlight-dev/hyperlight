@@ -2,303 +2,228 @@
 
 ## Requirement
 
-A snapshot restore must remove all model-specific register (MSR) state written
-after the snapshot. The guest must observe the MSR values saved with the
-restored state.
+A snapshot represents the state of a VM at a point in time. This includes MSR
+state that can affect later execution.
 
-## Reset set
+After `MultiUseSandbox::restore`, the destination sandbox's MSR state must match
+the supplied snapshot, regardless of prior execution in the sandbox.
 
-The reset set contains every MSR whose guest-written value can persist. Each
-running snapshot stores values for this set. A snapshot created from a guest
-binary has no saved MSR values, so restore uses the baseline captured when the
-VM was created.
+## How restore works
 
-`MSR_TABLE` lists the MSRs that hold retained state restore must write. A
-write-only command MSR holds no state, so it is absent from the table.
+Each backend provides the MSR indices it must reset. VM creation reads these
+indices before guest execution and stores the values as the destination
+baseline.
 
-The resolved reset set contains the backend core set, required MTRRs, and the
-validated allow list. Hyperlight sorts and deduplicates the indices before
-capturing the initialization baseline.
+A snapshot captured from a VM stores:
 
-The required invariant is:
+* The value of every MSR in the source VM's reset set.
+* The source sandbox's MSR allow list.
 
-```text
-guest-writable retained state => host-readable and host-writable state
-```
+Restore resolves the snapshot against the destination reset set. A value stored
+in the snapshot is restored directly. An index present only in the destination
+uses the destination baseline. This supports restoring into a sandbox whose
+allow list is a superset of the source allow list.
 
-Host-readable state need not be guest-writable. Extra reset entries are safe.
-`EFER`, `APIC_BASE`, `FS_BASE`, and `GS_BASE` belong to the special-register
-state.
+The backend writes the complete resolved set before guest execution resumes. A
+read, validation, or write failure aborts restore and poisons the sandbox.
 
-The two halves are established differently. Resolution checks the
-host-readable half at run time: a candidate index enters the set only when the
-host read succeeds, so an unreadable MSR is dropped. Nothing checks the
-host-writable half at run time. It holds by construction. Every reset MSR is
-stored in VP register state that the Hyper-V host interface both reads and
-writes, except `KERNEL_GS_BASE`, a real register the host reads and writes
-directly. Round-trip tests plant a guest value, restore, and assert that it does
-not survive. Every future entry must remain host-readable and host-writable.
+## Why the reset set is backend-specific
 
-## Reset set justification
+KVM can deny individual guest `RDMSR` and `WRMSR` operations. Its reset set can
+therefore be limited to allowed MSRs and state changed through other CPU
+instructions.
 
-Each entry is grounded in how the Hyper-V hypervisor handles a guest access to
-that register, confirmed against the Hyper-V source.
+MSHV and WHP do not provide Hyperlight with an equivalent per-MSR filter.
+Their reset sets must include every retained MSR state reachable through the
+partition's exposed CPU features. Hyperlight keeps a shared candidate table for
+these Hyper-V backends and lets each backend select entries it can map and read.
 
-A register is reset when the guest can write it and Hyper-V keeps the written
-value. Hyper-V keeps it in one of two ways: it stores the value in the VP's
-saved register state, or it lets the guest write the real register directly.
-Only `FS_BASE`, `GS_BASE`, and `KERNEL_GS_BASE` are written directly. Every
-other register below is intercepted and stored. Hyper-V stores the value on both
-Intel and AMD hosts.
+The backend owns discovery because register mappings and capabilities differ.
+Sorting, deduplication, baseline capture, snapshot validation, and fallback to
+the destination baseline are shared in `MsrResetState`.
 
-Interception alone is not the test. Hyper-V also intercepts registers the guest
-can only read, or that return a host-derived value. Those keep no
-guest-controlled state and are not reset. Each row below names the guest state
-that persists.
+Every reset entry must represent guest-writable retained state that the host can
+read and write. The shared candidate table is derived from the Hyper-V source
+and must be audited when that source, register mappings, or feature exposure
+changes. VM creation probes host reads. Host write support currently holds by
+table construction and round-trip tests.
 
-| MSR (index) | Retained guest state |
+## Snapshot validation and access policy
+
+Snapshot state is untrusted. Every `MsrEntry` stored in a snapshot must name an
+index in the destination VM's reset set. This prevents a snapshot from using
+the backend register interface to write arbitrary host-visible registers.
+
+The allow list is separate from the captured values:
+
+* `msrs` contains the complete source reset state.
+* `allowed_msrs` records which MSRs the source guest could access through the
+  configured policy.
+
+The source allow list must be a subset of the destination allow list. The
+destination configuration remains authoritative. Snapshot data cannot expand
+the destination policy or replace its KVM filter.
+
+`SandboxConfiguration::allow_msrs` accepts at most 16 distinct indices. KVM
+also supports at most 16 contiguous filter ranges. Each allowed index must be
+resettable, host-readable, and host-writable. Write-only command MSRs such as
+`PRED_CMD` and `FLUSH_CMD` hold no resettable state and cannot be allowed.
+
+MSHV and WHP cannot enforce the allow list during guest execution. They retain
+it in snapshots so restore compatibility has the same meaning on every
+backend.
+
+## State restored elsewhere
+
+Not all architecturally MSR-backed state uses the MSR reset path.
+
+| State | Restore owner |
 | --- | --- |
-| SYSENTER CS, ESP, EIP (`0x174`-`0x176`) | Guest write retained. |
-| STAR, LSTAR, CSTAR, SFMASK (`0xC000_0081`-`0xC000_0084`) | Guest write retained (syscall targets). |
-| KERNEL_GS_BASE (`0xC000_0102`) | Guest write retained. Written to the real register, and reachable through `SWAPGS` without a `WRMSR`. |
-| PAT (`0x277`) | Guest write retained. |
-| DEBUGCTL (`0x1D9`) | Guest write retained. |
-| SPEC_CTRL (`0x48`) | Guest write retained. |
-| CET U_CET, S_CET, PL0-3_SSP, INTERRUPT_SSP_TABLE_ADDR (`0x6A0`, `0x6A2`, `0x6A4`-`0x6A8`) | Guest write retained. |
-| XSS (`0xDA0`) | Guest write retained. |
-| TSC (`0x10`) | Guest write retained. Hyper-V forbids intercepting its implemented TSC, so restore rewrites the captured value. |
-| TSC_ADJUST (`0x3B`) | Guest write retained, independent of TSC. |
-| TSC_AUX (`0xC000_0103`) | Guest write retained. |
-| MTRRs (`0x2FF`, `0x200`-`0x21F`, `0x250`, `0x258`-`0x259`, `0x268`-`0x26F`) | Guest write retained (memory-type state). |
-| TSX_CTRL (`0x122`) | Guest write retained. |
-| XFD, XFD_ERR (`0x1C4`, `0x1C5`) | Guest write retained. |
-| UMWAIT_CONTROL (`0xE1`) | Guest write retained. Intel only. |
-| TSC_DEADLINE (`0x6E0`) | Guest write retained. |
-| BNDCFGS (`0xD90`) | Guest write retained when the host supports MPX. A guest access faults otherwise. |
-| MPERF, APERF (`0xE7`, `0xE8`) | Guest write retained in per-VP counters. |
+| `EFER`, `APIC_BASE`, `FS_BASE`, `GS_BASE` | Special-register snapshot state. |
+| PASID (`0xD93`) on MSHV | XSAVE state. |
 
-Write-only command MSRs hold no state. A guest write performs an action and
-leaves nothing to restore, so they are absent from the reset table and cannot
-be allowed.
-
-| MSR (index) | Behavior |
-| --- | --- |
-| PRED_CMD (`0x49`) | Guest write issues a prediction barrier. |
-| FLUSH_CMD (`0x10B`) | Guest write flushes caches. |
-
-Some registers are deliberately absent because guest access cannot leave state
-outside another reset mechanism.
-
-| MSR (index) | Why excluded |
-| --- | --- |
-| MISC_ENABLE (`0x1A0`) | Intercepted, but Hyper-V discards a guest write and returns a fixed value. No retained state. On AMD the access faults. See below. |
-| FRED (`0x1CC`-`0x1D4`) | Retained only when the host exposes FRED, which Hyperlight does not. A guest access faults otherwise. |
-| PASID (`0xD93`) | MSHV exposes ENQCMD on capable Intel hosts. PASID is a supervisor XSAVE component, so XSAVE reset clears it. WHP does not expose ENQCMD. |
-| PMU: PMC0, PERFEVTSEL0, FIXED_CTR_CTRL, PERF_GLOBAL_CTRL (`0xC1`, `0x186`, `0x38D`, `0x38F`) | Heads of the performance-monitoring class. Hyper-V leaves these unimplemented for the guest and installs guest-accessible descriptors, sized to the CPU counter count, only when perfmon is enabled. Hyperlight enables no perfmon, so a guest access faults and retains nothing. |
-| LBR: LBR_SELECT, LASTBRANCH_TOS, LBR_CTL, LBR_DEPTH (`0x1C8`, `0x1C9`, `0x14CE`, `0x14CF`) | Last-branch registers, gated with perfmon. A guest access faults and retains nothing while perfmon stays off. |
-
-Hyper-V virtualizes `BNDCFGS`, `FRED`, and `PASID` only when the matching CPU
-feature is exposed. `BNDCFGS` is reset because MPX is exposed by default on
-capable hosts. `FRED` stays excluded because Hyperlight does not expose it.
-MSHV can expose ENQCMD, but its XSAVE state mask then includes PASID. Hyperlight
-clears PASID during XSAVE reset before restoring MSRs. The performance-monitoring
-and last-branch registers remain inaccessible while perfmon is off.
-
-## Snapshot validation
-
-Snapshot MSR entries are untrusted. A snapshot records the reset values and the
-capturing sandbox's allow list. `validate_snapshot` enforces two rules against
-the destination VM's reset set:
-
-* The snapshot's allow list must be a subset of the destination's. A
-  destination that allows at least as much accepts the snapshot.
-* Every supplied index must belong to the destination reset set.
-
-Indices the destination resets but the snapshot omits take the destination's
-creation-time baseline. A rejected restore poisons the sandbox before the guest
-can run. Equivalent allow lists produce the same sorted reset set, regardless of
-insertion order.
-
-## Restore across allow lists
-
-A restore or `from_snapshot` succeeds when the destination allow list is a
-superset of the snapshot's, on every backend. The snapshot's allowed MSRs keep
-their captured values. An MSR the destination allows but the snapshot did not
-resets to the destination baseline. A non-superset allow list is rejected
-uniformly.
-
-The rule is backend independent even though each backend sizes its reset set
-differently. KVM derives its reset set from the allow list. MSHV and WHP reset
-the full host table. The allow-list subset check gates the restore before either
-reset set is applied, so a flow that succeeds on one backend succeeds on all.
-
-The superset check is the common rule across backends. MSHV and WHP accept any
-allow list on their own. The shared check gives every backend KVM's constraint.
-
-## Allow list
-
-`SandboxConfiguration::allow_msrs` adds indices to the requested allow list. It
-enforces capacity only. VM creation verifies that each index is resettable and
-supported by the selected backend.
-
-KVM requires the index in `KVM_GET_MSR_INDEX_LIST` and a successful host read
-and write. MSHV and WHP require a named-register mapping and a successful host
-read.
-
-At most 16 distinct MSRs may be requested. KVM also limits the resulting
-contiguous filter groups to 16.
+Keeping one owner avoids restoring the same state through two backend APIs.
 
 ## KVM
 
-KVM installs a deny filter over the full MSR space. Allowed indices form the
-only guest `RDMSR` and `WRMSR` paths through that filter. A denied access exits
-to Hyperlight, injects `#GP`, and poisons the sandbox. The denied write stores
-no state.
+KVM installs a default-deny MSR filter. The configured allow list supplies the
+only permitted filter ranges. VM creation rejects an allowed index unless KVM
+lists it and the host can read and write it.
 
-The KVM reset set contains the allow list plus `KERNEL_GS_BASE` and `TSC`.
-`KERNEL_GS_BASE` is required because `WRGSBASE` followed by `SWAPGS` changes it
-without `WRMSR`. `TSC` gives restore the same clock semantics on every backend.
+The KVM reset set contains:
 
-KVM does not filter x2APIC indices `0x800..=0x8FF`. Hyperlight keeps the APIC in
-xAPIC mode, where MSR access to that range raises `#GP`. `APIC_BASE` is not an
-allowable MSR, so a guest cannot enable x2APIC. Snapshots created by Hyperlight
-therefore retain `APIC_BASE.EXTD = 0`. File snapshots serialize `APIC_BASE`
-without semantic validation, so the caller must trust the snapshot source as
-required by the snapshot format.
+* Every allowed MSR.
+* `KERNEL_GS_BASE`, because `WRGSBASE` followed by `SWAPGS` can change it
+  without `WRMSR`.
+* `TSC`, so restore rewinds guest time on every backend.
 
-## MTRRs
+The default-deny filter also covers KVM's custom MSR namespace
+`0x4B56_4D00..=0x4B56_4DFF`.
 
-MSHV and WHP read `IA32_MTRRCAP` when the VM is created. The required set
-contains `MTRR_DEF_TYPE`, each variable pair reported by `VCNT`, and all fixed
-MTRRs.
+Some CPU state does not pass through the filter. Hyperlight addresses those
+paths separately:
 
-Hyper-V accepts fixed-MTRR writes even when `MTRRCAP.FIX` is clear. All fixed
-MTRRs are therefore required. Hyper-V supports at most 16 variable pairs. VM
-creation fails when the count is larger or a required MTRR cannot be read.
+* VMX and SVM are removed from guest CPUID, so nested VMCS and VMCB state is
+  unreachable. Their setup MSRs remain denied.
+* Hyperlight keeps the APIC in xAPIC mode. Guest writes to `APIC_BASE` and the
+  x2APIC range `0x800..=0x8FF` are denied. Snapshot restore also rejects an
+  `APIC_BASE` value with the x2APIC enable bit set.
+* `FS_BASE` and `GS_BASE` are restored through special-register state.
 
-## MSHV
+A denied guest access raises `#GP`. Hyperlight reports `GuestAborted` and
+poisons the sandbox.
 
-MSHV has no per-MSR filter. Hyper-V permits an MSR intercept only for an
-unimplemented index, which already faults for the guest, and cannot intercept
-the implemented MSRs that hold retained state. Isolation therefore comes from
-reset, not a deny filter.
+## Hyper-V backends
 
-The MSHV reset set contains every table entry that has a Hyper-V
-register mapping and can be read, plus the allow list.
+MSHV and WHP build their reset sets from:
 
-`msr_to_hv_reg_name` determines which indices the get and set path can reach.
-The enumerated host index list does not identify retained state, so it does not
-define the reset set.
+* Retained-state candidates that the backend maps and can read.
+* MTRRs required by the virtual CPU's `MTRRCAP`.
+* The validated allow list.
+
+The shared candidate table is not an intercept list. Hyper-V also intercepts
+read-only, command, and host-derived MSRs that retain no guest-controlled
+value. An entry belongs in the table only when guest execution can leave state
+that affects later execution.
+
+### MSHV
+
+MSHV enables the processor features supported by the host unless a partition
+feature mask disables them. Its guest-visible MSR surface therefore varies by
+host CPU.
 
 MSHV maps `IA32_XSS` through `MSR_IA32_REGISTER_U_XSS`. It maps `IA32_MPERF`
-and `IA32_APERF` to the per-VP `MCount` and `ACount` registers. TSX control,
-XFD, MPX (`BNDCFGS`), WAITPKG (`UMWAIT_CONTROL`), and the TSC deadline timer
-enter the reset set when their host-register probes succeed.
+and `IA32_APERF` through the per-VP `MCount` and `ACount` registers. TSX,
+WAITPKG, CET, XFD, MPX, and deadline-timer state enter the reset set when the
+host exposes and maps them.
 
-MSHV enables every host-supported processor feature unless the caller supplies
-an explicit disabled-feature mask. Hyperlight supplies no mask. On capable
-Intel hosts this can expose ENQCMD and its PASID MSR. MSHV reports PASID in the
-partition XSAVE state mask, and Hyperlight's XSAVE reset clears it.
+The host's enumerated MSR index list does not identify retained state, so it
+does not define the reset set.
 
-## WHP
+On capable Intel hosts MSHV can expose ENQCMD and PASID. PASID is a supervisor
+XSAVE component, so XSAVE restore owns it.
 
-WHP has no per-MSR filter. Its reset set contains every table entry
-that has a WHP register name and can be read, plus the allow list.
+### WHP
 
-WHP uses Germanium compatibility. Speculation control is off in its default
-feature banks, and perfmon (the PMU and architectural LBR) is a separate
-property WHP leaves off. Experimental `DEBUGCTL` bits stay disabled. The WHP
-API defines no FRED feature and its supported feature mask omits ENQCMD, so WHP
-cannot expose FRED or PASID.
+WHP's default feature banks disable speculation control, experimental
+`DEBUGCTL` bits, and performance monitoring. Its supported feature mask omits
+ENQCMD and defines no FRED feature, so WHP does not expose PASID or FRED.
 
-Each guest MSR write is either captured for restore or unsupported by the
-partition. Unsupported writes store no state.
+WHP maps supported MSRs to `WHV_REGISTER_NAME` values. The same mapping is used
+for snapshot reads and restore writes.
 
-## TSC
+### MTRRs
 
-MSHV and WHP expose `TSC` as a host-writable register. Hyper-V stores `TSC` and
-`TSC_ADJUST` independently, so restoring `TSC_ADJUST` cannot undo a guest
-`WRMSR(TSC)`.
+MSHV and WHP read `IA32_MTRRCAP` during VM creation. The reset set includes
+`MTRR_DEF_TYPE`, every variable base and mask pair reported by `VCNT`, and all
+fixed MTRRs. Hyper-V accepts fixed-MTRR writes even when `MTRRCAP.FIX` is
+clear.
 
-While time is running, Hyper-V preserves `TSC - TSC_ADJUST`: writing `TSC`
-adds the same delta to `TSC_ADJUST`, and writing `TSC_ADJUST` adds its delta to
-the internal TSC offset. Restoring `TSC` followed by `TSC_ADJUST` therefore
-cancels any guest-controlled delta. Freezing partition time is not required for
-isolation.
+VM creation fails if `VCNT` exceeds the supported maximum of 16 or required
+MTRRs cannot be read.
 
-Hyper-V does not permit an intercept for its implemented `TSC` MSR. Restore
-must therefore write the captured `TSC` value. KVM also restores `TSC` so all
-backends rewind guest time with the rest of the snapshot state.
+### TSC
 
-## Feature exposure
+Hyper-V stores `TSC` and `TSC_ADJUST` independently. While time runs, it
+preserves `TSC - TSC_ADJUST`: writing `TSC` also changes `TSC_ADJUST`, while
+writing `TSC_ADJUST` changes the internal TSC offset.
 
-On MSHV and WHP a guest reaches an MSR only when the hypervisor exposes that
-CPU feature to the partition. This gives three cases:
+Restore writes `TSC` before `TSC_ADJUST`. The two writes remove the guest's
+delta without freezing partition time. KVM also restores `TSC` so all backends
+use the same guest-time semantics.
 
-* Not exposed. Features the partition does not enable, such as the
-  performance-monitoring unit, last-branch records, and FRED. Hyper-V may still
-  model the register, but a guest access faults and stores no state until the
-  feature is exposed.
-* Exposed by default. Features the host CPU supports, such as TSC deadline,
-  UMWAIT, TSX control, CET, `MPERF`/`APERF`, XFD, AMX, and MPX. Their MSRs
-  must be in the reset set.
-* Reset through another state class. MSHV can expose ENQCMD and PASID on
-  capable Intel hosts. PASID is cleared by XSAVE reset, so it is not duplicated
-  in the MSR reset set.
+## Retained-state inventory
 
-MSHV and WHP enable partition features differently. MSHV creates the partition
-without an explicit feature mask, so it enables every processor feature the host
-supports. WHP starts from the host-supported set with speculation control off.
-MSHV exposes the broader surface and determines which registers the reset set
-must cover.
+These MSRs are reset when supported by the selected backend and host.
 
-Perfmon is not part of either default. The performance-monitoring unit and the
-last-branch registers are a separate opt-in partition property, off by default
-on both backends. Hyperlight never enables it, so those registers stay
-unreachable regardless of the enable-everything processor-feature default.
+| MSR (index) | Retained state |
+| --- | --- |
+| SYSENTER CS, ESP, EIP (`0x174`-`0x176`) | System-call entry state. |
+| STAR, LSTAR, CSTAR, SFMASK (`0xC000_0081`-`0xC000_0084`) | System-call target state. |
+| KERNEL_GS_BASE (`0xC000_0102`) | Kernel GS base, including `SWAPGS` changes. |
+| PAT (`0x277`) | Page attribute state. |
+| DEBUGCTL (`0x1D9`) | Debug control state. |
+| SPEC_CTRL (`0x48`), VIRT_SPEC_CTRL (`0xC001_011F`) | Speculation control state. |
+| CET (`0x6A0`, `0x6A2`, `0x6A4`-`0x6A8`) | CET control and shadow-stack state. |
+| XSS (`0xDA0`) | Extended supervisor state mask. |
+| TSC, TSC_ADJUST, TSC_AUX (`0x10`, `0x3B`, `0xC000_0103`) | Guest clock state. |
+| MTRRs (`0x2FF`, `0x200`-`0x21F`, `0x250`, `0x258`-`0x259`, `0x268`-`0x26F`) | Memory-type state. |
+| TSX_CTRL (`0x122`) | TSX control state. |
+| XFD, XFD_ERR (`0x1C4`, `0x1C5`) | Extended-feature disable state. |
+| UMWAIT_CONTROL (`0xE1`) | WAITPKG control state. |
+| TSC_DEADLINE (`0x6E0`) | Deadline-timer state. |
+| BNDCFGS (`0xD90`) | MPX bounds configuration. |
+| MPERF, APERF (`0xE7`, `0xE8`) | Per-VP performance counters. |
 
-Only reachable, retained MSRs need coverage, and retained state is always held
-in a host-readable and writable register. The mapped registers therefore bound
-the reset set: coverage is complete when every mapped register is in the reset
-table and reset.
+These classes do not need MSR reset entries.
 
-## Host-addressable but not guest-writable
+| MSR (index) | Reason |
+| --- | --- |
+| PRED_CMD (`0x49`) | Write-only command. Issues a prediction barrier. |
+| FLUSH_CMD (`0x10B`) | Write-only command. Flushes caches. |
+| MISC_ENABLE (`0x1A0`) | Hyper-V discards writes. AMD faults the access. |
+| FRED (`0x1CC`-`0x1D4`) | Hyperlight exposes no FRED feature. |
+| PMU (`0xC1`, `0x186`, `0x38D`, `0x38F`) | Hyperlight leaves perfmon disabled. |
+| LBR (`0x1C8`, `0x1C9`, `0x14CE`, `0x14CF`) | Hyperlight leaves perfmon disabled. |
 
-A host register mapping does not imply the guest can write the MSR.
-`IA32_MISC_ENABLE` (`0x1A0`) is the notable case. Hyper-V emulates it, discards
-a guest write, and returns a fixed value to the guest regardless of what was
-written. A guest cannot change it to any value, so it retains no guest state
-and needs no reset. On AMD the guest access faults.
+## Testing
 
-## Failed access reporting
+Focused tests cover:
 
-A KVM-denied or Hyper-V-unsupported MSR access does not persist and poisons the
-sandbox. The error type and its detail differ by backend.
+* Guest-written MSR values across snapshot, restore, and clone lifecycles.
+* Source and destination allow-list compatibility.
+* Backend reset-set discovery and snapshot index validation.
+* `SWAPGS`, TSC, MTRR, and feature-gated Hyper-V state.
+* KVM nested-virtualization, x2APIC, and custom-MSR denial.
 
-* KVM traps the access at the deny filter. Hyperlight reports
-  `MsrReadViolation` or `MsrWriteViolation`, naming the MSR index and, for a
-  write, the value. The report is host-verified.
-* MSHV and WHP have no host MSR trap. An unsupported access faults inside the
-  guest as a general protection fault from Hyper-V, so Hyperlight reports
-  `GuestAborted`. The message records the fault and the faulting instruction but
-  does not identify the MSR. An exposed MSR can succeed even when absent from
-  the allow list. Its retained state must be in the reset table.
+The ignored full-window audit probes additional Hyper-V MSR ranges on the CI
+CPU. It is a regression tool, not a complete inventory of vendor MSRs.
 
-Future work: the guest exception handler could decode a faulting `RDMSR` or
-`WRMSR` and report the index, promoting the abort to a typed MSR violation on
-MSHV and WHP. That index would be guest-reported and therefore advisory. It is
-not implemented.
+## Future work
 
-## Limitations
-
-KVM's security boundary is structural because its deny filter bounds guest
-writes. MSHV and WHP depend on the reset table and exposed processor
-features.
-
-The filterless backend tests run on one CPU model per runner. Model-specific
-state absent on that CPU is not exercised. A backend that exposes a new
-retained MSR feature needs a matching table entry before Hyperlight can use it
-safely.
-
-The ignored full-window audit probes fixed index ranges with a small set of
-values. It cannot prove that every vendor MSR or accepted value is covered.
+* Verify host write support for every resolved filterless reset entry during VM
+  creation. Allowed entries already receive a read and write check.
+* Exercise MSHV and WHP on more CPU models. Their reachable MSR surfaces depend
+  on host features.
+* Extend the inventory when Hyperlight enables new CPU features such as
+  perfmon, FRED, or nested virtualization.

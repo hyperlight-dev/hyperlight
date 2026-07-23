@@ -229,7 +229,7 @@ fn msrs_round_trip_via_disk() {
     assert_eq!(loaded.allowed_msrs(), Some(&[][..]));
 }
 
-/// A config with no `msrs` key loads and uses the destination reset set.
+/// A config with no `msr_state` key loads and uses the destination reset set.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn snapshot_without_msrs_key_loads_and_runs() {
@@ -237,17 +237,14 @@ fn snapshot_without_msrs_key_loads_and_runs() {
     rewrite_config(&path, |cfg| {
         let obj = cfg.as_object_mut().unwrap();
         assert!(
-            obj.remove("msrs").is_some(),
-            "a running x86_64 snapshot config should carry msrs to remove"
-        );
-        assert!(
-            obj.remove("allowed_msrs").is_some(),
-            "a running x86_64 snapshot config should carry allowed_msrs to remove"
+            obj.remove("msr_state").is_some(),
+            "a running x86_64 snapshot config should carry msr_state to remove"
         );
     });
 
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
-    assert_eq!(loaded.msrs(), None);
+    assert_eq!(loaded.msrs(), Some(&Vec::new()));
+    assert_eq!(loaded.allowed_msrs(), Some(&[][..]));
 
     let mut sbox =
         MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
@@ -376,8 +373,7 @@ fn disk_snapshot_non_superset_allow_list_rejected() {
     assert!(target.poisoned());
 }
 
-/// A config with `msrs` but no `allowed_msrs` cannot enforce the
-/// allow-list check, so the load rejects it.
+/// An MSR state without `allowed_msrs` cannot enforce the allow-list check.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn disk_snapshot_msrs_without_allow_list_rejected() {
@@ -385,6 +381,10 @@ fn disk_snapshot_msrs_without_allow_list_rejected() {
     rewrite_config(&path, |cfg| {
         assert!(
             cfg.as_object_mut()
+                .unwrap()
+                .get_mut("msr_state")
+                .unwrap()
+                .as_object_mut()
                 .unwrap()
                 .remove("allowed_msrs")
                 .is_some(),
@@ -398,7 +398,7 @@ fn disk_snapshot_msrs_without_allow_list_rejected() {
     ));
     assert!(
         format!("{err:?}").contains("allowed_msrs"),
-        "expected an msrs/allowed_msrs consistency error, got: {err:?}"
+        "expected a missing allowed_msrs error, got: {err:?}"
     );
 }
 

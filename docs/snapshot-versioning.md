@@ -56,12 +56,15 @@ made before it was added remain loadable. At the next hard break, make the
 field required, remove `serde(default)`, and reject zero as an invalid entry
 point rather than treating it as unknown.
 
-### Optional MSR fields
+### Missing MSR state
 
-The persisted `msrs` and `allowed_msrs` fields are optional so snapshots made
-before MSR capture remain loadable. At the next hard break, make them required
-vectors and remove `serde(default)` and the missing-field fallback. Keep the
-in-memory fields optional while `Snapshot` represents pre-init state.
+Configs written before MSR capture may omit the `msr_state` object. The loader
+represents an omitted object as empty values and an empty allow list, which
+restores the destination baseline. A present object requires both `msrs` and
+`allowed_msrs`.
+
+At the next hard break, make `msr_state` required and remove its
+`serde(default)` missing-field fallback.
 
 ## Enforcement
 
