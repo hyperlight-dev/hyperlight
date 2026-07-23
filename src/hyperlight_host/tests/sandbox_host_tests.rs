@@ -21,7 +21,7 @@ use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
@@ -215,10 +215,7 @@ fn small_scratch_sandbox() {
     cfg.set_scratch_size(0x48000);
     cfg.set_input_data_size(0x24000);
     cfg.set_output_data_size(0x24000);
-    let a = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    );
+    let a = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg));
 
     assert!(matches!(
         a.unwrap_err(),

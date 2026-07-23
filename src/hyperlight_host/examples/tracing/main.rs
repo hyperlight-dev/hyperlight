@@ -20,7 +20,7 @@ use std::thread::{JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::{GuestBinary, Result};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 use tracing_forest::ForestLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -45,8 +45,7 @@ fn main() -> Result<()> {
 }
 fn run_example() -> Result<()> {
     // Get the path to a simple guest binary.
-    let hyperlight_guest_path =
-        simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
+    let hyperlight_guest_path = simple_guest_as_pathbuf();
 
     let mut join_handles: Vec<JoinHandle<Result<()>>> = vec![];
 

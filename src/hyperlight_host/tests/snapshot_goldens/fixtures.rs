@@ -18,13 +18,14 @@ limitations under the License.
 //! goldens push contains. Any change here is a snapshot content
 //! change and requires a goldens regen.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use hyperlight_host::func::Registerable;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::snapshot::Snapshot;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 
 /// Heap pattern length used by the golden. Small enough to
 /// stay cheap, large enough to exercise non-trivial heap state.
@@ -47,8 +48,8 @@ fn golden_config() -> SandboxConfiguration {
     cfg
 }
 
-fn simpleguest_path() -> String {
-    simple_guest_as_string().expect("simpleguest_path")
+fn simpleguest_path() -> PathBuf {
+    simple_guest_as_pathbuf()
 }
 
 pub(crate) fn generate() -> Arc<Snapshot> {

@@ -20,7 +20,7 @@ limitations under the License.
 
 use std::sync::Arc;
 
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_as_pathbuf;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -30,7 +30,7 @@ use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 
 fn create_test_sandbox() -> MultiUseSandbox {
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     UninitializedSandbox::new(GuestBinary::FilePath(path), None)
         .unwrap()
         .evolve()
@@ -105,7 +105,7 @@ fn from_snapshot_already_initialized_in_memory() {
 #[test]
 fn from_snapshot_in_memory_pre_init() {
     let snap = Snapshot::from_env(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        GuestBinary::FilePath(simple_guest_as_pathbuf()),
         crate::sandbox::SandboxConfiguration::default(),
     )
     .unwrap();
@@ -211,7 +211,7 @@ fn snapshot_generation_round_trip() {
 #[test]
 fn pre_init_snapshot_cannot_be_persisted() {
     let snap = Snapshot::from_env(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        GuestBinary::FilePath(simple_guest_as_pathbuf()),
         crate::sandbox::SandboxConfiguration::default(),
     )
     .unwrap();
@@ -564,7 +564,7 @@ fn call_snapshot_without_sregs_rejected() {
 /// Build a `MultiUseSandbox` with the default host functions plus a
 /// custom `Add(i32, i32) -> i32`.
 fn create_sandbox_with_custom_host_funcs() -> MultiUseSandbox {
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
     u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
         .unwrap();
@@ -661,7 +661,7 @@ fn from_snapshot_accepts_extra_host_functions() {
 
 #[test]
 fn from_snapshot_accepts_zero_arg_host_function() {
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
     u.register_host_function("Zero", || Ok(7i64)).unwrap();
     let mut sbox = u.evolve().unwrap();
@@ -2401,7 +2401,7 @@ fn index_json_too_large_on_write_rejected() {
 
 #[test]
 fn config_blob_too_large_on_write_rejected() {
-    let guest = simple_guest_as_string().unwrap();
+    let guest = simple_guest_as_pathbuf();
     let mut u = UninitializedSandbox::new(GuestBinary::FilePath(guest), None).unwrap();
     // Each host function adds its name and signature to the config
     // JSON. Long names reach the 1 MiB cap with a modest count.
@@ -2604,13 +2604,11 @@ fn round_trip_preserves_non_default_scratch_size() {
     let mut cfg = SandboxConfiguration::default();
     let custom_scratch: usize = 256 * 1024;
     cfg.set_scratch_size(custom_scratch);
-    let mut sbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    )
-    .unwrap()
-    .evolve()
-    .unwrap();
+    let mut sbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
     let snap = sbox.snapshot().unwrap();
     let original = snap.layout().get_scratch_size();
     assert_eq!(original, custom_scratch);
@@ -3036,9 +3034,7 @@ fn from_snapshot_honors_guest_core_dump_enabled() {
         MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
-    sbox2
-        .generate_crashdump_to_dir(dir.path().to_str().unwrap())
-        .unwrap();
+    sbox2.generate_crashdump_to_dir(dir.path()).unwrap();
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -3067,9 +3063,7 @@ fn from_snapshot_honors_guest_core_dump_disabled() {
         MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
-    sbox2
-        .generate_crashdump_to_dir(dir.path().to_str().unwrap())
-        .unwrap();
+    sbox2.generate_crashdump_to_dir(dir.path()).unwrap();
 
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -3092,7 +3086,7 @@ fn round_trip_preserves_non_default_init_data_permissions() {
     use crate::mem::memory_region::MemoryRegionFlags;
     use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
 
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     let data: &[u8] = b"perm-pinned-init-data";
     let env = GuestEnvironment {
         guest_binary: GuestBinary::FilePath(path),

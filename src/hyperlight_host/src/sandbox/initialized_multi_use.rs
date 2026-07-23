@@ -15,6 +15,8 @@ limitations under the License.
 */
 
 use std::path::Path;
+#[cfg(crashdump)]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use flatbuffers::FlatBufferBuilder;
@@ -1017,7 +1019,7 @@ impl MultiUseSandbox {
     /// `unsafe { std::env::set_var(...) }`.
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-    pub fn generate_crashdump_to_dir(&mut self, dir: impl Into<String>) -> Result<()> {
+    pub fn generate_crashdump_to_dir(&mut self, dir: impl Into<PathBuf>) -> Result<()> {
         crate::hypervisor::crashdump::generate_crashdump(
             &self.vm,
             &mut self.mem_mgr,
@@ -1134,7 +1136,7 @@ mod tests {
 
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
@@ -1144,7 +1146,7 @@ mod tests {
     #[test]
     fn poison() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve()
         }
@@ -1232,7 +1234,7 @@ mod tests {
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
     fn host_func_error() {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         sandbox
             .register("HostError", || -> Result<()> {
@@ -1258,7 +1260,7 @@ mod tests {
 
     #[test]
     fn call_host_func_expect_error() {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
         sandbox
@@ -1272,7 +1274,7 @@ mod tests {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_input_data_size(4096);
         cfg.set_output_data_size(4096);
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let mut sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
         sandbox.register("HostAdd", |a: i32, b: i32| a + b).unwrap();
@@ -1293,7 +1295,7 @@ mod tests {
     #[test]
     fn test_call_guest_function_by_name() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve()
         }
@@ -1332,7 +1334,7 @@ mod tests {
         cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 
         let mut sbox1: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
             u_sbox.evolve()
         }
@@ -1343,7 +1345,7 @@ mod tests {
         }
 
         let mut sbox2: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
             u_sbox.evolve()
         }
@@ -1364,7 +1366,7 @@ mod tests {
     #[test]
     fn snapshot_evolve_restore_handles_state_correctly() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve()
         }
@@ -1384,11 +1386,9 @@ mod tests {
 
     #[test]
     fn test_trigger_exception_on_guest() {
-        let usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let usbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
@@ -1424,7 +1424,7 @@ mod tests {
                 barrier.wait();
 
                 for _ in 0..SANDBOXES_PER_THREAD {
-                    let guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+                    let guest_path = simple_guest_as_pathbuf();
                     let uninit =
                         UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None).unwrap();
 
@@ -1447,13 +1447,11 @@ mod tests {
 
     #[test]
     fn test_mmap() {
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         let expected = b"hello world";
         let map_mem = page_aligned_memory(expected);
@@ -1482,13 +1480,11 @@ mod tests {
     // Makes sure MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE executable but not writable
     #[test]
     fn test_mmap_write_exec() {
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         #[cfg(target_arch = "x86_64")]
         let expected = &[0x90, 0x90, 0x90, 0xC3]; // NOOP slide to RET
@@ -1565,7 +1561,7 @@ mod tests {
     #[test]
     fn snapshot_restore_handles_remapping_correctly() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1633,7 +1629,7 @@ mod tests {
     #[test]
     fn snapshot_restore_across_sandboxes_preserves_mapped_region_contents() {
         let mut source: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1658,7 +1654,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1685,13 +1681,13 @@ mod tests {
     #[test]
     fn snapshot_restore_across_sandboxes() {
         let mut sandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
 
         let mut sandbox2 = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1707,7 +1703,7 @@ mod tests {
     #[test]
     fn snapshot_restore_rejects_incompatible_layout() {
         let mut sandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(0x10_000);
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1715,7 +1711,7 @@ mod tests {
         };
 
         let mut sandbox2 = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(0x20_000);
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1731,7 +1727,7 @@ mod tests {
     /// rejected `restore` leaves the target usable.
     #[test]
     fn snapshot_restore_failure_leaves_target_usable() {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let mut cfg_a = SandboxConfiguration::default();
         cfg_a.set_heap_size(0x10_000);
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg_a))
@@ -1739,7 +1735,7 @@ mod tests {
             .evolve()
             .unwrap();
 
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let mut cfg_b = SandboxConfiguration::default();
         cfg_b.set_heap_size(0x20_000);
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg_b))
@@ -1768,7 +1764,7 @@ mod tests {
     #[test]
     fn snapshot_restore_across_sandboxes_target_has_mapped_regions() {
         let mut source: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1776,7 +1772,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1797,7 +1793,7 @@ mod tests {
     #[test]
     fn snapshot_restore_across_sandboxes_both_have_different_mapped_regions() {
         let mut source: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1819,7 +1815,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1851,7 +1847,7 @@ mod tests {
     #[test]
     fn snapshot_restore_across_sandboxes_repeated() {
         let mut source: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1859,7 +1855,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1879,7 +1875,7 @@ mod tests {
     #[test]
     fn snapshot_restore_resets_debug_registers() {
         let mut sandbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1915,7 +1911,7 @@ mod tests {
     #[test]
     fn stale_abort_buffer_does_not_leak_across_calls() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -1951,7 +1947,7 @@ mod tests {
             cfg.set_heap_size(heap_size);
             cfg.set_scratch_size(0x100000);
 
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))
                 .unwrap_or_else(|e| panic!("Failed to create {} sandbox: {}", name, e))
                 .evolve()
@@ -1964,7 +1960,7 @@ mod tests {
     /// Helper: create a MultiUseSandbox from the simple guest with default config.
     #[cfg(feature = "trace_guest")]
     fn sandbox_for_gva_tests() -> MultiUseSandbox {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         UninitializedSandbox::new(GuestBinary::FilePath(path), None)
             .unwrap()
             .evolve()
@@ -2082,13 +2078,11 @@ mod tests {
         let (path, expected_bytes) =
             create_test_file("hyperlight_test_map_file_cow_basic.bin", expected);
 
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
         let mapped_size = sbox.map_file_cow(&path, guest_base).unwrap();
@@ -2122,13 +2116,11 @@ mod tests {
         let content = &[0xBB; 4096];
         let (path, _) = create_test_file("hyperlight_test_map_file_cow_readonly.bin", content);
 
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
         sbox.map_file_cow(&path, guest_base).unwrap();
@@ -2157,7 +2149,7 @@ mod tests {
         let (path, _) = create_test_file("hyperlight_test_map_file_cow_poison.bin", &[0xCC; 4096]);
 
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve()
         }
@@ -2193,21 +2185,17 @@ mod tests {
 
         let guest_base: u64 = 0x1_0000_0000;
 
-        let mut sbox1 = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox1 =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
-        let mut sbox2 = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox2 =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         // Map the same file into both sandboxes
         sbox1.map_file_cow(&path, guest_base).unwrap();
@@ -2262,7 +2250,7 @@ mod tests {
                 barrier.wait();
 
                 let mut sbox = UninitializedSandbox::new(
-                    GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                    GuestBinary::FilePath(simple_guest_as_pathbuf()),
                     None,
                 )
                 .unwrap()
@@ -2298,13 +2286,11 @@ mod tests {
         let (path, _) = create_test_file("hyperlight_test_map_file_cow_cleanup.bin", &[0xDD; 4096]);
 
         {
-            let mut sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-            )
-            .unwrap()
-            .evolve()
-            .unwrap();
+            let mut sbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                    .unwrap()
+                    .evolve()
+                    .unwrap();
 
             sbox.map_file_cow(&path, 0x1_0000_0000).unwrap();
             // sandbox dropped here
@@ -2323,13 +2309,11 @@ mod tests {
         let (path, expected_bytes) =
             create_test_file("hyperlight_test_map_file_cow_snapshot_remap.bin", expected);
 
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
 
@@ -2389,13 +2373,11 @@ mod tests {
         let (path, expected_bytes) =
             create_test_file("hyperlight_test_map_file_cow_snap_restore.bin", expected);
 
-        let mut sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
         sbox.map_file_cow(&path, guest_base).unwrap();
@@ -2441,11 +2423,9 @@ mod tests {
 
         let guest_base: u64 = 0x1_0000_0000;
 
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let mut u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         // Map the file before evolving — this defers the VM-side work.
         let mapped_size = u_sbox.map_file_cow(&path, guest_base).unwrap();
@@ -2487,11 +2467,9 @@ mod tests {
         let guest_base: u64 = 0x1_0000_0000;
 
         {
-            let mut u_sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-            )
-            .unwrap();
+            let mut u_sbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                    .unwrap();
 
             u_sbox.map_file_cow(&path, guest_base).unwrap();
             // u_sbox dropped here without evolving — PreparedFileMapping::drop
@@ -2514,11 +2492,9 @@ mod tests {
         let (path, _) =
             create_test_file("hyperlight_test_map_file_cow_unaligned.bin", &[0xBB; 4096]);
 
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let mut u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         // Use an intentionally unaligned address (page_size + 1).
         let unaligned_base: u64 = (page_size::get() + 1) as u64;
@@ -2539,11 +2515,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         std::fs::File::create(&path).unwrap(); // create empty file
 
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let mut u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         let guest_base: u64 = 0x1_0000_0000;
         let result = u_sbox.map_file_cow(&path, guest_base);
@@ -2562,11 +2536,9 @@ mod tests {
 
         let guest_base: u64 = 0x1_0000_0000;
 
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let mut u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         // First mapping should succeed.
         u_sbox.map_file_cow(&path1, guest_base).unwrap();
@@ -2591,11 +2563,9 @@ mod tests {
             &[0xCC; 4096],
         );
 
-        let mut u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
+        let mut u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap();
 
         // Use BASE_ADDRESS itself — smack in the middle of shared memory.
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
@@ -2612,7 +2582,7 @@ mod tests {
     #[test]
     fn map_region_rejects_overlapping_regions() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -2637,7 +2607,7 @@ mod tests {
     #[test]
     fn map_region_rejects_partial_overlap() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -2663,7 +2633,7 @@ mod tests {
     #[test]
     fn map_region_allows_adjacent_non_overlapping() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -2685,7 +2655,7 @@ mod tests {
     #[test]
     fn map_region_rejects_overlap_with_snapshot() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -2707,7 +2677,7 @@ mod tests {
     #[test]
     fn map_region_rejects_overlap_with_scratch() {
         let mut sbox: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()
         };
@@ -2729,7 +2699,7 @@ mod tests {
     mod from_snapshot {
         use std::sync::Arc;
 
-        use hyperlight_testing::simple_guest_as_string;
+        use hyperlight_testing::simple_guest_as_pathbuf;
 
         use crate::func::Registerable;
         use crate::sandbox::SandboxConfiguration;
@@ -2739,7 +2709,7 @@ mod tests {
         };
 
         fn make_sandbox() -> MultiUseSandbox {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             UninitializedSandbox::new(GuestBinary::FilePath(path), None)
                 .unwrap()
                 .evolve()
@@ -2748,7 +2718,7 @@ mod tests {
 
         /// Sandbox with an extra `Add(i32, i32) -> i32` host function.
         fn make_sandbox_with_add() -> MultiUseSandbox {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
                 .unwrap();
@@ -2776,7 +2746,7 @@ mod tests {
 
         #[test]
         fn round_trip_pre_init_snapshot() {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let snap =
                 Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
@@ -2871,7 +2841,7 @@ mod tests {
         fn restore_rejects_signature_mismatch() {
             let mut sbox_with_add = make_sandbox_with_add();
             let snap = sbox_with_add.snapshot().unwrap();
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u.register_host_function("Add", |a: String, b: String| Ok(format!("{a}{b}")))
                 .unwrap();
@@ -2898,7 +2868,7 @@ mod tests {
             source.call::<i32>("AddToStatic", 17i32).unwrap();
             let snap = source.snapshot().unwrap();
 
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
                 .unwrap();
@@ -2972,7 +2942,7 @@ mod tests {
         /// original sandbox's closure) is the one invoked at runtime.
         #[test]
         fn supplied_host_function_is_callable() {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u.register_host_function("Echo42", || Ok(1i64)).unwrap();
             let mut sbox = u.evolve().unwrap();
@@ -2995,7 +2965,7 @@ mod tests {
         /// `HostFunctions` set is accepted.
         #[test]
         fn pre_init_snapshot_accepts_arbitrary_host_functions() {
-            let path = simple_guest_as_string().unwrap();
+            let path = simple_guest_as_pathbuf();
             let snap =
                 Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();

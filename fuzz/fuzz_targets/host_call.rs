@@ -23,7 +23,7 @@ use hyperlight_host::func::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_for_fuzzing_as_string;
+use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::fuzz_target;
 
 static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
@@ -37,7 +37,7 @@ fuzz_target!(
         cfg.set_input_data_size(64 * 1024); // 64 KB input buffer
         cfg.set_scratch_size(512 * 1024); // large scratch region to contain those buffers, any data copies, etc.
         let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
+            GuestBinary::FilePath(simple_guest_for_fuzzing_as_pathbuf()),
             Some(cfg)
         )
         .unwrap();

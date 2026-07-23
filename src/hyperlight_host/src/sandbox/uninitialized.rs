@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::fmt::Debug;
 use std::option::Option;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
@@ -39,7 +39,7 @@ use crate::{MultiUseSandbox, Result, new_error};
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SandboxRuntimeConfig {
     #[cfg(crashdump)]
-    pub(crate) binary_path: Option<String>,
+    pub(crate) binary_path: Option<PathBuf>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<super::config::DebugInfo>,
     #[cfg(crashdump)]
@@ -97,7 +97,7 @@ pub enum GuestBinary<'a> {
     /// A buffer containing the GuestBinary
     Buffer(&'a [u8]),
     /// A path to the GuestBinary
-    FilePath(String),
+    FilePath(PathBuf),
 }
 impl<'a> GuestBinary<'a> {
     /// If the guest binary is identified by a file, canonicalise the path
@@ -109,13 +109,9 @@ impl<'a> GuestBinary<'a> {
     ///       into an invariant on one of those types.
     pub fn canonicalize(&mut self) -> Result<()> {
         if let GuestBinary::FilePath(p) = self {
-            let canon = Path::new(&p)
+            *p = p
                 .canonicalize()
-                .map_err(|e| new_error!("GuestBinary not found: '{}': {}", p, e))?
-                .into_os_string()
-                .into_string()
-                .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
-            *self = GuestBinary::FilePath(canon)
+                .map_err(|e| new_error!("GuestBinary not found: '{}': {}", p.display(), e))?;
         }
         Ok(())
     }
@@ -181,7 +177,7 @@ impl UninitializedSandbox {
     fn from_snapshot(
         snapshot: Arc<Snapshot>,
         cfg: Option<SandboxConfiguration>,
-        #[cfg(crashdump)] binary_path: Option<String>,
+        #[cfg(crashdump)] binary_path: Option<PathBuf>,
     ) -> Result<Self> {
         #[cfg(feature = "build-metadata")]
         log_build_details();
@@ -414,15 +410,32 @@ mod tests {
 
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
     use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
+    #[cfg(unix)]
+    #[test]
+    fn guest_binary_loads_from_non_utf8_path() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let guest_path = temp_dir
+            .path()
+            .join(OsString::from_vec(b"guest-\xff".to_vec()));
+        fs::copy(simple_guest_as_pathbuf(), &guest_path).unwrap();
+
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None);
+
+        assert!(sandbox.is_ok());
+    }
+
     #[test]
     fn test_load_extra_blob() {
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let buffer = [0xde, 0xad, 0xbe, 0xef];
         let guest_env =
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
@@ -441,14 +454,16 @@ mod tests {
     fn test_new_sandbox() {
         // Guest Binary exists at path
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), None);
         assert!(sandbox.is_ok());
 
         // Guest Binary does not exist at path
 
         let mut binary_path_does_not_exist = binary_path.clone();
-        binary_path_does_not_exist.push_str(".nonexistent");
+        binary_path_does_not_exist
+            .as_mut_os_string()
+            .push(".nonexistent");
         let uninitialized_sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(binary_path_does_not_exist), None);
         assert!(uninitialized_sandbox.is_err());
@@ -475,14 +490,14 @@ mod tests {
 
         // Test with a valid guest binary buffer
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::Buffer(&fs::read(binary_path).unwrap()), None);
         assert!(sandbox.is_ok());
 
         // Test with a invalid guest binary buffer
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
         let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
@@ -492,11 +507,8 @@ mod tests {
     #[test]
     fn test_host_functions() {
         let uninitialized_sandbox = || {
-            UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-            )
-            .unwrap()
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
         };
 
         // simple register + call
@@ -610,11 +622,9 @@ mod tests {
             Ok(0)
         };
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(writer)
@@ -672,7 +682,7 @@ mod tests {
         // let writer_func = Arc::new(Mutex::new(writer));
         //
         // let sandbox = UninitializedSandbox::new(
-        //     GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+        //     GuestBinary::FilePath(simple_guest_as_pathbuf()),
         //     None,
         //     None,
         //     Some(&writer_func),
@@ -699,11 +709,9 @@ mod tests {
             Ok(0)
         }
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(fn_writer)
@@ -726,11 +734,9 @@ mod tests {
 
         let writer_closure = move |s| test_host_print.write(s);
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(writer_closure)
@@ -765,7 +771,7 @@ mod tests {
         let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
 
         for i in 0..10 {
-            let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+            let simple_guest_path = simple_guest_as_pathbuf();
             let unintializedsandbox = {
                 let err_string = format!("failed to create UninitializedSandbox {i}");
                 let err_str = err_string.as_str();
@@ -893,7 +899,8 @@ mod tests {
             // UninitializedSandbox::new by calling it once. This ensures the
             // callsite exists in the global registry regardless of whether
             // another thread already registered it.
-            let bad_path = simple_guest_as_string().unwrap() + "does_not_exist";
+            let mut bad_path = simple_guest_as_pathbuf();
+            bad_path.as_mut_os_string().push("does_not_exist");
             let _ = UninitializedSandbox::new(GuestBinary::FilePath(bad_path.clone()), None);
 
             // Rebuild the interest cache. Now that the callsite is guaranteed
@@ -990,8 +997,10 @@ mod tests {
 
             rebuild_interest_cache();
 
-            let mut invalid_binary_path = simple_guest_as_string().unwrap();
-            invalid_binary_path.push_str("does_not_exist");
+            let mut invalid_binary_path = simple_guest_as_pathbuf();
+            invalid_binary_path
+                .as_mut_os_string()
+                .push("does_not_exist");
 
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_binary_path), None);
             assert!(sbox.is_err());
@@ -1062,10 +1071,7 @@ mod tests {
             valid_binary_path.push("sandbox");
             valid_binary_path.push("initialized.rs");
 
-            let sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(valid_binary_path.into_os_string().into_string().unwrap()),
-                None,
-            );
+            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(valid_binary_path), None);
             assert!(sbox.is_err());
 
             // There should be 2 calls this time when we change to the log
@@ -1098,7 +1104,7 @@ mod tests {
 
             let sbox = {
                 let res = UninitializedSandbox::new(
-                    GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+                    GuestBinary::FilePath(simple_guest_as_pathbuf()),
                     None,
                 );
                 res.unwrap()
@@ -1114,7 +1120,7 @@ mod tests {
     #[test]
     fn test_invalid_path() {
         let invalid_path = "some/path/that/does/not/exist";
-        let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_path.to_string()), None);
+        let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_path.into()), None);
         println!("{:?}", sbox);
         #[cfg(target_os = "windows")]
         assert!(
@@ -1130,7 +1136,7 @@ mod tests {
     fn test_from_snapshot_various_configurations() {
         use crate::sandbox::snapshot::Snapshot;
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
 
         // Test 1: Create snapshot with default config, create multiple sandboxes from it
         {
