@@ -1796,5 +1796,4 @@ mod tests {
         ));
         assert_eq!(producer.inner.num_inflight(), 1);
     }
-
 }
