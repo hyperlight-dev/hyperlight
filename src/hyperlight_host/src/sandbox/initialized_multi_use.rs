@@ -3926,6 +3926,45 @@ mod tests {
                 "active SSP leaked across restore (original=0x{original:X}, mutated=0x{mutated:X}, after=0x{after:X})"
             );
         }
+
+        /// Hyperlight hides CET from KVM guests, so shadow stacks cannot be
+        /// enabled and active SSP cannot be moved. Active SSP has no
+        /// architectural MSR, so it is absent from the KVM reset set and the
+        /// backend never restores it. Hiding CET keeps that gap unreachable.
+        #[test]
+        #[cfg(all(kvm, target_arch = "x86_64"))]
+        fn kvm_does_not_expose_cet_to_guest() {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                return;
+            }
+
+            let mut sbox = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .unwrap()
+            .evolve()
+            .unwrap();
+            assert!(
+                !sbox.call::<bool>("CetShadowStackSupported", ()).unwrap(),
+                "KVM guest CPUID exposes CET shadow stacks"
+            );
+
+            // With CET hidden the host cannot read or write IA32_S_CET, so
+            // allowing it is rejected at VM creation.
+            let mut cfg = SandboxConfiguration::default();
+            cfg.allow_msrs(&[MSR_S_CET]).unwrap();
+            let err = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                Some(cfg),
+            )
+            .unwrap()
+            .evolve()
+            .expect_err("allowing IA32_S_CET must be rejected when CET is hidden");
+            assert_msr_not_allowable(&err, MSR_S_CET);
+        }
     }
 
     /// Tests for [`MultiUseSandbox::from_snapshot`] in-memory.

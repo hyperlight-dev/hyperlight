@@ -110,6 +110,10 @@ paths separately:
 
 * VMX and SVM are removed from guest CPUID, so nested VMCS and VMCB state is
   unreachable. Their setup MSRs remain denied.
+* CET is removed from guest CPUID, so the guest cannot enable shadow stacks and
+  cannot move active SSP. Active SSP has no architectural MSR, so it is absent
+  from the KVM reset set and the backend never restores it. The CET MSRs stay
+  denied and unallowable.
 * Hyperlight keeps the APIC in xAPIC mode. Guest writes to `APIC_BASE` and the
   x2APIC range `0x800..=0x8FF` are denied. Snapshot restore also rejects an
   `APIC_BASE` value with the x2APIC enable bit set.

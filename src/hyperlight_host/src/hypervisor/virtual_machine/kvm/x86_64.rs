@@ -69,9 +69,14 @@ use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 const CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION: u32 =
     0x8000_0008;
 const CPUID_FUNCTION_FEATURE_INFORMATION: u32 = 0x1;
+const CPUID_FUNCTION_STRUCTURED_EXTENDED_FEATURES: u32 = 0x7;
 const CPUID_FUNCTION_EXTENDED_FEATURE_INFORMATION: u32 = 0x8000_0001;
 const CPUID_FEATURE_VMX: u32 = 1 << 5;
 const CPUID_FEATURE_SVM: u32 = 1 << 2;
+/// CPUID.(EAX=7,ECX=0):ECX[7], shadow-stack support.
+const CPUID_FEATURE_SHSTK: u32 = 1 << 7;
+/// CPUID.(EAX=7,ECX=0):EDX[20], indirect-branch-tracking support.
+const CPUID_FEATURE_IBT: u32 = 1 << 20;
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -199,6 +204,14 @@ impl KvmVm {
                 // Hyperlight does not support nested AMD virtualization.
                 CPUID_FUNCTION_EXTENDED_FEATURE_INFORMATION => {
                     entry.ecx &= !CPUID_FEATURE_SVM;
+                }
+                // Hyperlight does not expose CET. Shadow stacks let the guest
+                // move active SSP. It has no architectural MSR, so it is not in
+                // the KVM reset set, and the backend does not make the separate
+                // KVM register access needed to restore it.
+                CPUID_FUNCTION_STRUCTURED_EXTENDED_FEATURES if entry.index == 0 => {
+                    entry.ecx &= !CPUID_FEATURE_SHSTK;
+                    entry.edx &= !CPUID_FEATURE_IBT;
                 }
                 // KVM allows MaxPhysAddr to be overridden and defaults it too low for
                 // Hyperlight's memory layout. MSHV passes it through from hardware
