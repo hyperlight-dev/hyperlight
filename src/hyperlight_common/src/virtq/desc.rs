@@ -238,6 +238,16 @@ impl DescTable {
         Some(self.base_addr + (idx as u64 * Descriptor::SIZE as u64))
     }
 
+    /// Clear all descriptors in the table by writing zeroed descriptors to memory.
+    pub fn clear<M: MemOps>(&self, mem: &M) -> Result<(), M::Error> {
+        let zeroed = Descriptor::zeroed();
+        for idx in 0..self.len {
+            let addr = self.base_addr + (idx as u64 * Descriptor::SIZE as u64);
+            zeroed.write_release(mem, addr)?;
+        }
+        Ok(())
+    }
+
     /// Get number of descriptors in table
     pub fn len(&self) -> usize {
         self.len
@@ -246,6 +256,11 @@ impl DescTable {
     /// Is the descriptor table empty?
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Get the base address of the descriptor table in shared memory
+    pub fn base_addr(&self) -> u64 {
+        self.base_addr
     }
 
     pub const fn default_len() -> usize {

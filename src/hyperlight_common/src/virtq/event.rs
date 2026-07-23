@@ -123,6 +123,15 @@ impl EventSuppression {
         })
     }
 
+    /// Clear an `EventSuppression` to the canonical enabled state.
+    ///
+    /// # Invariant
+    ///
+    /// The caller must ensure that `addr` is a valid pointer to an `EventSuppression`.
+    pub fn clear<M: MemOps>(mem: &M, addr: u64) -> Result<(), M::Error> {
+        Self::new(0, EventFlags::ENABLE).write_release(mem, addr)
+    }
+
     /// Write an `EventSuppression` to a raw pointer with release semantics.
     ///
     /// # Invariant

@@ -641,12 +641,13 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// # Errors
     ///
     /// - [`VirtqError::InvalidState`] - one or more chains are still in flight
+    /// - [`VirtqError::RingError`] - device-event normalization failed
     pub fn reset(&mut self) -> Result<(), VirtqError> {
         if self.inflight.ones().next().is_some() {
             return Err(VirtqError::InvalidState);
         }
 
-        self.inner.reset();
+        self.inner.reset()?;
         self.inflight.clear();
         Ok(())
     }
