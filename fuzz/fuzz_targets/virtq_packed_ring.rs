@@ -8,7 +8,8 @@ use std::num::NonZeroU16;
 use std::ops::Range;
 use std::rc::Rc;
 
-use hyperlight_common::virtq::{Descriptor, Layout, MemOps, RingConsumer};
+use hyperlight_common::virtq::canonical::validate_canon_image;
+use hyperlight_common::virtq::{Descriptor, Layout, MemOps, RingConsumer, RingError};
 use libfuzzer_sys::{Corpus, fuzz_target};
 
 const DEFAULT_QUEUE_SIZE: usize = 16;
@@ -30,6 +31,7 @@ struct FuzzDesc {
 #[derive(Clone, Debug)]
 struct FuzzCase {
     queue_size: usize,
+    avail_descs: usize,
     driver_event_off_wrap: u16,
     driver_event_flags: u16,
     written_len: u32,
@@ -112,9 +114,9 @@ unsafe impl MemOps for FuzzMem {
     }
 }
 
-fn write_driver_event(mem: &FuzzMem, layout: Layout, off_wrap: u16, flags: u16) -> Result<(), ()> {
+fn write_event(mem: &FuzzMem, addr: u64, off_wrap: u16, flags: u16) -> Result<(), ()> {
     mem.write(
-        layout.drv_evt_addr(),
+        addr,
         &[
             (off_wrap & 0xff) as u8,
             (off_wrap >> 8) as u8,
@@ -150,7 +152,8 @@ fn parse_case(data: &[u8]) -> Option<FuzzCase> {
 
     let raw_queue_size = read_u16(0);
     let queue_size = normalize_queue_size(raw_queue_size);
-    let desc_count = usize::from(read_u16(2)).min(MAX_DESCS).min(queue_size);
+    let avail_descs = usize::from(read_u16(2));
+    let desc_count = avail_descs.min(MAX_DESCS).min(queue_size);
 
     let driver_event_off_wrap = read_u16(4);
     let driver_event_flags = read_u16(6);
@@ -177,6 +180,7 @@ fn parse_case(data: &[u8]) -> Option<FuzzCase> {
 
     Some(FuzzCase {
         queue_size,
+        avail_descs,
         driver_event_off_wrap,
         driver_event_flags,
         written_len,
@@ -194,6 +198,60 @@ fn normalize_queue_size(raw: u16) -> usize {
     raw.min(MAX_QUEUE_SIZE)
 }
 
+fn fuzz_canon_image(
+    mem: &FuzzMem,
+    layout: Layout,
+    case: &FuzzCase,
+    payload_base: u64,
+) -> Result<(), ()> {
+    write_event(
+        mem,
+        layout.drv_evt_addr(),
+        case.driver_event_off_wrap,
+        case.driver_event_flags,
+    )?;
+    let _ = validate_canon_image(mem, layout, case.avail_descs, |_, _| true);
+
+    write_event(mem, layout.drv_evt_addr(), 0, 0)?;
+    let canon = validate_canon_image(mem, layout, case.avail_descs, |_, _| true);
+
+    let payload_end = payload_base + PAYLOAD_SIZE as u64;
+    let _ = validate_canon_image(mem, layout, case.avail_descs, |_, elem| {
+        elem.addr >= payload_base
+            && elem
+                .addr
+                .checked_add(u64::from(elem.len))
+                .is_some_and(|end| end <= payload_end)
+    });
+
+    if let Ok(chains) = canon {
+        let mut consumer = RingConsumer::new(layout, mem.clone());
+        for expected in chains {
+            let Ok((id, actual)) = consumer.poll_available() else {
+                panic!("canonical image was rejected by the ring consumer");
+            };
+            assert_eq!(id, expected.id());
+            assert_eq!(actual.elems().len(), expected.buffers().elems().len());
+            for (actual, expected) in actual.elems().iter().zip(expected.buffers().elems()) {
+                assert_eq!(actual.addr, expected.addr);
+                assert_eq!(actual.len, expected.len);
+                assert_eq!(actual.writable, expected.writable);
+            }
+        }
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::WouldBlock)
+        ));
+    }
+
+    write_event(
+        mem,
+        layout.drv_evt_addr(),
+        case.driver_event_off_wrap,
+        case.driver_event_flags,
+    )
+}
+
 fn run_case(case: FuzzCase) -> Corpus {
     let Some(num_descs) = NonZeroU16::new(case.queue_size as u16) else {
         return Corpus::Reject;
@@ -205,17 +263,6 @@ fn run_case(case: FuzzCase) -> Corpus {
         Ok(layout) => layout,
         Err(_) => return Corpus::Reject,
     };
-
-    if write_driver_event(
-        &mem,
-        layout,
-        case.driver_event_off_wrap,
-        case.driver_event_flags,
-    )
-    .is_err()
-    {
-        return Corpus::Reject;
-    }
 
     let payload_base = BASE_ADDR + ring_size as u64;
     for (idx, fuzz_desc) in case.descs.iter().enumerate() {
@@ -230,6 +277,10 @@ fn run_case(case: FuzzCase) -> Corpus {
         if mem.write_val(desc_addr, desc).is_err() {
             return Corpus::Reject;
         }
+    }
+
+    if fuzz_canon_image(&mem, layout, &case, payload_base).is_err() {
+        return Corpus::Reject;
     }
 
     let mut consumer = RingConsumer::new(layout, mem);
