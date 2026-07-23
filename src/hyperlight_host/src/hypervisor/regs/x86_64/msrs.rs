@@ -146,6 +146,7 @@ pub(crate) const MSR_PL1_SSP: u32 = 0x6A5;
 pub(crate) const MSR_PL2_SSP: u32 = 0x6A6;
 pub(crate) const MSR_PL3_SSP: u32 = 0x6A7;
 pub(crate) const MSR_INTERRUPT_SSP_TABLE_ADDR: u32 = 0x6A8;
+pub(crate) const MSR_IA32_SSP: u32 = 0x7A0;
 pub(crate) const MSR_TSC_DEADLINE: u32 = 0x6E0;
 pub(crate) const MSR_BNDCFGS: u32 = 0xD90;
 pub(crate) const MSR_XSS: u32 = 0xDA0;
@@ -216,6 +217,10 @@ const NON_MTRR_RESETTABLE_MSRS: &[u32] = &[
     MSR_BNDCFGS,
 ];
 
+// State exposed through Hyper-V's VP register API, but not through an
+// architectural RDMSR/WRMSR pair suitable for allow_msrs.
+const HYPERV_ONLY_RESETTABLE_MSRS: &[u32] = &[MSR_IA32_SSP];
+
 const MTRR_RESET_INDICES: &[u32] = &[
     // Hyper-V accepts fixed-MTRR writes even when MTRRCAP.FIX is clear.
     MSR_MTRR_DEF_TYPE,
@@ -271,13 +276,17 @@ pub(crate) fn is_resettable_msr(index: u32) -> bool {
 
 /// Returns non-MTRR candidates probed by filterless Hyper-V backends.
 pub(crate) fn filterless_core_reset_candidates() -> impl Iterator<Item = u32> {
-    NON_MTRR_RESETTABLE_MSRS.iter().copied()
+    NON_MTRR_RESETTABLE_MSRS
+        .iter()
+        .chain(HYPERV_ONLY_RESETTABLE_MSRS)
+        .copied()
 }
 
 #[cfg(test)]
 pub(crate) fn resettable_msr_indices() -> impl Iterator<Item = u32> {
     NON_MTRR_RESETTABLE_MSRS
         .iter()
+        .chain(HYPERV_ONLY_RESETTABLE_MSRS)
         .chain(MTRR_RESET_INDICES)
         .copied()
 }

@@ -317,21 +317,6 @@ impl HyperlightVm {
         Ok(())
     }
 
-    /// Reads arbitrary backend MSRs for tests.
-    #[cfg(all(test, mshv3, target_arch = "x86_64"))]
-    pub(crate) fn capture_msrs_for_test(
-        &self,
-        indices: &[u32],
-    ) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
-        self.vm.msrs(indices)
-    }
-
-    /// Attempts one backend MSR write for tests.
-    #[cfg(all(test, mshv3, target_arch = "x86_64"))]
-    pub(crate) fn try_set_msr_for_test(&self, index: u32, value: u64) -> bool {
-        self.vm.set_msrs(&[MsrEntry { index, value }]).is_ok()
-    }
-
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///

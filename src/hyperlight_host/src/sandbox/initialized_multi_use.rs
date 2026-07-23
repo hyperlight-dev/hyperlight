@@ -2775,7 +2775,7 @@ mod tests {
         use crate::HostFunctions;
         use crate::hypervisor::hyperlight_vm::{CreateHyperlightVmError, HyperlightVmError};
         use crate::hypervisor::regs::{
-            APIC_BASE_X2APIC_ENABLE, MSR_APERF, MSR_BNDCFGS, MSR_CSTAR, MSR_DEBUGCTL,
+            MSR_APERF, MSR_BNDCFGS, MSR_CSTAR, MSR_DEBUGCTL, MSR_IA32_SSP,
             MSR_INTERRUPT_SSP_TABLE_ADDR, MSR_KERNEL_GS_BASE as KERNEL_GS_BASE, MSR_LSTAR,
             MSR_MPERF, MSR_MTRR_DEF_TYPE, MSR_MTRR_FIX64K_00000, MSR_PAT, MSR_PL0_SSP, MSR_PL1_SSP,
             MSR_PL2_SSP, MSR_PL3_SSP, MSR_S_CET, MSR_SFMASK, MSR_SPEC_CTRL, MSR_STAR,
@@ -3133,6 +3133,7 @@ mod tests {
         #[test]
         #[cfg(kvm)]
         fn guest_cannot_enable_x2apic_through_apic_base() {
+            use crate::hypervisor::regs::APIC_BASE_X2APIC_ENABLE;
             use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
 
             if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
@@ -3609,6 +3610,9 @@ mod tests {
         fn reset_exception_reason(index: u32) -> Option<&'static str> {
             match index {
                 MSR_TSC => Some("KVM denies direct guest TSC MSR access"),
+                MSR_IA32_SSP => Some(
+                    "active SSP has no architectural RDMSR/WRMSR; covered by active_ssp_does_not_leak_across_restore",
+                ),
                 MSR_DEBUGCTL => Some("DEBUGCTL support depends on exposed debug features"),
                 MSR_SPEC_CTRL => Some("SPEC_CTRL writable bits depend on mitigation features"),
                 MSR_U_CET
@@ -3888,16 +3892,12 @@ mod tests {
             );
         }
 
-        /// A host TSC write must reset the guest-visible MSHV counter.
+        /// Active SSP is guest-writable state the Hyper-V backends reset
+        /// across restore. Skips where the guest cannot use CET shadow
+        /// stacks, which includes every KVM host.
         #[test]
-        #[cfg(all(mshv3, target_arch = "x86_64"))]
-        fn mshv_host_tsc_writeback_resets_guest_tsc() {
-            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
-
-            if !matches!(get_available_hypervisor(), Some(HypervisorType::Mshv)) {
-                return;
-            }
-
+        #[cfg(all(any(mshv3, target_os = "windows"), target_arch = "x86_64"))]
+        fn active_ssp_does_not_leak_across_restore() {
             let mut sbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
@@ -3906,29 +3906,24 @@ mod tests {
             .evolve()
             .unwrap();
 
-            let base = sbox.vm.capture_msrs_for_test(&[MSR_TSC]).unwrap()[0].value;
+            if !sbox.call::<bool>("CetShadowStackSupported", ()).unwrap() {
+                return;
+            }
 
-            let jump = base.wrapping_add(1 << 60);
-            sbox.call::<()>("WriteMSR", (MSR_TSC, jump)).unwrap();
-            let planted: u64 = sbox.call("ReadMSR", MSR_TSC).unwrap();
-            assert!(
-                planted >= jump,
-                "guest TSC write did not take (planted=0x{planted:X} jump=0x{jump:X})"
-            );
+            let baseline = sbox.snapshot().unwrap();
+            let original: u64 = sbox.call("ReadActiveSsp", ()).unwrap();
 
-            assert!(
-                sbox.vm.try_set_msr_for_test(MSR_TSC, base),
-                "host set of HV_X64_REGISTER_TSC failed"
-            );
+            let mutated: u64 = sbox.call("IncrementActiveSsp", ()).unwrap();
+            assert_ne!(mutated, original, "guest did not change active SSP");
+            let seen: u64 = sbox.call("ReadActiveSsp", ()).unwrap();
+            assert_eq!(seen, mutated, "guest did not observe its own SSP mutation");
 
-            let after: u64 = sbox.call("ReadMSR", MSR_TSC).unwrap();
-            eprintln!(
-                "mshv TSC writeback probe: base=0x{base:X} jump=0x{jump:X} planted=0x{planted:X} after=0x{after:X}"
-            );
-            assert!(
-                after < jump / 2,
-                "host TSC write-back did NOT reset the guest TSC (after=0x{after:X} still near \
-                 jump=0x{jump:X}); the reset approach is not viable on this host"
+            sbox.restore(baseline).unwrap();
+
+            let after: u64 = sbox.call("ReadActiveSsp", ()).unwrap();
+            assert_eq!(
+                after, original,
+                "active SSP leaked across restore (original=0x{original:X}, mutated=0x{mutated:X}, after=0x{after:X})"
             );
         }
     }

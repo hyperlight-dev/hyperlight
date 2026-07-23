@@ -45,8 +45,8 @@ the destination baseline are shared in `MsrResetState`.
 Every reset entry must represent guest-writable retained state that the host can
 read and write. The shared candidate table is derived from the Hyper-V source
 and must be audited when that source, register mappings, or feature exposure
-changes. VM creation probes host reads. Host write support currently holds by
-table construction and round-trip tests.
+changes. VM creation probes host reads. Table construction and round-trip
+tests currently cover host write support.
 
 ## Snapshot validation and access policy
 
@@ -68,6 +68,11 @@ the destination policy or replace its KVM filter.
 also supports at most 16 contiguous filter ranges. Each allowed index must be
 resettable, host-readable, and host-writable. Write-only command MSRs such as
 `PRED_CMD` and `FLUSH_CMD` hold no resettable state and cannot be allowed.
+
+Reset and allowable are not the same set. Active SSP (`0x7A0`) is reset on the
+Hyper-V backends but cannot be allowed. It has no architectural `RDMSR`/`WRMSR`
+and is reachable only through the VP register API, so no guest `WRMSR` sets it
+and no filter range names it.
 
 MSHV and WHP cannot enforce the allow list during guest execution. They retain
 it in snapshots so restore compatibility has the same meaning on every
@@ -117,7 +122,8 @@ poisons the sandbox.
 
 MSHV and WHP build their reset sets from:
 
-* Retained-state candidates that the backend maps and can read.
+* Retained-state candidates the backend maps and can read, including state
+  reachable only through the VP register API such as active SSP.
 * MTRRs required by the virtual CPU's `MTRRCAP`.
 * The validated allow list.
 
@@ -185,6 +191,7 @@ These MSRs are reset when supported by the selected backend and host.
 | DEBUGCTL (`0x1D9`) | Debug control state. |
 | SPEC_CTRL (`0x48`), VIRT_SPEC_CTRL (`0xC001_011F`) | Speculation control state. |
 | CET (`0x6A0`, `0x6A2`, `0x6A4`-`0x6A8`) | CET control and shadow-stack state. |
+| Active SSP (`0x7A0`) | Shadow-stack pointer. Reset on Hyper-V backends through the VP register API. Not allowable: no architectural `RDMSR`/`WRMSR`. |
 | XSS (`0xDA0`) | Extended supervisor state mask. |
 | TSC, TSC_ADJUST, TSC_AUX (`0x10`, `0x3B`, `0xC000_0103`) | Guest clock state. |
 | MTRRs (`0x2FF`, `0x200`-`0x21F`, `0x250`, `0x258`-`0x259`, `0x268`-`0x26F`) | Memory-type state. |
