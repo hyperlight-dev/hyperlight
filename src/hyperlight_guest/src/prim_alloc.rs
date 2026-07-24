@@ -22,3 +22,20 @@ mod arch;
 /// latter cannot be perfectly satisfied due to the lack of per-byte
 /// atomic memcpy in the host.
 pub use arch::alloc_phys_pages;
+
+#[inline]
+fn allocation_exceeds_limit(base: u64, len: u64, limit: u64) -> bool {
+    base.checked_add(len).is_none_or(|end| end > limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allocation_exceeds_limit;
+
+    #[test]
+    fn allocation_may_end_at_limit() {
+        assert!(!allocation_exceeds_limit(0x1000, 0x2000, 0x3000));
+        assert!(allocation_exceeds_limit(0x1000, 0x2001, 0x3000));
+        assert!(allocation_exceeds_limit(u64::MAX, 1, u64::MAX));
+    }
+}
