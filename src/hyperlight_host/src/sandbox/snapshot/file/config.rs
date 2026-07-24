@@ -132,6 +132,12 @@ impl CpuVendor {
             // `0x` prefix padded to width 4, e.g. Apple `0x61`, Arm `0x41`.
             Self(format!("{implementer:#04x}"))
         }
+        #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+        {
+            // Windows does not expose MIDR_EL1 directly; use a fixed vendor
+            // string. All current Windows ARM64 devices use Qualcomm/ARM cores.
+            Self("arm-windows".to_owned())
+        }
     }
 
     pub(super) fn as_str(&self) -> &str {
