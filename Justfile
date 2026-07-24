@@ -50,7 +50,7 @@ build target=default-target:
     {{ cargo-cmd }} build --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
 # build testing guest binaries
-guests: build-and-move-rust-guests build-and-move-c-guests
+guests: build-and-move-rust-guests build-and-move-rust-guests-non-pie build-and-move-c-guests
 
 # Ensure the pinned cargo-hyperlight is installed. We compare the *actual*
 # installed binary's reported version instead of relying on `cargo install`
@@ -74,6 +74,22 @@ build-rust-guests target=default-target features="": (ensure-cargo-hyperlight)
 
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
+
+# Build non-PIE variants of rust guests for testing ELF VA mapping.
+# Phase 1 builds the sysroot without RUSTFLAGS (avoids RUSTFLAGS leaking
+# into the sysroot wrapper build in cargo-hyperlight).
+# Phase 2 uses plain cargo with --sysroot and non-PIE link flags.
+build-rust-guests-non-pie target=default-target: (ensure-cargo-hyperlight)
+    cd src/tests/rust_guests/simpleguest && cargo hyperlight build --target-dir ../target-non-pie --profile={{ if target == "debug" { "dev" } else { target } }}
+    {{ if os() == "windows" { "$env:RUSTC_BOOTSTRAP=1; $env:RUSTFLAGS='--sysroot=' + (Resolve-Path src/tests/rust_guests/target-non-pie/sysroot).Path + ' -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTC_BOOTSTRAP=1 RUSTFLAGS=\"--sysroot=$(cd .. && pwd)/target-non-pie/sysroot -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint\"" } }} cargo build --target x86_64-hyperlight-none --target-dir ../target-non-pie/build --profile={{ if target == "debug" { "dev" } else { target } }}
+
+non_pie_guests_target := "src/tests/rust_guests/target-non-pie/build/x86_64-hyperlight-none"
+
+@move-rust-guests-non-pie target=default-target:
+    {{ if os() == "windows" { "New-Item -ItemType Directory -Path " + rust_guests_bin_dir + "/" + target + "/non_pie -Force | Out-Null" } else { "mkdir -p " + rust_guests_bin_dir + "/" + target + "/non_pie" } }}
+    cp {{ non_pie_guests_target }}/{{ target }}/simpleguest {{ rust_guests_bin_dir }}/{{ target }}/non_pie/
+
+build-and-move-rust-guests-non-pie: (build-rust-guests-non-pie "debug") (move-rust-guests-non-pie "debug") (build-rust-guests-non-pie "release") (move-rust-guests-non-pie "release")
 
 clean: clean-rust
 

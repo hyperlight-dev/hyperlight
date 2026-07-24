@@ -476,6 +476,7 @@ mod test {
         let ptr = dummy_vec.as_ptr() as usize;
         let regions = vec![CrashDumpRegion {
             guest_region: 0x1000..0x2000,
+            guest_virt_addr: 0x1000,
             host_region: ptr..ptr + dummy_vec.len(),
             flags: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             region_type: crate::mem::memory_region::MemoryRegionType::Code,

@@ -185,6 +185,12 @@ pub(super) struct OciSnapshotConfig {
     /// treats as unknown.
     #[serde(default)]
     pub(super) original_entrypoint_addr: u64,
+    /// Virtual base address of the code region. For PIE guests this equals
+    /// the physical load address; for non-PIE guests it is the ELF-declared
+    /// base VA. Optional: older snapshots deserialize to `0`, meaning
+    /// identity-mapped (VA == GPA).
+    #[serde(default)]
+    pub(super) code_virt_base: u64,
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
@@ -720,6 +726,7 @@ mod tests {
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: 0,
+            code_virt_base: 0,
             sregs: distinct_sregs(),
             layout: MemoryLayout {
                 input_data_size: 0,
@@ -792,6 +799,7 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 0,
+  "code_virt_base": 0,
   "sregs": {
     "cs": {
       "base": 1,
@@ -968,6 +976,7 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 0,
+  "code_virt_base": 0,
   "sregs": {
     "tcr_el1": 1,
     "mair_el1": 2,

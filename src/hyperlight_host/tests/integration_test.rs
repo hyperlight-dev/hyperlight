@@ -21,7 +21,7 @@ use std::time::Duration;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{HyperlightError, MultiUseSandbox};
+use hyperlight_host::{HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
 use tracing_core::LevelFilter;
@@ -1838,6 +1838,7 @@ fn memory_region_types_are_publicly_accessible() {
         let base: <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType = 0x1000;
         let _region = MemoryRegion_::<HostGuestMemoryRegion> {
             guest_region: 0x1000..0x2000,
+            guest_virt_addr: 0x1000,
             host_region: base..<HostGuestMemoryRegion as MemoryRegionKind>::add(base, 0x1000),
             flags: MemoryRegionFlags::READ,
             region_type: MemoryRegionType::Code,
@@ -1858,6 +1859,7 @@ fn memory_region_types_are_publicly_accessible() {
         };
         let _region = MemoryRegion_::<HostGuestMemoryRegion> {
             guest_region: 0x1000..0x2000,
+            guest_virt_addr: 0x1000,
             host_region: host_base
                 ..<HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, 0x1000),
             flags: MemoryRegionFlags::READ,
@@ -1889,4 +1891,17 @@ fn hw_timer_interrupts() {
             "Expected at least one timer interrupt, got {count}"
         );
     });
+}
+
+#[test]
+fn non_pie_guest_hello_world() {
+    let path =
+        hyperlight_testing::simple_guest_non_pie_as_string().expect("non-PIE guest not found");
+    let sandbox =
+        UninitializedSandbox::new(hyperlight_host::GuestBinary::FilePath(path), None).unwrap();
+    let mut multi_use_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
+    let result: i32 = multi_use_sandbox
+        .call("PrintOutput", "Hello from non-PIE guest!\n".to_string())
+        .unwrap();
+    assert_eq!(result, 26);
 }

@@ -66,10 +66,10 @@ use std::mem::size_of;
 use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
 use tracing::{Span, instrument};
 
-use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
+use super::memory_region::MemoryRegionType::{self, Code, Heap, InitData, Peb};
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
-    MemoryRegionVecBuilder,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion, MemoryRegion_,
+    MemoryRegionFlags, MemoryRegionKind, MemoryRegionVecBuilder,
 };
 #[cfg(readable_shared_mem)]
 use super::shared_mem::HostSharedMemory;
@@ -553,6 +553,64 @@ impl SandboxMemoryLayout {
         }
 
         Ok(builder.build())
+    }
+
+    /// Compute the virtual base address for the code region, validate
+    /// that it does not overlap any other memory region, and return the
+    /// guest memory regions with the Code region's `guest_virt_addr`
+    /// already set to the computed virtual base.
+    ///
+    /// For PIE binaries (`is_pie == true`), the code is identity-mapped so
+    /// the virtual base equals the physical load address and no conflict
+    /// is possible by construction.
+    ///
+    /// For non-PIE binaries, the code appears at the ELF's declared
+    /// virtual address (`elf_base_va`), which may differ from the physical
+    /// load address.  This method checks that the resulting virtual range
+    /// `[elf_base_va, elf_base_va + loaded_size)` does not overlap any
+    /// non-Code region.
+    ///
+    /// Returns `(code_virt_base, regions)`.
+    pub(crate) fn get_guest_regions_with_code_va(
+        &self,
+        is_pie: bool,
+        elf_base_va: u64,
+        loaded_size: u64,
+    ) -> Result<(u64, Vec<MemoryRegion_<GuestMemoryRegion>>)> {
+        let load_addr = self.get_guest_code_address() as u64;
+        let code_virt_base = if is_pie { load_addr } else { elf_base_va };
+
+        let mut regions = self.get_memory_regions_::<GuestMemoryRegion>(())?;
+
+        if !is_pie {
+            let code_virt_end = code_virt_base + loaded_size;
+            for rgn in regions.iter() {
+                if rgn.region_type == MemoryRegionType::Code {
+                    continue;
+                }
+                let rgn_start = rgn.guest_region.start as u64;
+                let rgn_end = rgn_start + rgn.guest_region.len() as u64;
+                if code_virt_base < rgn_end && rgn_start < code_virt_end {
+                    return Err(new_error!(
+                        "Non-PIE code mapping [{:#x}, {:#x}) conflicts with {:?} region [{:#x}, {:#x})",
+                        code_virt_base,
+                        code_virt_end,
+                        rgn.region_type,
+                        rgn_start,
+                        rgn_end,
+                    ));
+                }
+            }
+        }
+
+        // Set the Code region's guest_virt_addr to code_virt_base.
+        for rgn in regions.iter_mut() {
+            if rgn.region_type == MemoryRegionType::Code {
+                rgn.guest_virt_addr = code_virt_base as usize;
+            }
+        }
+
+        Ok((code_virt_base, regions))
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]

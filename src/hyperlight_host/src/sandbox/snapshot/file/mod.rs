@@ -610,6 +610,7 @@ impl Snapshot {
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
             original_entrypoint_addr: self.original_entrypoint,
+            code_virt_base: self.code_virt_base,
             sregs: *sregs,
             layout: MemoryLayout {
                 input_data_size: l.input_data_size(),
@@ -899,6 +900,7 @@ impl Snapshot {
             sregs: Some(cfg.sregs),
             next_action,
             original_entrypoint: cfg.original_entrypoint_addr,
+            code_virt_base: cfg.code_virt_base,
             snapshot_generation,
             host_functions,
         })
