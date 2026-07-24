@@ -205,16 +205,20 @@ impl HyperlightVm {
         Ok(x)
     }
 
-    pub(crate) fn reset_vcpu(
-        &mut self,
-        cr3: u64,
-        sregs: &CommonSpecialRegisters,
-    ) -> std::result::Result<(), ResetVcpuError> {
+    pub(crate) fn reset_vm_state(&mut self) -> std::result::Result<(), ResetVcpuError> {
         debug_assert!(
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
         self.vm.reset_vcpu()?;
+        Ok(())
+    }
+
+    pub(crate) fn restore_sregs(
+        &mut self,
+        cr3: u64,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), ResetVcpuError> {
         self.apply_sregs(cr3, sregs)?;
         Ok(())
     }

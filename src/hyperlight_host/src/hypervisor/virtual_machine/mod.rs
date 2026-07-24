@@ -107,7 +107,7 @@ pub(crate) enum HypervisorType {
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
 /// Only used by MSHV and WHP which use compacted XSAVE format and need to
 /// validate buffer size before accessing XCOMP_BV.
-#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+#[cfg(all(target_arch = "x86_64", mshv3))]
 pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 
 /// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
@@ -247,6 +247,9 @@ pub enum RegisterError {
     #[cfg(target_os = "windows")]
     #[error("Failed to convert WHP registers: {0}")]
     ConversionFailed(String),
+    #[cfg(target_os = "windows")]
+    #[error("Failed to reset partition: {0}")]
+    ResetPartition(HypervisorError),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -356,7 +359,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
     /// Set the debug registers of the vCPU
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Called on Linux (reset_vm_state) and via gdb, but dead on Windows release builds without gdb
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
     /// Get xsave
@@ -364,7 +367,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(not(target_arch = "aarch64"))]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
     /// Reset xsave to default state
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", any(kvm, mshv3)))]
     fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
     /// Set xsave - only used for tests
     #[cfg(test)]
@@ -380,6 +383,19 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
         Err(ResetVcpuError::NotSupported)
     }
+
+    /// Reset the partition using WHvResetPartition.
+    ///
+    /// Resets all per-VP state to architectural defaults: GP registers, segment
+    /// registers, control registers, EFER, MSRs, debug registers, full XSAVE
+    /// state (x87/SSE/AVX/AVX-512/AMX), XCR0, APIC/LAPIC, pending interrupts,
+    /// and VMCS/VMCB internals.
+    ///
+    /// Does NOT reset: GPA memory mappings or contents, partition configuration,
+    /// notification ports, or VPCI device state.
+    #[cfg(target_os = "windows")]
+    fn reset_partition(&mut self) -> std::result::Result<(), RegisterError>;
+
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
