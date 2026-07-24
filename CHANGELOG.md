@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add `RngRestorePolicy` to `SandboxConfiguration` to preserve or reseed the guest libc PRNG on snapshot restore.
 
 ### Changed
 

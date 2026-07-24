@@ -25,6 +25,8 @@ float echo_float(float f) { return f; }
 
 double echo_double(double d) { return d; }
 
+int next_random(void) { return rand(); }
+
 hl_Vec *set_byte_array_to_zero(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
   uint8_t *x = malloc(input.len);
@@ -359,6 +361,7 @@ HYPERLIGHT_WRAP_FUNCTION(print_ten_args, Int, 10, String, Int, Long, String, Str
 HYPERLIGHT_WRAP_FUNCTION(print_eleven_args, Int, 11, String, Int, Long, String, String, Bool, Bool, UInt, ULong, Int, Float)
 HYPERLIGHT_WRAP_FUNCTION(echo_float, Float, 1, Float)
 HYPERLIGHT_WRAP_FUNCTION(echo_double, Double, 1, Double)
+HYPERLIGHT_WRAP_FUNCTION(next_random, Int, 0)
 HYPERLIGHT_WRAP_FUNCTION(set_static, Int, 0)
 // HYPERLIGHT_WRAP_FUNCTION(get_size_prefixed_buffer, Int, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_msg, Int, 2, Int, String)
@@ -398,6 +401,7 @@ void hyperlight_main(void)
     HYPERLIGHT_REGISTER_FUNCTION("PrintElevenArgs", print_eleven_args);
     HYPERLIGHT_REGISTER_FUNCTION("EchoFloat", echo_float);
     HYPERLIGHT_REGISTER_FUNCTION("EchoDouble", echo_double);
+    HYPERLIGHT_REGISTER_FUNCTION("NextRandom", next_random);
     HYPERLIGHT_REGISTER_FUNCTION("SetStatic", set_static);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
