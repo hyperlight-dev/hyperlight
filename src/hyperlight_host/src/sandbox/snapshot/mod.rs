@@ -67,20 +67,6 @@ pub enum NextAction {
     None,
 }
 
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone)]
-pub(crate) struct SnapshotMsrState {
-    msrs: Vec<MsrEntry>,
-    allowed_msrs: Vec<u32>,
-}
-
-#[cfg(target_arch = "x86_64")]
-impl SnapshotMsrState {
-    pub(crate) fn new(msrs: Vec<MsrEntry>, allowed_msrs: Vec<u32>) -> Self {
-        Self { msrs, allowed_msrs }
-    }
-}
-
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
 pub struct Snapshot {
@@ -108,9 +94,9 @@ pub struct Snapshot {
     /// tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
 
-    /// MSR reset state and capture-time allow list from a running vCPU.
+    /// The MSRs saved in this snapshot. None before the guest has run.
     #[cfg(target_arch = "x86_64")]
-    msr_state: Option<SnapshotMsrState>,
+    msrs: Option<Vec<MsrEntry>>,
 
     /// The next action that should be performed on this snapshot
     next_action: NextAction,
@@ -413,7 +399,7 @@ impl Snapshot {
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
             #[cfg(target_arch = "x86_64")]
-            msr_state: None,
+            msrs: None,
             next_action: NextAction::Initialise(entrypoint_gva),
             original_entrypoint: entrypoint_gva,
             snapshot_generation: 0,
@@ -441,7 +427,7 @@ impl Snapshot {
         root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
-        #[cfg(target_arch = "x86_64")] msr_state: SnapshotMsrState,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<MsrEntry>,
         next_action: NextAction,
         original_entrypoint: u64,
         snapshot_generation: u64,
@@ -597,7 +583,7 @@ impl Snapshot {
             stack_top_gva,
             sregs: Some(sregs),
             #[cfg(target_arch = "x86_64")]
-            msr_state: Some(msr_state),
+            msrs: Some(msrs),
             next_action,
             original_entrypoint,
             snapshot_generation,
@@ -642,18 +628,10 @@ impl Snapshot {
         self.sregs.as_ref()
     }
 
-    /// Returns the captured MSR reset state.
+    /// The MSRs saved in this snapshot.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn msrs(&self) -> Option<&Vec<MsrEntry>> {
-        self.msr_state.as_ref().map(|state| &state.msrs)
-    }
-
-    /// Returns the capturing sandbox's allow list.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn allowed_msrs(&self) -> Option<&[u32]> {
-        self.msr_state
-            .as_ref()
-            .map(|state| state.allowed_msrs.as_slice())
+        self.msrs.as_ref()
     }
 
     pub(crate) fn next_action(&self) -> NextAction {
@@ -822,7 +800,7 @@ mod tests {
             0,
             default_sregs(),
             #[cfg(target_arch = "x86_64")]
-            super::SnapshotMsrState::new(Vec::new(), Vec::new()),
+            Vec::new(),
             super::NextAction::None,
             0,
             1,
@@ -842,7 +820,7 @@ mod tests {
             0,
             default_sregs(),
             #[cfg(target_arch = "x86_64")]
-            super::SnapshotMsrState::new(Vec::new(), Vec::new()),
+            Vec::new(),
             super::NextAction::None,
             0,
             2,

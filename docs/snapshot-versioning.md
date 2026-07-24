@@ -58,13 +58,11 @@ point rather than treating it as unknown.
 
 ### Missing MSR state
 
-Configs written before MSR capture may omit the `msr_state` object. The loader
-represents an omitted object as empty values and an empty allow list, which
-restores the destination baseline. A present object requires both `msrs` and
-`allowed_msrs`.
+Configs written before MSR capture omit the `msrs` array. The loader defaults a
+missing `msrs` to an empty array, which restores the destination baseline.
 
-At the next hard break, make `msr_state` required and remove its
-`serde(default)` missing-field fallback.
+At the next hard break, make `msrs` required and remove its `serde(default)`
+missing-field fallback.
 
 ## Enforcement
 

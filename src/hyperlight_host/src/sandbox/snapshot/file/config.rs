@@ -190,12 +190,11 @@ pub(super) struct OciSnapshotConfig {
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
-    /// Complete MSR reset state and capture-time guest access policy.
-    /// `msrs` contains every reset value. `allowed_msrs` is the policy subset.
+    /// The MSRs saved in this snapshot. Legacy configs omit this field; an
+    /// empty vec restores the destination baseline.
     #[cfg(target_arch = "x86_64")]
-    // Legacy configs omit this field. Empty state restores the destination baseline.
     #[serde(default)]
-    pub(super) msr_state: OciSnapshotMsrState,
+    pub(super) msrs: Vec<MsrEntry>,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -208,14 +207,6 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
-}
-
-#[cfg(target_arch = "x86_64")]
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OciSnapshotMsrState {
-    pub(super) msrs: Vec<MsrEntry>,
-    pub(super) allowed_msrs: Vec<u32>,
 }
 
 /// Sizes and permissions of the regions inside the snapshot blob,
@@ -669,28 +660,23 @@ mod tests {
         ]));
         let json = serde_json::to_vec(&original).unwrap();
         let restored: OciSnapshotConfig = serde_json::from_slice(&json).unwrap();
-        assert_eq!(restored.msr_state.msrs, original.msr_state.msrs);
-        assert_eq!(
-            restored.msr_state.allowed_msrs,
-            original.msr_state.allowed_msrs
-        );
+        assert_eq!(restored.msrs, original.msrs);
     }
 
-    /// A config JSON with no MSR state deserializes empty state.
+    /// A config JSON with no MSR state deserializes to an empty set.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn config_without_msr_state_deserializes_to_empty_state() {
+    fn config_without_msrs_deserializes_to_empty_set() {
         let with = gating_config_with_msrs(Some(vec![MsrEntry {
             index: 0x10,
             value: 1,
         }]));
         let mut json: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&with).unwrap()).unwrap();
-        assert!(json.as_object_mut().unwrap().remove("msr_state").is_some());
+        assert!(json.as_object_mut().unwrap().remove("msrs").is_some());
 
         let restored: OciSnapshotConfig = serde_json::from_value(json).unwrap();
-        assert!(restored.msr_state.msrs.is_empty());
-        assert!(restored.msr_state.allowed_msrs.is_empty());
+        assert!(restored.msrs.is_empty());
     }
 
     /// Every `ParameterType` survives the round-trip through its serde
@@ -779,7 +765,7 @@ mod tests {
             original_entrypoint_addr: 0,
             sregs: distinct_sregs(),
             #[cfg(target_arch = "x86_64")]
-            msr_state: OciSnapshotMsrState::default(),
+            msrs: Vec::new(),
             layout: MemoryLayout {
                 input_data_size: 0,
                 output_data_size: 0,
@@ -801,10 +787,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn gating_config_with_msrs(msrs: Option<Vec<MsrEntry>>) -> OciSnapshotConfig {
         OciSnapshotConfig {
-            msr_state: OciSnapshotMsrState {
-                msrs: msrs.unwrap_or_default(),
-                allowed_msrs: Vec::new(),
-            },
+            msrs: msrs.unwrap_or_default(),
             ..gating_config()
         }
     }
@@ -1005,22 +988,16 @@ mod schema_pin {
       11
     ]
   },
-    "msr_state": {
-        "msrs": [
-            {
-                "index": 16,
-                "value": 42
-            },
-            {
-                "index": 3221225474,
-                "value": 3735928559
-            }
-        ],
-        "allowed_msrs": [
-            16,
-            3221225474
-        ]
+  "msrs": [
+    {
+      "index": 16,
+      "value": 42
     },
+    {
+      "index": 3221225474,
+      "value": 3735928559
+    }
+  ],
   "layout": {
     "input_data_size": 1,
     "output_data_size": 2,

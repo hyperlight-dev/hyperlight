@@ -562,8 +562,11 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
-    fn msr_reset_indices(&self, allowed: &[u32]) -> std::result::Result<Vec<u32>, CreateVmError> {
-        crate::hypervisor::virtual_machine::hyperv_msr_reset_indices(self, allowed)
+    fn msr_reset_indices(
+        &self,
+        guest_msrs: &[u32],
+    ) -> std::result::Result<Vec<u32>, CreateVmError> {
+        crate::hypervisor::virtual_machine::hyperv_msr_reset_indices(self, guest_msrs)
     }
 
     #[allow(dead_code)]

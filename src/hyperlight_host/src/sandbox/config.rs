@@ -29,14 +29,14 @@ pub struct DebugInfo {
     pub port: u16,
 }
 
-/// Errors returned when configuring guest MSR access.
+/// Errors returned when declaring guest MSRs.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum AllowMsrError {
-    /// The requested allow list exceeds its fixed capacity.
-    #[error("MSR allow list exceeds its maximum of {maximum} distinct entries")]
+pub enum GuestMsrError {
+    /// The declared MSR set exceeds its fixed capacity.
+    #[error("declared guest MSRs exceed the maximum of {maximum} distinct entries")]
     CapacityExceeded {
-        /// Maximum number of distinct allowed MSRs.
+        /// Maximum number of distinct declared MSRs.
         maximum: usize,
     },
 }
@@ -86,12 +86,12 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
-    /// Requested allow list stored inline to keep this type `Copy`.
+    /// Declared guest MSRs, stored inline to keep this type `Copy`.
     #[cfg(target_arch = "x86_64")]
-    allowed_msrs: [u32; Self::MAX_ALLOWED_MSRS],
-    /// Number of valid entries in `allowed_msrs`.
+    guest_msrs: [u32; Self::MAX_GUEST_MSRS],
+    /// Number of valid entries in `guest_msrs`.
     #[cfg(target_arch = "x86_64")]
-    allowed_msrs_count: usize,
+    guest_msrs_count: usize,
 }
 
 impl SandboxConfiguration {
@@ -111,11 +111,11 @@ impl SandboxConfiguration {
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
-    /// Maximum number of distinct requested MSRs.
+    /// Maximum number of distinct guest MSRs that can be declared.
     /// KVM supports at most 16 MSR filter ranges. Each index may require its
     /// own range, so 16 is the portable limit across backends.
     #[cfg(target_arch = "x86_64")]
-    pub const MAX_ALLOWED_MSRS: usize = 16;
+    pub const MAX_GUEST_MSRS: usize = 16;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -142,9 +142,9 @@ impl SandboxConfiguration {
             #[cfg(crashdump)]
             guest_core_dump,
             #[cfg(target_arch = "x86_64")]
-            allowed_msrs: [0; Self::MAX_ALLOWED_MSRS],
+            guest_msrs: [0; Self::MAX_GUEST_MSRS],
             #[cfg(target_arch = "x86_64")]
-            allowed_msrs_count: 0,
+            guest_msrs_count: 0,
         }
     }
 
@@ -186,60 +186,61 @@ impl SandboxConfiguration {
         self.interrupt_vcpu_sigrtmin_offset
     }
 
-    /// Adds MSRs to the sandbox allow list.
+    /// Declares the MSRs the guest depends on.
     ///
-    /// Adds MSRs to the state captured by
-    /// [`MultiUseSandbox::snapshot`](crate::MultiUseSandbox::snapshot) and restored
-    /// by [`MultiUseSandbox::restore`](crate::MultiUseSandbox::restore).
+    /// A declared MSR's value is part of the sandbox's saved state: captured by
+    /// [`MultiUseSandbox::snapshot`](crate::MultiUseSandbox::snapshot) and written
+    /// back on [`MultiUseSandbox::restore`](crate::MultiUseSandbox::restore). Every
+    /// MSR you do not declare is reset to a clean default on each restore.
     ///
-    /// If this method is not called, only the platform's standard MSR set is
-    /// captured and restored.
+    /// If this method is not called, only a small core of essential CPU state
+    /// (kernel GS base, TSC) is saved and restored.
     ///
     /// # Platform-specific behavior
     ///
-    /// * KVM also uses this list to control guest MSR access. Access to unlisted
-    ///   MSRs is denied.
-    /// * MSHV and WHP cannot restrict guest MSR access. An unlisted MSR is not
-    ///   restored unless it belongs to the platform's standard MSR set.
+    /// * On KVM, declaring an MSR is also what lets the guest access it. The
+    ///   guest faults on any `RDMSR`/`WRMSR` of an undeclared MSR.
+    /// * On MSHV and WHP there is no such enforcement, so declaration only
+    ///   controls what is saved and restored, not what the guest may touch.
     ///
-    /// Duplicate indices, within the slice or against the existing list, are
+    /// Duplicate indices, within the slice or against the existing set, are
     /// ignored and do not count toward capacity.
     ///
     /// # Errors
     ///
-    /// Returns [`AllowMsrError::CapacityExceeded`] if the distinct entries
-    /// would exceed [`Self::MAX_ALLOWED_MSRS`]. The allow list is unchanged on
+    /// Returns [`GuestMsrError::CapacityExceeded`] if the distinct entries
+    /// would exceed [`Self::MAX_GUEST_MSRS`]. The declared set is unchanged on
     /// error.
     #[cfg(target_arch = "x86_64")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn allow_msrs(&mut self, indices: &[u32]) -> Result<&mut Self, AllowMsrError> {
+    pub fn guest_msrs(&mut self, indices: &[u32]) -> Result<&mut Self, GuestMsrError> {
         let additional = indices
             .iter()
             .enumerate()
             .filter(|(position, index)| {
-                !self.allowed_msrs[..self.allowed_msrs_count].contains(index)
+                !self.guest_msrs[..self.guest_msrs_count].contains(index)
                     && !indices[..*position].contains(index)
             })
             .count();
-        if additional > Self::MAX_ALLOWED_MSRS - self.allowed_msrs_count {
-            return Err(AllowMsrError::CapacityExceeded {
-                maximum: Self::MAX_ALLOWED_MSRS,
+        if additional > Self::MAX_GUEST_MSRS - self.guest_msrs_count {
+            return Err(GuestMsrError::CapacityExceeded {
+                maximum: Self::MAX_GUEST_MSRS,
             });
         }
         for &index in indices {
-            if !self.allowed_msrs[..self.allowed_msrs_count].contains(&index) {
-                self.allowed_msrs[self.allowed_msrs_count] = index;
-                self.allowed_msrs_count += 1;
+            if !self.guest_msrs[..self.guest_msrs_count].contains(&index) {
+                self.guest_msrs[self.guest_msrs_count] = index;
+                self.guest_msrs_count += 1;
             }
         }
         Ok(self)
     }
 
-    /// Returns the requested allow list.
+    /// Returns the declared guest MSRs.
     #[cfg(target_arch = "x86_64")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_allowed_msrs(&self) -> &[u32] {
-        &self.allowed_msrs[..self.allowed_msrs_count]
+    pub(crate) fn get_guest_msrs(&self) -> &[u32] {
+        &self.guest_msrs[..self.guest_msrs_count]
     }
 
     /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for
@@ -344,61 +345,61 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use super::{AllowMsrError, SandboxConfiguration};
+    use super::{GuestMsrError, SandboxConfiguration};
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn msr_allow_list_reports_overflow() {
+    fn guest_msrs_reports_overflow() {
         let mut cfg = SandboxConfiguration::default();
-        for index in 0..SandboxConfiguration::MAX_ALLOWED_MSRS as u32 {
-            cfg.allow_msrs(&[index]).unwrap();
+        for index in 0..SandboxConfiguration::MAX_GUEST_MSRS as u32 {
+            cfg.guest_msrs(&[index]).unwrap();
         }
 
-        cfg.allow_msrs(&[0]).unwrap();
+        cfg.guest_msrs(&[0]).unwrap();
         assert_eq!(
-            cfg.allow_msrs(&[SandboxConfiguration::MAX_ALLOWED_MSRS as u32]),
-            Err(AllowMsrError::CapacityExceeded {
-                maximum: SandboxConfiguration::MAX_ALLOWED_MSRS,
+            cfg.guest_msrs(&[SandboxConfiguration::MAX_GUEST_MSRS as u32]),
+            Err(GuestMsrError::CapacityExceeded {
+                maximum: SandboxConfiguration::MAX_GUEST_MSRS,
             })
         );
     }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn bulk_msr_allow_list_overflow_is_atomic() {
+    fn bulk_guest_msrs_overflow_is_atomic() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.allow_msrs(&[1, 2]).unwrap();
-        let oversized: Vec<u32> = (3..=SandboxConfiguration::MAX_ALLOWED_MSRS as u32 + 1).collect();
+        cfg.guest_msrs(&[1, 2]).unwrap();
+        let oversized: Vec<u32> = (3..=SandboxConfiguration::MAX_GUEST_MSRS as u32 + 1).collect();
 
         assert!(matches!(
-            cfg.allow_msrs(&oversized),
-            Err(AllowMsrError::CapacityExceeded { .. })
+            cfg.guest_msrs(&oversized),
+            Err(GuestMsrError::CapacityExceeded { .. })
         ));
-        assert_eq!(cfg.get_allowed_msrs(), &[1, 2]);
+        assert_eq!(cfg.get_guest_msrs(), &[1, 2]);
     }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn allow_msrs_dedups_and_preserves_order() {
+    fn guest_msrs_dedups_and_preserves_order() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.allow_msrs(&[0x10]).unwrap();
-        cfg.allow_msrs(&[0x20, 0x20, 0x10, 0x30, 0x20]).unwrap();
+        cfg.guest_msrs(&[0x10]).unwrap();
+        cfg.guest_msrs(&[0x20, 0x20, 0x10, 0x30, 0x20]).unwrap();
         // 0x10 already present, 0x20 and 0x30 added once each in first-seen order.
-        assert_eq!(cfg.get_allowed_msrs(), &[0x10, 0x20, 0x30]);
+        assert_eq!(cfg.get_guest_msrs(), &[0x10, 0x20, 0x30]);
     }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    fn allow_msrs_duplicates_do_not_count_toward_capacity() {
+    fn guest_msrs_duplicates_do_not_count_toward_capacity() {
         let mut cfg = SandboxConfiguration::default();
-        let fill: Vec<u32> = (0..SandboxConfiguration::MAX_ALLOWED_MSRS as u32 - 1).collect();
-        cfg.allow_msrs(&fill).unwrap();
+        let fill: Vec<u32> = (0..SandboxConfiguration::MAX_GUEST_MSRS as u32 - 1).collect();
+        cfg.guest_msrs(&fill).unwrap();
         // One slot remains. Three copies of one new index count as a single
         // distinct entry and fit.
-        cfg.allow_msrs(&[u32::MAX, u32::MAX, u32::MAX]).unwrap();
+        cfg.guest_msrs(&[u32::MAX, u32::MAX, u32::MAX]).unwrap();
         assert_eq!(
-            cfg.get_allowed_msrs().len(),
-            SandboxConfiguration::MAX_ALLOWED_MSRS
+            cfg.get_guest_msrs().len(),
+            SandboxConfiguration::MAX_GUEST_MSRS
         );
     }
 

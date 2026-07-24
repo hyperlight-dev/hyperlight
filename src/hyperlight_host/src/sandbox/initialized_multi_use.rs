@@ -159,8 +159,9 @@ impl MultiUseSandbox {
     /// interrupt behavior. Memory layout fields
     /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
     /// are always taken from the snapshot. Any values supplied in
-    /// `config` for those fields are ignored. On x86_64 the `config` MSR
-    /// allow list must be a superset of the one the snapshot was taken with,
+    /// `config` for those fields are ignored. On x86_64 the `config` must
+    /// declare every guest MSR the snapshot was taken with (see
+    /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
     /// or the load fails with an MSR mismatch.
     ///
     /// # Examples
@@ -309,12 +310,11 @@ impl MultiUseSandbox {
 
             // Restore captured MSR state.
             #[cfg(target_arch = "x86_64")]
-            vm.restore_msrs(snapshot.msrs(), snapshot.allowed_msrs())
-                .map_err(|e| {
-                    crate::HyperlightError::HyperlightVmError(
-                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
-                    )
-                })?;
+            vm.restore_msrs(snapshot.msrs()).map_err(|e| {
+                crate::HyperlightError::HyperlightVmError(
+                    crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                )
+            })?;
         }
 
         #[cfg(gdb)]
@@ -340,9 +340,9 @@ impl MultiUseSandbox {
     /// [`MultiUseSandbox::from_snapshot`] for the exact compatibility
     /// rules and the error variants returned on mismatch.
     ///
-    /// On x86_64, the snapshot includes the platform's standard MSR set and
-    /// each MSR selected with
-    /// [`SandboxConfiguration::allow_msrs`](crate::sandbox::SandboxConfiguration::allow_msrs).
+    /// On x86_64, the snapshot saves a small core of essential CPU state plus
+    /// each MSR declared with
+    /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs).
     ///
     /// ## Poisoned Sandbox
     ///
@@ -405,10 +405,6 @@ impl MultiUseSandbox {
             .vm
             .get_msr_reset_state()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        #[cfg(target_arch = "x86_64")]
-        let allowed_msrs = self.vm.get_msr_allow_list();
-        #[cfg(target_arch = "x86_64")]
-        let msr_state = crate::sandbox::snapshot::SnapshotMsrState::new(msrs, allowed_msrs);
         let next_action = self.vm.get_next_action();
         let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
@@ -421,7 +417,7 @@ impl MultiUseSandbox {
             stack_top_gpa,
             sregs,
             #[cfg(target_arch = "x86_64")]
-            msr_state,
+            msrs,
             next_action,
             host_functions,
         )?;
@@ -444,12 +440,12 @@ impl MultiUseSandbox {
     /// carrying the missing names and signature differences.
     ///
     /// On x86_64, this restores the MSR state captured by
-    /// [`MultiUseSandbox::snapshot`].
-    /// [`SandboxConfiguration::allow_msrs`](crate::sandbox::SandboxConfiguration::allow_msrs)
-    /// selects additional MSRs to capture and restore.
+    /// [`MultiUseSandbox::snapshot`]:
+    /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)
+    /// selects which MSRs are saved and restored.
     ///
-    /// On x86_64 this sandbox's MSR allow list must be a superset of the one
-    /// the snapshot was taken with, or the restore poisons with an MSR
+    /// Restore writes the snapshot's saved MSRs. On KVM the destination must
+    /// declare every MSR the snapshot saved, or the restore poisons with an MSR
     /// mismatch.
     ///
     /// ## Poison State Recovery
@@ -580,12 +576,10 @@ impl MultiUseSandbox {
 
         // Restore captured MSR state.
         #[cfg(target_arch = "x86_64")]
-        self.vm
-            .restore_msrs(snapshot.msrs(), snapshot.allowed_msrs())
-            .map_err(|e| {
-                self.poisoned = true;
-                HyperlightVmError::Restore(e)
-            })?;
+        self.vm.restore_msrs(snapshot.msrs()).map_err(|e| {
+            self.poisoned = true;
+            HyperlightVmError::Restore(e)
+        })?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_next_action(snapshot.next_action());
@@ -2788,13 +2782,13 @@ mod tests {
         };
         use crate::sandbox::snapshot::Snapshot;
 
-        fn assert_msr_not_allowable(error: &HyperlightError, expected: u32) {
+        fn assert_msr_not_declarable(error: &HyperlightError, expected: u32) {
             assert!(
                 matches!(
                     error,
                     HyperlightError::HyperlightVmError(HyperlightVmError::Create(
                         CreateHyperlightVmError::Vm(VmError::CreateVm(
-                            CreateVmError::MsrNotAllowable { msr, .. }
+                            CreateVmError::MsrNotDeclarable { msr, .. }
                         ))
                     )) if *msr == expected
                 ),
@@ -2802,15 +2796,15 @@ mod tests {
             );
         }
 
-        fn assert_msr_not_allowed(error: &HyperlightError) {
+        fn assert_snapshot_msr_index_invalid(error: &HyperlightError) {
             assert!(
                 matches!(
                     error,
                     HyperlightError::HyperlightVmError(HyperlightVmError::Restore(
-                        ResetVcpuError::Register(RegisterError::SnapshotMsrNotAllowed { .. })
+                        ResetVcpuError::Register(RegisterError::InvalidSnapshotMsrIndex { .. })
                     ))
                 ),
-                "expected SnapshotMsrNotAllowed, got: {error:?}"
+                "expected InvalidSnapshotMsrIndex, got: {error:?}"
             );
         }
 
@@ -2855,7 +2849,7 @@ mod tests {
         #[test]
         fn snapshot_msr_values_survive_full_in_memory_lifecycle() {
             let mut config = SandboxConfiguration::default();
-            config.allow_msrs(&[KERNEL_GS_BASE]).unwrap();
+            config.guest_msrs(&[KERNEL_GS_BASE]).unwrap();
             let mut source = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(config),
@@ -2930,7 +2924,7 @@ mod tests {
             let source_order = [KERNEL_GS_BASE, SYSENTER_CS];
             let target_order = [SYSENTER_CS, KERNEL_GS_BASE];
             let mut source_config = SandboxConfiguration::default();
-            source_config.allow_msrs(&source_order).unwrap();
+            source_config.guest_msrs(&source_order).unwrap();
             let mut source = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(source_config),
@@ -2952,7 +2946,7 @@ mod tests {
             let snapshot = source.snapshot().unwrap();
 
             let mut target_config = SandboxConfiguration::default();
-            target_config.allow_msrs(&target_order).unwrap();
+            target_config.guest_msrs(&target_order).unwrap();
             let mut target = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(target_config),
@@ -2991,15 +2985,15 @@ mod tests {
             assert_eq!(clone.call::<u64>("ReadMSR", SYSENTER_CS).unwrap(), 0x5555);
         }
 
-        /// A restore succeeds when the destination allow list is a superset
-        /// of the snapshot's. The snapshot's allowed MSR keeps its captured
+        /// A restore succeeds when the destination declares a superset of the
+        /// snapshot's guest MSRs. The snapshot's declared MSR keeps its saved
         /// value. An MSR the destination adds resets to the baseline.
         #[test]
-        fn snapshot_restores_into_superset_allow_list() {
+        fn snapshot_restores_into_superset_guest_msrs() {
             const SYSENTER_ESP: u32 = 0x175;
             let sentinel: u64 = 0x1234;
             let mut source_config = SandboxConfiguration::default();
-            source_config.allow_msrs(&[SYSENTER_CS]).unwrap();
+            source_config.guest_msrs(&[SYSENTER_CS]).unwrap();
             let mut source = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(source_config),
@@ -3014,7 +3008,7 @@ mod tests {
 
             let mut dest_config = SandboxConfiguration::default();
             dest_config
-                .allow_msrs(&[SYSENTER_CS, SYSENTER_ESP])
+                .guest_msrs(&[SYSENTER_CS, SYSENTER_ESP])
                 .unwrap();
 
             let mut clone = MultiUseSandbox::from_snapshot(
@@ -3048,14 +3042,15 @@ mod tests {
             );
         }
 
-        /// A restore is rejected when the snapshot allows an MSR the
-        /// destination does not. Both restore paths fail and poison the
-        /// sandbox.
+        /// A restore is rejected when the snapshot captured an MSR the
+        /// destination neither declares nor covers as a core MSR. The contract
+        /// is the same on every backend: both restore paths fail and poison
+        /// the sandbox.
         #[test]
-        fn snapshot_rejects_non_superset_allow_list() {
+        fn snapshot_rejects_non_superset_guest_msrs() {
             const SYSENTER_ESP: u32 = 0x175;
             let mut source_config = SandboxConfiguration::default();
-            source_config.allow_msrs(&[SYSENTER_CS]).unwrap();
+            source_config.guest_msrs(&[SYSENTER_CS]).unwrap();
             let mut source = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(source_config),
@@ -3068,19 +3063,20 @@ mod tests {
                 .unwrap();
             let snapshot = source.snapshot().unwrap();
 
-            // A destination that allows nothing, and one that allows a
-            // disjoint MSR, both fail the superset check.
+            // A destination that declares nothing, and one that declares a
+            // disjoint MSR, both reject because the snapshot's SYSENTER_CS is
+            // neither declared by the destination nor a core MSR.
             for dest in [&[][..], &[SYSENTER_ESP][..]] {
                 let mut config = SandboxConfiguration::default();
-                config.allow_msrs(dest).unwrap();
+                config.guest_msrs(dest).unwrap();
 
                 let err = MultiUseSandbox::from_snapshot(
                     snapshot.clone(),
                     HostFunctions::default(),
                     Some(config),
                 )
-                .expect_err("from_snapshot must reject a non-superset allow list");
-                assert_msr_not_allowed(&err);
+                .expect_err("from_snapshot must reject an unrestorable snapshot MSR");
+                assert_snapshot_msr_index_invalid(&err);
 
                 let mut target = UninitializedSandbox::new(
                     GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3091,8 +3087,8 @@ mod tests {
                 .unwrap();
                 let err = target
                     .restore(snapshot.clone())
-                    .expect_err("restore must reject a non-superset allow list");
-                assert_msr_not_allowed(&err);
+                    .expect_err("restore must reject an unrestorable snapshot MSR");
+                assert_snapshot_msr_index_invalid(&err);
                 assert!(target.poisoned());
                 assert!(matches!(
                     target.call::<String>("Echo", "hi".to_string()),
@@ -3104,7 +3100,7 @@ mod tests {
         #[test]
         fn from_pre_init_snapshot_uses_local_msr_reset_set() {
             let mut config = SandboxConfiguration::default();
-            config.allow_msrs(&[KERNEL_GS_BASE]).unwrap();
+            config.guest_msrs(&[KERNEL_GS_BASE]).unwrap();
             let snapshot = Arc::new(
                 Snapshot::from_env(
                     GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3275,7 +3271,7 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         fn test_allow_non_resettable_msr_fails_creation() {
             let mut cfg = SandboxConfiguration::default();
-            cfg.allow_msrs(&[0x49]).unwrap(); // IA32_PRED_CMD, a write-only command MSR
+            cfg.guest_msrs(&[0x49]).unwrap(); // IA32_PRED_CMD, a write-only command MSR
 
             let err = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3285,13 +3281,13 @@ mod tests {
             .evolve()
             .unwrap_err();
 
-            assert_msr_not_allowable(&err, 0x49);
+            assert_msr_not_declarable(&err, 0x49);
         }
 
         /// Host support cannot authorize an unclassified MSR.
         #[test]
         #[cfg(kvm)]
-        fn unclassified_allowed_msr_rejected_at_creation() {
+        fn unclassified_declared_msr_rejected_at_creation() {
             use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
 
             if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
@@ -3299,7 +3295,7 @@ mod tests {
             }
 
             let mut cfg = SandboxConfiguration::default();
-            cfg.allow_msrs(&[0x1A0]).unwrap(); // IA32_MISC_ENABLE: host-probeable, not in MSR_TABLE
+            cfg.guest_msrs(&[0x1A0]).unwrap(); // IA32_MISC_ENABLE: host-probeable, not in MSR_TABLE
 
             let err = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3307,18 +3303,18 @@ mod tests {
             )
             .unwrap()
             .evolve()
-            .expect_err("an unclassified allowed MSR must be rejected at creation");
+            .expect_err("an unclassified declared MSR must be rejected at creation");
 
-            assert_msr_not_allowable(&err, 0x1A0);
+            assert_msr_not_declarable(&err, 0x1A0);
         }
 
         #[test]
         #[cfg(target_arch = "x86_64")]
-        fn test_multiple_allowed_msrs_reset_across_restore() {
-            // Resettable MSRs the guest may write once allowed.
+        fn test_multiple_guest_msrs_reset_across_restore() {
+            // Resettable MSRs the guest may write once declared.
             let msrs: [u32; 4] = [0x174, 0x175, 0x176, 0xC000_0102];
             let mut cfg = SandboxConfiguration::default();
-            cfg.allow_msrs(&msrs).unwrap();
+            cfg.guest_msrs(&msrs).unwrap();
 
             let mut sbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -3347,15 +3343,15 @@ mod tests {
             }
         }
 
-        /// An allowed guest write must not survive restore.
+        /// A declared guest write must not survive restore.
         #[test]
         #[cfg(target_arch = "x86_64")]
-        fn test_allowed_msr_does_not_leak_across_restore() {
+        fn test_declared_msr_does_not_leak_across_restore() {
             let msr_index: u32 = 0xC000_0102; // IA32_KERNEL_GS_BASE
             let sentinel: u64 = 0xCAFE_F00D;
 
             let mut cfg = SandboxConfiguration::default();
-            cfg.allow_msrs(&[msr_index]).unwrap();
+            cfg.guest_msrs(&[msr_index]).unwrap();
             let mut sbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(cfg),
@@ -3955,7 +3951,7 @@ mod tests {
             // With CET hidden the host cannot read or write IA32_S_CET, so
             // allowing it is rejected at VM creation.
             let mut cfg = SandboxConfiguration::default();
-            cfg.allow_msrs(&[MSR_S_CET]).unwrap();
+            cfg.guest_msrs(&[MSR_S_CET]).unwrap();
             let err = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 Some(cfg),
@@ -3963,7 +3959,7 @@ mod tests {
             .unwrap()
             .evolve()
             .expect_err("allowing IA32_S_CET must be rejected when CET is hidden");
-            assert_msr_not_allowable(&err, MSR_S_CET);
+            assert_msr_not_declarable(&err, MSR_S_CET);
         }
     }
 

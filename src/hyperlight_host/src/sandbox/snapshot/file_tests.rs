@@ -225,11 +225,9 @@ fn msrs_round_trip_via_disk() {
 
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
     assert_eq!(loaded.msrs(), original.as_ref());
-    // The allow list travels with the MSRs and is Some exactly when they are.
-    assert_eq!(loaded.allowed_msrs(), Some(&[][..]));
 }
 
-/// A config with no `msr_state` key loads and uses the destination reset set.
+/// A config with no `msrs` key loads and uses the destination reset set.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn snapshot_without_msrs_key_loads_and_runs() {
@@ -237,32 +235,31 @@ fn snapshot_without_msrs_key_loads_and_runs() {
     rewrite_config(&path, |cfg| {
         let obj = cfg.as_object_mut().unwrap();
         assert!(
-            obj.remove("msr_state").is_some(),
-            "a running x86_64 snapshot config should carry msr_state to remove"
+            obj.remove("msrs").is_some(),
+            "a running x86_64 snapshot config should carry msrs to remove"
         );
     });
 
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
     assert_eq!(loaded.msrs(), Some(&Vec::new()));
-    assert_eq!(loaded.allowed_msrs(), Some(&[][..]));
 
     let mut sbox =
         MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
     assert_eq!(sbox.call::<i32>("GetStatic", ()).unwrap(), 0);
 }
 
-/// A snapshot whose reset set includes an allowed MSR carries that
+/// A snapshot whose reset set includes a declared guest MSR carries that
 /// MSR's guest-written value across a disk round-trip. Loading with a
-/// matching allow config restores the value, and restore-in-place
-/// returns it after an overwrite.
+/// matching config restores the value, and restore-in-place returns it
+/// after an overwrite.
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn disk_snapshot_restores_allowed_msr_value() {
+fn disk_snapshot_restores_declared_msr_value() {
     const SYSENTER_CS: u32 = 0x174;
     let sentinel: u64 = 0xDEAD_BEEF;
 
     let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.allow_msrs(&[SYSENTER_CS]).unwrap();
+    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
     let mut source = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
@@ -281,7 +278,7 @@ fn disk_snapshot_restores_allowed_msr_value() {
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
 
     let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.allow_msrs(&[SYSENTER_CS]).unwrap();
+    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
     let mut sbox =
         MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), Some(cfg))
             .unwrap();
@@ -293,16 +290,17 @@ fn disk_snapshot_restores_allowed_msr_value() {
     assert_eq!(sbox.call::<u64>("ReadMSR", SYSENTER_CS).unwrap(), sentinel);
 }
 
-/// A disk snapshot restores into a destination with a superset allow list.
+/// A disk snapshot restores into a destination that declares a superset of the
+/// snapshot's guest MSRs.
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn disk_snapshot_restores_into_superset_allow_list() {
+fn disk_snapshot_restores_into_superset_guest_msrs() {
     const SYSENTER_CS: u32 = 0x174;
     const SYSENTER_ESP: u32 = 0x175;
     let sentinel: u64 = 0xDEAD_BEEF;
 
     let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.allow_msrs(&[SYSENTER_CS]).unwrap();
+    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
     let mut source = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
@@ -321,21 +319,24 @@ fn disk_snapshot_restores_into_superset_allow_list() {
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
 
     let mut dest_cfg = crate::sandbox::SandboxConfiguration::default();
-    dest_cfg.allow_msrs(&[SYSENTER_CS, SYSENTER_ESP]).unwrap();
+    dest_cfg.guest_msrs(&[SYSENTER_CS, SYSENTER_ESP]).unwrap();
     let mut sbox =
         MultiUseSandbox::from_snapshot(loaded, HostFunctions::default(), Some(dest_cfg)).unwrap();
     assert_eq!(sbox.call::<u64>("ReadMSR", SYSENTER_CS).unwrap(), sentinel);
 }
 
-/// A disk snapshot is rejected when it allows an MSR the destination does not.
+/// A disk snapshot is rejected when it captured an MSR the destination neither
+/// declares nor covers as a core MSR. The destination declares nothing, so the
+/// snapshot's declared MSR is outside its restorable set. The contract is the
+/// same on every backend.
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn disk_snapshot_non_superset_allow_list_rejected() {
+fn disk_snapshot_non_superset_guest_msrs_rejected() {
     const SYSENTER_CS: u32 = 0x174;
     let sentinel: u64 = 0x1234;
 
     let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.allow_msrs(&[SYSENTER_CS]).unwrap();
+    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
     let mut source = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
@@ -353,53 +354,22 @@ fn disk_snapshot_non_superset_allow_list_rejected() {
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
 
-    // The destination allows nothing, so the snapshot's allowed MSR is not
-    // a subset of the destination allow list.
     let err = MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None)
-        .expect_err("loading into a non-superset allow list must fail");
+        .expect_err("loading a snapshot MSR the destination cannot restore must fail");
     assert!(
-        format!("{err:?}").contains("SnapshotMsrNotAllowed"),
-        "expected an MSR allow-list mismatch, got: {err:?}"
+        format!("{err:?}").contains("InvalidSnapshotMsrIndex"),
+        "expected an MSR reset-set mismatch, got: {err:?}"
     );
 
     let mut target = create_test_sandbox();
     let err = target
         .restore(loaded)
-        .expect_err("restore into a non-superset allow list must fail");
+        .expect_err("restore of a snapshot MSR the destination cannot restore must fail");
     assert!(
-        format!("{err:?}").contains("SnapshotMsrNotAllowed"),
-        "expected an MSR allow-list mismatch, got: {err:?}"
+        format!("{err:?}").contains("InvalidSnapshotMsrIndex"),
+        "expected an MSR reset-set mismatch, got: {err:?}"
     );
     assert!(target.poisoned());
-}
-
-/// An MSR state without `allowed_msrs` cannot enforce the allow-list check.
-#[cfg(target_arch = "x86_64")]
-#[test]
-fn disk_snapshot_msrs_without_allow_list_rejected() {
-    let (_dir, path) = save_for_mutation();
-    rewrite_config(&path, |cfg| {
-        assert!(
-            cfg.as_object_mut()
-                .unwrap()
-                .get_mut("msr_state")
-                .unwrap()
-                .as_object_mut()
-                .unwrap()
-                .remove("allowed_msrs")
-                .is_some(),
-            "a running x86_64 snapshot config should carry allowed_msrs to remove"
-        );
-    });
-
-    let err = unwrap_err_snapshot(Snapshot::checked_load(
-        &path,
-        OciTag::new("latest").unwrap(),
-    ));
-    assert!(
-        format!("{err:?}").contains("allowed_msrs"),
-        "expected a missing allowed_msrs error, got: {err:?}"
-    );
 }
 
 #[test]

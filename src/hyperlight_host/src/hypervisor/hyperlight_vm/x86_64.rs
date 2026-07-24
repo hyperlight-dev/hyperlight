@@ -93,7 +93,7 @@ impl HyperlightVm {
             Some(HypervisorType::Kvm) => {
                 let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
                 kvm_vm
-                    .configure_msr_access(config.get_allowed_msrs())
+                    .configure_msr_access(config.get_guest_msrs())
                     .map_err(VmError::CreateVm)?;
                 Box::new(kvm_vm)
             }
@@ -141,13 +141,12 @@ impl HyperlightVm {
         });
 
         let reset_indices = vm
-            .msr_reset_indices(config.get_allowed_msrs())
+            .msr_reset_indices(config.get_guest_msrs())
             .map_err(VmError::CreateVm)?;
-        let msr_reset =
-            MsrResetState::capture(reset_indices, config.get_allowed_msrs(), |indices| {
-                vm.msrs(indices)
-            })
-            .map_err(VmError::Register)?;
+        let msr_reset = MsrResetState::capture(reset_indices, config.get_guest_msrs(), |indices| {
+            vm.msrs(indices)
+        })
+        .map_err(VmError::Register)?;
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
@@ -284,33 +283,24 @@ impl HyperlightVm {
         Ok(self.vm.sregs()?)
     }
 
-    /// Returns the current values of the MSR reset set.
+    /// Returns the current values of the MSRs persisted in a snapshot.
     pub(crate) fn get_msr_reset_state(&self) -> Result<Vec<MsrEntry>, AccessPageTableError> {
-        Ok(self.vm.msrs(&self.msr_reset.indices())?)
-    }
-
-    /// Returns this VM's requested allow list, sorted and deduplicated.
-    pub(crate) fn get_msr_allow_list(&self) -> Vec<u32> {
-        self.msr_reset.allowed().to_vec()
+        Ok(self.vm.msrs(&self.msr_reset.persist_indices())?)
     }
 
     /// Restores snapshot MSRs or the initialization baseline.
     pub(crate) fn restore_msrs(
         &mut self,
         snap_msrs: Option<&Vec<MsrEntry>>,
-        snap_allowed: Option<&[u32]>,
     ) -> std::result::Result<(), ResetVcpuError> {
         match snap_msrs {
             // No captured MSRs. Use this VM's baseline.
             None => self.vm.set_msrs(self.msr_reset.baseline())?,
-            // Reset the MSRs to the snapshot's captured values. The snapshot's
-            // allow list must be a subset of this VM's, and every captured
-            // index must be in this reset set, so validation rejects a
-            // mismatch first.
+            // Scrub the reset set to the destination baseline and write the
+            // snapshot's captured values on top. Validation rejects any
+            // captured index the destination cannot restore.
             Some(msrs) => {
-                let entries = self
-                    .msr_reset
-                    .validate_snapshot(msrs, snap_allowed.unwrap_or(&[]))?;
+                let entries = self.msr_reset.validate_snapshot(msrs)?;
                 self.vm.set_msrs(&entries)?;
             }
         }

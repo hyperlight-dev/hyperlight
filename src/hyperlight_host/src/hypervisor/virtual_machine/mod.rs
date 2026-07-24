@@ -193,8 +193,8 @@ pub enum CreateVmError {
     #[error("KVM MSR filtering requires KVM_CAP_X86_MSR_FILTER")]
     MsrFilterNotSupported,
     #[cfg(target_arch = "x86_64")]
-    #[error("MSR {msr:#x} cannot be allowed: {reason}")]
-    MsrNotAllowable { msr: u32, reason: String },
+    #[error("MSR {msr:#x} cannot be declared as a guest MSR: {reason}")]
+    MsrNotDeclarable { msr: u32, reason: String },
     #[cfg(target_arch = "x86_64")]
     #[error("Failed to read IA32_MTRRCAP: {0}")]
     GetMtrrCap(RegisterError),
@@ -205,7 +205,7 @@ pub enum CreateVmError {
     #[error("Guest exposes {advertised} variable MTRR pairs, expected at most {maximum}")]
     UnexpectedVariableMtrrCount { advertised: u8, maximum: u8 },
     #[cfg(all(kvm, target_arch = "x86_64"))]
-    #[error("Too many allowed MSR filter ranges: {0}. Maximum is 16")]
+    #[error("Too many guest MSR filter ranges: {0}. Maximum is 16")]
     TooManyMsrRanges(usize),
     #[cfg(target_os = "windows")]
     #[error("Get Partition Property failed: {0}")]
@@ -289,12 +289,6 @@ pub enum RegisterError {
     #[cfg(target_arch = "x86_64")]
     #[error("Failed to set MSRs: {0}")]
     SetMsrs(HypervisorError),
-    #[cfg(target_arch = "x86_64")]
-    #[error("Snapshot allows MSRs the destination does not: {missing:x?}")]
-    SnapshotMsrNotAllowed {
-        /// Allowed MSR indices present in the snapshot but not the destination.
-        missing: Vec<u32>,
-    },
     #[cfg(target_arch = "x86_64")]
     #[error("Snapshot MSR index {index:#x} is not in this VM's reset set")]
     InvalidSnapshotMsrIndex {
@@ -435,7 +429,8 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError>;
     /// Returns the MSRs whose state this backend must reset.
     #[cfg(target_arch = "x86_64")]
-    fn msr_reset_indices(&self, allowed: &[u32]) -> std::result::Result<Vec<u32>, CreateVmError>;
+    fn msr_reset_indices(&self, guest_msrs: &[u32])
+    -> std::result::Result<Vec<u32>, CreateVmError>;
 
     /// Get xsave
     #[allow(dead_code)]
@@ -463,29 +458,29 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 }
 
-/// Validates that each allowed MSR is restorable: reset replays a captured
-/// value, so the host must read and write it.
+/// Validates that each declared guest MSR is restorable: reset replays a
+/// captured value, so the host must read and write it.
 /// Rejects e.g. a variable MTRR above the host VCNT.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn validate_allowed_msrs(
+pub(crate) fn validate_guest_msrs(
     vm: &dyn VirtualMachine,
-    allowed: &[u32],
+    guest_msrs: &[u32],
 ) -> std::result::Result<(), CreateVmError> {
-    for &msr in allowed {
+    for &msr in guest_msrs {
         if !is_resettable_msr(msr) {
-            return Err(CreateVmError::MsrNotAllowable {
+            return Err(CreateVmError::MsrNotDeclarable {
                 msr,
                 reason: "MSR is not a resettable MSR".to_string(),
             });
         }
         let captured = vm
             .msrs(&[msr])
-            .map_err(|_| CreateVmError::MsrNotAllowable {
+            .map_err(|_| CreateVmError::MsrNotDeclarable {
                 msr,
                 reason: "MSR cannot be read on this host".to_string(),
             })?;
         vm.set_msrs(&captured)
-            .map_err(|_| CreateVmError::MsrNotAllowable {
+            .map_err(|_| CreateVmError::MsrNotDeclarable {
                 msr,
                 reason: "MSR cannot be written on this host".to_string(),
             })?;
@@ -512,13 +507,13 @@ pub(crate) fn mtrr_reset_indices(
 #[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
 pub(crate) fn hyperv_msr_reset_indices(
     vm: &dyn VirtualMachine,
-    allowed: &[u32],
+    guest_msrs: &[u32],
 ) -> std::result::Result<Vec<u32>, CreateVmError> {
-    validate_allowed_msrs(vm, allowed)?;
+    validate_guest_msrs(vm, guest_msrs)?;
     let mut indices: Vec<u32> = filterless_core_reset_candidates()
         .filter(|index| vm.msrs(&[*index]).is_ok())
         .chain(mtrr_reset_indices(vm)?)
-        .chain(allowed.iter().copied())
+        .chain(guest_msrs.iter().copied())
         .collect();
     indices.sort_unstable();
     indices.dedup();

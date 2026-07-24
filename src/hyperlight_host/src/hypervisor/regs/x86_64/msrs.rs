@@ -17,7 +17,7 @@ limitations under the License.
 //! Model-specific register (MSR) state restored with a snapshot.
 //!
 //! The reset set contains every MSR whose guest-written state can persist.
-//! Allowing guest access to an MSR is a separate concern. Allowed MSRs still
+//! Which MSRs the guest may access is a separate concern: declared MSRs still
 //! reset.
 
 use serde::{Deserialize, Serialize};
@@ -34,22 +34,29 @@ pub(crate) struct MsrEntry {
 /// The MSR reset set and initialization baseline for one VM.
 #[derive(Debug, Clone)]
 pub(crate) struct MsrResetState {
-    /// Creation-time value for every MSR this VM resets on restore and
-    /// captures in a snapshot: core indices, required MTRRs, and the allow
-    /// list. Sorted by index and deduplicated.
+    /// Creation-time value for every MSR this VM resets on restore and can
+    /// capture in a snapshot: the fixed core, required MTRRs, and the declared
+    /// guest MSRs. Sorted by index and deduplicated.
     baseline: Vec<MsrEntry>,
-    /// The user-supplied allow list (`SandboxConfiguration::allow_msrs`),
-    /// sorted and deduplicated. A subset of the `baseline` indices, kept as a
-    /// separate copy so restore can compare it, as a superset, against a
-    /// snapshot's allow list.
-    allowed: Vec<u32>,
+    /// The declared guest MSRs
+    /// ([`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
+    /// sorted and deduplicated. A subset of the `baseline` indices, kept
+    /// separately to pick which reset entries a snapshot persists.
+    guest_msrs: Vec<u32>,
 }
+
+/// MSRs always saved and restored, independent of the declared guest MSRs.
+/// The guest can change these without `WRMSR`, so declaring them cannot gate
+/// them, and they must survive restore for faithful resume: `KERNEL_GS_BASE`
+/// via `SWAPGS`, the `TSC`/`TSC_ADJUST` pair, and active SSP on the Hyper-V
+/// backends via CET instructions.
+const CORE_PERSIST_MSRS: &[u32] = &[MSR_KERNEL_GS_BASE, MSR_TSC, MSR_TSC_ADJUST, MSR_IA32_SSP];
 
 impl MsrResetState {
     /// Captures and normalizes the reset state for a backend-provided index set.
     pub fn capture(
         mut indices: Vec<u32>,
-        allowed: &[u32],
+        guest_msrs: &[u32],
         read: impl FnOnce(
             &[u32],
         )
@@ -58,10 +65,13 @@ impl MsrResetState {
         indices.sort_unstable();
         indices.dedup();
         let baseline = read(&indices)?;
-        let mut allowed = allowed.to_vec();
-        allowed.sort_unstable();
-        allowed.dedup();
-        Ok(Self { baseline, allowed })
+        let mut guest_msrs = guest_msrs.to_vec();
+        guest_msrs.sort_unstable();
+        guest_msrs.dedup();
+        Ok(Self {
+            baseline,
+            guest_msrs,
+        })
     }
 
     /// The creation-time baseline entries.
@@ -69,41 +79,36 @@ impl MsrResetState {
         &self.baseline
     }
 
-    /// This VM's requested allow list.
-    pub fn allowed(&self) -> &[u32] {
-        &self.allowed
+    /// The MSR indices captured into a snapshot: the declared guest MSRs plus
+    /// the fixed core, intersected with this VM's reset set. The rest of the
+    /// reset set is scrubbed to the destination baseline on restore rather than
+    /// saved.
+    pub fn persist_indices(&self) -> Vec<u32> {
+        self.baseline
+            .iter()
+            .map(|entry| entry.index)
+            .filter(|index| CORE_PERSIST_MSRS.contains(index) || self.guest_msrs.contains(index))
+            .collect()
     }
 
-    /// The MSR indices this VM resets, for host reads.
-    pub fn indices(&self) -> Vec<u32> {
-        self.baseline.iter().map(|entry| entry.index).collect()
-    }
-
-    /// Resolves an untrusted snapshot's MSRs against this VM's reset set.
+    /// Resolves an untrusted snapshot's MSRs against the destination's
+    /// declared set.
     ///
-    /// The snapshot's allow list must be a subset of this VM's, so a
-    /// destination that allows at least as much accepts the snapshot on every
-    /// backend. Each supplied index must belong to this reset set. Returns the
-    /// entries to write: the snapshot's value for each reset index, or the
-    /// baseline where the snapshot omits it.
+    /// Each supplied index must be a declared guest MSR or a core MSR this VM
+    /// resets. That set is backend-independent, so the accept/reject contract
+    /// is the same on KVM and the Hyper-V backends, and a snapshot cannot carry
+    /// a value the destination does not restore. Returns the entries to write:
+    /// the snapshot's value for each reset index, or the baseline where the
+    /// snapshot omits it.
     pub fn validate_snapshot(
         &self,
         snapshot: &[MsrEntry],
-        snap_allowed: &[u32],
     ) -> Result<Vec<MsrEntry>, crate::hypervisor::virtual_machine::RegisterError> {
         use crate::hypervisor::virtual_machine::RegisterError;
 
-        let missing: Vec<u32> = snap_allowed
-            .iter()
-            .copied()
-            .filter(|index| !self.allowed.contains(index))
-            .collect();
-        if !missing.is_empty() {
-            return Err(RegisterError::SnapshotMsrNotAllowed { missing });
-        }
-
+        let restorable = self.persist_indices();
         for entry in snapshot {
-            if !self.baseline.iter().any(|base| base.index == entry.index) {
+            if !restorable.contains(&entry.index) {
                 return Err(RegisterError::InvalidSnapshotMsrIndex { index: entry.index });
             }
         }
@@ -164,7 +169,7 @@ const HYPERV_VARIABLE_MTRR_COUNT: u8 = 16;
 // EFER, APIC_BASE, FS_BASE, and GS_BASE are part of the special-register state.
 // PRED_CMD (0x49) and FLUSH_CMD (0x10B) are intentionally absent: they are
 // write-only commands with no retained state, so they cannot be reset and
-// therefore cannot be allowed.
+// therefore cannot be declared.
 const NON_MTRR_RESETTABLE_MSRS: &[u32] = &[
     // Guest and host access use the matching SYSENTER state.
     MSR_SYSENTER_CS,
@@ -348,7 +353,7 @@ mod tests {
                     value: 0x3C,
                 },
             ],
-            allowed: vec![MSR_SYSENTER_CS, MSR_SYSENTER_ESP],
+            guest_msrs: vec![MSR_SYSENTER_CS, MSR_SYSENTER_ESP],
         }
     }
 
@@ -414,12 +419,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(
-            state()
-                .validate_snapshot(&supplied, &[MSR_SYSENTER_CS])
-                .unwrap(),
-            supplied
-        );
+        assert_eq!(state().validate_snapshot(&supplied).unwrap(), supplied);
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         ];
 
         assert_eq!(
-            state().validate_snapshot(&supplied, &[]).unwrap(),
+            state().validate_snapshot(&supplied).unwrap(),
             vec![
                 MsrEntry {
                     index: MSR_SYSENTER_CS,
@@ -454,15 +454,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn snapshot_msr_validation_rejects_non_superset_allow_list() {
-        // The snapshot allows an MSR the destination does not.
-        assert!(matches!(
-            state().validate_snapshot(&[], &[MSR_KERNEL_GS_BASE]),
-            Err(RegisterError::SnapshotMsrNotAllowed { missing }) if missing == vec![MSR_KERNEL_GS_BASE]
-        ));
     }
 
     #[test]
@@ -483,17 +474,90 @@ mod tests {
         ];
 
         assert!(matches!(
-            state().validate_snapshot(&supplied, &[]),
+            state().validate_snapshot(&supplied),
             Err(RegisterError::InvalidSnapshotMsrIndex { index }) if index == MSR_PAT
         ));
+    }
+
+    #[test]
+    fn snapshot_msr_validation_rejects_reset_index_that_is_not_declared() {
+        // PAT is in the reset set but neither core nor declared, so a snapshot
+        // cannot override it even though the backend resets it. This keeps the
+        // accept/reject contract identical on KVM and the Hyper-V backends,
+        // whose reset sets differ in size.
+        let state = MsrResetState {
+            baseline: vec![
+                MsrEntry {
+                    index: MSR_PAT,
+                    value: 1,
+                },
+                MsrEntry {
+                    index: MSR_KERNEL_GS_BASE,
+                    value: 2,
+                },
+                MsrEntry {
+                    index: MSR_SYSENTER_CS,
+                    value: 3,
+                },
+            ],
+            guest_msrs: vec![MSR_SYSENTER_CS],
+        };
+        assert!(matches!(
+            state.validate_snapshot(&[MsrEntry {
+                index: MSR_PAT,
+                value: 9,
+            }]),
+            Err(RegisterError::InvalidSnapshotMsrIndex { index }) if index == MSR_PAT
+        ));
+        // A declared MSR and a core MSR are both accepted.
+        assert!(
+            state
+                .validate_snapshot(&[
+                    MsrEntry {
+                        index: MSR_SYSENTER_CS,
+                        value: 9,
+                    },
+                    MsrEntry {
+                        index: MSR_KERNEL_GS_BASE,
+                        value: 8,
+                    },
+                ])
+                .is_ok()
+        );
     }
 
     #[test]
     fn snapshot_msr_validation_accepts_empty_canonical_set() {
         let state = MsrResetState {
             baseline: Vec::new(),
-            allowed: Vec::new(),
+            guest_msrs: Vec::new(),
         };
-        assert!(state.validate_snapshot(&[], &[]).unwrap().is_empty());
+        assert!(state.validate_snapshot(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn persist_indices_covers_guest_msrs_and_core_only() {
+        let state = MsrResetState {
+            baseline: vec![
+                MsrEntry {
+                    index: MSR_PAT,
+                    value: 1,
+                },
+                MsrEntry {
+                    index: MSR_KERNEL_GS_BASE,
+                    value: 2,
+                },
+                MsrEntry {
+                    index: MSR_SYSENTER_CS,
+                    value: 3,
+                },
+            ],
+            guest_msrs: vec![MSR_SYSENTER_CS],
+        };
+        // PAT is neither core nor declared, so it is scrubbed, not saved.
+        assert_eq!(
+            state.persist_indices(),
+            vec![MSR_KERNEL_GS_BASE, MSR_SYSENTER_CS]
+        );
     }
 }
