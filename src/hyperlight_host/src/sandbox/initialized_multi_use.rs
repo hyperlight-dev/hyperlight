@@ -1553,6 +1553,7 @@ mod tests {
         MemoryRegion {
             host_region: mem.host_region_base()..mem.host_region_end(),
             guest_region: guest_base..(guest_base + len),
+            guest_virt_addr: guest_base,
             flags,
             region_type: MemoryRegionType::Heap,
         }
@@ -1976,9 +1977,12 @@ mod tests {
     /// `read_guest_memory_by_gva`, then assert both views are identical.
     #[cfg(feature = "trace_guest")]
     fn assert_gva_read_matches(sbox: &mut MultiUseSandbox, gva: u64, len: usize) {
-        // Guest reads via its own page tables
+        // Guest reads via its own page tables.
+        // do_map = false: the code region is already mapped (identity-mapped
+        // or ASLR-mapped), so we must not remap it with an identity mapping
+        // that would use the GVA as a physical address.
         let expected: Vec<u8> = sbox
-            .call("ReadMappedBuffer", (gva, len as u64, true))
+            .call("ReadMappedBuffer", (gva, len as u64, false))
             .unwrap();
         assert_eq!(expected.len(), len);
 
@@ -2002,7 +2006,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_single_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.code_virt_base;
         assert_gva_read_matches(&mut sbox, code_gva, 128);
     }
 
@@ -2012,7 +2016,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_full_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.code_virt_base;
         assert_gva_read_matches(&mut sbox, code_gva, 4096);
     }
 
@@ -2022,7 +2026,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_unaligned_cross_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.code_virt_base;
         // Start 1 byte before the second page boundary and read 4097 bytes
         // (spans 2 full page boundaries).
         let start = code_gva + 4096 - 1;
@@ -2038,7 +2042,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_two_full_pages() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.code_virt_base;
         assert_gva_read_matches(&mut sbox, code_gva, 4096 * 2);
     }
 
@@ -2049,7 +2053,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_cross_page_boundary() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.code_virt_base;
         // Start 100 bytes before the first page boundary, read across it.
         let start = code_gva + 4096 - 100;
         assert_gva_read_matches(&mut sbox, start, 200);

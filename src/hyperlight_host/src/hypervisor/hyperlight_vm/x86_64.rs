@@ -675,10 +675,9 @@ pub(super) mod debug {
                             .dbg_mem_access_fn
                             .try_lock()
                             .map_err(|_| ProcessDebugRequestError::TryLockError(file!(), line!()))?
-                            .layout
-                            .get_guest_code_address();
+                            .code_virt_base;
 
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                        Ok(DebugResponse::GetCodeSectionOffset(offset))
                     }
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
