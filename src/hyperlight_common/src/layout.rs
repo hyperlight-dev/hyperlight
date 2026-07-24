@@ -25,6 +25,8 @@ pub use arch::{
 };
 
 const EXN_STACK_ALIGNMENT: usize = 16;
+/// Pages reserved for the exception stack and scratch-top metadata.
+pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
 
 // Fields are listed in ascending-address order. Public offsets are measured
 // down from the top of scratch memory.
@@ -69,6 +71,11 @@ const _: () = {
     assert!(SCRATCH_TOP_RESERVED_OFFSET == 0x28);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x30);
 };
+
+/// Exclusive upper GPA boundary for dynamic scratch allocations.
+pub const fn scratch_allocator_limit_gpa() -> u64 {
+    (SCRATCH_TOP_GPA + 1 - SCRATCH_TOP_RESERVED_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (SCRATCH_TOP_GPA - size + 1) as u64

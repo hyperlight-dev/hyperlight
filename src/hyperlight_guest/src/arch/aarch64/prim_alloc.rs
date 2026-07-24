@@ -35,13 +35,8 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
             prev_base = out(reg) prev_base,
         );
     }
-    // Set aside two pages at the top of the scratch region for the
-    // exception stack, shared state, etc
-    let max_avail = layout::SCRATCH_TOP_GPA - vmem::PAGE_SIZE * 2;
-    if prev_base
-        .checked_add(nbytes)
-        .is_none_or(|xx| xx >= max_avail as u64)
-    {
+    let limit = layout::scratch_allocator_limit_gpa();
+    if super::allocation_exceeds_limit(prev_base, nbytes, limit) {
         unsafe {
             crate::exit::abort_with_code_and_message(
                 &[ErrorCode::MallocFailed as u8],
