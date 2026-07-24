@@ -56,6 +56,14 @@ made before it was added remain loadable. At the next hard break, make the
 field required, remove `serde(default)`, and reject zero as an invalid entry
 point rather than treating it as unknown.
 
+### Missing MSR state
+
+Configs written before MSR capture omit the `msrs` array. The loader defaults a
+missing `msrs` to an empty array, which restores the destination baseline.
+
+At the next hard break, make `msrs` required and remove its `serde(default)`
+missing-field fallback.
+
 ## Enforcement
 
 The format is large and easy to change by accident. Two mechanisms

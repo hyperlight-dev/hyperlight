@@ -41,10 +41,8 @@ use crate::hypervisor::gdb::{
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebugMemoryAccessError};
 use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, MsrEntry, MsrResetState,
 };
-#[cfg(not(gdb))]
-use crate::hypervisor::virtual_machine::VirtualMachine;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(mshv3)]
@@ -69,6 +67,11 @@ use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
+#[cfg(gdb)]
+type BoxedVm = Box<dyn DebuggableVm>;
+#[cfg(not(gdb))]
+type BoxedVm = Box<dyn VirtualMachine>;
+
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -85,14 +88,15 @@ impl HyperlightVm {
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        #[cfg(gdb)]
-        type VmType = Box<dyn DebuggableVm>;
-        #[cfg(not(gdb))]
-        type VmType = Box<dyn VirtualMachine>;
-
-        let vm: VmType = match get_available_hypervisor() {
+        let vm: BoxedVm = match get_available_hypervisor() {
             #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+            Some(HypervisorType::Kvm) => {
+                let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
+                kvm_vm
+                    .configure_msr_access(config.get_guest_msrs())
+                    .map_err(VmError::CreateVm)?;
+                Box::new(kvm_vm)
+            }
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
             #[cfg(target_os = "windows")]
@@ -136,6 +140,14 @@ impl HyperlightVm {
             }),
         });
 
+        let reset_indices = vm
+            .msr_reset_indices(config.get_guest_msrs())
+            .map_err(VmError::CreateVm)?;
+        let msr_reset = MsrResetState::capture(reset_indices, config.get_guest_msrs(), |indices| {
+            vm.msrs(indices)
+        })
+        .map_err(VmError::Register)?;
+
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
@@ -168,6 +180,7 @@ impl HyperlightVm {
             trace_info,
             #[cfg(crashdump)]
             rt_cfg,
+            msr_reset,
         };
 
         ret.update_snapshot_mapping(snapshot_mem)?;
@@ -270,6 +283,30 @@ impl HyperlightVm {
         Ok(self.vm.sregs()?)
     }
 
+    /// Returns the current values of the MSRs persisted in a snapshot.
+    pub(crate) fn get_msr_reset_state(&self) -> Result<Vec<MsrEntry>, AccessPageTableError> {
+        Ok(self.vm.msrs(&self.msr_reset.persist_indices())?)
+    }
+
+    /// Restores snapshot MSRs or the initialization baseline.
+    pub(crate) fn restore_msrs(
+        &mut self,
+        snap_msrs: Option<&Vec<MsrEntry>>,
+    ) -> std::result::Result<(), ResetVcpuError> {
+        match snap_msrs {
+            // No captured MSRs. Use this VM's baseline.
+            None => self.vm.set_msrs(self.msr_reset.baseline())?,
+            // Scrub the reset set to the destination baseline and write the
+            // snapshot's captured values on top. Validation rejects any
+            // captured index the destination cannot restore.
+            Some(msrs) => {
+                let entries = self.msr_reset.validate_snapshot(msrs)?;
+                self.vm.set_msrs(&entries)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///
@@ -361,6 +398,12 @@ impl HyperlightVm {
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
+        if sregs.apic_base & crate::hypervisor::regs::APIC_BASE_X2APIC_ENABLE != 0 {
+            return Err(RegisterError::InvalidSnapshotApicBase {
+                value: sregs.apic_base,
+            });
+        }
+
         // Restore the full special registers from snapshot, but update CR3
         // to point to the new (relocated) page tables
         let mut sregs = *sregs;

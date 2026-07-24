@@ -32,6 +32,8 @@ use tracing::{Span, instrument};
 
 use crate::Result;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(target_arch = "x86_64")]
+use crate::hypervisor::regs::MsrEntry;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
@@ -91,6 +93,10 @@ pub struct Snapshot {
     /// Note: CR3 in this struct is NOT used on restore, since page
     /// tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
+
+    /// The MSRs saved in this snapshot. None before the guest has run.
+    #[cfg(target_arch = "x86_64")]
+    msrs: Option<Vec<MsrEntry>>,
 
     /// The next action that should be performed on this snapshot
     next_action: NextAction,
@@ -392,6 +398,8 @@ impl Snapshot {
             load_info,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
+            #[cfg(target_arch = "x86_64")]
+            msrs: None,
             next_action: NextAction::Initialise(entrypoint_gva),
             original_entrypoint: entrypoint_gva,
             snapshot_generation: 0,
@@ -419,6 +427,7 @@ impl Snapshot {
         root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<MsrEntry>,
         next_action: NextAction,
         original_entrypoint: u64,
         snapshot_generation: u64,
@@ -573,6 +582,8 @@ impl Snapshot {
             load_info,
             stack_top_gva,
             sregs: Some(sregs),
+            #[cfg(target_arch = "x86_64")]
+            msrs: Some(msrs),
             next_action,
             original_entrypoint,
             snapshot_generation,
@@ -615,6 +626,12 @@ impl Snapshot {
     /// use `root_pt_gpa()` instead since page tables are relocated during snapshot.
     pub(crate) fn sregs(&self) -> Option<&CommonSpecialRegisters> {
         self.sregs.as_ref()
+    }
+
+    /// The MSRs saved in this snapshot.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn msrs(&self) -> Option<&Vec<MsrEntry>> {
+        self.msrs.as_ref()
     }
 
     pub(crate) fn next_action(&self) -> NextAction {
@@ -782,6 +799,8 @@ mod tests {
             &[pt_base],
             0,
             default_sregs(),
+            #[cfg(target_arch = "x86_64")]
+            Vec::new(),
             super::NextAction::None,
             0,
             1,
@@ -800,6 +819,8 @@ mod tests {
             &[pt_base],
             0,
             default_sregs(),
+            #[cfg(target_arch = "x86_64")]
+            Vec::new(),
             super::NextAction::None,
             0,
             2,

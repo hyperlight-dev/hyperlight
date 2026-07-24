@@ -306,6 +306,7 @@ where
         root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
         next_action: NextAction,
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
@@ -319,6 +320,8 @@ where
             root_pt_gpas,
             rsp_gva,
             sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs,
             next_action,
             self.original_entrypoint,
             self.snapshot_count,

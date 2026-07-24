@@ -1095,6 +1095,221 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
+#[guest_function("ReadMSR")]
+#[cfg(target_arch = "x86_64")]
+fn read_msr(msr: u32) -> u64 {
+    let (read_eax, read_edx): (u32, u32);
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") read_eax,
+            out("edx") read_edx,
+            options(nostack, nomem)
+        );
+    }
+    ((read_edx as u64) << 32) | (read_eax as u64)
+}
+
+#[guest_function("IncrementActiveSsp")]
+#[cfg(target_arch = "x86_64")]
+fn increment_active_ssp() -> u64 {
+    const MSR_IA32_S_CET: u32 = 0x6A2;
+    const CR4_CET: u64 = 1 << 23;
+
+    let shadow_stack_gpa = unsafe { hyperlight_guest::prim_alloc::alloc_phys_pages(1) };
+    let shadow_stack = hyperlight_guest_bin::paging::phys_to_virt(shadow_stack_gpa)
+        .expect("allocated shadow stack is outside scratch");
+    let restore_token = (shadow_stack as u64 + 8) | 1;
+    unsafe {
+        core::ptr::write_volatile(shadow_stack.cast::<u64>(), restore_token);
+        hyperlight_guest_bin::paging::map_region(
+            shadow_stack_gpa,
+            shadow_stack,
+            hyperlight_common::vmem::PAGE_SIZE as u64,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: false,
+                executable: false,
+            }),
+        );
+        core::arch::asm!("invlpg [{shadow_stack}]", shadow_stack = in(reg) shadow_stack);
+    }
+
+    let original_s_cet = read_msr(MSR_IA32_S_CET);
+    let original_s_cet_low = original_s_cet as u32;
+    let original_s_cet_high = (original_s_cet >> 32) as u32;
+    let after: u64;
+
+    // SAFETY: The test guest runs at CPL0. The restore token is on a read-only, dirty page,
+    // and CET is disabled before the function returns.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {cet_cr4}, {original_cr4}",
+            "or {cet_cr4}, {cr4_cet}",
+            "mov cr4, {cet_cr4}",
+            "mov ecx, {s_cet}",
+            "mov eax, 1",
+            "xor edx, edx",
+            "wrmsr",
+            "rstorssp [{shadow_stack}]",
+            "incsspq {increment}",
+            "rdsspq {after}",
+            "mov ecx, {s_cet}",
+            "mov eax, {original_s_cet_low:e}",
+            "mov edx, {original_s_cet_high:e}",
+            "wrmsr",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            cet_cr4 = out(reg) _,
+            after = out(reg) after,
+            shadow_stack = in(reg) shadow_stack,
+            increment = in(reg) 1_u64,
+            original_s_cet_low = in(reg) original_s_cet_low,
+            original_s_cet_high = in(reg) original_s_cet_high,
+            s_cet = const MSR_IA32_S_CET,
+            cr4_cet = const CR4_CET,
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack)
+        );
+    }
+
+    after
+}
+
+#[guest_function("CetShadowStackSupported")]
+#[cfg(target_arch = "x86_64")]
+fn cet_shadow_stack_supported() -> bool {
+    core::arch::x86_64::__cpuid(0).eax >= 7
+        && core::arch::x86_64::__cpuid_count(7, 0).ecx & (1 << 7) != 0
+}
+
+#[guest_function("ReadActiveSsp")]
+#[cfg(target_arch = "x86_64")]
+fn read_active_ssp() -> u64 {
+    const MSR_IA32_S_CET: u32 = 0x6A2;
+    const CR4_CET: u64 = 1 << 23;
+
+    let original_s_cet = read_msr(MSR_IA32_S_CET);
+    let original_s_cet_low = original_s_cet as u32;
+    let original_s_cet_high = (original_s_cet >> 32) as u32;
+    let ssp: u64;
+
+    // SAFETY: The test guest runs at CPL0. RDSSPQ only reads the SSP register,
+    // and CET is disabled before the function returns.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {cet_cr4}, {original_cr4}",
+            "or {cet_cr4}, {cr4_cet}",
+            "mov cr4, {cet_cr4}",
+            "mov ecx, {s_cet}",
+            "mov eax, 1",
+            "xor edx, edx",
+            "wrmsr",
+            "rdsspq {ssp}",
+            "mov ecx, {s_cet}",
+            "mov eax, {original_s_cet_low:e}",
+            "mov edx, {original_s_cet_high:e}",
+            "wrmsr",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            cet_cr4 = out(reg) _,
+            ssp = out(reg) ssp,
+            original_s_cet_low = in(reg) original_s_cet_low,
+            original_s_cet_high = in(reg) original_s_cet_high,
+            s_cet = const MSR_IA32_S_CET,
+            cr4_cet = const CR4_CET,
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack)
+        );
+    }
+
+    ssp
+}
+
+#[guest_function("NestedVirtualizationCpuid")]
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn nested_virtualization_cpuid() -> u32 {
+    // SAFETY: CPUID leaves 0, 1, and 0x80000000 are always available on x86_64.
+    let vmx = unsafe { core::arch::x86_64::__cpuid(1) }.ecx & (1 << 5) != 0;
+    let max_extended = unsafe { core::arch::x86_64::__cpuid(0x8000_0000) }.eax;
+    let svm = max_extended >= 0x8000_0001
+        && unsafe { core::arch::x86_64::__cpuid(0x8000_0001) }.ecx & (1 << 2) != 0;
+    u32::from(vmx) | (u32::from(svm) << 1)
+}
+
+#[guest_function("WriteKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn write_kernel_gs_base_via_swapgs(value: u64) {
+    // SAFETY: The test guest runs at CPL0, and CR4 is restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "wrgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            fsgsbase = const 1 << 16,
+            value = in(reg) value,
+            options(nostack)
+        );
+    }
+}
+
+#[guest_function("ReadKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn read_kernel_gs_base_via_swapgs() -> u64 {
+    let value: u64;
+    // SAFETY: The test guest runs at CPL0, and SWAPGS and CR4 are restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "swapgs",
+            "rdgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            value = lateout(reg) value,
+            fsgsbase = const 1 << 16,
+            options(nostack)
+        );
+    }
+    value
+}
+
+#[guest_function("WriteMSR")]
+#[cfg(target_arch = "x86_64")]
+fn write_msr(msr: u32, value: u64) {
+    let eax = (value & 0xFFFFFFFF) as u32;
+    let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") eax,
+            in("edx") edx,
+            options(nostack, nomem)
+        );
+    }
+}
+
 #[hyperlight_guest_bin::main]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn main() {

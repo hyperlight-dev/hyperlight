@@ -611,6 +611,12 @@ impl Snapshot {
             entrypoint_addr,
             original_entrypoint_addr: self.original_entrypoint,
             sregs: *sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs: self
+                .msrs
+                .as_ref()
+                .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
+                .clone(),
             layout: MemoryLayout {
                 input_data_size: l.input_data_size(),
                 output_data_size: l.output_data_size(),
@@ -897,6 +903,8 @@ impl Snapshot {
             load_info: crate::mem::exe::LoadInfo::dummy(),
             stack_top_gva: cfg.stack_top_gva,
             sregs: Some(cfg.sregs),
+            #[cfg(target_arch = "x86_64")]
+            msrs: Some(cfg.msrs),
             next_action,
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,

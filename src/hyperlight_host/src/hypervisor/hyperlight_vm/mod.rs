@@ -409,6 +409,9 @@ pub(crate) struct HyperlightVm {
     pub(super) trace_info: MemTraceInfo,
     #[cfg(crashdump)]
     pub(super) rt_cfg: SandboxRuntimeConfig,
+    /// MSRs restored on snapshot restore.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) msr_reset: crate::hypervisor::regs::MsrResetState,
 }
 
 impl HyperlightVm {

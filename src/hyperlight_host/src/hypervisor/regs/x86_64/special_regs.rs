@@ -33,6 +33,7 @@ const CR0_PE: u64 = 1;
 const CR0_ET: u64 = 1 << 4;
 const CR0_WP: u64 = 1 << 16;
 const CR0_PG: u64 = 1 << 31;
+pub(crate) const APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 
 mod amd64_consts {
     pub(crate) const CR4_PAE: u64 = 1 << 5;
@@ -675,6 +676,16 @@ mod tests {
         let roundtrip = CommonSpecialRegisters::from(&kvm_sregs);
 
         assert_eq!(original, roundtrip);
+    }
+
+    /// The guest boots in xAPIC mode. `APIC_BASE` bit 10 (`EXTD`) enables
+    /// x2APIC, which would make the `0x800`-`0x8FF` MSR range legal. Keeping it
+    /// clear is why a guest write to an x2APIC MSR faults.
+    #[test]
+    fn standard_defaults_leave_x2apic_disabled() {
+        const X2APIC_ENABLE: u64 = 1 << 10;
+        let sregs = CommonSpecialRegisters::standard_64bit_defaults(0x1000);
+        assert_eq!(sregs.apic_base & X2APIC_ENABLE, 0);
     }
 
     #[cfg(mshv3)]

@@ -16,11 +16,13 @@ limitations under the License.
 
 mod debug_regs;
 mod fpu;
+mod msrs;
 mod special_regs;
 mod standard_regs;
 
 pub(crate) use debug_regs::*;
 pub(crate) use fpu::*;
+pub(crate) use msrs::*;
 pub(crate) use special_regs::*;
 pub(crate) use standard_regs::*;
 

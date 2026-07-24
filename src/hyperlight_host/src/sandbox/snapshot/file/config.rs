@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use super::media_types::SNAPSHOT_ABI_VERSION;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(target_arch = "x86_64")]
+use crate::hypervisor::regs::MsrEntry;
 use crate::mem::layout::SandboxMemoryLayout;
 
 // --- Arch and hypervisor identifiers --------------------------------
@@ -188,6 +190,11 @@ pub(super) struct OciSnapshotConfig {
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
+    /// The MSRs saved in this snapshot. Legacy configs omit this field; an
+    /// empty vec restores the destination baseline.
+    #[cfg(target_arch = "x86_64")]
+    #[serde(default)]
+    pub(super) msrs: Vec<MsrEntry>,
     pub(super) layout: MemoryLayout,
     /// Total size of the memory blob in bytes (including the guest
     /// page-table tail, if any). Equal to `self.memory.mem_size()`.
@@ -636,6 +643,42 @@ mod tests {
         assert_eq!(restored, expected);
     }
 
+    /// Captured MSRs survive the serde round-trip through the config,
+    /// including index and value for every entry.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn msrs_round_trip_preserves_every_entry() {
+        let original = gating_config_with_msrs(Some(vec![
+            MsrEntry {
+                index: 0xC000_0102,
+                value: 0xDEAD_BEEF,
+            },
+            MsrEntry {
+                index: 0x10,
+                value: 0x1234_5678_9ABC_DEF0,
+            },
+        ]));
+        let json = serde_json::to_vec(&original).unwrap();
+        let restored: OciSnapshotConfig = serde_json::from_slice(&json).unwrap();
+        assert_eq!(restored.msrs, original.msrs);
+    }
+
+    /// A config JSON with no MSR state deserializes to an empty set.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn config_without_msrs_deserializes_to_empty_set() {
+        let with = gating_config_with_msrs(Some(vec![MsrEntry {
+            index: 0x10,
+            value: 1,
+        }]));
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&with).unwrap()).unwrap();
+        assert!(json.as_object_mut().unwrap().remove("msrs").is_some());
+
+        let restored: OciSnapshotConfig = serde_json::from_value(json).unwrap();
+        assert!(restored.msrs.is_empty());
+    }
+
     /// Every `ParameterType` survives the round-trip through its serde
     /// mirror, guarding against a transposed variant in either match.
     #[test]
@@ -721,6 +764,8 @@ mod tests {
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: 0,
             sregs: distinct_sregs(),
+            #[cfg(target_arch = "x86_64")]
+            msrs: Vec::new(),
             layout: MemoryLayout {
                 input_data_size: 0,
                 output_data_size: 0,
@@ -735,6 +780,15 @@ mod tests {
             memory_size: PAGE_SIZE as u64,
             host_functions: Vec::new(),
             snapshot_generation: 0,
+        }
+    }
+
+    /// `gating_config` with a chosen MSR set, for serde tests.
+    #[cfg(target_arch = "x86_64")]
+    fn gating_config_with_msrs(msrs: Option<Vec<MsrEntry>>) -> OciSnapshotConfig {
+        OciSnapshotConfig {
+            msrs: msrs.unwrap_or_default(),
+            ..gating_config()
         }
     }
 
@@ -934,6 +988,16 @@ mod schema_pin {
       11
     ]
   },
+  "msrs": [
+    {
+      "index": 16,
+      "value": 42
+    },
+    {
+      "index": 3221225474,
+      "value": 3735928559
+    }
+  ],
   "layout": {
     "input_data_size": 1,
     "output_data_size": 2,
@@ -1012,12 +1076,15 @@ mod schema_pin {
 ]"#;
 
     fn assert_round_trip(pinned: &str) {
+        let pinned_value: serde_json::Value =
+            serde_json::from_str(pinned).expect("pinned JSON must deserialize as a value");
         let parsed: OciSnapshotConfig =
-            serde_json::from_str(pinned).expect("pinned JSON must deserialize");
+            serde_json::from_value(pinned_value.clone()).expect("pinned JSON must deserialize");
         let actual = serde_json::to_string_pretty(&parsed).expect("serialize");
+        let actual_value: serde_json::Value =
+            serde_json::from_str(&actual).expect("serialized config must deserialize");
         assert_eq!(
-            actual.trim(),
-            pinned.trim(),
+            actual_value, pinned_value,
             "Snapshot config JSON schema changed. If the change can break \
              existing snapshots on disk, bump `MT_CONFIG_V1` in \
              `super::media_types` and follow `docs/snapshot-versioning.md`. \
