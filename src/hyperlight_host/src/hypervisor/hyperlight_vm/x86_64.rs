@@ -18,11 +18,6 @@ limitations under the License.
 use std::collections::HashMap;
 #[cfg(crashdump)]
 use std::path::Path;
-#[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU8;
-#[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
@@ -32,6 +27,8 @@ use super::*;
 use crate::hypervisor::InterruptHandleImpl;
 #[cfg(any(kvm, mshv3))]
 use crate::hypervisor::LinuxInterruptHandle;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 #[cfg(gdb)]
@@ -54,8 +51,6 @@ use crate::hypervisor::virtual_machine::whp::WhpVm;
 use crate::hypervisor::virtual_machine::{
     HypervisorType, RegisterError, VmError, get_available_hypervisor,
 };
-#[cfg(target_os = "windows")]
-use crate::hypervisor::{PartitionState, WindowsInterruptHandle};
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -90,7 +85,7 @@ impl HyperlightVm {
         #[cfg(not(gdb))]
         type VmType = Box<dyn VirtualMachine>;
 
-        let vm: VmType = match get_available_hypervisor() {
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             #[cfg(mshv3)]
@@ -106,35 +101,12 @@ impl HyperlightVm {
         .map_err(VmError::Register)?;
 
         #[cfg(any(kvm, mshv3))]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            #[cfg(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            ))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            #[cfg(not(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            )))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(LinuxInterruptHandle::new(config));
 
         #[cfg(target_os = "windows")]
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
-            state: AtomicU8::new(0),
-            partition_state: std::sync::RwLock::new(PartitionState {
-                handle: vm.partition_handle(),
-                dropped: false,
-            }),
-        });
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(WindowsInterruptHandle::new(vm.partition_handle()));
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
@@ -598,8 +570,6 @@ impl HyperlightVm {
 
 #[cfg(gdb)]
 pub(super) mod debug {
-    use hyperlight_common::mem::PAGE_SIZE;
-
     use super::HyperlightVm;
     use crate::hypervisor::gdb::arch::{SW_BP, SW_BP_SIZE};
     use crate::hypervisor::gdb::{
@@ -789,7 +759,7 @@ pub(super) mod debug {
 
                 let read_len = std::cmp::min(
                     data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                    page_size::get() - (gpa as usize & (page_size::get() - 1)),
                 );
 
                 mem_access.read(&mut data[..read_len], gpa)?;
@@ -817,7 +787,7 @@ pub(super) mod debug {
 
                 let write_len = std::cmp::min(
                     data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                    page_size::get() - (gpa as usize & (page_size::get() - 1)),
                 );
 
                 // Use the memory access to write to guest memory

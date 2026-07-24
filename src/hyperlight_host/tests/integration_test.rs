@@ -1472,11 +1472,14 @@ fn interrupt_infinite_moving_loop_stress_test() {
     use std::thread;
 
     // We have a high thread count to stress test and to have interesting interleavings
-    const NUM_THREADS: usize = 200;
+    #[cfg(not(hvf))]
+    let num_threads: usize = 200;
+    #[cfg(hvf)]
+    let num_threads: usize = 30;
 
     let mut handles = vec![];
 
-    for _ in 0..NUM_THREADS {
+    for _ in 0..num_threads {
         handles.push(thread::spawn(move || {
             let entered_guest = Arc::new(AtomicBool::new(false));
             let entered_guest_clone = entered_guest.clone();

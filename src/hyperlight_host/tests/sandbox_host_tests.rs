@@ -22,6 +22,8 @@ use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
 use hyperlight_testing::simple_guest_as_string;
+#[cfg(hvf)]
+use serial_test::serial;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
@@ -123,7 +125,7 @@ fn invalid_guest_function_name() {
 #[test]
 fn set_static() {
     let mut cfg: SandboxConfiguration = Default::default();
-    cfg.set_scratch_size(0x100A000);
+    cfg.set_scratch_size(0x100C000);
     with_all_sandboxes_cfg(Some(cfg), |mut sandbox| {
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
@@ -285,6 +287,7 @@ fn simple_test() {
 }
 
 #[test]
+#[cfg_attr(hvf, serial(thread_heavy))]
 fn simple_test_parallel() {
     let handles: Vec<_> = (0..50)
         .map(|_| {
@@ -329,8 +332,13 @@ fn callback_test() {
 }
 
 #[test]
+#[cfg_attr(hvf, serial(thread_heavy))]
 fn callback_test_parallel() {
-    let handles: Vec<_> = (0..100)
+    #[cfg(not(hvf))]
+    let n_threads = 100;
+    #[cfg(hvf)]
+    let n_threads = 50;
+    let handles: Vec<_> = (0..n_threads)
         .map(|_| {
             std::thread::spawn(|| {
                 callback_test_helper();

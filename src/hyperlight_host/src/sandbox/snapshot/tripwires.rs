@@ -28,7 +28,7 @@ use super::file::{
     MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, OCI_LAYOUT_VERSION, SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 1;
+const EXPECTED_ABI_VERSION: u32 = 2;
 const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v1+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
@@ -54,14 +54,15 @@ const _: () = {
 };
 
 const _: () = {
-    use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
+    use hyperlight_common::mem::HyperlightPEB;
+    use hyperlight_common::vmem::PAGE_SIZE;
     // The loading host derives `guest_heap_buffer_offset`, and every
     // offset after it, from the PEB's page-rounded size. Existing
     // snapshots place the PEB in a single page, so the only thing that
     // must hold is that the PEB keeps fitting in one page. Field layout
     // is not pinned: only the captured guest reads the fields, and it
     // travels inside the snapshot, so it stays self-consistent.
-    abi_assert!(std::mem::size_of::<HyperlightPEB>() <= PAGE_SIZE_USIZE);
+    abi_assert!(std::mem::size_of::<HyperlightPEB>() <= PAGE_SIZE);
 };
 
 const _: () = {
@@ -86,7 +87,7 @@ const _: () = {
 
 const _: () = {
     use crate::mem::layout::SandboxMemoryLayout;
-    abi_assert!(SandboxMemoryLayout::BASE_ADDRESS == 0x1000);
+    abi_assert!(SandboxMemoryLayout::BASE_ADDRESS == 0x4000);
 };
 
 const fn str_eq(a: &str, b: &str) -> bool {

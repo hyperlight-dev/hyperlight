@@ -17,9 +17,7 @@ limitations under the License.
 use std::ops::Range;
 
 use bitflags::bitflags;
-#[cfg(mshv3)]
-use hyperlight_common::mem::PAGE_SHIFT;
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::vmem::PAGE_SIZE;
 #[cfg(kvm)]
 use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 #[cfg(mshv3)]
@@ -388,7 +386,7 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
         flags: MemoryRegionFlags,
         region_type: MemoryRegionType,
     ) -> usize {
-        let aligned_size = (size + PAGE_SIZE_USIZE - 1) & !(PAGE_SIZE_USIZE - 1);
+        let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         self.push(aligned_size, flags, region_type)
     }
 
@@ -403,7 +401,7 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
 impl From<&MemoryRegion> for mshv_user_mem_region {
     fn from(region: &MemoryRegion) -> Self {
         let size = (region.guest_region.end - region.guest_region.start) as u64;
-        let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
+        let guest_pfn = (region.guest_region.start / page_size::get()) as u64;
         let userspace_addr = region.host_region.start as u64;
 
         let flags: u8 = region.flags.iter().fold(0, |acc, flag| {

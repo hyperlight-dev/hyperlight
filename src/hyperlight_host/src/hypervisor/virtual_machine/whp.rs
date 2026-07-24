@@ -564,7 +564,7 @@ impl VirtualMachine for WhpVm {
             })
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
             regs.into();
         self.set_registers(&whp_regs)
@@ -601,7 +601,7 @@ impl VirtualMachine for WhpVm {
             })
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
             fpu.into();
         self.set_registers(&whp_fpu)
@@ -638,7 +638,10 @@ impl VirtualMachine for WhpVm {
             })
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
             sregs.into();
 

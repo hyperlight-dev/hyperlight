@@ -17,24 +17,28 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
 };
+#[cfg(hvf)]
+use crate::hypervisor::HvfInterruptHandle;
+use crate::hypervisor::InterruptHandleImpl;
+#[cfg(any(kvm, mshv3))]
+use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(hvf)]
+use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
-#[cfg(kvm)]
-use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
 use crate::hypervisor::virtual_machine::{
-    RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
+    HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
+    get_available_hypervisor,
 };
-use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -47,6 +51,7 @@ use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
@@ -61,23 +66,26 @@ impl HyperlightVm {
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
         // TODO: support gdb on aarch64
         type VmType = Box<dyn VirtualMachine>;
-        let vm: VmType = match get_available_hypervisor() {
+        #[cfg(hvf)]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(HvfInterruptHandle::new(config.get_interrupt_retry_delay()));
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             // TODO: mshv support
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            #[cfg(hvf)]
+            Some(HypervisorType::Hvf) => {
+                Box::new(HvfVm::new(interrupt_handle.clone()).map_err(VmError::CreateVm)?)
+            }
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
             .map_err(VmError::Register)?;
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
+        #[cfg(any(kvm, mshv3))]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(LinuxInterruptHandle::new(config));
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;

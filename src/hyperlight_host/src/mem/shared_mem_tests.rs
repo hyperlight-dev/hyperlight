@@ -20,8 +20,6 @@ use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::mem::size_of;
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
 use crate::{Result, log_then_return, new_error};
 
 /// A function that knows how to read data of type `T` from a
@@ -53,7 +51,7 @@ where
     T: PartialEq + Debug + Clone + TryFrom<U>,
     U: Debug + Clone,
 {
-    let mem_size = PAGE_SIZE_USIZE;
+    let mem_size = page_size::get();
     let test_read = |mem_size, offset| {
         let sm = shared_memory_new(mem_size)?;
         (reader)(&sm, offset)

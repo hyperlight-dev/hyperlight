@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+Certain fixed guest addresses were changed on AArch64 to more easily
+accommodate 16k pages without wasting memory. Snapshots taken from
+sandboxes using the old addresses will not be loadable by new
+hyperlight versions.
+
 ### Removed
 
 ### Fixed

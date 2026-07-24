@@ -71,7 +71,7 @@ pub(crate) enum HostFileResources {
         view_base: *mut c_void,
     },
     /// Linux: `mmap` base pointer.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     Linux {
         mmap_base: *mut c_void,
         mmap_size: usize,
@@ -103,7 +103,7 @@ impl Drop for PreparedFileMapping {
                         tracing::error!("PreparedFileMapping::drop: CloseHandle failed: {:?}", e);
                     }
                 },
-                #[cfg(target_os = "linux")]
+                #[cfg(unix)]
                 HostFileResources::Linux {
                     mmap_base,
                     mmap_size,
@@ -168,7 +168,7 @@ impl PreparedFileMapping {
                     region_type: MemoryRegionType::MappedFile,
                 })
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             HostFileResources::Linux {
                 mmap_base,
                 mmap_size,

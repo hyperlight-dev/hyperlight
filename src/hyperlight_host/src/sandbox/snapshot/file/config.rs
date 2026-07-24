@@ -64,6 +64,7 @@ pub(super) enum Hypervisor {
     Kvm,
     Mshv,
     Whp,
+    Hvf,
 }
 
 impl Hypervisor {
@@ -79,6 +80,8 @@ impl Hypervisor {
             Some(HypervisorType::Mshv) => Some(Self::Mshv),
             #[cfg(target_os = "windows")]
             Some(HypervisorType::Whp) => Some(Self::Whp),
+            #[cfg(hvf)]
+            Some(HypervisorType::Hvf) => Some(Self::Hvf),
             None => None,
         }
     }
@@ -88,6 +91,7 @@ impl Hypervisor {
             Self::Kvm => "KVM",
             Self::Mshv => "MSHV",
             Self::Whp => "WHP",
+            Self::Hvf => "HVF",
         }
     }
 
@@ -99,6 +103,7 @@ impl Hypervisor {
             Self::Kvm => "kvm",
             Self::Mshv => "mshv",
             Self::Whp => "whp",
+            Self::Hvf => "hvf",
         }
     }
 }
@@ -131,6 +136,10 @@ impl CpuVendor {
             let implementer = (midr >> 24) & 0xff;
             // `0x` prefix padded to width 4, e.g. Apple `0x61`, Arm `0x41`.
             Self(format!("{implementer:#04x}"))
+        }
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            Self("0x61".to_string())
         }
     }
 
@@ -695,6 +704,8 @@ mod tests {
         );
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         // MIDR_EL1 implementer byte for Apple silicon.
+        assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
     }
 

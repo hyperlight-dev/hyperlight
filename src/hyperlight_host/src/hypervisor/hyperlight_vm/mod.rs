@@ -588,7 +588,7 @@ impl HyperlightVm {
     }
 
     pub(crate) fn clear_cancel(&self) {
-        self.interrupt_handle.clear_cancel();
+        self.interrupt_handle.state().clear_cancel();
     }
 
     pub(super) fn run(
@@ -608,12 +608,12 @@ impl HyperlightVm {
             //      without sending any signals/WHV api calls
             #[cfg(any(kvm, mshv3))]
             self.interrupt_handle.set_tid();
-            self.interrupt_handle.set_running();
+            self.interrupt_handle.state().set_running();
             // NOTE: `set_running()`` must be called before checking `is_cancelled()`
             // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
 
-            let exit_reason = if self.interrupt_handle.is_cancelled()
-                || self.interrupt_handle.is_debug_interrupted()
+            let exit_reason = if self.interrupt_handle.state().is_cancelled()
+                || self.interrupt_handle.state().is_debug_interrupted()
             {
                 Ok(VmExit::Cancelled())
             } else {
@@ -653,14 +653,14 @@ impl HyperlightVm {
             // If kill() is called and ran to completion BEFORE this line executes:
             //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
             //    - Signals will be sent until `clear_running()` is called, which is ok
-            self.interrupt_handle.clear_running();
+            self.interrupt_handle.state().clear_running();
 
             // ===== KILL() TIMING POINT 5: Before capturing cancel_requested =====
             // If kill() is called and ran to completion BEFORE this line executes:
             //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
             //    - Signals will not be sent
-            let cancel_requested = self.interrupt_handle.is_cancelled();
-            let debug_interrupted = self.interrupt_handle.is_debug_interrupted();
+            let cancel_requested = self.interrupt_handle.state().is_cancelled();
+            let debug_interrupted = self.interrupt_handle.state().is_debug_interrupted();
 
             // ===== KILL() TIMING POINT 6: Before checking exit_reason =====
             // If kill() is called and ran to completion BEFORE this line executes:
@@ -755,7 +755,7 @@ impl HyperlightVm {
                     // If the vcpu was interrupted by a debugger, we need to handle it
                     #[cfg(gdb)]
                     {
-                        self.interrupt_handle.clear_debug_interrupt();
+                        self.interrupt_handle.state().clear_debug_interrupt();
                         if let Err(e) =
                             self.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
                         {

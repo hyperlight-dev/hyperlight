@@ -1532,9 +1532,8 @@ mod tests {
     }
 
     fn page_aligned_memory(src: &[u8]) -> GuestSharedMemory {
-        use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
-        let len = src.len().div_ceil(PAGE_SIZE_USIZE) * PAGE_SIZE_USIZE;
+        let page_size = page_size::get();
+        let len = src.len().div_ceil(page_size) * page_size;
 
         let mut mem = ExclusiveSharedMemory::new(len).unwrap();
         mem.copy_from_slice(src, 0).unwrap();
@@ -2643,15 +2642,16 @@ mod tests {
         };
 
         // Use multi-page regions so partial overlap is geometrically possible
-        let mem1 = page_aligned_memory(&[0xAA; 8192]); // 2 pages
-        let mem2 = page_aligned_memory(&[0xBB; 8192]); // 2 pages
+        let ps = page_size::get();
+        let mem1 = page_aligned_memory(&vec![0xAA; ps * 2]); // 2 pages
+        let mem2 = page_aligned_memory(&vec![0xBB; ps * 2]); // 2 pages
         let guest_base: usize = 0x200000000;
         let region1 = region_for_memory(&mem1, guest_base, MemoryRegionFlags::READ);
 
         unsafe { sbox.map_region(&region1).unwrap() };
 
         // region2 starts one page before region1, overlapping by one page
-        let overlap_base = guest_base - 0x1000;
+        let overlap_base = guest_base - ps;
         let region2 = region_for_memory(&mem2, overlap_base, MemoryRegionFlags::READ);
         let err = unsafe { sbox.map_region(&region2) }.unwrap_err();
         assert!(

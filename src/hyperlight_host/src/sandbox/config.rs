@@ -142,13 +142,13 @@ impl SandboxConfiguration {
     }
 
     /// Sets the interrupt retry delay
-    #[cfg(target_os = "linux")]
+    #[cfg(any(kvm, mshv3, hvf))]
     pub fn set_interrupt_retry_delay(&mut self, delay: Duration) {
         self.interrupt_retry_delay = delay;
     }
 
     /// Get the delay between retries for interrupts
-    #[cfg(target_os = "linux")]
+    #[cfg(any(kvm, mshv3, hvf))]
     pub fn get_interrupt_retry_delay(&self) -> Duration {
         self.interrupt_retry_delay
     }

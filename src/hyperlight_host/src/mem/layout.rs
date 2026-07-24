@@ -63,7 +63,8 @@ limitations under the License.
 use std::fmt::Debug;
 use std::mem::size_of;
 
-use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
+use hyperlight_common::mem::HyperlightPEB;
+use hyperlight_common::vmem::PAGE_SIZE;
 use tracing::{Span, instrument};
 
 use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
@@ -359,7 +360,7 @@ impl SandboxMemoryLayout {
     pub(crate) const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x1000;
+    pub(crate) const BASE_ADDRESS: usize = 0x4000;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -544,6 +545,17 @@ impl SandboxMemoryLayout {
 
         let expected_final_offset = TryInto::<usize>::try_into(self.get_memory_size()?)?;
 
+        // This function is primarily used to construct
+        // GuestMemoryRegions used to populate initial guest page
+        // tables. Therefore, the regions above are aligned based on
+        // the guest page size. However, the total final size of the
+        // region mapped into the guest needs to be aligned based on
+        // the host page size. Therefore, align both of these values
+        // to both page sizes before comparing them.
+        let final_offset = final_offset.next_multiple_of(page_size::get());
+        let expected_final_offset =
+            expected_final_offset.next_multiple_of(hyperlight_common::vmem::PAGE_SIZE);
+
         if final_offset != expected_final_offset {
             return Err(new_error!(
                 "Final offset does not match expected Final offset expected:  {}, actual:  {}",
@@ -654,7 +666,7 @@ impl SandboxMemoryLayout {
 impl SandboxMemoryLayout {
     /// Offset of the PEB struct within the snapshot region.
     pub(crate) fn peb_offset(&self) -> usize {
-        self.code_size.next_multiple_of(PAGE_SIZE_USIZE)
+        self.code_size.next_multiple_of(PAGE_SIZE)
     }
 
     /// Guest physical address of the PEB.
@@ -664,12 +676,12 @@ impl SandboxMemoryLayout {
 
     /// Offset of the guest heap buffer within the snapshot region.
     pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
-        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
+        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE)
     }
 
     /// Offset of the init data section within the snapshot region.
     pub(crate) fn init_data_offset(&self) -> usize {
-        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE_USIZE)
+        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE)
     }
 
     /// The code offset is always 0.
@@ -705,8 +717,7 @@ impl SandboxMemoryLayout {
     /// Offset from the beginning of the scratch region to the location
     /// where page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.input_data_size + self.output_data_size)
-            .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+        (self.input_data_size + self.output_data_size).next_multiple_of(PAGE_SIZE)
     }
 
     /// Base GPA to which the page tables are eagerly copied on restore.
@@ -731,12 +742,12 @@ impl SandboxMemoryLayout {
     pub(crate) fn get_memory_size(&self) -> Result<usize> {
         let total_memory = self.get_unaligned_memory_size();
 
-        // Size should be a multiple of page size.
-        let remainder = total_memory % PAGE_SIZE_USIZE;
-        let multiples = total_memory / PAGE_SIZE_USIZE;
+        // Size should be a multiple of host page size.
+        let remainder = total_memory % page_size::get();
+        let multiples = total_memory / page_size::get();
         let size = match remainder {
             0 => total_memory,
-            _ => (multiples + 1) * PAGE_SIZE_USIZE,
+            _ => (multiples + 1) * page_size::get(),
         };
 
         if size > Self::MAX_MEMORY_SIZE {
@@ -749,8 +760,6 @@ impl SandboxMemoryLayout {
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
     use super::*;
 
     // helper func for testing
@@ -761,11 +770,11 @@ mod tests {
 
         // PEB
         let peb_and_array = size_of::<HyperlightPEB>();
-        expected_size += peb_and_array.next_multiple_of(PAGE_SIZE_USIZE);
+        expected_size += peb_and_array.next_multiple_of(PAGE_SIZE);
 
-        expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE_USIZE);
+        expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE);
 
-        expected_size
+        expected_size.next_multiple_of(page_size::get())
     }
 
     #[test]
@@ -805,8 +814,8 @@ mod tests {
         let cfg = SandboxConfiguration::default();
         let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
         let mut b = a;
-        b.snapshot_size = a.snapshot_size + PAGE_SIZE_USIZE;
-        b.set_pt_size(PAGE_SIZE_USIZE).unwrap();
+        b.snapshot_size = a.snapshot_size + PAGE_SIZE;
+        b.set_pt_size(PAGE_SIZE).unwrap();
         assert!(a.is_compatible_with(&b));
         assert!(b.is_compatible_with(&a));
     }
@@ -818,12 +827,12 @@ mod tests {
 
         // Each mutation must independently break compatibility.
         let mutators: &[fn(&mut SandboxMemoryLayout)] = &[
-            |l| l.input_data_size += PAGE_SIZE_USIZE,
-            |l| l.output_data_size += PAGE_SIZE_USIZE,
-            |l| l.heap_size += PAGE_SIZE_USIZE,
-            |l| l.code_size += PAGE_SIZE_USIZE,
-            |l| l.init_data_size += PAGE_SIZE_USIZE,
-            |l| l.scratch_size += PAGE_SIZE_USIZE,
+            |l| l.input_data_size += PAGE_SIZE,
+            |l| l.output_data_size += PAGE_SIZE,
+            |l| l.heap_size += PAGE_SIZE,
+            |l| l.code_size += PAGE_SIZE,
+            |l| l.init_data_size += PAGE_SIZE,
+            |l| l.scratch_size += PAGE_SIZE,
             |l| {
                 l.init_data_permissions = Some(MemoryRegionFlags::READ);
             },
@@ -882,7 +891,7 @@ mod tests {
             );
             pin_eq!(
                 hyperlight_common::layout::SCRATCH_TOP_GPA,
-                0x0000_000f_ffff_efff
+                0x0000_000f_ffff_bfff
             );
         }
 
@@ -906,7 +915,7 @@ mod tests {
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x1000);
-        pin_eq!(layout.peb_address(), 0x2000);
+        pin_eq!(layout.peb_address(), 0x5000);
         pin_eq!(layout.guest_heap_buffer_offset(), 0x2000);
         pin_eq!(layout.init_data_offset(), 0x4000);
         pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
@@ -955,10 +964,13 @@ mod tests {
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x3000);
-        pin_eq!(layout.peb_address(), 0x4000);
+        pin_eq!(layout.peb_address(), 0x7000);
         pin_eq!(layout.guest_heap_buffer_offset(), 0x4000);
         pin_eq!(layout.init_data_offset(), 0x9000);
-        pin_eq!(layout.get_memory_size().unwrap(), 0x9000);
+        pin_eq!(
+            layout.get_memory_size().unwrap(),
+            0x9000_usize.next_multiple_of(page_size::get())
+        );
 
         pin_eq!(layout.get_scratch_size(), 0x20000);
         pin_eq!(layout.get_pt_size(), 0);
