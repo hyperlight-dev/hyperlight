@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::{layout, vmem};
 
 // There are no notable architecture-specific safety considerations
 // here, and the general conditions are documented in the
@@ -9,7 +10,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     let addr = crate::layout::allocator_gva();
-    let nbytes = n * hyperlight_common::vmem::PAGE_SIZE as u64;
+    let nbytes = n * vmem::PAGE_SIZE as u64;
     let mut x = nbytes;
     unsafe {
         core::arch::asm!(
@@ -18,13 +19,8 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
             x = inout(reg) x
         );
     }
-    // Set aside two pages at the top of the scratch region for the
-    // exception stack, shared state, etc
-    let max_avail =
-        hyperlight_common::layout::SCRATCH_TOP_GPA - hyperlight_common::vmem::PAGE_SIZE * 2;
-    if x.checked_add(nbytes)
-        .is_none_or(|xx| xx >= max_avail as u64)
-    {
+    let limit = layout::scratch_allocator_limit_gpa();
+    if super::allocation_exceeds_limit(x, nbytes, limit) {
         unsafe {
             crate::exit::abort_with_code_and_message(
                 &[ErrorCode::MallocFailed as u8],
