@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
+use core::mem::{offset_of, size_of};
+
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 mod arch;
@@ -22,12 +24,51 @@ pub use arch::{
     SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
 };
 
-// offsets down from the top of scratch memory for various things
-pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
-pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
-pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
-pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 = 0x20;
-pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
+const EXN_STACK_ALIGNMENT: usize = 16;
+
+// Fields are listed in ascending-address order. Public offsets are measured
+// down from the top of scratch memory.
+#[repr(C)]
+struct ScratchTopMetadata {
+    /// Keep the exception stack pointer aligned 16 bytes aligned.
+    _alignment_padding: [u8; 8],
+    /// Reserved for future scratch metadata.
+    _reserved: u64,
+    /// Generation of the snapshot backing the sandbox.
+    snapshot_generation: u64,
+    /// GPA of the snapshot page-table copy in scratch memory.
+    snapshot_pt_gpa_base: u64,
+    /// Next GPA available to the dynamic scratch allocator.
+    allocator: u64,
+    /// Size of the scratch region in bytes.
+    scratch_size: u64,
+}
+
+const fn scratch_top_offset(field_offset: usize) -> u64 {
+    (size_of::<ScratchTopMetadata>() - field_offset) as u64
+}
+
+const SCRATCH_TOP_RESERVED_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, _reserved));
+pub const SCRATCH_TOP_SIZE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, scratch_size));
+pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, allocator));
+pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, snapshot_pt_gpa_base));
+pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, snapshot_generation));
+pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = size_of::<ScratchTopMetadata>() as u64;
+
+const _: () = {
+    assert!(size_of::<ScratchTopMetadata>().is_multiple_of(EXN_STACK_ALIGNMENT));
+    assert!(SCRATCH_TOP_SIZE_OFFSET == 0x08);
+    assert!(SCRATCH_TOP_ALLOCATOR_OFFSET == 0x10);
+    assert!(SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET == 0x18);
+    assert!(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET == 0x20);
+    assert!(SCRATCH_TOP_RESERVED_OFFSET == 0x28);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x30);
+};
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (SCRATCH_TOP_GPA - size + 1) as u64
