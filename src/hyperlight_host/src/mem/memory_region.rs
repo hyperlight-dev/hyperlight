@@ -118,8 +118,16 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 impl TryFrom<hv_arm64_memory_intercept_message> for MemoryRegionFlags {
     type Error = crate::HyperlightError;
 
-    fn try_from(_msg: hv_arm64_memory_intercept_message) -> crate::Result<Self> {
-        unimplemented!("try_from")
+    fn try_from(msg: hv_arm64_memory_intercept_message) -> crate::Result<Self> {
+        let access_type = msg.header.intercept_access_type;
+        match access_type {
+            0 => Ok(MemoryRegionFlags::READ),
+            1 => Ok(MemoryRegionFlags::WRITE),
+            2 => Ok(MemoryRegionFlags::EXECUTE),
+            _ => Err(crate::HyperlightError::Error(
+                "unknown memory access type".to_string(),
+            )),
+        }
     }
 }
 
