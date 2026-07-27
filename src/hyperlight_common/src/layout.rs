@@ -21,6 +21,22 @@ pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
 struct ScratchTopMetadata {
     /// Keep the exception stack pointer aligned 16 bytes aligned.
     _alignment_padding: [u8; 8],
+    /// Number of pages reserved for the H2G pool.
+    h2g_pool_pages: u64,
+    /// Guest-published GPA of the H2G pool.
+    h2g_pool_gpa: u64,
+    /// Host-published GPA of the H2G ring.
+    h2g_ring_gpa: u64,
+    /// Host-published H2G descriptor count.
+    h2g_queue_depth: u64,
+    /// Number of pages reserved for the G2H pool.
+    g2h_pool_pages: u64,
+    /// Guest-published GPA of the G2H pool.
+    g2h_pool_gpa: u64,
+    /// Host-published GPA of the G2H ring.
+    g2h_ring_gpa: u64,
+    /// Host-published G2H descriptor count.
+    g2h_queue_depth: u64,
     /// Seed request for libc's pseudorandom number generator.
     libc_rng_seed: u64,
     /// Generation of the snapshot backing the sandbox.
@@ -37,6 +53,22 @@ const fn scratch_top_offset(field_offset: usize) -> u64 {
     (size_of::<ScratchTopMetadata>() - field_offset) as u64
 }
 
+pub const SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_queue_depth));
+pub const SCRATCH_TOP_G2H_RING_GPA_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_ring_gpa));
+pub const SCRATCH_TOP_G2H_POOL_GPA_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_pool_gpa));
+pub const SCRATCH_TOP_G2H_POOL_PAGES_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_pool_pages));
+pub const SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_queue_depth));
+pub const SCRATCH_TOP_H2G_RING_GPA_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_ring_gpa));
+pub const SCRATCH_TOP_H2G_POOL_GPA_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_pool_gpa));
+pub const SCRATCH_TOP_H2G_POOL_PAGES_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_pool_pages));
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, scratch_size));
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 =
@@ -56,7 +88,15 @@ const _: () = {
     assert!(SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET == 0x18);
     assert!(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET == 0x20);
     assert!(SCRATCH_TOP_LIBC_RNG_SEED_OFFSET == 0x28);
-    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x30);
+    assert!(SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET == 0x30);
+    assert!(SCRATCH_TOP_G2H_RING_GPA_OFFSET == 0x38);
+    assert!(SCRATCH_TOP_G2H_POOL_GPA_OFFSET == 0x40);
+    assert!(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET == 0x48);
+    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET == 0x50);
+    assert!(SCRATCH_TOP_H2G_RING_GPA_OFFSET == 0x58);
+    assert!(SCRATCH_TOP_H2G_POOL_GPA_OFFSET == 0x60);
+    assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x68);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
 };
 
 /// Exclusive upper GPA boundary for dynamic scratch allocations.
