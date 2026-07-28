@@ -405,6 +405,7 @@ impl AckChain {
 /// ```
 pub struct VirtqConsumer<M, N> {
     inner: RingConsumer<M>,
+    mem: M,
     notifier: N,
     inflight: FixedBitSet,
     next_token: u32,
@@ -419,11 +420,17 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// * `mem` - Memory ops implementation for reading/writing to shared memory
     /// * `notifier` - Callback for notifying the driver about replies
     pub fn new(layout: Layout, mem: M, notifier: N) -> Self {
-        let inner = RingConsumer::new(layout, mem);
+        Self::new_split(layout, mem.clone(), mem, notifier)
+    }
+
+    /// Create a consumer with separate ring and buffer memory accessors.
+    pub fn new_split(layout: Layout, ring_mem: M, buf_mem: M, notifier: N) -> Self {
+        let inner = RingConsumer::new(layout, ring_mem);
         let inflight = FixedBitSet::with_capacity(inner.len());
 
         Self {
             inner,
+            mem: buf_mem,
             notifier,
             inflight,
             next_token: 0,
@@ -499,18 +506,16 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
 
         let chain = RecvChain::new(
-            self.inner.mem().clone(),
+            self.mem.clone(),
             token,
             readables.iter().copied().collect(),
             recv_len,
         );
 
         let reply = if !writables.is_empty() {
-            let writable = WritableChain::new(
-                self.inner.mem().clone(),
-                token,
-                writables.iter().copied().collect(),
-            );
+            let mem = self.mem.clone();
+            let elems = writables.iter().copied().collect();
+            let writable = WritableChain::new(mem, token, elems);
             ReplyChain::Writable(writable)
         } else {
             let ack = AckChain::new(token);
@@ -922,12 +927,19 @@ mod tests {
             .unwrap();
         ring_producer.submit_available(&chain).unwrap();
 
-        let guarded_mem = FailingPayloadReadMem {
+        let ring_mem = FailingPayloadReadMem {
+            inner: mem.clone(),
+            payload_addr,
+            payload_len: 0,
+        };
+        let mem = FailingPayloadReadMem {
             inner: mem,
             payload_addr,
             payload_len: 4,
         };
-        let mut consumer = VirtqConsumer::new(ring.layout(), guarded_mem, TestNotifier::new());
+
+        let mut consumer =
+            VirtqConsumer::new_split(ring.layout(), ring_mem, mem, TestNotifier::new());
 
         let (recv, reply) = consumer.poll(4).unwrap().unwrap();
         assert!(matches!(recv.to_bytes(), Err(VirtqError::MemoryReadError)));

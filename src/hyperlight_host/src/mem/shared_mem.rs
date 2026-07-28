@@ -20,6 +20,7 @@ use std::io::Error;
 use std::mem::{align_of, size_of};
 #[cfg(target_os = "linux")]
 use std::ptr::null_mut;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -61,6 +62,46 @@ macro_rules! bounds_check {
     };
 }
 
+mod atomic_access {
+    pub trait Sealed {}
+}
+
+/// An integer atomic supported by [`HostSharedMemory`] atomic operations.
+///
+/// This trait is sealed and implemented for the standard signed and unsigned
+/// integer atomic types.
+#[allow(private_bounds)]
+pub trait AtomicAccess: atomic_access::Sealed {
+    /// The integer stored by this atomic type.
+    type Value: Copy;
+
+    /// Load the atomic value with `ordering`.
+    #[doc(hidden)]
+    fn load(&self, ordering: Ordering) -> Self::Value;
+
+    /// Store `value` with `ordering`.
+    #[doc(hidden)]
+    fn store(&self, value: Self::Value, ordering: Ordering);
+}
+
+macro_rules! impl_atomic_access {
+    ($atomic:ty, $value:ty) => {
+        impl atomic_access::Sealed for $atomic {}
+
+        impl AtomicAccess for $atomic {
+            type Value = $value;
+
+            fn load(&self, ordering: Ordering) -> Self::Value {
+                <$atomic>::load(self, ordering)
+            }
+
+            fn store(&self, value: Self::Value, ordering: Ordering) {
+                <$atomic>::store(self, value, ordering);
+            }
+        }
+    };
+}
+
 /// generates a reader function for the given type
 macro_rules! generate_reader {
     ($fname:ident, $ty:ty) => {
@@ -90,6 +131,17 @@ macro_rules! generate_writer {
         }
     };
 }
+
+impl_atomic_access!(std::sync::atomic::AtomicI8, i8);
+impl_atomic_access!(std::sync::atomic::AtomicI16, i16);
+impl_atomic_access!(std::sync::atomic::AtomicI32, i32);
+impl_atomic_access!(std::sync::atomic::AtomicI64, i64);
+impl_atomic_access!(std::sync::atomic::AtomicIsize, isize);
+impl_atomic_access!(std::sync::atomic::AtomicU8, u8);
+impl_atomic_access!(std::sync::atomic::AtomicU16, u16);
+impl_atomic_access!(std::sync::atomic::AtomicU32, u32);
+impl_atomic_access!(std::sync::atomic::AtomicU64, u64);
+impl_atomic_access!(std::sync::atomic::AtomicUsize, usize);
 
 /// A representation of a host mapping of a shared memory region,
 /// which will be released when this structure is Drop'd. This is not
@@ -1148,6 +1200,70 @@ impl HostSharedMemory {
         self.copy_from_slice(bytemuck::bytes_of(&data), offset)
     }
 
+    /// Load an integer atomic at `offset` with `ordering`.
+    pub fn load_atomic<A: AtomicAccess>(
+        &self,
+        offset: usize,
+        ordering: Ordering,
+    ) -> Result<A::Value> {
+        if matches!(ordering, Ordering::Release | Ordering::AcqRel) {
+            return Err(new_error!("Invalid atomic load ordering: {:?}", ordering));
+        }
+
+        bounds_check!(offset, size_of::<A>(), self.mem_size());
+        let ptr = self.base_ptr().wrapping_add(offset);
+        if !(ptr as usize).is_multiple_of(align_of::<A>()) {
+            return Err(new_error!(
+                "Atomic access at offset {} is not aligned to {} bytes",
+                offset,
+                align_of::<A>()
+            ));
+        }
+
+        let _guard = self
+            .lock
+            .try_read()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        // SAFETY: The bounds and alignment checks cover an A within the mapping.
+        // AtomicAccess is sealed to integer atomics, whose bit patterns are valid.
+        let atomic = unsafe { &*ptr.cast::<A>() };
+        Ok(atomic.load(ordering))
+    }
+
+    /// Store an integer atomic at `offset` with `ordering`.
+    pub fn store_atomic<A: AtomicAccess>(
+        &self,
+        offset: usize,
+        value: A::Value,
+        ordering: Ordering,
+    ) -> Result<()> {
+        if matches!(ordering, Ordering::Acquire | Ordering::AcqRel) {
+            return Err(new_error!("Invalid atomic store ordering: {:?}", ordering));
+        }
+
+        bounds_check!(offset, size_of::<A>(), self.mem_size());
+        let ptr = self.base_ptr().wrapping_add(offset);
+        if !(ptr as usize).is_multiple_of(align_of::<A>()) {
+            return Err(new_error!(
+                "Atomic access at offset {} is not aligned to {} bytes",
+                offset,
+                align_of::<A>()
+            ));
+        }
+
+        let _guard = self
+            .lock
+            .try_read()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        // SAFETY: The bounds and alignment checks cover an A within the mapping.
+        // AtomicAccess is sealed to integer atomics, whose bit patterns are valid.
+        let atomic = unsafe { &*ptr.cast::<A>() };
+        atomic.store(value, ordering);
+        Ok(())
+    }
+
     /// Copy the contents of the slice into the sandbox at the
     /// specified offset
     pub fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
@@ -1791,6 +1907,8 @@ impl<S: SharedMemory> PartialEq<S> for ReadonlySharedMemory {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicI32, AtomicU16, Ordering};
+
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
     #[cfg(not(miri))]
     use proptest::prelude::*;
@@ -1859,6 +1977,53 @@ mod tests {
 
         assert!(hshm.fill(0, usize::MAX, 1).is_err());
         assert!(hshm.fill(0, 1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn atomic_access() {
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let (hshm, _) = eshm.build();
+
+        hshm.store_atomic::<AtomicU16>(0, 0x1234, Ordering::Release)
+            .unwrap();
+        assert_eq!(
+            hshm.load_atomic::<AtomicU16>(0, Ordering::Acquire).unwrap(),
+            0x1234
+        );
+
+        hshm.store_atomic::<AtomicI32>(4, -42, Ordering::SeqCst)
+            .unwrap();
+        assert_eq!(
+            hshm.load_atomic::<AtomicI32>(4, Ordering::SeqCst).unwrap(),
+            -42
+        );
+
+        assert!(hshm.load_atomic::<AtomicU16>(1, Ordering::Relaxed).is_err());
+        assert!(
+            hshm.load_atomic::<AtomicU16>(PAGE_SIZE_USIZE - 1, Ordering::Relaxed)
+                .is_err()
+        );
+        assert!(hshm.load_atomic::<AtomicU16>(0, Ordering::Release).is_err());
+        assert!(
+            hshm.store_atomic::<AtomicU16>(0, 0, Ordering::Acquire)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn atomic_access_observes_exclusivity() {
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let (mut hshm, _) = eshm.build();
+        let other = hshm.clone();
+
+        hshm.with_exclusivity(|_| {
+            assert!(
+                other
+                    .load_atomic::<AtomicU16>(0, Ordering::Relaxed)
+                    .is_err()
+            );
+        })
+        .unwrap();
     }
 
     #[test]
