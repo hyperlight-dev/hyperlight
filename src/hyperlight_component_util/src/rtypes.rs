@@ -573,9 +573,14 @@ pub fn emit_func_param(s: &mut State, p: &Param) -> TokenStream {
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
 pub fn emit_func_result(s: &mut State, r: &etypes::Result<'_>) -> TokenStream {
-    match r {
+    let result = match r {
         Some(vt) => emit_value(s, vt),
         None => quote! { () },
+    };
+    if !s.is_guest && s.is_export {
+        quote! { ::hyperlight_host::Result<#result> }
+    } else {
+        result
     }
 }
 
@@ -674,11 +679,6 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .map(|p| emit_func_param(&mut s, p))
                         .collect::<Vec<_>>();
                     let result = emit_func_result(&mut s, &ft.result);
-                    let result = if !s.is_guest && s.is_export {
-                        quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
-                    } else {
-                        result
-                    };
                     quote! {
                         fn #n(&mut self, #(#params),*) -> #result;
                     }
@@ -686,6 +686,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
                 FnName::Associated(r, n) => {
                     let mut s = s.helper();
                     s.cur_trait = Some(r.clone());
+                    if s.cur_trait().extern_decls.contains_key(ed.kebab_name) {
+                        return quote! {};
+                    }
                     let mut needs_vars = BTreeSet::new();
                     let mut sv = s.with_needs_vars(&mut needs_vars);
                     let params = ft
@@ -695,31 +698,24 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .collect::<Vec<_>>();
                     match n {
                         ResourceItemName::Constructor => {
-                            sv.cur_trait().items.extend(quote! {
-                                fn new(&mut self, #(#params),*) -> Self::T;
-                            });
+                            sv.cur_trait().extern_decls.insert(
+                                ed.kebab_name.to_string(),
+                                quote! { fn new(&mut self, #(#params),*) -> Self::T; },
+                            );
                         }
                         ResourceItemName::Method(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
-                            let result = if !sv.is_guest && sv.is_export {
-                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
-                            } else {
-                                result
-                            };
-                            sv.cur_trait().items.extend(quote! {
-                                fn #n(&mut self, #(#params),*) -> #result;
-                            });
+                            sv.cur_trait().extern_decls.insert(
+                                ed.kebab_name.to_string(),
+                                quote! { fn #n(&mut self, #(#params),*) -> #result; },
+                            );
                         }
                         ResourceItemName::Static(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
-                            let result = if !sv.is_guest && sv.is_export {
-                                quote! { ::std::result::Result<#result, ::hyperlight_host::error::HyperlightError> }
-                            } else {
-                                result
-                            };
-                            sv.cur_trait().items.extend(quote! {
-                                fn #n(&mut self, #(#params),*) -> #result;
-                            });
+                            sv.cur_trait().extern_decls.insert(
+                                ed.kebab_name.to_string(),
+                                quote! { fn #n(&mut self, #(#params),*) -> #result; },
+                            );
                         }
                     }
                     for v in needs_vars {
@@ -739,12 +735,14 @@ fn emit_extern_decl<'a, 'b, 'c>(
             ) -> TokenStream {
                 let id = kebab_to_type(ed.kebab_name);
                 let mut s = s.helper();
-                if !s.cur_mod().emitted_type_names.insert(id.clone()) {
+                if s.cur_mod().extern_decls.contains_key(ed.kebab_name) {
                     return TokenStream::new();
                 }
 
                 let t = emit_defined(&mut s, v, id, t);
-                s.cur_mod().items.extend(t);
+                s.cur_mod()
+                    .extern_decls
+                    .insert(ed.kebab_name.to_string(), t);
                 TokenStream::new()
             }
             let edn: &'b str = ed.kebab_name;
@@ -763,13 +761,13 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         let rn = kebab_to_type(ed.kebab_name);
                         s.add_helper_supertrait(rn.clone());
                         let mut s = s.helper();
-                        if !s.cur_mod().emitted_type_names.insert(rn.clone()) {
-                            return quote! {};
-                        }
                         s.cur_trait = Some(rn.clone());
-                        s.cur_trait().items.extend(quote! {
-                            type T: ::core::marker::Send;
-                        });
+                        if !s.cur_trait().extern_decls.contains_key(ed.kebab_name) {
+                            s.cur_trait().extern_decls.insert(
+                                ed.kebab_name.to_string(),
+                                quote! { type T: ::core::marker::Send; },
+                            );
+                        }
                         quote! {}
                     }
                 }
@@ -783,12 +781,12 @@ fn emit_extern_decl<'a, 'b, 'c>(
             emit_instance(&mut s, wn.clone(), it);
 
             let nsids = wn.namespace_idents();
-            let trait_name = if !s.is_guest && s.is_export {
+            let trait_tn = if !s.is_guest && s.is_export {
                 kebab_to_exports_name(wn.name)
             } else {
                 kebab_to_type(wn.name)
             };
-            let repr = s.r#trait(&nsids, trait_name.clone());
+            let repr = s.r#trait(&nsids, trait_tn.clone());
             let vs = if !repr.tvs.is_empty() {
                 let vs = repr.tvs.clone();
                 let tvs = vs
@@ -807,9 +805,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
             let rp = s.root_path();
             let tns = wn.namespace_path();
             let trait_bound = if tns.is_empty() {
-                quote! { #rp #trait_name }
+                quote! { #rp #trait_tn }
             } else {
-                quote! { #rp #tns::#trait_name }
+                quote! { #rp #tns::#trait_tn }
             };
             quote! {
                 type #member_tn: #trait_bound #vs;
@@ -886,7 +884,6 @@ fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Inst
         let id = s.noff_var_id(v);
         s.cur_trait().tvs.insert(id, (Some(v), TokenStream::new()));
     }
-
     s.cur_trait().items.extend(quote! { #(#exports)* });
 }
 

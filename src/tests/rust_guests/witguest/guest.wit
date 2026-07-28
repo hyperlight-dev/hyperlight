@@ -93,5 +93,5 @@ interface test-host-resource {
 }
 
 interface failable {
-  guest-panic: func() -> string;
+  will-trap: func() -> string;
 }

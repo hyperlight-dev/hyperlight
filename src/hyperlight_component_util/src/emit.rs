@@ -149,6 +149,10 @@ pub struct Trait {
     pub tvs: BTreeMap<Ident, (Option<u32>, TokenStream)>,
     /// Raw tokens of the contents of the trait
     pub items: TokenStream,
+    /// Trait items keyed by their WIT names. A resource can be reached
+    /// more than once, e.g. via both the import-side and the export-side
+    /// trait of an instance, and its trait is shared.
+    pub extern_decls: BTreeMap<String, TokenStream>,
 }
 impl Trait {
     pub fn new() -> Self {
@@ -156,6 +160,7 @@ impl Trait {
             supertraits: BTreeMap::new(),
             tvs: BTreeMap::new(),
             items: TokenStream::new(),
+            extern_decls: BTreeMap::new(),
         }
     }
     /// Collect the component tyvar indices that correspond to the
@@ -217,8 +222,9 @@ impl Trait {
             .collect::<Vec<_>>();
         let tvs = self.tv_toks();
         let items = &self.items;
+        let extern_decls = self.extern_decls.values();
         quote! {
-            pub trait #n #tvs #trait_colon #(#supertraits)+* { #items }
+            pub trait #n #tvs #trait_colon #(#supertraits)+* { #items #(#extern_decls)* }
         }
     }
 }
@@ -230,18 +236,21 @@ impl Trait {
 pub struct Mod {
     pub submods: BTreeMap<Ident, Mod>,
     pub items: TokenStream,
+    /// Definitions keyed by their WIT names. An instance can be reached
+    /// more than once, e.g. as both an import and an export of a component,
+    /// and its helper module is shared.
+    pub extern_decls: BTreeMap<String, TokenStream>,
     pub traits: BTreeMap<Ident, Trait>,
     pub impls: BTreeMap<(Vec<Ident>, Ident), TokenStream>,
-    pub emitted_type_names: BTreeSet<Ident>,
 }
 impl Mod {
     pub fn empty() -> Self {
         Self {
             submods: BTreeMap::new(),
             items: TokenStream::new(),
+            extern_decls: BTreeMap::new(),
             traits: BTreeMap::new(),
             impls: BTreeMap::new(),
-            emitted_type_names: BTreeSet::new(),
         }
     }
     /// Get a reference to a sub-module, creating it if necessary
@@ -295,6 +304,9 @@ impl Mod {
         }
         for (n, mut t) in self.traits {
             tt.extend(t.into_tokens(n));
+        }
+        for (_, decl) in self.extern_decls {
+            tt.extend(decl);
         }
         tt.extend(self.items);
         for ((ns, i), t) in self.impls {

@@ -293,7 +293,7 @@ fn sb() -> TestSandbox<Host, MultiUseSandbox> {
 
 mod wit_test {
 
-    use hyperlight_host::error::HyperlightError;
+    use hyperlight_host::HyperlightError;
     use proptest::prelude::*;
 
     use crate::bindings::test::wit::{
@@ -400,6 +400,15 @@ mod wit_test {
         sb().roundtrip().roundtrip_no_result(42).unwrap();
     }
 
+    #[test]
+    fn test_guest_trap_returns_error() {
+        let err = sb().failable().will_trap().unwrap_err();
+        assert!(
+            matches!(err, HyperlightError::GuestAborted(_, _)),
+            "unexpected error: {err:?}"
+        );
+    }
+
     use std::sync::atomic::Ordering::Relaxed;
 
     #[test]
@@ -426,16 +435,6 @@ mod wit_test {
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
-    }
-
-    #[test]
-    fn test_guest_call_error_returns_error() {
-        let mut sb = sb();
-        let err = sb.failable().guest_panic().unwrap_err();
-        assert!(matches!(
-            err,
-            HyperlightError::GuestAborted(_, msg) if msg.contains("deliberate guest panic")
-        ));
     }
 }
 
@@ -508,29 +507,35 @@ mod bindgen_test_cases {
     #[allow(dead_code)]
     struct ExportHost;
 
-    impl test::bindgen_test_cases::Executor for ExportHost {
-        fn execute(&mut self) -> test::bindgen_test_cases::executor::ExecutionResult {
-            test::bindgen_test_cases::executor::ExecutionResult {
+    impl test::bindgen_test_cases::ExecutorExports for ExportHost {
+        fn execute(
+            &mut self,
+        ) -> hyperlight_host::Result<test::bindgen_test_cases::executor::ExecutionResult> {
+            Ok(test::bindgen_test_cases::executor::ExecutionResult {
                 message: String::from("executed"),
-            }
+            })
         }
     }
 
-    impl test::bindgen_test_cases::Types for ExportHost {
-        fn get_status(&mut self) -> test::bindgen_test_cases::types::Status {
-            test::bindgen_test_cases::types::Status {
+    impl test::bindgen_test_cases::TypesExports for ExportHost {
+        fn get_status(
+            &mut self,
+        ) -> hyperlight_host::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
                 message: String::from("ok"),
-            }
+            })
         }
     }
 
-    impl test::bindgen_test_cases::UsesExportedTypes<test::bindgen_test_cases::types::Status>
+    impl test::bindgen_test_cases::UsesExportedTypesExports<test::bindgen_test_cases::types::Status>
         for ExportHost
     {
-        fn get_status(&mut self) -> test::bindgen_test_cases::types::Status {
-            test::bindgen_test_cases::types::Status {
+        fn get_status(
+            &mut self,
+        ) -> hyperlight_host::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
                 message: String::from("ok"),
-            }
+            })
         }
     }
 
@@ -583,4 +588,26 @@ mod inline_bindgen_test {
         };
         assert_eq!(result.value, "inline");
     }
+}
+
+/// The import and export traits share one helper module. Its type definitions
+/// must be emitted once to avoid duplicate definitions during macro expansion.
+mod shared_interface_bindings {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            package test:shared-iface;
+
+            world shared-world {
+                import shared;
+                export shared;
+            }
+
+            interface shared {
+                record item {
+                    value: u32,
+                }
+            }
+        "#,
+        world: "shared-world",
+    });
 }

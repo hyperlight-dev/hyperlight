@@ -47,7 +47,6 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         .map(|p| rtypes::emit_func_param(s, p))
                         .collect::<Vec<_>>();
                     let result_decl = rtypes::emit_func_result(s, &ft.result);
-                    let result_decl = quote! { ::std::result::Result<#result_decl, ::hyperlight_host::error::HyperlightError> };
                     let hln = emit_fn_hl_name(s, ed.kebab_name);
                     let ret = format_ident!("ret");
                     let marshal = ft
@@ -60,17 +59,16 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         fn #n(&mut self, #(#param_decls),*) -> #result_decl {
                             let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
                             let marshalled = {
-                                let mut rts = self.rt.lock().unwrap();
+                                let mut rts = self.rt.lock()?;
                                 #[allow(clippy::unused_unit)]
                                 (#(#marshal,)*)
                             };
                             let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
                                 #hln,
                                 marshalled,
-                            );
-                            let #ret = #ret?;
+                            )?;
                             #[allow(clippy::unused_unit)]
-                            let mut rts = self.rt.lock().unwrap();
+                            let mut rts = self.rt.lock()?;
                             #[allow(clippy::unused_unit)]
                             Ok(#unmarshal)
                         }
@@ -167,7 +165,7 @@ impl SelfInfo {
             orig_id,
             type_id: vec![format_ident!("I")],
             inner_preamble: quote! {
-                let mut #inner_id = #outer_id.lock().unwrap();
+                let mut #inner_id = #outer_id.lock()?;
                 let mut #inner_id = ::std::ops::DerefMut::deref_mut(&mut #inner_id);
             },
             outer_id,
@@ -246,7 +244,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                 let #outer_id = #orig_id.clone();
                 let captured_rts = rts.clone();
                 sb.register_host_function(#hln, move |#(#pds),*| {
-                    let mut rts = captured_rts.lock().unwrap();
+                    let mut rts = captured_rts.lock()?;
                     #inner_preamble
                     let #ret = #callname(
                         ::std::borrow::BorrowMut::<#(#type_id)::*>::borrow_mut(

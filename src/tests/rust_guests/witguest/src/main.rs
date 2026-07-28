@@ -166,12 +166,6 @@ impl test::wit::Roundtrip for Guest {
     }
 }
 
-impl test::wit::Failable for Guest {
-    fn guest_panic(&mut self) -> alloc::string::String {
-        panic!("deliberate guest panic")
-    }
-}
-
 use alloc::string::ToString;
 
 use test::wit::host_resource::Testresource;
@@ -207,6 +201,12 @@ impl test::wit::TestHostResource<<Host as Testresource>::T> for Guest {
         let r = self.host_resource.take().unwrap();
         <Host as Testresource>::append_char(&mut host, &r, 'c');
         r
+    }
+}
+
+impl test::wit::Failable for Guest {
+    fn will_trap(&mut self) -> String {
+        panic!("deliberate guest crash")
     }
 }
 
