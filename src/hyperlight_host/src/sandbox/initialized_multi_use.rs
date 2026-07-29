@@ -1370,6 +1370,10 @@ mod tests {
             hyperlight_common::layout::min_scratch_size(
                 defaults.get_input_data_size(),
                 defaults.get_output_data_size(),
+                defaults.get_g2h_queue_depth(),
+                defaults.get_h2g_queue_depth(),
+                defaults.get_g2h_pool_pages(),
+                defaults.get_h2g_pool_pages(),
             )
         } + 0x10000
             + 0x10000;

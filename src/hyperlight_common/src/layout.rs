@@ -11,6 +11,8 @@ pub use arch::{
     SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
 };
 
+use crate::virtq;
+
 const EXN_STACK_ALIGNMENT: usize = 16;
 /// Pages reserved for the exception stack and scratch-top metadata.
 pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
@@ -21,19 +23,23 @@ pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
 struct ScratchTopMetadata {
     /// Keep the exception stack pointer aligned 16 bytes aligned.
     _alignment_padding: [u8; 8],
+    /// Host-published capacity of each H2G buffer.
+    h2g_buffer_size: u64,
     /// Number of pages reserved for the H2G pool.
     h2g_pool_pages: u64,
     /// Guest-published GPA of the H2G pool.
     h2g_pool_gpa: u64,
-    /// Host-published GPA of the H2G ring.
+    /// Guest-published GPA of the H2G ring.
     h2g_ring_gpa: u64,
     /// Host-published H2G descriptor count.
     h2g_queue_depth: u64,
+    /// Host-published capacity of each G2H upper-tier buffer.
+    g2h_buffer_size: u64,
     /// Number of pages reserved for the G2H pool.
     g2h_pool_pages: u64,
     /// Guest-published GPA of the G2H pool.
     g2h_pool_gpa: u64,
-    /// Host-published GPA of the G2H ring.
+    /// Guest-published GPA of the G2H ring.
     g2h_ring_gpa: u64,
     /// Host-published G2H descriptor count.
     g2h_queue_depth: u64,
@@ -61,6 +67,8 @@ pub const SCRATCH_TOP_G2H_POOL_GPA_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_pool_gpa));
 pub const SCRATCH_TOP_G2H_POOL_PAGES_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_pool_pages));
+pub const SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_buffer_size));
 pub const SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_queue_depth));
 pub const SCRATCH_TOP_H2G_RING_GPA_OFFSET: u64 =
@@ -69,6 +77,8 @@ pub const SCRATCH_TOP_H2G_POOL_GPA_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_pool_gpa));
 pub const SCRATCH_TOP_H2G_POOL_PAGES_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_pool_pages));
+pub const SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_buffer_size));
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, scratch_size));
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 =
@@ -92,11 +102,13 @@ const _: () = {
     assert!(SCRATCH_TOP_G2H_RING_GPA_OFFSET == 0x38);
     assert!(SCRATCH_TOP_G2H_POOL_GPA_OFFSET == 0x40);
     assert!(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET == 0x48);
-    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET == 0x50);
-    assert!(SCRATCH_TOP_H2G_RING_GPA_OFFSET == 0x58);
-    assert!(SCRATCH_TOP_H2G_POOL_GPA_OFFSET == 0x60);
-    assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x68);
-    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
+    assert!(SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET == 0x50);
+    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET == 0x58);
+    assert!(SCRATCH_TOP_H2G_RING_GPA_OFFSET == 0x60);
+    assert!(SCRATCH_TOP_H2G_POOL_GPA_OFFSET == 0x68);
+    assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x70);
+    assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x78);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x80);
 };
 
 /// Exclusive upper GPA boundary for dynamic scratch allocations.
@@ -112,4 +124,52 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 }
 
 /// Compute the minimum scratch region size needed for a sandbox.
-pub use arch::min_scratch_size;
+///
+/// The transport allowance contains one page-backed ring arena and both
+/// page-backed buffer pools. The result saturates at [`usize::MAX`].
+pub fn min_scratch_size(
+    input_data_size: usize,
+    output_data_size: usize,
+    g2h_queue_depth: usize,
+    h2g_queue_depth: usize,
+    g2h_pool_pages: usize,
+    h2g_pool_pages: usize,
+) -> usize {
+    let size = arch::min_scratch_size(input_data_size, output_data_size).and_then(|fixed| {
+        let h2g_ring_offset = virtq::Layout::query_size(g2h_queue_depth)
+            .checked_next_multiple_of(virtq::Descriptor::ALIGN)?;
+
+        let ring_pages = h2g_ring_offset
+            .checked_add(virtq::Layout::query_size(h2g_queue_depth))?
+            .checked_next_multiple_of(crate::vmem::PAGE_SIZE)?;
+
+        let pool_size = g2h_pool_pages
+            .checked_add(h2g_pool_pages)?
+            .checked_mul(crate::vmem::PAGE_SIZE)?;
+
+        fixed.checked_add(ring_pages)?.checked_add(pool_size)
+    });
+
+    size.unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_scratch_includes_ring_arena_and_pools() {
+        let fixed = arch::min_scratch_size(0, 0).unwrap();
+        let transport_pages = 1 + 8 + 4;
+
+        assert_eq!(
+            fixed + transport_pages * crate::vmem::PAGE_SIZE,
+            min_scratch_size(0, 0, 64, 32, 8, 4)
+        );
+    }
+
+    #[test]
+    fn minimum_scratch_saturates_on_overflow() {
+        assert_eq!(usize::MAX, min_scratch_size(0, 0, 64, 32, usize::MAX, 4));
+    }
+}
