@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add per-direction virtqueue configuration and account its allocations in
+  scratch sizing.
 
 ### Changed
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.

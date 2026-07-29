@@ -206,11 +206,29 @@ fn test_tiered_slot_pool_reports_layouts() {
 }
 
 #[test]
+fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
+    let lower = SlotLayout::new(0x80000, 0x100, 2);
+    let upper = SlotLayout::new(0x80200, 0x100, 3);
+    let pool = SlotPool::new_tiered(lower, upper).unwrap();
+
+    assert_eq!(pool.layouts(), (None, SlotLayout::new(0x80000, 0x100, 5)));
+    assert_eq!(pool.base_addr(), 0x80000);
+    assert_eq!(pool.slot_size(), 0x100);
+    assert_eq!(pool.count(), 5);
+    assert_eq!(pool.slot_addr(4), Some(0x80400));
+}
+
+#[test]
 fn test_tiered_slot_pool_rejects_invalid_layout() {
     let lower = SlotLayout::new(0x80000, 0x100, 32);
     let overlapping_upper = SlotLayout::new(0x81000, 0x1000, 2);
     let overlapping = SlotPool::new_tiered(lower, overlapping_upper);
     assert!(matches!(overlapping, Err(AllocError::InvalidArg)));
+
+    let lower = SlotLayout::new(0x80000, 0x100, 2);
+    let separated_upper = SlotLayout::new(0x80300, 0x100, 2);
+    let separated = SlotPool::new_tiered(lower, separated_upper);
+    assert!(matches!(separated, Err(AllocError::InvalidArg)));
 
     let lower = SlotLayout::new(0x80000, 0x1000, 2);
     let smaller_upper = SlotLayout::new(0x90000, 0x100, 32);
