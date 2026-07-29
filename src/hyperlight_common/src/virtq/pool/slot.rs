@@ -201,13 +201,34 @@ impl Inner {
         let lower = lower.map(Tier::from_layout).transpose()?;
         let upper = Tier::from_layout(upper)?;
 
-        if let Some(lower) = &lower
-            && (lower.slot_size >= upper.slot_size || lower.end() > upper.base_addr)
-        {
+        let Some(lower) = lower else {
+            return Ok(Self { lower: None, upper });
+        };
+
+        if lower.slot_size > upper.slot_size || lower.end() > upper.base_addr {
             return Err(AllocError::InvalidArg);
         }
 
-        Ok(Self { lower, upper })
+        if lower.slot_size == upper.slot_size {
+            if lower.end() != upper.base_addr {
+                return Err(AllocError::InvalidArg);
+            }
+
+            let count = lower
+                .count
+                .checked_add(upper.count)
+                .ok_or(AllocError::Overflow)?;
+            let layout = SlotLayout::new(lower.base_addr, lower.slot_size, count);
+            return Ok(Self {
+                lower: None,
+                upper: Tier::from_layout(layout)?,
+            });
+        }
+
+        Ok(Self {
+            lower: Some(lower),
+            upper,
+        })
     }
 
     fn max_alloc_len(&self) -> usize {
@@ -304,7 +325,8 @@ impl SlotPool {
     /// Create a two-tier recycling pool from exact lower and upper layouts.
     ///
     /// The lower layout must precede the upper layout without overlap, and its
-    /// slot size must be strictly smaller.
+    /// slot size must not exceed the upper slot size. Adjacent equal-sized
+    /// layouts form one tier.
     pub fn new_tiered(lower: SlotLayout, upper: SlotLayout) -> Result<Self, AllocError> {
         Self::from_layouts(Some(lower), upper)
     }

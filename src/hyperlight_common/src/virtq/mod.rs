@@ -172,6 +172,13 @@ pub use producer::*;
 pub use ring::*;
 use thiserror::Error;
 
+/// Capacity of each fixed G2H lower-tier slot.
+pub const G2H_LOWER_SLOT_SIZE: usize = 256;
+/// Number of G2H lower-tier slots occupying the first pool page.
+pub const G2H_LOWER_SLOT_COUNT: usize = crate::vmem::PAGE_SIZE / G2H_LOWER_SLOT_SIZE;
+
+const _: () = assert!(G2H_LOWER_SLOT_COUNT * G2H_LOWER_SLOT_SIZE == crate::vmem::PAGE_SIZE);
+
 /// A trait for notifying the consumer about virtqueue events.
 pub trait Notifier {
     fn notify(&self, stats: QueueStats);
