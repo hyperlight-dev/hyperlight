@@ -39,17 +39,8 @@ pub fn snapshot_generation_gva() -> *mut u64 {
 pub fn g2h_queue_depth_gva() -> *mut u64 {
     scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET)
 }
-pub fn g2h_ring_gpa_gva() -> *mut u64 {
-    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_RING_GPA_OFFSET)
-}
-pub fn h2g_ring_gpa_gva() -> *mut u64 {
-    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_H2G_RING_GPA_OFFSET)
-}
-pub fn g2h_pool_gpa_gva() -> *mut u64 {
-    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_POOL_GPA_OFFSET)
-}
-pub fn h2g_pool_gpa_gva() -> *mut u64 {
-    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_H2G_POOL_GPA_OFFSET)
+pub fn transport_arena_gpa_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET)
 }
 pub fn g2h_pool_pages_gva() -> *mut u64 {
     scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_POOL_PAGES_OFFSET)

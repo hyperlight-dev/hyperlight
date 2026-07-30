@@ -38,5 +38,7 @@ pub mod shared_mem;
 /// Utilities for writing shared memory tests
 #[cfg(all(test, not(miri)))] // uses proptest which isn't miri-compatible
 pub(crate) mod shared_mem_tests;
+/// Host virtqueue attachment and validation.
+pub(crate) mod virtq;
 #[allow(dead_code)]
 pub(crate) mod virtq_mem;

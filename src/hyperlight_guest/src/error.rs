@@ -19,6 +19,7 @@ use alloc::string::{String, ToString as _};
 
 pub use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Error as FuncError;
+use hyperlight_common::virtq::VirtqError;
 use {anyhow, serde_json};
 
 pub type Result<T> = core::result::Result<T, HyperlightGuestError>;
@@ -76,6 +77,15 @@ impl From<FuncError> for HyperlightGuestError {
                 ErrorCode::GuestFunctionParameterTypeMismatch,
                 e.to_string(),
             ),
+        }
+    }
+}
+
+impl From<VirtqError> for HyperlightGuestError {
+    fn from(error: VirtqError) -> Self {
+        Self {
+            kind: ErrorCode::GuestError,
+            message: format!("virtq: {error}"),
         }
     }
 }

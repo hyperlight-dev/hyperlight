@@ -282,6 +282,11 @@ const fn align_up(val: usize, align: usize) -> usize {
     val.next_multiple_of(align)
 }
 
+#[inline]
+const fn align_up_checked(val: usize, align: usize) -> Option<usize> {
+    val.checked_next_multiple_of(align)
+}
+
 impl Layout {
     /// Create a Layout from a base address and number of descriptors.
     ///
@@ -357,6 +362,18 @@ impl Layout {
         let dev_evt_offset = align_up(drv_evt_offset + event_size, event_align);
 
         dev_evt_offset + event_size
+    }
+
+    /// Calculate the ring size, returning `None` on arithmetic overflow.
+    pub fn checked_query_size(num_descs: usize) -> Option<usize> {
+        let desc_size = num_descs.checked_mul(Descriptor::SIZE)?;
+        let event_size = EventSuppression::SIZE;
+        let align = EventSuppression::ALIGN;
+
+        let drv_evt_offset = align_up_checked(desc_size, align)?;
+        let dev_evt_offset = align_up_checked(drv_evt_offset.checked_add(event_size)?, align)?;
+
+        dev_evt_offset.checked_add(event_size)
     }
 }
 
