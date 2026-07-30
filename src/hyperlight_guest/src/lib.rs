@@ -12,6 +12,7 @@ pub mod error;
 pub mod exit;
 pub mod layout;
 pub mod prim_alloc;
+pub mod transport;
 pub mod types;
 
 pub mod guest_handle {
