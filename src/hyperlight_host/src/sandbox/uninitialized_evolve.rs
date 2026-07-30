@@ -23,6 +23,10 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     let max_guest_log_level = u_sbox.config.get_max_guest_log_level();
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
+    let attach_virtq = matches!(
+        hshm.next_action,
+        crate::sandbox::snapshot::NextAction::Initialise(_)
+    );
 
     // Get the host page size. Narrowed to u32 because the guest ABI
     // passes it via a 32-bit register (rdx), but widened back to usize
@@ -86,10 +90,16 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     )
     .map_err(HyperlightVmError::Initialize)?;
 
+    if attach_virtq {
+        hshm.attach_virtq()?;
+    }
+
     let mut sbox = MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+
     if let Some(log_level) = max_guest_log_level {
         sbox.log_level(log_level)?;
     }
+
     Ok(sbox)
 }
 

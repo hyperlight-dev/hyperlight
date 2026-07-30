@@ -269,6 +269,10 @@ impl MultiUseSandbox {
 
         let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
         let (mut hshm, gshm) = mgr.build()?;
+        let attach_virtq = matches!(
+            snapshot.next_action(),
+            super::snapshot::NextAction::Initialise(_)
+        );
 
         let page_size = u32::try_from(page_size::get())? as usize;
 
@@ -344,10 +348,16 @@ impl MultiUseSandbox {
             })?;
         }
 
+        if attach_virtq {
+            hshm.attach_virtq()?;
+        }
+
         let mut sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
+
         if let Some(log_level) = max_guest_log_level {
             sbox.log_level(log_level)?;
         }
+
         Ok(sbox)
     }
 
