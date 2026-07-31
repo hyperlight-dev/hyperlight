@@ -9,7 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scratch sizing.
 
 ### Changed
-* Support overriding the guest log level when building or restoring initialized snapshots. Persisted snapshots use ABI version 3 and must be regenerated.
+* Support overriding the guest log level when building or restoring initialized
+  snapshots.
 * `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
   blocks instead of writing them. A guest memory image is mostly untouched
   pages, so this cuts the bytes actually written by roughly the proportion of
@@ -24,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   level is `OFF`. `hyperlight_guest_tracing::is_trace_enabled` reports whether
   the configured level is above `OFF` rather than whether the tracing state was
   allocated.
+* Place virtqueue rings and pools in host-owned scratch before page tables.
+  Snapshot ABI 4 rejects snapshots created with earlier layouts.
 
 ### Removed
 

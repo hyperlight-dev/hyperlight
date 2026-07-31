@@ -26,6 +26,7 @@ use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+use crate::mem::virtq::VirtqSnapshot;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
@@ -110,6 +111,12 @@ pub struct Snapshot {
     /// `HostFunctions` set that is missing required functions or
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
+
+    /// Canonical in-memory virtqueue state omitted from ordinary snapshot pages.
+    ///
+    /// File snapshot persistence is deferred while stack communication remains
+    /// active.
+    virtq: Option<VirtqSnapshot>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -393,6 +400,7 @@ impl Snapshot {
             host_functions: HostFunctionDetails {
                 host_functions: None,
             },
+            virtq: None,
         })
     }
 
@@ -419,6 +427,7 @@ impl Snapshot {
         original_entrypoint: u64,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
+        virtq: Option<VirtqSnapshot>,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
@@ -568,6 +577,10 @@ impl Snapshot {
         debug_assert!(guest_visible_size.is_multiple_of(page_size::get()));
         layout.set_snapshot_size(guest_visible_size);
 
+        if let Some(virtq) = &virtq {
+            virtq.preflight(&layout)?;
+        }
+
         Ok(Self {
             layout,
             memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
@@ -580,6 +593,7 @@ impl Snapshot {
             original_entrypoint,
             snapshot_generation,
             host_functions,
+            virtq,
         })
     }
 
@@ -628,6 +642,10 @@ impl Snapshot {
 
     pub(crate) fn next_action(&self) -> NextAction {
         self.next_action
+    }
+
+    pub(crate) fn virtq(&self) -> Option<&VirtqSnapshot> {
+        self.virtq.as_ref()
     }
 
     /// Guest virtual address of the guest binary's ELF entry point,
@@ -779,6 +797,7 @@ mod tests {
             0,
             1,
             HostFunctionDetails::default(),
+            None,
         )
         .unwrap();
 
@@ -799,6 +818,7 @@ mod tests {
             0,
             2,
             HostFunctionDetails::default(),
+            None,
         )
         .unwrap();
 
