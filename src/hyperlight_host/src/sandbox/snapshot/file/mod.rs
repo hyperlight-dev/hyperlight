@@ -39,7 +39,8 @@ use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
 };
 pub(super) use self::media_types::{
-    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1,
+    SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
@@ -625,6 +626,12 @@ impl Snapshot {
                 init_data_size: l.init_data_size(),
                 init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
+                g2h_queue_depth: l.get_g2h_queue_depth(),
+                h2g_queue_depth: l.get_h2g_queue_depth(),
+                g2h_buffer_size: l.get_g2h_buffer_size(),
+                h2g_buffer_size: l.get_h2g_buffer_size(),
+                g2h_pool_pages: l.get_g2h_pool_pages(),
+                h2g_pool_pages: l.get_h2g_pool_pages(),
                 snapshot_size: l.snapshot_size(),
                 pt_size: l.pt_size(),
             },
@@ -747,16 +754,21 @@ impl Snapshot {
         //    digest.
         let manifest = load_manifest(path, &blobs_dir, reference, verify_blobs)?;
         let cfg_desc = manifest.config();
-        // Loader dispatch on config media type. A future v2 lands
-        // as a new arm that converts to the in-memory current shape.
+        // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V1 => {}
+            MT_CONFIG_V2 => {}
+            MT_CONFIG_V1 => {
+                return Err(crate::new_error!(
+                    "snapshot config v1 is incompatible with snapshot ABI {}",
+                    SNAPSHOT_ABI_VERSION
+                ));
+            }
             other => {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V1
+                    MT_CONFIG_V2
                 ));
             }
         }
@@ -816,6 +828,12 @@ impl Snapshot {
         sbox_cfg.set_output_data_size(cfg.layout.output_data_size);
         sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
+        sbox_cfg.set_g2h_queue_depth(cfg.layout.g2h_queue_depth);
+        sbox_cfg.set_h2g_queue_depth(cfg.layout.h2g_queue_depth);
+        sbox_cfg.set_g2h_buffer_size(cfg.layout.g2h_buffer_size);
+        sbox_cfg.set_h2g_buffer_size(cfg.layout.h2g_buffer_size);
+        sbox_cfg.set_g2h_pool_pages(cfg.layout.g2h_pool_pages);
+        sbox_cfg.set_h2g_pool_pages(cfg.layout.h2g_pool_pages);
         let init_data_perms = match cfg.layout.init_data_permissions {
             None => None,
             Some(bits) => Some(MemoryRegionFlags::from_bits(bits).ok_or_else(|| {
@@ -909,6 +927,7 @@ impl Snapshot {
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,
             host_functions,
+            virtq: None,
         })
     }
 }

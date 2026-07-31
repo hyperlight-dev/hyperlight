@@ -320,37 +320,6 @@ where
     pub(crate) fn get_abort_buffer_mut(&mut self) -> &mut Vec<u8> {
         &mut self.abort_buffer
     }
-
-    /// Create a snapshot with the given mapped regions
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn snapshot(
-        &mut self,
-        mapped_regions: Vec<MemoryRegion>,
-        root_pt_gpas: &[u64],
-        rsp_gva: u64,
-        sregs: CommonSpecialRegisters,
-        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
-        next_action: NextAction,
-        host_functions: HostFunctionDetails,
-    ) -> Result<Snapshot> {
-        self.snapshot_count += 1;
-        Snapshot::new(
-            &mut self.shared_mem,
-            &mut self.scratch_mem,
-            self.layout,
-            crate::mem::exe::LoadInfo::dummy(),
-            mapped_regions,
-            root_pt_gpas,
-            rsp_gva,
-            sregs,
-            #[cfg(target_arch = "x86_64")]
-            msrs,
-            next_action,
-            self.original_entrypoint,
-            self.snapshot_count,
-            host_functions,
-        )
-    }
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
@@ -415,6 +384,44 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Create a snapshot with the given mapped regions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn snapshot(
+        &mut self,
+        mapped_regions: Vec<MemoryRegion>,
+        root_pt_gpas: &[u64],
+        rsp_gva: u64,
+        sregs: CommonSpecialRegisters,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
+        next_action: NextAction,
+        host_functions: HostFunctionDetails,
+    ) -> Result<Snapshot> {
+        let virtq = match (&self.g2h_consumer, &self.h2g_consumer) {
+            (Some(_), Some(_)) => Some(virtq::snapshot(&self.layout, &self.scratch_mem)?),
+            (None, None) => None,
+            _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
+        };
+
+        self.snapshot_count += 1;
+        Snapshot::new(
+            &mut self.shared_mem,
+            &mut self.scratch_mem,
+            self.layout,
+            crate::mem::exe::LoadInfo::dummy(),
+            mapped_regions,
+            root_pt_gpas,
+            rsp_gva,
+            sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs,
+            next_action,
+            self.original_entrypoint,
+            self.snapshot_count,
+            host_functions,
+            virtq,
+        )
+    }
+
     /// Attach host consumers to a guest-produced initial transport image.
     ///
     /// Before guest initialization, the host publishes queue dimensions and the
@@ -431,6 +438,22 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
 
         let (g2h, h2g) = virtq::attach(&self.layout, &self.scratch_mem)?;
+        self.g2h_consumer = Some(g2h);
+        self.h2g_consumer = Some(h2g);
+        Ok(())
+    }
+
+    /// Restore a captured canonical transport image against this scratch mapping.
+    pub(crate) fn restore_virtq(&mut self, snapshot: Option<&virtq::VirtqSnapshot>) -> Result<()> {
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+
+        if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
+            return Err(new_error!("virtqueue consumers are already attached"));
+        }
+
+        let (g2h, h2g) = virtq::restore(&self.layout, &self.scratch_mem, snapshot)?;
         self.g2h_consumer = Some(g2h);
         self.h2g_consumer = Some(h2g);
         Ok(())
@@ -527,6 +550,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Option<SnapshotSharedMemory<GuestSharedMemory>>,
         Option<GuestSharedMemory>,
     )> {
+        if let Some(virtq) = snapshot.virtq() {
+            virtq.preflight(snapshot.layout())?;
+        }
+
         self.g2h_consumer = None;
         self.h2g_consumer = None;
 
@@ -572,6 +599,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
 
         self.update_scratch_bookkeeping()?;
+        self.restore_virtq(snapshot.virtq())?;
         Ok((gsnapshot, gscratch))
     }
 

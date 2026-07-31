@@ -342,8 +342,8 @@ impl Debug for SandboxMemoryLayout {
 impl SandboxMemoryLayout {
     /// Whether `other` has the same active memory layout as `self`.
     ///
-    /// Transport configuration does not participate while snapshots use the
-    /// stack transport. `snapshot_size` and `pt_size` are outputs of building a
+    /// Transport configuration participates because it determines fixed scratch
+    /// addresses. `snapshot_size` and `pt_size` are outputs of building a
     /// snapshot blob, so they may differ between live and captured layouts.
     ///
     /// TODO: separate/remove snapshot_size and pt_size from this struct.
@@ -359,12 +359,12 @@ impl SandboxMemoryLayout {
             init_data_size,
             init_data_permissions,
             scratch_size,
-            g2h_queue_depth: _,
-            h2g_queue_depth: _,
-            g2h_buffer_size: _,
-            h2g_buffer_size: _,
-            g2h_pool_pages: _,
-            h2g_pool_pages: _,
+            g2h_queue_depth,
+            h2g_queue_depth,
+            g2h_buffer_size,
+            h2g_buffer_size,
+            g2h_pool_pages,
+            h2g_pool_pages,
             snapshot_size: _,
             pt_size: _,
         } = self;
@@ -375,6 +375,12 @@ impl SandboxMemoryLayout {
             && *init_data_size == other.init_data_size
             && *init_data_permissions == other.init_data_permissions
             && *scratch_size == other.scratch_size
+            && *g2h_queue_depth == other.g2h_queue_depth
+            && *h2g_queue_depth == other.h2g_queue_depth
+            && *g2h_buffer_size == other.g2h_buffer_size
+            && *h2g_buffer_size == other.h2g_buffer_size
+            && *g2h_pool_pages == other.g2h_pool_pages
+            && *h2g_pool_pages == other.h2g_pool_pages
     }
 
     /// The maximum amount of memory a single sandbox will be allowed.
@@ -976,6 +982,12 @@ mod tests {
             |l| l.code_size += PAGE_SIZE_USIZE,
             |l| l.init_data_size += PAGE_SIZE_USIZE,
             |l| l.scratch_size += PAGE_SIZE_USIZE,
+            |l| l.g2h_queue_depth *= 2,
+            |l| l.h2g_queue_depth *= 2,
+            |l| l.g2h_buffer_size *= 2,
+            |l| l.h2g_buffer_size *= 2,
+            |l| l.g2h_pool_pages += 1,
+            |l| l.h2g_pool_pages += 1,
             |l| {
                 l.init_data_permissions = Some(MemoryRegionFlags::READ);
             },
@@ -990,23 +1002,6 @@ mod tests {
                 other,
             );
         }
-    }
-
-    #[test]
-    fn is_compatible_with_ignores_inactive_transport_configuration() {
-        let base =
-            SandboxMemoryLayout::new(SandboxConfiguration::default(), 4096, 0, None).unwrap();
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_g2h_queue_depth(128);
-        cfg.set_h2g_queue_depth(16);
-        cfg.set_g2h_buffer_size(16 * 1024);
-        cfg.set_h2g_buffer_size(8 * 1024);
-        cfg.set_g2h_pool_pages(16);
-        cfg.set_h2g_pool_pages(8);
-        let other = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
-
-        assert!(base.is_compatible_with(&other));
-        assert!(other.is_compatible_with(&base));
     }
 
     /// Pinned region offsets. These methods place every region that a

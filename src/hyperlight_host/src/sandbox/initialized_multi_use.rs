@@ -328,6 +328,8 @@ impl MultiUseSandbox {
 
         if attach_virtq {
             hshm.attach_virtq()?;
+        } else {
+            hshm.restore_virtq(snapshot.virtq())?;
         }
 
         let sbox = MultiUseSandbox::from_uninit(
@@ -1189,6 +1191,11 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
+    fn assert_virtq_attached(sbox: &MultiUseSandbox) {
+        assert!(sbox.mem_mgr.g2h_consumer.is_some());
+        assert!(sbox.mem_mgr.h2g_consumer.is_some());
+    }
+
     #[test]
     fn poison() {
         let mut sbox: MultiUseSandbox = {
@@ -1747,6 +1754,7 @@ mod tests {
 
         let snapshot = sandbox.snapshot().unwrap();
         sandbox2.restore(snapshot).unwrap();
+        assert_virtq_attached(&sandbox2);
         assert_eq!(sandbox2.call::<i32>("GetStatic", ()).unwrap(), 42);
     }
 
@@ -4012,8 +4020,10 @@ mod tests {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 11i32).unwrap();
             let snapshot = sbox.snapshot().unwrap();
+            assert!(snapshot.virtq().is_some());
             let mut sbox2 =
                 MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None).unwrap();
+            super::assert_virtq_attached(&sbox2);
             assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 11);
             let echoed: String = sbox2.call("Echo", "hi".to_string()).unwrap();
             assert_eq!(echoed, "hi");
@@ -4025,6 +4035,7 @@ mod tests {
             let snap =
                 Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
+            assert!(snap.virtq().is_none());
             let mut sbox =
                 MultiUseSandbox::from_snapshot(Arc::new(snap), HostFunctions::default(), None)
                     .unwrap();
@@ -4046,6 +4057,8 @@ mod tests {
             let mut b =
                 MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), None)
                     .unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
 
@@ -4055,6 +4068,8 @@ mod tests {
 
             a.restore(snapshot.clone()).unwrap();
             b.restore(snapshot).unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
         }

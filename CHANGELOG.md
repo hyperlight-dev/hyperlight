@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resets to a clean default. On KVM the guest may only read or write declared
   MSRs, on MSHV and WHP this is not enforced. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
 * **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
+* Place virtqueue rings and pools in host-owned scratch before page tables.
+  Snapshot ABI 2 rejects snapshots created with earlier layouts.
 
 ### Removed
 
