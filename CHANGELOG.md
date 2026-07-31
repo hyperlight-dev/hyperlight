@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Expose C guest `ByteChunks` values as pointer and length arrays.
 * Return typed `hl_ReturnValue` objects from C guest functions through
   `hl_result_from_*` constructors.
+* Place virtqueue rings and pools in host-owned scratch before page tables.
+  Snapshot ABI 3 rejects snapshots created with earlier layouts.
 
 ### Removed
 
