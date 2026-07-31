@@ -23,8 +23,8 @@ A snapshot carries three independently evolvable version markers:
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
-* **Config schema**, `MT_CONFIG_V1`
-  (`application/vnd.hyperlight.snapshot.config.v1+json`), aliased as
+* **Config schema**, `MT_CONFIG_V2`
+  (`application/vnd.hyperlight.snapshot.config.v2+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
@@ -367,4 +367,3 @@ major:
 * The loader accepts the old `abi_version` (Option 2 step 4), so the old
   golden loads.
 * Register the host functions the old golden's checks call.
-
