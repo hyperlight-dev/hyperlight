@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Host [`MemOps`] access to a bounded scratch region.
+//! Host [`MemOps`] implementations for live scratch and captured ring images.
 //!
-//! Every operation uses [`HostSharedMemory`]'s checked API and acquires its
-//! lifecycle read lock. This preserves exclusive-memory coordination but makes
-//! descriptor traversal pay for one lock acquisition per field access.
+//! Live scratch operations use [`HostSharedMemory`]'s checked API and acquire
+//! its lifecycle read lock. This preserves exclusive-memory coordination but
+//! makes descriptor traversal pay for one lock acquisition per field access.
 
 use core::mem::size_of;
 use core::ops::Range;
@@ -129,6 +129,70 @@ unsafe impl MemOps for HostMemOps {
     #[allow(clippy::mut_from_ref)]
     unsafe fn as_mut_slice(&self, _addr: u64, _len: usize) -> Result<&mut [u8]> {
         Err(new_error!("as_slice/as_mut_slice not supported on host"))
+    }
+}
+
+/// Read-only [`MemOps`] view over a captured ring image.
+///
+/// Snapshot preflight must validate captured bytes before writing them into
+/// restored scratch. This view maps the image to its captured ring GVA, letting
+/// the same directional validators handle snapshots and live [`HostMemOps`].
+pub(super) struct ImageMem<'a> {
+    base: u64,
+    bytes: &'a [u8],
+}
+
+impl<'a> ImageMem<'a> {
+    pub(super) fn new(base: u64, bytes: &'a [u8]) -> Self {
+        Self { base, bytes }
+    }
+
+    fn offset(&self, addr: u64, len: usize) -> Result<usize> {
+        let out_of_bounds = || new_error!("image memory access is out of bounds");
+        // VirtqLayout uses absolute GVAs, while the captured image starts at index zero.
+        let offset = addr.checked_sub(self.base).ok_or_else(&out_of_bounds)?;
+        let offset = usize::try_from(offset).map_err(|_| out_of_bounds())?;
+        let end = offset.checked_add(len).ok_or_else(&out_of_bounds)?;
+
+        (end <= self.bytes.len())
+            .then_some(offset)
+            .ok_or_else(out_of_bounds)
+    }
+}
+
+// SAFETY: ImageMem provides immutable access only within `bytes`. Write
+// operations fail, and the backing slice outlives every returned shared slice.
+unsafe impl MemOps for ImageMem<'_> {
+    type Error = HyperlightError;
+
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<()> {
+        let offset = self.offset(addr, dst.len())?;
+        dst.copy_from_slice(&self.bytes[offset..offset + dst.len()]);
+        Ok(())
+    }
+
+    fn load_acquire(&self, addr: u64) -> Result<u16> {
+        let mut bytes = [0; size_of::<u16>()];
+        self.read(addr, &mut bytes)?;
+        Ok(u16::from_ne_bytes(bytes))
+    }
+
+    unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8]> {
+        let offset = self.offset(addr, len)?;
+        Ok(&self.bytes[offset..offset + len])
+    }
+
+    fn write(&self, _addr: u64, _src: &[u8]) -> Result<()> {
+        Err(new_error!("image memory is read-only"))
+    }
+
+    fn store_release(&self, _addr: u64, _val: u16) -> Result<()> {
+        Err(new_error!("image memory is read-only"))
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn as_mut_slice(&self, _addr: u64, _len: usize) -> Result<&mut [u8]> {
+        Err(new_error!("image memory is read-only"))
     }
 }
 

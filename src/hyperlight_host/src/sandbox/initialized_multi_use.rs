@@ -166,10 +166,9 @@ impl MultiUseSandbox {
     ///
     /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
     /// can be supplied to override runtime settings such as timeouts and
-    /// interrupt behavior. Memory layout fields
-    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
-    /// are always taken from the snapshot. Any values supplied in
-    /// `config` for those fields are ignored. On x86_64 the `config` must
+    /// interrupt behavior. Memory layout fields and transport geometry are
+    /// always taken from the snapshot. Any values supplied in `config` for
+    /// those fields are ignored. On x86_64 the `config` must
     /// declare every guest MSR the snapshot was taken with (see
     /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
     /// or the load fails with an MSR mismatch.
@@ -251,6 +250,12 @@ impl MultiUseSandbox {
         config.set_output_data_size(snapshot.layout().output_data_size());
         config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
+        config.set_g2h_queue_depth(snapshot.layout().get_g2h_queue_depth());
+        config.set_h2g_queue_depth(snapshot.layout().get_h2g_queue_depth());
+        config.set_g2h_buffer_size(snapshot.layout().get_g2h_buffer_size());
+        config.set_h2g_buffer_size(snapshot.layout().get_h2g_buffer_size());
+        config.set_g2h_pool_pages(snapshot.layout().get_g2h_pool_pages());
+        config.set_h2g_pool_pages(snapshot.layout().get_h2g_pool_pages());
         let max_guest_log_level = config.get_max_guest_log_level();
         let load_info = snapshot.load_info();
 
@@ -351,6 +356,8 @@ impl MultiUseSandbox {
 
         if attach_virtq {
             hshm.attach_virtq()?;
+        } else {
+            hshm.restore_virtq(snapshot.virtq())?;
         }
 
         let sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
@@ -1174,6 +1181,36 @@ fn warn_on_layout_override(
             caller.get_scratch_size() as u64,
             snapshot.get_scratch_size() as u64,
         ),
+        (
+            "g2h_queue_depth",
+            caller.get_g2h_queue_depth() as u64,
+            snapshot.get_g2h_queue_depth() as u64,
+        ),
+        (
+            "h2g_queue_depth",
+            caller.get_h2g_queue_depth() as u64,
+            snapshot.get_h2g_queue_depth() as u64,
+        ),
+        (
+            "g2h_buffer_size",
+            caller.get_g2h_buffer_size() as u64,
+            snapshot.get_g2h_buffer_size() as u64,
+        ),
+        (
+            "h2g_buffer_size",
+            caller.get_h2g_buffer_size() as u64,
+            snapshot.get_h2g_buffer_size() as u64,
+        ),
+        (
+            "g2h_pool_pages",
+            caller.get_g2h_pool_pages() as u64,
+            snapshot.get_g2h_pool_pages() as u64,
+        ),
+        (
+            "h2g_pool_pages",
+            caller.get_h2g_pool_pages() as u64,
+            snapshot.get_h2g_pool_pages() as u64,
+        ),
     ];
     for (name, supplied, snap) in mismatches {
         if supplied != snap {
@@ -1196,8 +1233,6 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
-    #[cfg(any(target_arch = "x86_64", feature = "trace_guest"))]
-    use crate::MultiUseSandbox;
     use crate::func::host_functions::Registerable;
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
@@ -1206,7 +1241,8 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
     use crate::{
-        GuestBinary, HyperlightError, Result, SandboxBuilder, SandboxStatus, UninitializedSandbox,
+        GuestBinary, HyperlightError, MultiUseSandbox, Result, SandboxBuilder, SandboxStatus,
+        UninitializedSandbox,
     };
 
     #[test]
@@ -1222,6 +1258,11 @@ mod tests {
         assert!(!SandboxStatus::Unrecoverable.is_ready());
         assert!(!SandboxStatus::Unrecoverable.is_poisoned());
         assert!(SandboxStatus::Unrecoverable.is_unrecoverable());
+    }
+
+    fn assert_virtq_attached(sbox: &MultiUseSandbox) {
+        assert!(sbox.mem_mgr.g2h_consumer.is_some());
+        assert!(sbox.mem_mgr.h2g_consumer.is_some());
     }
 
     #[test]
@@ -1761,6 +1802,7 @@ mod tests {
 
         let snapshot = sandbox.snapshot().unwrap();
         sandbox2.restore(snapshot).unwrap();
+        assert_virtq_attached(&sandbox2);
         assert_eq!(sandbox2.call::<i32>("GetStatic", ()).unwrap(), 42);
     }
 
@@ -4671,7 +4713,9 @@ mod tests {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 11i32).unwrap();
             let snapshot = sbox.snapshot().unwrap();
+            assert!(snapshot.virtq().is_some());
             let mut sbox2 = SandboxBuilder::from_snapshot(snapshot).build().unwrap();
+            super::assert_virtq_attached(&sbox2);
             assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 11);
             let echoed: String = sbox2.call("Echo", "hi".to_string()).unwrap();
             assert_eq!(echoed, "hi");
@@ -4683,6 +4727,7 @@ mod tests {
             let snap =
                 Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
+            assert!(snap.virtq().is_none());
             let mut sbox = SandboxBuilder::from_snapshot(Arc::new(snap))
                 .build()
                 .unwrap();
@@ -4779,6 +4824,8 @@ mod tests {
             let mut b = SandboxBuilder::from_snapshot(snapshot.clone())
                 .build()
                 .unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
 
@@ -4788,6 +4835,8 @@ mod tests {
 
             a.restore(snapshot.clone()).unwrap();
             b.restore(snapshot).unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
         }

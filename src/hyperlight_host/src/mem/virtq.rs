@@ -17,7 +17,7 @@ use hyperlight_common::virtq::{
 
 use super::layout::{BaseGpaRegion, SandboxMemoryLayout};
 use super::shared_mem::{HostSharedMemory, SharedMemory};
-use super::virtq_mem::HostMemOps;
+use super::virtq_mem::{HostMemOps, ImageMem};
 use crate::{Result, new_error};
 
 /// Host-side G2H virtqueue consumer.
@@ -57,6 +57,45 @@ pub(crate) fn attach(
         VirtqConsumer::new_split(g2h_layout, g2h_ring_mem, g2h_pool_mem, HostNotifier),
         VirtqConsumer::new_split(h2g_layout, h2g_ring_mem, h2g_pool_mem, HostNotifier),
     ))
+}
+
+/// Capture the canonical transport state omitted from the main memory snapshot.
+pub(crate) fn snapshot(
+    layout: &SandboxMemoryLayout,
+    scratch_mem: &HostSharedMemory,
+) -> Result<VirtqSnapshot> {
+    let validator = Validator::new(layout)?;
+
+    let arena_gpa = read_published_arena_gpa(scratch_mem)?;
+    let regions = validator.validate_published_arena(arena_gpa)?;
+
+    let g2h_mem = HostMemOps::new(scratch_mem, regions.g2h_ring.clone())?;
+    validator.validate_g2h(&g2h_mem, regions.g2h_ring.clone())?;
+
+    let h2g_mem = HostMemOps::new(scratch_mem, regions.h2g_ring.clone())?;
+    validator.validate_h2g(&h2g_mem, regions.h2g_ring.clone(), regions.h2g_pool.clone())?;
+
+    // The vCPU is stopped, so the ring images and snapshotted guest producer
+    // bookkeeping describe the same instant.
+    Ok(VirtqSnapshot {
+        scratch_size: layout.get_scratch_size(),
+        g2h_ring: read_ring(scratch_mem, regions.g2h_ring)?,
+        h2g_ring: read_ring(scratch_mem, regions.h2g_ring)?,
+    })
+}
+
+/// Restore one captured canonical transport image and return fresh consumers.
+pub(crate) fn restore(
+    layout: &SandboxMemoryLayout,
+    scratch_mem: &HostSharedMemory,
+    snapshot: &VirtqSnapshot,
+) -> Result<(G2hConsumer, H2gConsumer)> {
+    let regions = Validator::new(layout)?.validate_snapshot(snapshot)?;
+
+    write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
+    write_ring(scratch_mem, regions.g2h_ring, &snapshot.g2h_ring)?;
+    write_ring(scratch_mem, regions.h2g_ring, &snapshot.h2g_ring)?;
+    attach(layout, scratch_mem)
 }
 
 /// Bounded GVA regions derived from validated transport GPAs.
@@ -134,7 +173,22 @@ impl Config {
     }
 }
 
-/// Validates one initial transport image against one host layout.
+/// Canonical in-memory transport state excluded from ordinary snapshot pages.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VirtqSnapshot {
+    scratch_size: usize,
+    g2h_ring: Vec<u8>,
+    h2g_ring: Vec<u8>,
+}
+
+impl VirtqSnapshot {
+    /// Validate every captured field before mutating restored scratch.
+    pub(crate) fn preflight(&self, layout: &SandboxMemoryLayout) -> Result<()> {
+        Validator::new(layout)?.validate_snapshot(self).map(|_| ())
+    }
+}
+
+/// Validates live and captured transport images against one host layout.
 struct Validator<'a> {
     config: Config,
     layout: &'a SandboxMemoryLayout,
@@ -240,6 +294,28 @@ impl<'a> Validator<'a> {
         self.resolve_gva_regions()
     }
 
+    fn validate_snapshot(&self, snapshot: &VirtqSnapshot) -> Result<GvaRegions> {
+        if snapshot.scratch_size != self.layout.get_scratch_size() {
+            return Err(new_error!(
+                "virtqueue snapshot scratch size {} does not match layout size {}",
+                snapshot.scratch_size,
+                self.layout.get_scratch_size()
+            ));
+        }
+
+        let regions = self.resolve_gva_regions()?;
+        validate_ring_len("G2H", &snapshot.g2h_ring, self.config.g2h.ring_len)?;
+        validate_ring_len("H2G", &snapshot.h2g_ring, self.config.h2g.ring_len)?;
+
+        let g2h_mem = ImageMem::new(regions.g2h_ring.start, &snapshot.g2h_ring);
+        self.validate_g2h(&g2h_mem, regions.g2h_ring.clone())?;
+
+        let h2g_mem = ImageMem::new(regions.h2g_ring.start, &snapshot.h2g_ring);
+        self.validate_h2g(&h2g_mem, regions.h2g_ring.clone(), regions.h2g_pool.clone())?;
+
+        Ok(regions)
+    }
+
     /// Translate validated transport GPAs into the GVA ranges used by descriptors.
     fn resolve_gva_regions(&self) -> Result<GvaRegions> {
         let to_gva = |gpa| {
@@ -292,10 +368,39 @@ fn read_published_arena_gpa(scratch_mem: &HostSharedMemory) -> Result<u64> {
     Ok(scratch_mem.read::<u64>(scratch_mem.mem_size() - offset)?)
 }
 
-#[cfg(test)]
 fn write_published_arena_gpa(scratch_mem: &HostSharedMemory, arena_gpa: u64) -> Result<()> {
     let offset = hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
     Ok(scratch_mem.write::<u64>(scratch_mem.mem_size() - offset, arena_gpa)?)
+}
+
+fn read_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>) -> Result<Vec<u8>> {
+    let len = usize::try_from(
+        ring.end
+            .checked_sub(ring.start)
+            .ok_or_else(|| new_error!("invalid ring range"))?,
+    )?;
+
+    let mem = HostMemOps::new(scratch_mem, ring.clone())?;
+    let mut bytes = vec![0; len];
+    mem.read(ring.start, &mut bytes)?;
+
+    Ok(bytes)
+}
+
+fn write_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>, bytes: &[u8]) -> Result<()> {
+    validate_ring_len("restored", bytes, usize::try_from(ring.end - ring.start)?)?;
+    let mem = HostMemOps::new(scratch_mem, ring.clone())?;
+    mem.write(ring.start, bytes)
+}
+
+fn validate_ring_len(direction: &str, bytes: &[u8], expected: usize) -> Result<()> {
+    if bytes.len() != expected {
+        return Err(new_error!(
+            "{direction} snapshot ring length {} and expected length {expected}",
+            bytes.len()
+        ));
+    }
+    Ok(())
 }
 
 fn checked_region(start: u64, len: usize, tag: &str) -> Result<Range<u64>> {
@@ -356,6 +461,7 @@ mod tests {
     }
 
     struct PreparedVirtq {
+        scratch: HostSharedMemory,
         g2h_mem: HostMemOps,
         h2g_mem: HostMemOps,
         g2h_ring: Range<u64>,
@@ -421,6 +527,7 @@ mod tests {
         let h2g_mem = HostMemOps::new(&scratch, h2g_ring.clone()).unwrap();
 
         PreparedVirtq {
+            scratch,
             g2h_mem,
             h2g_mem,
             g2h_ring,
@@ -509,6 +616,66 @@ mod tests {
     #[test]
     fn validates_initial_virtq_images() {
         validate(&prepared_virtq()).unwrap();
+    }
+
+    #[test]
+    fn snapshots_and_restores_canonical_image() {
+        let prepared = prepared_virtq();
+        let layout = memory_layout();
+        let stale_pool = [0xa5; 16];
+        let pool_mem = HostMemOps::new(&prepared.scratch, prepared.h2g_pool.clone()).unwrap();
+        pool_mem
+            .write(prepared.h2g_pool.start, &stale_pool)
+            .unwrap();
+
+        let captured = snapshot(&layout, &prepared.scratch).unwrap();
+        let restored = host_scratch();
+        let allocator = layout.get_first_free_scratch_gpa();
+        let allocator_offset =
+            restored.mem_size() - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        restored.write::<u64>(allocator_offset, allocator).unwrap();
+
+        restore(&layout, &restored, &captured).unwrap();
+        let restored_snapshot = snapshot(&layout, &restored).unwrap();
+        let restored_pool = HostMemOps::new(&restored, prepared.h2g_pool.clone()).unwrap();
+        let mut pool_bytes = [0; 16];
+        restored_pool
+            .read(prepared.h2g_pool.start, &mut pool_bytes)
+            .unwrap();
+
+        assert_eq!(restored_snapshot, captured);
+        assert_eq!(restored.read::<u64>(allocator_offset).unwrap(), allocator);
+        assert_eq!(pool_bytes, [0; 16]);
+    }
+
+    #[test]
+    fn rejects_corrupt_snapshot_ring_before_restore() {
+        let prepared = prepared_virtq();
+        let layout = memory_layout();
+        let mut snapshot = snapshot(&layout, &prepared.scratch).unwrap();
+        snapshot.h2g_ring.fill(0);
+        let restored = host_scratch();
+
+        assert!(restore(&layout, &restored, &snapshot).is_err());
+        assert_eq!(read_published_arena_gpa(&restored).unwrap(), 0);
+    }
+
+    #[test]
+    fn restores_with_grown_page_tables() {
+        let prepared = prepared_virtq();
+        let layout = memory_layout();
+        let snapshot = snapshot(&layout, &prepared.scratch).unwrap();
+        let mut grown_layout = layout;
+        grown_layout
+            .set_pt_size(layout.get_pt_size() + vmem::PAGE_SIZE)
+            .unwrap();
+        let restored = host_scratch();
+
+        restore(&grown_layout, &restored, &snapshot).unwrap();
+        assert_eq!(
+            read_published_arena_gpa(&restored).unwrap(),
+            grown_layout.get_transport_arena().base_addr()
+        );
     }
 
     #[test]
