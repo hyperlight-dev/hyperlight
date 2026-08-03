@@ -1,15 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Host virtqueue attachment and snapshot restoration.
+//! Host virtqueue consumers, G2H I/O, and snapshot restoration.
 //!
 //! Rings occupy fixed arena storage. Payload accesses are bounded copies
 //! within mapped scratch. Consumers validate descriptors when they are used.
+//!
+//! G2H codec helpers copy untrusted request data into host-owned values before
+//! dispatch. Shared wire framing lives in `hyperlight_common::transport`.
+//!
 //! Snapshots require canonical rings with empty G2H and the initial H2G prefill.
 //! H2G chains contain one writable descriptor of the configured buffer size.
 
+use anyhow::{Context, bail};
+use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
+use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::transport::{
+    EncodedMessage, ExternalValues, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len,
+    size_prefixed_len,
+};
 use hyperlight_common::virtq::canonical::validate_canon_image;
-use hyperlight_common::virtq::{Layout as VirtqLayout, Notifier, QueueStats, VirtqConsumer};
+use hyperlight_common::virtq::{
+    Layout as VirtqLayout, Notifier, QueueStats, RecvChain, VirtqConsumer, WritableChain,
+};
 
 use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{HostSharedMemory, SharedMemory};
@@ -21,7 +38,7 @@ pub(crate) type G2hConsumer = VirtqConsumer<HostMemOps, HostNotifier>;
 /// Host-side H2G virtqueue consumer.
 pub(crate) type H2gConsumer = VirtqConsumer<HostMemOps, HostNotifier>;
 
-/// No-op notifier for polled host transport.
+/// No-op notifier because the host completes work during the current VM exit.
 #[derive(Clone, Copy)]
 pub(crate) struct HostNotifier;
 
@@ -29,10 +46,11 @@ impl Notifier for HostNotifier {
     fn notify(&self, _stats: QueueStats) {}
 }
 
-/// Bind both host consumers at the guest's initial cursor zero.
+/// Create both host consumers before the first guest entry.
 ///
-/// Ring addresses come from the host layout. Entries are checked when consumed.
-pub(crate) fn attach(
+/// Ring contents are not inspected because the guest has not initialized them
+/// yet. Consumer cursors start at zero and observe descriptors published later.
+pub(crate) fn create_consumers(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
 ) -> Result<(G2hConsumer, H2gConsumer)> {
@@ -45,11 +63,64 @@ pub(crate) fn attach(
     Ok((g2h, h2g))
 }
 
+/// Decode one complete host function call from a G2H request.
+///
+/// Control data and external values are copied out of guest-writable scratch.
+/// Unconsumed trailing bytes are rejected.
+pub(crate) fn get_host_function_call(
+    chain: &mut RecvChain<HostMemOps>,
+) -> anyhow::Result<FunctionCall> {
+    let control = read_control(chain)?;
+    let mut external_values = ChainExternalValues::new(chain);
+    FunctionCall::decode_external(&control, &mut external_values)
+}
+
+/// Encode a host function result into a G2H reply.
+///
+/// A result that exceeds the writable capacity is replaced with a bounded
+/// transport error. An error is returned if that fallback also cannot fit.
+pub(crate) fn write_response_from_host_function_call(
+    chain: &mut WritableChain<HostMemOps>,
+    cid: u32,
+    result: &FunctionCallResult,
+) -> anyhow::Result<()> {
+    if try_write_response_from_host_function_call(chain, cid, result)? {
+        return Ok(());
+    }
+
+    let error = FunctionCallResult::new(Err(GuestError::new(
+        ErrorCode::HostFunctionError,
+        "Host response exceeds virtqueue capacity".into(),
+    )));
+
+    if !try_write_response_from_host_function_call(chain, cid, &error)? {
+        bail!(
+            "Writable response capacity {} cannot hold a transport error",
+            chain.capacity()
+        );
+    }
+    Ok(())
+}
+
+/// Decode guest log data and reject trailing external bytes.
+pub(crate) fn read_guest_log_data(
+    chain: &mut RecvChain<HostMemOps>,
+) -> anyhow::Result<GuestLogData> {
+    let control = read_control(chain)?;
+    if chain.remaining() != 0 {
+        bail!("G2H log has {} trailing external bytes", chain.remaining());
+    }
+    GuestLogData::try_from(control.as_slice())
+}
+
 /// Validated ring images excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
+    /// Scratch size used to derive transport GVAs.
     scratch_size: usize,
+    /// Canonical guest-to-host ring image.
     g2h_ring: Vec<u8>,
+    /// Canonical host-to-guest ring image.
     h2g_ring: Vec<u8>,
 }
 
@@ -97,7 +168,7 @@ impl VirtqSnapshot {
 
         scratch_mem.copy_from_slice(&self.g2h_ring, g2h_offset)?;
         scratch_mem.copy_from_slice(&self.h2g_ring, h2g_offset)?;
-        attach(layout, scratch_mem)
+        create_consumers(layout, scratch_mem)
     }
 
     /// Check geometry, canonical state, and H2G receive-buffer shape at admission.
@@ -162,6 +233,53 @@ fn ring_layouts(layout: &SandboxMemoryLayout) -> Result<(VirtqLayout, VirtqLayou
     Ok((g2h_layout, h2g_layout))
 }
 
+/// Copies external values from guest-writable scratch into host-owned storage.
+///
+/// Chunked values become one owned chunk because host calls cannot retain
+/// references into untrusted guest memory.
+struct ChainExternalValues<'a> {
+    request: &'a mut RecvChain<HostMemOps>,
+}
+
+impl<'a> ChainExternalValues<'a> {
+    fn new(request: &'a mut RecvChain<HostMemOps>) -> Self {
+        Self { request }
+    }
+}
+
+impl ExternalValueSource for ChainExternalValues<'_> {
+    fn take_bytes(&mut self, length: usize) -> anyhow::Result<Vec<u8>> {
+        validate_external_length("VecBytes", length, self.request.remaining())?;
+        let mut value = zeroed_vec(length, "external VecBytes")?;
+
+        self.request.read_exact(&mut value)?;
+        Ok(value)
+    }
+
+    fn take_chunks(&mut self, length: usize) -> anyhow::Result<Vec<Bytes>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        validate_external_length("ByteChunks", length, self.request.remaining())?;
+        let mut value = zeroed_vec(length, "external ByteChunks")?;
+        self.request.read_exact(&mut value)?;
+
+        Ok(vec![Bytes::from(value)])
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        if self.request.remaining() != 0 {
+            bail!(
+                "G2H message has {} trailing external bytes",
+                self.request.remaining()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Publish the fixed transport arena GPA in scratch-top metadata.
 fn write_published_arena_gpa(scratch_mem: &HostSharedMemory, arena_gpa: u64) -> Result<()> {
     let offset = hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
     Ok(scratch_mem.write::<u64>(scratch_mem.mem_size() - offset, arena_gpa)?)
@@ -179,6 +297,74 @@ fn ring_offsets(layout: &SandboxMemoryLayout) -> (usize, usize) {
     let g2h_offset = (arena.base_addr() - scratch_base) as usize;
     let (h2g_offset, ..) = arena.to_offsets();
     (g2h_offset, g2h_offset + h2g_offset)
+}
+
+/// Write a response only when the complete wire message fits.
+///
+/// `false` means no bytes were written, allowing the caller to try a bounded
+/// transport error. Encoding and chain write failures are returned as errors.
+fn try_write_response_from_host_function_call(
+    reply: &mut WritableChain<HostMemOps>,
+    cid: u32,
+    result: &FunctionCallResult,
+) -> anyhow::Result<bool> {
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValues::new();
+
+    let control = result.encode_external(&mut builder, &mut external_values)?;
+    let message = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+        .context("Host function response length overflow")?;
+
+    if message.total_len() > reply.capacity() {
+        return Ok(false);
+    }
+
+    for chunk in message.chunks() {
+        reply.write_all(chunk)?;
+    }
+
+    Ok(true)
+}
+
+/// Copy size-prefixed control data and leave external values unread.
+fn read_control(request: &mut RecvChain<HostMemOps>) -> anyhow::Result<Vec<u8>> {
+    let mut prefix = [0u8; SIZE_PREFIX_LEN];
+    request.read_exact(&mut prefix)?;
+
+    let payload_len = size_prefix_payload_len(&prefix).context("invalid G2H size prefix")?;
+    if payload_len > request.remaining() {
+        bail!(
+            "G2H control data declares {payload_len} bytes, only {} remain",
+            request.remaining()
+        );
+    }
+
+    let control_len = size_prefixed_len(payload_len).context("G2H control length overflow")?;
+    // Do not trust control_len to be small enough to allocate.
+    let mut control = zeroed_vec(control_len, "G2H control data")?;
+
+    control[..SIZE_PREFIX_LEN].copy_from_slice(&prefix);
+    request.read_exact(&mut control[SIZE_PREFIX_LEN..])?;
+    Ok(control)
+}
+
+/// Allocate zeroed host-owned storage without panicking on reserve failure.
+fn zeroed_vec(length: usize, what: &str) -> anyhow::Result<Vec<u8>> {
+    let mut value = Vec::new();
+    value
+        .try_reserve_exact(length)
+        .with_context(|| format!("Failed to allocate {length} bytes for {what}"))?;
+
+    value.resize(length, 0);
+    Ok(value)
+}
+
+/// Validate a declared external length before allocating its storage.
+fn validate_external_length(kind: &str, length: usize, remaining: usize) -> anyhow::Result<()> {
+    if length > remaining {
+        bail!("External {kind} requires {length} bytes, only {remaining} remain");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -200,6 +386,18 @@ mod tests {
     const G2H_POOL_PAGES: usize = 3;
     const H2G_POOL_PAGES: usize = 2;
     const H2G_BUFFER_SIZE: usize = 3000;
+
+    #[test]
+    fn external_length_is_bounded_before_allocation() {
+        assert!(validate_external_length("VecBytes", usize::MAX, 16).is_err());
+        assert!(validate_external_length("ByteChunks", 17, 16).is_err());
+        assert!(validate_external_length("VecBytes", 16, 16).is_ok());
+    }
+
+    #[test]
+    fn oversized_allocation_fails_without_panicking() {
+        assert!(zeroed_vec(usize::MAX, "test buffer").is_err());
+    }
 
     fn memory_layout() -> SandboxMemoryLayout {
         let mut config = SandboxConfiguration::default();
@@ -438,7 +636,7 @@ mod tests {
         h2g_desc.len = 3;
         write_desc(&case.mem, case.h2g_layout, 0, h2g_desc);
 
-        let (mut g2h, mut h2g) = attach(&memory_layout(), &case.scratch).unwrap();
+        let (mut g2h, mut h2g) = create_consumers(&memory_layout(), &case.scratch).unwrap();
         let (mut recv, reply) = g2h.poll(3).unwrap().unwrap();
         let mut bytes = [0; 3];
         recv.read_exact(&mut bytes).unwrap();
@@ -496,7 +694,7 @@ mod tests {
         let mut desc = read_desc(&case.mem, case.h2g_layout, 0);
         desc.flags |= DescFlags::INDIRECT.bits();
         write_desc(&case.mem, case.h2g_layout, 0, desc);
-        let (_, mut h2g) = attach(&memory_layout(), &case.scratch).unwrap();
+        let (_, mut h2g) = create_consumers(&memory_layout(), &case.scratch).unwrap();
         assert!(matches!(
             h2g.poll(0),
             Err(VirtqError::RingError(RingError::BadChain))
