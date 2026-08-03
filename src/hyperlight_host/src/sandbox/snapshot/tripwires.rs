@@ -54,8 +54,6 @@ const _: () = {
 
 const _: () = {
     use hyperlight_common::outb::OutBAction;
-    abi_assert!(OutBAction::Log as u16 == 99);
-    abi_assert!(OutBAction::CallFunction as u16 == 101);
     abi_assert!(OutBAction::Abort as u16 == 102);
     abi_assert!(OutBAction::DebugPrint as u16 == 103);
     #[cfg(feature = "trace_guest")]

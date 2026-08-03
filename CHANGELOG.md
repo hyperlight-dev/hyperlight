@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `ChainBuilder::build()` allocates readable and writable requests.
   `writable_avail()` reserves available upper-tier slots within the descriptor
   budget. It may add zero slots to a nonempty chain.
+* Require guest logs and host function calls to use the guest-to-host
+  virtqueue protocol.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
