@@ -267,6 +267,9 @@ pub(crate) extern "C" fn generic_init(
         OS_PAGE_SIZE = ops as u32;
     }
 
+    // Prepare transport before logging or guest initialization code can use it.
+    transport::initialize();
+
     // set up the logger
     let guest_log_level_filter =
         GuestLogFilter::try_from(max_log_level).expect("Invalid log level");
@@ -291,9 +294,6 @@ pub(crate) extern "C" fn generic_init(
     for registration in __private::GUEST_FUNCTION_INIT {
         registration();
     }
-
-    // Prepare transport before guest code starts.
-    transport::initialize();
 
     unsafe {
         hyperlight_main();

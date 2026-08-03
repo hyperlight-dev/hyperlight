@@ -641,6 +641,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
 
         self.inner.reset()?;
         self.inflight.clear();
+        self.next_token = 0;
         Ok(())
     }
 }
@@ -1278,5 +1279,6 @@ mod tests {
 
         assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
+        assert_eq!(consumer.next_token, 0);
     }
 }
