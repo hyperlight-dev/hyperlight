@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use hyperlight_host::{MultiUseSandbox, SandboxBuilder};
+use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::{GuestBinary, MultiUseSandbox, SandboxBuilder, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
 /// Returns the path to the Rust simple guest binary.
@@ -50,6 +51,24 @@ where
     F: FnOnce(MultiUseSandbox),
 {
     f(build_rust_sandbox(configure));
+}
+
+/// Runs a test with a Rust guest UninitializedSandbox.
+pub fn with_rust_uninit_sandbox<F>(f: F)
+where
+    F: FnOnce(UninitializedSandbox),
+{
+    with_rust_uninit_sandbox_cfg(SandboxConfiguration::default(), f);
+}
+
+/// Runs a test with a Rust guest UninitializedSandbox using custom configuration.
+pub fn with_rust_uninit_sandbox_cfg<F>(cfg: SandboxConfiguration, f: F)
+where
+    F: FnOnce(UninitializedSandbox),
+{
+    let sandbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), Some(cfg)).unwrap();
+    f(sandbox);
 }
 
 // =============================================================================

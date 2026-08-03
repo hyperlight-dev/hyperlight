@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Wire format header for all virtqueue messages.
+//! Wire framing for virtqueue messages.
 //!
-//! Every payload on both the G2H and H2G queues starts with this
-//! fixed 8-byte header, enabling message type discrimination and
-//! request/response correlation.
+//! Every message chain on both the G2H and H2G queues starts with this fixed
+//! 8-byte header, enabling message type discrimination and request/response
+//! correlation. Payload lengths come from the size-prefixed FlatBuffer and its
+//! external-byte declarations.
 
-use bitflags::bitflags;
+use crate::flatbuffer_wrappers::{ExternalValueRef, ExternalValueRefs};
+
+/// Length of a FlatBuffer size prefix.
+pub const SIZE_PREFIX_LEN: usize = core::mem::size_of::<u32>();
 
 /// Message types for the virtqueue wire protocol.
 #[repr(u8)]
@@ -43,49 +47,27 @@ impl TryFrom<u8> for MsgKind {
     }
 }
 
-bitflags! {
-    #[repr(transparent)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct MsgFlags: u8 {
-        /// More descriptors follow for this message.
-        const MORE = 1 << 0;
-    }
-}
-
-/// Wire header for all virtqueue messages
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+/// Wire header for all virtqueue messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct VirtqMsgHeader {
     /// Discriminates the message type.
     pub kind: u8,
-    /// Per-message flags (see [`MsgFlags`]).
-    pub flags: u8,
+    /// keep the header 8 bytes long and aligned to 4 bytes.
+    reserved: [u8; 3],
     /// Caller-assigned correlation ID. Responses echo the request's ID.
-    pub req_id: u16,
-    /// Byte length of the payload following this header in this descriptor.
-    pub payload_len: u32,
+    pub cid: u32,
 }
 
 impl VirtqMsgHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
-    /// Create a new message header with no flags set.
-    pub const fn new(kind: MsgKind, req_id: u16, payload_len: u32) -> Self {
+    /// Create a message header.
+    pub const fn new(kind: MsgKind, cid: u32) -> Self {
         Self {
             kind: kind as u8,
-            flags: 0,
-            req_id,
-            payload_len,
-        }
-    }
-
-    /// Create a new header with flags.
-    pub const fn with_flags(kind: MsgKind, flags: MsgFlags, req_id: u16, payload_len: u32) -> Self {
-        Self {
-            kind: kind as u8,
-            flags: flags.bits(),
-            req_id,
-            payload_len,
+            reserved: [0; 3],
+            cid,
         }
     }
 
@@ -94,14 +76,158 @@ impl VirtqMsgHeader {
         MsgKind::try_from(self.kind)
     }
 
-    /// Interpret the raw flags field as [`MsgFlags`].
-    pub fn msg_flags(&self) -> MsgFlags {
-        MsgFlags::from_bits_truncate(self.flags)
+    /// Return the wire representation.
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
     }
 
-    /// Returns true if [`MsgFlags::MORE`] is set, indicating more
-    /// descriptors follow for this message.
-    pub const fn has_more(&self) -> bool {
-        self.flags & MsgFlags::MORE.bits() != 0
+    /// Parse and validate a wire header.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::SIZE {
+            return None;
+        }
+        let header: Self = bytemuck::pod_read_unaligned(bytes);
+        (header.reserved == [0; 3] && header.msg_kind().is_ok()).then_some(header)
+    }
+}
+
+/// Borrowed wire message split into transport-ready chunks.
+#[derive(Debug)]
+pub struct EncodedMessage<'a> {
+    header: VirtqMsgHeader,
+    control: &'a [u8],
+    externals: ExternalValueRefs<'a>,
+    wire_len: usize,
+}
+
+impl<'a> EncodedMessage<'a> {
+    /// Build a message, returning `None` if its wire length overflows.
+    pub fn new(
+        kind: MsgKind,
+        cid: u32,
+        control: &'a [u8],
+        externals: ExternalValueRefs<'a>,
+    ) -> Option<Self> {
+        let wire_len = VirtqMsgHeader::SIZE
+            .checked_add(control.len())?
+            .checked_add(externals.total_len()?)?;
+
+        Some(Self {
+            header: VirtqMsgHeader::new(kind, cid),
+            control,
+            externals,
+            wire_len,
+        })
+    }
+
+    /// Visit wire chunks in transmission order.
+    pub fn try_for_each_chunk<E>(
+        &self,
+        mut visit: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit(self.header.as_bytes())?;
+        visit(self.control)?;
+
+        for value in self.externals.as_slice() {
+            match value {
+                ExternalValueRef::Bytes(value) => visit(value)?,
+                ExternalValueRef::Chunks(chunks) => {
+                    chunks.iter().try_for_each(|chunk| visit(chunk))?
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Total wire length of all chunks.
+    pub const fn wire_len(&self) -> usize {
+        self.wire_len
+    }
+
+    /// Length of external bytes after the header and control prefix.
+    pub const fn external_len(&self) -> usize {
+        self.wire_len - self.prefix_len()
+    }
+
+    /// Length of the header and control prefix before external bytes.
+    pub const fn prefix_len(&self) -> usize {
+        VirtqMsgHeader::SIZE + self.control.len()
+    }
+}
+
+/// Decode a FlatBuffer size prefix.
+pub fn size_prefix_payload_len(prefix: &[u8]) -> Option<usize> {
+    // TODO: this is flatbuffer-specific and should be moved probably somewhere else.
+    let prefix = <[u8; SIZE_PREFIX_LEN]>::try_from(prefix).ok()?;
+    usize::try_from(u32::from_le_bytes(prefix)).ok()
+}
+
+/// Add the FlatBuffer size prefix to a payload length.
+pub const fn size_prefixed_len(payload_len: usize) -> Option<usize> {
+    // TODO: this is flatbuffer-specific and should be moved probably somewhere else.
+    SIZE_PREFIX_LEN.checked_add(payload_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flatbuffer_wrappers::ExternalValueSink;
+
+    #[test]
+    fn header_contains_only_kind_and_cid() {
+        let header = VirtqMsgHeader::new(MsgKind::Response, 0x1234_5678);
+
+        assert_eq!(VirtqMsgHeader::SIZE, 8);
+        assert_eq!(header.msg_kind(), Ok(MsgKind::Response));
+        assert_eq!(header.cid, 0x1234_5678);
+        assert_eq!(header.reserved, [0; 3]);
+    }
+
+    #[test]
+    fn rejects_invalid_wire_headers() {
+        let header = VirtqMsgHeader::new(MsgKind::Request, 1);
+        let mut bytes = [0; VirtqMsgHeader::SIZE];
+        bytes.copy_from_slice(header.as_bytes());
+
+        bytes[1] = 1;
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes), None);
+
+        bytes[1] = 0;
+        bytes[0] = u8::MAX;
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes), None);
+        assert_eq!(VirtqMsgHeader::from_bytes(&bytes[..7]), None);
+    }
+
+    #[test]
+    fn encoded_message_visits_wire_chunks_in_order() {
+        let chunks = [
+            bytes::Bytes::from_static(b"ef"),
+            bytes::Bytes::from_static(b"gh"),
+        ];
+        let mut external_values = ExternalValueRefs::new();
+        external_values.push_bytes(b"cd").unwrap();
+        external_values.push_chunks(&chunks).unwrap();
+
+        let message = EncodedMessage::new(MsgKind::Request, 7, b"ab", external_values).unwrap();
+        let mut visited = Vec::new();
+        message
+            .try_for_each_chunk(|chunk| {
+                visited.push(chunk.to_vec());
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(message.wire_len(), VirtqMsgHeader::SIZE + 8);
+        assert_eq!(message.prefix_len(), VirtqMsgHeader::SIZE + 2);
+        assert_eq!(visited[1..], [b"ab", b"cd", b"ef", b"gh"]);
+    }
+
+    #[test]
+    fn size_prefix_helpers_validate_length() {
+        assert_eq!(size_prefix_payload_len(&4u32.to_le_bytes()), Some(4));
+        assert_eq!(size_prefix_payload_len(&[0; 3]), None);
+        assert_eq!(size_prefixed_len(4), Some(SIZE_PREFIX_LEN + 4));
+        assert_eq!(size_prefixed_len(usize::MAX), None);
     }
 }

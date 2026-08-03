@@ -366,6 +366,11 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             h2g_consumer: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
+
+        if matches!(host_mgr.next_action, NextAction::Initialise(_)) {
+            host_mgr.create_virtq_consumers()?;
+        }
+
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -409,22 +414,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
         )
     }
 
-    /// Attach host consumers to a guest-produced initial transport image.
+    /// Create host consumers before the guest initializes the transport.
     ///
-    /// Before guest initialization, the host publishes queue dimensions and the
-    /// transport arena GPA. The guest derives and initializes every fixed region
-    /// without consuming dynamic scratch.
-    ///
-    /// This method runs after the initialization VM exit. It checks the
-    /// published arena against the host layout, derives bounded GVA views,
-    /// and validates each directional ring before exposing either consumer.
-    /// Fresh sandboxes and pre-initialization restores use this path.
-    pub(crate) fn attach_virtq(&mut self) -> Result<()> {
+    /// The consumers begin at cursor zero and observe descriptors published
+    /// during the first guest entry.
+    fn create_virtq_consumers(&mut self) -> Result<()> {
         if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
-            return Err(new_error!("virtqueue consumers are already attached"));
+            return Err(new_error!("virtqueue consumers already exist"));
         }
 
-        let (g2h, h2g) = virtq::attach(&self.layout, &self.scratch_mem)?;
+        let (g2h, h2g) = virtq::create_consumers(&self.layout, &self.scratch_mem)?;
         self.g2h_consumer = Some(g2h);
         self.h2g_consumer = Some(h2g);
         Ok(())
@@ -887,6 +886,7 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_pathbuf;
 
+    use super::SandboxMemoryManager;
     use crate::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::Snapshot;
@@ -933,5 +933,19 @@ mod tests {
         for (name, config) in test_cases {
             verify_page_tables(name, config);
         }
+    }
+
+    #[test]
+    fn build_creates_virtq_consumers_before_initialization() {
+        let path = simple_guest_as_pathbuf();
+        let snapshot =
+            Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                .unwrap();
+        let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
+
+        let (mgr, _) = mgr.build().unwrap();
+
+        assert!(mgr.g2h_consumer.is_some());
+        assert!(mgr.h2g_consumer.is_some());
     }
 }

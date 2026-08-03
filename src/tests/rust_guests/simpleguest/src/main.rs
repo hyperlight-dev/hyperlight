@@ -25,7 +25,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterType, ParameterValue, ReturnType, ReturnValue,
+    Bytes, ParameterType, ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
@@ -39,8 +39,7 @@ use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
-    print_output_with_host_print, read_n_bytes_from_user_memory,
+    call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
@@ -445,6 +444,12 @@ fn host_echo_string(v: String) -> Result<String>;
 #[host_function("HostEchoVecBytes")]
 fn host_echo_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>>;
 
+#[host_function("HostEchoByteChunks")]
+fn host_echo_byte_chunks(v: Vec<Bytes>) -> Result<Vec<Bytes>>;
+
+#[host_function("HostOversizedVecBytes")]
+fn host_oversized_vec_bytes() -> Result<Vec<u8>>;
+
 #[host_function("HostNoOp")]
 fn host_noop() -> Result<()>;
 
@@ -493,8 +498,26 @@ fn round_trip_host_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>> {
     host_echo_vec_bytes(v)
 }
 
+#[guest_function("RoundTripHostByteChunks")]
+fn round_trip_host_byte_chunks(v: Vec<Bytes>) -> Result<Vec<Bytes>> {
+    let chunks = host_echo_byte_chunks(v)?;
+    host_noop()?;
+    Ok(chunks)
+}
+
+#[guest_function("GetOversizedHostVecBytes")]
+fn get_oversized_host_vec_bytes() -> Result<Vec<u8>> {
+    host_oversized_vec_bytes()
+}
+
 #[guest_function("RoundTripHostNoOp")]
 fn round_trip_host_noop() -> Result<()> {
+    host_noop()
+}
+
+#[guest_function("LogThenHostNoOp")]
+fn log_then_host_noop() -> Result<()> {
+    log::info!("log before host call");
     host_noop()
 }
 
@@ -613,6 +636,13 @@ fn log_message(message: String, level: i32) {
         None => {
             // was passed LevelFilter::Off, do nothing
         }
+    }
+}
+
+#[guest_function("LogMessageN")]
+fn log_message_n(count: i32) {
+    for i in 0..count {
+        log::info!("log entry {}", i);
     }
 }
 
@@ -1557,18 +1587,9 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
         }
     };
 
-    // Because we do not know at compile time the actual return type of the host function to be called
-    // we cannot use the `call_host_function<T>` generic function.
-    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
-    // value
-    call_host_function_without_returning_result(
-        &host_func_name,
-        Some(params),
-        func.expected_return_type,
-    )
-    .expect("failed to call host function");
+    let host_return =
+        call_host_function::<ReturnValue>(&host_func_name, Some(params), func.expected_return_type);
 
-    let host_return = get_host_return_value_raw();
     match host_return {
         Ok(return_value) => match return_value {
             ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),

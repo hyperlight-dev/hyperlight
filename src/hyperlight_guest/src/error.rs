@@ -5,6 +5,7 @@ use alloc::format;
 use alloc::string::{String, ToString as _};
 
 pub use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::func::Error as FuncError;
 use hyperlight_common::virtq::VirtqError;
 use {anyhow, serde_json};
@@ -73,6 +74,15 @@ impl From<VirtqError> for HyperlightGuestError {
         Self {
             kind: ErrorCode::GuestError,
             message: format!("virtq: {error}"),
+        }
+    }
+}
+
+impl From<GuestError> for HyperlightGuestError {
+    fn from(error: GuestError) -> Self {
+        Self {
+            kind: error.code,
+            message: error.message,
         }
     }
 }
@@ -168,10 +178,10 @@ impl<T, E: core::fmt::Debug> GuestErrorContext for core::result::Result<T, E> {
 #[macro_export]
 macro_rules! bail {
     ($ec:expr => $($msg:tt)*) => {
-        return ::core::result::Result::Err($crate::error::HyperlightGuestError::new($ec, ::alloc::format!($($msg)*)));
+        return ::core::result::Result::Err($crate::error::HyperlightGuestError::new($ec, ::alloc::format!($($msg)*)))
     };
     ($($msg:tt)*) => {
-        $crate::bail!($crate::error::ErrorCode::GuestError => $($msg)*);
+        $crate::bail!($crate::error::ErrorCode::GuestError => $($msg)*)
     };
 }
 

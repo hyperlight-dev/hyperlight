@@ -150,6 +150,10 @@ impl QueueDims {
         }
 
         let pool_pages = NonZeroUsize::new(pool_pages)?;
+        pool_pages.get().checked_mul(crate::vmem::PAGE_SIZE)?;
+
+        virtq::Layout::checked_query_size(usize::from(size.get()))?;
+
         Some(Self { size, pool_pages })
     }
 
@@ -163,14 +167,14 @@ impl QueueDims {
         self.pool_pages
     }
 
-    /// Compute the ring length, returning `None` on arithmetic overflow.
-    pub fn checked_ring_len(&self) -> Option<usize> {
-        virtq::Layout::checked_query_size(usize::from(self.size.get()))
+    /// Ring length in bytes.
+    pub const fn ring_len(&self) -> usize {
+        virtq::Layout::query_size(self.size.get() as usize)
     }
 
-    /// Compute the pool length, returning `None` on arithmetic overflow.
-    pub fn checked_pool_len(&self) -> Option<usize> {
-        self.pool_pages.get().checked_mul(crate::vmem::PAGE_SIZE)
+    /// Buffer pool length in bytes.
+    pub const fn pool_len(&self) -> usize {
+        self.pool_pages.get() * crate::vmem::PAGE_SIZE
     }
 }
 
@@ -208,18 +212,16 @@ impl TransportArena {
         }
 
         let h2g_ring_offset = g2h
-            .checked_ring_len()?
+            .ring_len()
             .checked_next_multiple_of(virtq::Descriptor::ALIGN)?;
 
         let g2h_pool_offset = h2g_ring_offset
-            .checked_add(h2g.checked_ring_len()?)?
+            .checked_add(h2g.ring_len())?
             .checked_next_multiple_of(crate::vmem::PAGE_SIZE)?;
 
-        let g2h_pool_len = g2h.checked_pool_len()?;
-        let h2g_pool_offset = g2h_pool_offset.checked_add(g2h_pool_len)?;
+        let h2g_pool_offset = g2h_pool_offset.checked_add(g2h.pool_len())?;
 
-        let h2g_pool_len = h2g.checked_pool_len()?;
-        let len = h2g_pool_offset.checked_add(h2g_pool_len)?;
+        let len = h2g_pool_offset.checked_add(h2g.pool_len())?;
 
         let addr = |offset: usize| base_addr.checked_add(u64::try_from(offset).ok()?);
         let _end_addr = addr(len)?;
@@ -304,6 +306,8 @@ mod tests {
         let h2g = QueueDims::new(32, 4).unwrap();
         let arena = TransportArena::new(base, g2h, h2g).unwrap();
 
+        assert_eq!(g2h.ring_len(), virtq::Layout::query_size(64));
+        assert_eq!(g2h.pool_len(), 8 * crate::vmem::PAGE_SIZE);
         assert_eq!(arena.g2h_ring_addr(), base);
         assert!(
             arena
@@ -339,8 +343,7 @@ mod tests {
         assert_eq!(QueueDims::new(3, 8), None);
         assert_eq!(QueueDims::new(64, 0), None);
         assert_eq!(QueueDims::new(usize::MAX, 8), None);
-        let oversized = QueueDims::new(64, usize::MAX).unwrap();
-        assert_eq!(TransportArena::new(base, oversized, h2g), None);
+        assert_eq!(QueueDims::new(64, usize::MAX), None);
         assert_eq!(
             TransportArena::new(u64::MAX - crate::vmem::PAGE_SIZE as u64 + 1, g2h, h2g,),
             None
