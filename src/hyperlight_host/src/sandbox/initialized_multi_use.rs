@@ -966,8 +966,6 @@ impl MultiUseSandbox {
         // In the happy path we do not need to clear io-buffers from the host because:
         // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
         // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
-        // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
-        // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
         if let Err(e) = &res {
             self.mem_mgr.clear_io_buffers();
 
