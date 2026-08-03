@@ -13,11 +13,10 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::transport;
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
-use hyperlight_guest_bin::host_comm::{
-    call_host_function_without_returning_result, get_host_return_value,
-};
+use hyperlight_guest_bin::host_comm::call_host_function;
 
 use crate::types::{FfiFunctionCall, FfiReturnValue, OwnedFfiFunctionCall};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
@@ -128,11 +127,11 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let func_name = unsafe { function_call.copy_function_name() };
     let return_type = unsafe { function_call.copy_return_type() };
 
-    call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
-        .expect("Failed to call host function");
+    let result = call_host_function::<ReturnValue>(&func_name, Some(parameters), return_type);
+    transport::with_context(|context| context.stash_host_result(result));
 }
 
-/// Retrieve the return value from the last `hl_call_host_function`.
+/// Retrieve the return value stashed by the last `hl_call_host_function`.
 pub(crate) fn take_last_host_return<T: TryFrom<ReturnValue>>() -> T {
-    get_host_return_value().expect("Unable to get host return value")
+    transport::with_context(|context| context.take_host_return::<T>())
 }

@@ -7,12 +7,13 @@
 
 pub mod context;
 pub mod mem;
+mod response;
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 pub use context::{GuestContext, QueueConfig};
-pub use mem::GuestMemOps;
+pub(crate) use mem::GuestMemOps;
 
 const UNINITIALIZED: u8 = 0;
 const INITIALIZED: u8 = 1;

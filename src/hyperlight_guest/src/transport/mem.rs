@@ -3,16 +3,20 @@
 
 //! Guest-side [`MemOps`] implementation for virtqueue access.
 
-use core::mem::{align_of, size_of};
+use core::mem::{ManuallyDrop, align_of, size_of};
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use hyperlight_common::virtq::MemOps;
+use hyperlight_common::virtq::{BufferLease, BufferMap, MemOps};
 
 use crate::layout;
 
-/// Guest-side memory accessor for GVA-valued virtqueue addresses.
+#[cfg(test)]
+extern crate std;
+
+/// Fixed-pool memory access within an initialized guest runtime.
 #[derive(Clone, Copy, Debug)]
-pub struct GuestMemOps {
+pub(crate) struct GuestMemOps {
     scratch_gva: u64,
     scratch_end: u64,
 }
@@ -22,9 +26,15 @@ pub struct GuestMemOps {
 pub struct GuestMemError;
 
 impl GuestMemOps {
-    pub(super) fn for_scratch() -> Self {
+    /// # Safety
+    ///
+    /// Guest scratch metadata must be initialized. Execution must stay within
+    /// the single-vCPU guest. Scratch must remain mapped while this accessor
+    /// or any returned views exist.
+    pub(super) unsafe fn for_scratch() -> Self {
+        // SAFETY: The caller guarantees initialized guest scratch metadata.
         let scratch_len = unsafe { layout::scratch_size_gva().read_volatile() };
-        // SAFETY: Generic initialization keeps the scratch GVA range mapped.
+        // SAFETY: The caller supplies the guest execution and backing lifetime guarantees.
         unsafe { Self::from_raw_parts(layout::scratch_base_gva(), scratch_len) }
     }
 
@@ -32,9 +42,10 @@ impl GuestMemOps {
     ///
     /// # Safety
     ///
-    /// The range must remain mapped for this value's lifetime. Peer access must
-    /// follow virtqueue descriptor ownership.
-    pub unsafe fn from_raw_parts(scratch_gva: u64, scratch_len: u64) -> Self {
+    /// The range must remain mapped while this accessor or its returned views
+    /// exist. Peer access must follow descriptor ownership. Production callers
+    /// must uphold the guest execution requirements of [`Self::for_scratch`].
+    unsafe fn from_raw_parts(scratch_gva: u64, scratch_len: u64) -> Self {
         let scratch_end = scratch_gva
             .checked_add(scratch_len)
             .expect("scratch end overflow");
@@ -60,6 +71,61 @@ impl GuestMemOps {
         }
         // SAFETY: `ptr` is inside the live scratch mapping and is aligned.
         Ok(unsafe { &*ptr.cast::<AtomicU16>() })
+    }
+}
+
+impl BufferMap for GuestMemOps {
+    type Mapping = GuestMapping;
+
+    unsafe fn map_buffer(
+        &self,
+        lease: BufferLease,
+        written: usize,
+    ) -> Result<Self::Mapping, Self::Error> {
+        // SAFETY: The caller owns the initialized prefix. The accessor's
+        // constructor guarantees backing remains mapped while returned views exist.
+        let data = NonNull::from(unsafe { self.as_slice(lease.allocation().addr, written)? });
+        Ok(GuestMapping {
+            data,
+            lease: ManuallyDrop::new(lease),
+            #[cfg(test)]
+            creator: std::thread::current().id(),
+        })
+    }
+}
+
+/// An initialized scratch view held by its original allocation lease.
+pub(crate) struct GuestMapping {
+    data: NonNull<[u8]>,
+    lease: ManuallyDrop<BufferLease>,
+    #[cfg(test)]
+    creator: std::thread::ThreadId,
+}
+
+// SAFETY: The view is immutable. Production construction requires serialized
+// guest execution and guest-lifetime backing. Native tests check the creator
+// thread before releasing the Rc-backed lease.
+unsafe impl Send for GuestMapping {}
+
+impl AsRef<[u8]> for GuestMapping {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: The lease protects the initialized view from reuse.
+        unsafe { self.data.as_ref() }
+    }
+}
+
+impl Drop for GuestMapping {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        assert_eq!(
+            self.creator,
+            std::thread::current().id(),
+            "guest mapping dropped on another thread"
+        );
+
+        // SAFETY: The view is no longer exposed. Guest execution, or the native
+        // creator-thread check, serializes release of the Rc-backed lease.
+        unsafe { ManuallyDrop::drop(&mut self.lease) };
     }
 }
 
@@ -110,7 +176,8 @@ mod tests {
     use alloc::vec;
     use core::mem::size_of;
 
-    use hyperlight_common::virtq::MemOps;
+    use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
+    use hyperlight_common::virtq::{MemOps, SlotLayout, SlotPool};
 
     use super::*;
 
@@ -131,5 +198,45 @@ mod tests {
 
         assert!(mem.write(base + LEN as u64 - 1, &[1, 2]).is_err());
         assert!(mem.load_acquire(base + 1).is_err());
+    }
+
+    #[test]
+    fn mapped_bytes_keep_the_slot_until_the_last_view_drops() {
+        let mut backing = [u64::from_ne_bytes(*b"dataTAIL")];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing remains live until all mapped views are dropped.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 8) };
+        let pool = SlotPool::new(SlotLayout::new(base, 8, 1)).unwrap();
+        let allocation = pool.alloc(8).unwrap();
+        let lease = BufferLease::new(pool.clone(), allocation);
+
+        // SAFETY: The allocation is initialized and exclusively leased.
+        let bytes = Bytes::from_owner(unsafe { mem.map_buffer(lease, 4) }.unwrap());
+        assert_eq!(bytes.as_ref(), b"data");
+        assert_eq!(bytes.as_ptr() as u64, base);
+
+        let retained = bytes.slice(1..3);
+        drop(bytes);
+        assert_eq!(pool.num_free(), 0);
+        assert_eq!(retained.as_ref(), b"at");
+        assert_eq!(retained.as_ptr() as u64, base + 1);
+
+        drop(retained);
+        assert_eq!(pool.num_free(), 1);
+    }
+
+    #[test]
+    fn failed_mapping_releases_its_lease() {
+        let mut backing = [0u64; 2];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing remains mapped for the accessor's lifetime.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 8) };
+        let pool = SlotPool::new(SlotLayout::new(base + 8, 8, 1)).unwrap();
+        let allocation = pool.alloc(8).unwrap();
+        let lease = BufferLease::new(pool.clone(), allocation);
+
+        // SAFETY: The allocation is initialized and leased, but outside this accessor.
+        assert!(unsafe { mem.map_buffer(lease, 8) }.is_err());
+        assert_eq!(pool.num_free(), 1);
     }
 }
