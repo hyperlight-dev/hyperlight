@@ -74,8 +74,6 @@ impl TryFrom<u8> for Exception {
 
 /// Supported actions when issuing an OUTB actions by Hyperlight.
 /// These are handled by the sandbox-level outb dispatcher.
-/// - Log: for logging,
-/// - CallFunction: makes a call to a host function,
 /// - Abort: aborts the execution of the guest,
 /// - DebugPrint: prints a message to the host
 /// - TraceBatch: reports a batch of spans and events from the guest
@@ -83,8 +81,6 @@ impl TryFrom<u8> for Exception {
 /// - TraceMemoryFree: records memory deallocation events
 /// - VirtqNotify: reports newly available virtqueue work
 pub enum OutBAction {
-    Log = 99,
-    CallFunction = 101,
     Abort = 102,
     DebugPrint = 103,
     #[cfg(feature = "trace_guest")]
@@ -116,8 +112,6 @@ impl TryFrom<u16> for OutBAction {
     type Error = anyhow::Error;
     fn try_from(val: u16) -> anyhow::Result<Self> {
         match val {
-            99 => Ok(OutBAction::Log),
-            101 => Ok(OutBAction::CallFunction),
             102 => Ok(OutBAction::Abort),
             103 => Ok(OutBAction::DebugPrint),
             #[cfg(feature = "trace_guest")]
@@ -140,5 +134,16 @@ impl TryFrom<u16> for VmAction {
             108 => Ok(VmAction::Halt),
             _ => Err(anyhow::anyhow!("Invalid VmAction value: {}", val)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutBAction;
+
+    #[test]
+    fn rejects_legacy_stack_actions() {
+        assert!(OutBAction::try_from(99).is_err());
+        assert!(OutBAction::try_from(101).is_err());
     }
 }
