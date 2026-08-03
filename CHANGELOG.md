@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `hl_result_from_*` constructors.
 * Place virtqueue rings and pools in host-owned scratch before page tables.
   Snapshot ABI 3 rejects snapshots created with earlier layouts.
+* Require guest logs and host function calls to use the guest-to-host
+  virtqueue protocol.
 
 ### Removed
 
