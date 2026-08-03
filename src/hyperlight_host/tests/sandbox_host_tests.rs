@@ -17,6 +17,7 @@ use core::f64;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::func::Bytes;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
@@ -26,7 +27,7 @@ use hyperlight_testing::simple_guest_as_pathbuf;
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
     with_all_sandboxes, with_all_sandboxes_cfg, with_all_sandboxes_with_writer,
-    with_all_uninit_sandboxes,
+    with_all_uninit_sandboxes, with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
 };
 
 #[test]
@@ -323,6 +324,99 @@ fn callback_test_helper() {
 #[test]
 fn callback_test() {
     callback_test_helper();
+}
+
+#[test]
+fn host_external_bytes_round_trip() {
+    with_rust_uninit_sandbox(|mut sandbox| {
+        sandbox
+            .register("HostEchoVecBytes", |value: Vec<u8>| value)
+            .unwrap();
+        sandbox
+            .register("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .unwrap();
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+        let expected: Vec<u8> = (0..6 * 1024).map(|index| (index % 251) as u8).collect();
+
+        let contiguous: Vec<u8> = sandbox
+            .call("RoundTripHostVecBytes", expected.clone())
+            .unwrap();
+        assert_eq!(contiguous, expected);
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+        for _ in 0..2 {
+            let chunks: Vec<Bytes> = sandbox
+                .call("RoundTripHostByteChunks", input.clone())
+                .unwrap();
+            let flattened: Vec<u8> = chunks
+                .iter()
+                .flat_map(|chunk| chunk.iter().copied())
+                .collect();
+            assert_eq!(flattened, expected);
+        }
+    });
+}
+
+#[test]
+fn oversized_host_response_returns_transport_error() {
+    with_rust_uninit_sandbox(|mut sandbox| {
+        sandbox
+            .register("HostOversizedVecBytes", || vec![0u8; 64 * 1024])
+            .unwrap();
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let error = sandbox
+            .call::<Vec<u8>>("GetOversizedHostVecBytes", ())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            HyperlightError::GuestError(_, message)
+                if message == "Host response exceeds virtqueue capacity"
+        ));
+        sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+    });
+}
+
+#[test]
+fn log_then_host_call_with_small_g2h_ring() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_depth(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        for _ in 0..20 {
+            sandbox.call::<()>("LogThenHostNoOp", ()).unwrap();
+        }
+    });
+}
+
+#[test]
+fn oversized_fixed_host_error_returns_transport_error() {
+    with_rust_uninit_sandbox(|mut sandbox| {
+        sandbox
+            .register("HostNoOp", || -> Result<()> {
+                Err(new_error!("host error {}", "x".repeat(1024)))
+            })
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let error = sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap_err();
+        assert!(matches!(
+            error,
+            HyperlightError::GuestError(_, message)
+                if message == "Host response exceeds virtqueue capacity"
+        ));
+    });
 }
 
 #[test]

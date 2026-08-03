@@ -277,6 +277,12 @@ where
         self.inner.num_free()
     }
 
+    /// Number of submitted descriptors not yet polled as used.
+    #[inline]
+    pub fn num_inflight(&self) -> usize {
+        self.inner.num_inflight()
+    }
+
     /// Configure event suppression for used buffer notifications.
     ///
     /// This controls when the device (consumer) signals us about completed buffers:

@@ -215,6 +215,8 @@ fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
     assert_eq!(pool.base_addr(), 0x80000);
     assert_eq!(pool.slot_size(), 0x100);
     assert_eq!(pool.count(), 5);
+    assert_eq!(pool.num_free_lower(), 0);
+    assert_eq!(pool.num_free_upper(), 5);
     assert_eq!(pool.slot_addr(4), Some(0x80400));
 }
 
@@ -272,6 +274,24 @@ fn test_tiered_slot_pool_does_not_mask_lower_errors() {
 }
 
 #[test]
+fn test_tiered_slot_pool_reports_free_tier_counts() {
+    let pool = make_tiered_slot_pool(2, 3);
+
+    assert_eq!(pool.num_free_lower(), 2);
+    assert_eq!(pool.num_free_upper(), 3);
+
+    let lower = pool.alloc(128).unwrap();
+    let upper = pool.alloc(4096).unwrap();
+    assert_eq!(pool.num_free_lower(), 1);
+    assert_eq!(pool.num_free_upper(), 2);
+
+    pool.dealloc(lower.addr).unwrap();
+    pool.dealloc(upper.addr).unwrap();
+    assert_eq!(pool.num_free_lower(), 2);
+    assert_eq!(pool.num_free_upper(), 3);
+}
+
+#[test]
 fn test_tiered_slot_pool_alloc_sg_uses_both_tiers() {
     let pool = make_tiered_slot_pool(1, 2);
     let sgs = pool.alloc_sg(4096 + 128).unwrap();
@@ -286,6 +306,51 @@ fn test_tiered_slot_pool_alloc_sg_uses_both_tiers() {
         pool.dealloc(sg.addr).unwrap();
     }
     assert_eq!(pool.num_free(), 3);
+}
+
+#[test]
+fn test_tiered_slot_pool_plans_alloc_sg_without_allocating() {
+    let pool = make_tiered_slot_pool(2, 3);
+    let next_lower = pool.slot_addr(1).unwrap();
+
+    let plan = pool.plan_alloc(4096 + 128).unwrap();
+    assert_eq!(plan.lower_slots(), 1);
+    assert_eq!(plan.upper_slots(), 1);
+    assert_eq!(plan.num_slots(), 2);
+    assert_eq!(pool.num_free_lower(), 2);
+    assert_eq!(pool.num_free_upper(), 3);
+
+    let lower = pool.alloc(128).unwrap();
+    assert_eq!(lower.addr, next_lower);
+    let lower_allocations = [lower, pool.alloc(128).unwrap()];
+    let plan = pool.plan_alloc(128).unwrap();
+    assert_eq!(plan.lower_slots(), 0);
+    assert_eq!(plan.upper_slots(), 1);
+
+    for allocation in lower_allocations {
+        pool.dealloc(allocation.addr).unwrap();
+    }
+}
+
+#[test]
+fn test_single_tier_slot_pool_plans_all_segments_as_upper() {
+    let pool = SlotPool::new(SlotLayout::new(0x80000, 256, 3)).unwrap();
+
+    let plan = pool.plan_alloc(257).unwrap();
+    assert_eq!(plan.lower_slots(), 0);
+    assert_eq!(plan.upper_slots(), 2);
+    assert_eq!(plan.num_slots(), 2);
+}
+
+#[test]
+fn test_slot_pool_plan_rejects_invalid_or_unavailable_allocations() {
+    let pool = make_tiered_slot_pool(1, 1);
+
+    assert!(matches!(pool.plan_alloc(0), Err(AllocError::InvalidArg)));
+    assert!(matches!(
+        pool.plan_alloc(4096 + 257),
+        Err(AllocError::NoSpace)
+    ));
 }
 
 #[test]

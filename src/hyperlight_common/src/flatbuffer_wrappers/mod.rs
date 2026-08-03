@@ -31,4 +31,4 @@ pub mod host_function_definition;
 pub mod host_function_details;
 pub mod util;
 
-pub use codec::{ExternalValueSink, ExternalValueSource};
+pub use codec::{ExternalValueRef, ExternalValueRefs, ExternalValueSink, ExternalValueSource};

@@ -24,8 +24,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
 use hyperlight_common::flatbuffer_wrappers::util::{
     byte_chunks_from_vec, byte_chunks_to_vec, get_flatbuffer_result,
 };
-use hyperlight_guest_bin::host_comm::get_host_return_value;
 
+use crate::dispatch::take_last_host_return;
 use crate::types::FfiVec;
 
 // The reason for the capitalized type in the function names below
@@ -117,44 +117,43 @@ pub extern "C" fn hl_flatbuffer_result_from_Bool(value: bool) -> Box<FfiVec> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_Int() -> i32 {
-    get_host_return_value().expect("Unable to get host return value as int")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_UInt() -> u32 {
-    get_host_return_value().expect("Unable to get host return value as uint")
+    take_last_host_return()
 }
 
 // the same for long, ulong
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_Long() -> i64 {
-    get_host_return_value().expect("Unable to get host return value as long")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_ULong() -> u64 {
-    get_host_return_value().expect("Unable to get host return value as ulong")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_Bool() -> bool {
-    get_host_return_value().expect("Unable to get host return value as bool")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_Float() -> f32 {
-    get_host_return_value().expect("Unable to get host return value as f32")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_Double() -> f64 {
-    get_host_return_value().expect("Unable to get host return value as f64")
+    take_last_host_return()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_String() -> *const c_char {
-    let string_value: String =
-        get_host_return_value().expect("Unable to get host return value as string");
+    let string_value: String = take_last_host_return();
 
     let c_string = CString::new(string_value).expect("Failed to create CString");
     c_string.into_raw()
@@ -162,16 +161,14 @@ pub extern "C" fn hl_get_host_return_value_as_String() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_VecBytes() -> Box<FfiVec> {
-    let vec_value: Vec<u8> =
-        get_host_return_value().expect("Unable to get host return value as vec bytes");
+    let vec_value: Vec<u8> = take_last_host_return();
 
     Box::new(unsafe { FfiVec::from_vec(vec_value) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_get_host_return_value_as_ByteChunks() -> Box<FfiVec> {
-    let chunks: Vec<Bytes> =
-        get_host_return_value().expect("Unable to get host return value as byte chunks");
+    let chunks: Vec<Bytes> = take_last_host_return();
 
     Box::new(unsafe { FfiVec::from_vec(byte_chunks_to_vec(&chunks)) })
 }

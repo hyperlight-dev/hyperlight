@@ -14,18 +14,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Host virtqueue attachment.
+//! Host virtqueue construction, I/O, and canonical snapshot validation.
 //!
-//! The host publishes one transport arena address in scratch-top metadata. Guest
-//! initialization builds both queues in those fixed regions. This module
-//! validates the complete initial image before returning either consumer.
+//! Runtime consumers bind bounded ring and pool views to the host-owned fixed
+//! transport arena. They start at cursor zero before the first guest entry and
+//! observe descriptors published by the guest later.
+//!
+//! G2H codec helpers copy untrusted request data into host-owned values before
+//! dispatch. Shared wire framing lives in `hyperlight_common::virtq::msg`.
+//!
+//! Snapshot capture and restore validate canonical ring images against the
+//! configured arena before exposing consumers.
 
 use core::ops::Range;
 
+use anyhow::{Context, bail};
+use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
+use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::{ExternalValueRefs, ExternalValueSource};
 use hyperlight_common::layout::{QueueDims, TransportArena};
 use hyperlight_common::virtq::canonical::validate_canon_image;
+use hyperlight_common::virtq::msg::{
+    EncodedMessage, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
+};
 use hyperlight_common::virtq::{
-    Layout as VirtqLayout, MemOps, Notifier, QueueStats, VirtqConsumer,
+    Layout as VirtqLayout, MemOps, Notifier, QueueStats, RecvChain, VirtqConsumer, VirtqError,
+    WritableChain,
 };
 
 use super::layout::{BaseGpaRegion, SandboxMemoryLayout};
@@ -38,7 +55,7 @@ pub(crate) type G2hConsumer = VirtqConsumer<HostMemOps, HostNotifier>;
 /// Host-side H2G virtqueue consumer.
 pub(crate) type H2gConsumer = VirtqConsumer<HostMemOps, HostNotifier>;
 
-/// No-op notifier for polled host transport.
+/// No-op notifier because the host completes work during the current VM exit.
 #[derive(Clone, Copy)]
 pub(crate) struct HostNotifier;
 
@@ -46,11 +63,24 @@ impl Notifier for HostNotifier {
     fn notify(&self, _stats: QueueStats) {}
 }
 
-/// Build both host consumers from a guest-produced initial transport image.
+/// Create both host consumers before the first guest entry.
 ///
-/// The consumers are returned only after the host-assigned arena and both
-/// directional ring images have passed validation.
-pub(crate) fn attach(
+/// Ring contents are not inspected because the guest has not initialized them
+/// yet. Consumer cursors start at zero and observe descriptors published later.
+pub(crate) fn create_consumers(
+    layout: &SandboxMemoryLayout,
+    scratch_mem: &HostSharedMemory,
+) -> Result<(G2hConsumer, H2gConsumer)> {
+    let validator = Validator::new(layout)?;
+    let regions = validator.resolve_gva_regions()?;
+    let g2h_layout = validator.config.g2h.layout(&regions.g2h_ring, "G2H")?;
+    let h2g_layout = validator.config.h2g.layout(&regions.h2g_ring, "H2G")?;
+
+    build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
+}
+
+/// Validate a materialized canonical image before attaching consumers.
+fn attach_canonical(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
 ) -> Result<(G2hConsumer, H2gConsumer)> {
@@ -59,12 +89,29 @@ pub(crate) fn attach(
     let regions = validator.validate_published_arena(arena_gpa)?;
 
     let g2h_ring_mem = HostMemOps::new(scratch_mem, regions.g2h_ring.clone())?;
-    let g2h_pool_mem = HostMemOps::new(scratch_mem, regions.g2h_pool)?;
-    let g2h_layout = validator.validate_g2h(&g2h_ring_mem, regions.g2h_ring)?;
+    let g2h_layout = validator.validate_g2h(&g2h_ring_mem, regions.g2h_ring.clone())?;
 
     let h2g_ring_mem = HostMemOps::new(scratch_mem, regions.h2g_ring.clone())?;
-    let h2g_pool_mem = HostMemOps::new(scratch_mem, regions.h2g_pool.clone())?;
-    let h2g_layout = validator.validate_h2g(&h2g_ring_mem, regions.h2g_ring, regions.h2g_pool)?;
+    let h2g_layout = validator.validate_h2g(
+        &h2g_ring_mem,
+        regions.h2g_ring.clone(),
+        regions.h2g_pool.clone(),
+    )?;
+
+    build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
+}
+
+/// Bind consumers to separately bounded ring and pool mappings.
+fn build_consumers(
+    scratch_mem: &HostSharedMemory,
+    regions: GvaRegions,
+    g2h_layout: VirtqLayout,
+    h2g_layout: VirtqLayout,
+) -> Result<(G2hConsumer, H2gConsumer)> {
+    let g2h_ring_mem = HostMemOps::new(scratch_mem, regions.g2h_ring)?;
+    let g2h_pool_mem = HostMemOps::new(scratch_mem, regions.g2h_pool)?;
+    let h2g_ring_mem = HostMemOps::new(scratch_mem, regions.h2g_ring)?;
+    let h2g_pool_mem = HostMemOps::new(scratch_mem, regions.h2g_pool)?;
 
     Ok((
         VirtqConsumer::new_split(g2h_layout, g2h_ring_mem, g2h_pool_mem, HostNotifier),
@@ -72,7 +119,9 @@ pub(crate) fn attach(
     ))
 }
 
-/// Capture the canonical transport state omitted from the main memory snapshot.
+/// Capture the canonical ring state omitted from the main memory snapshot.
+///
+/// Pool contents are transient and are not included.
 pub(crate) fn snapshot(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
@@ -97,7 +146,10 @@ pub(crate) fn snapshot(
     })
 }
 
-/// Restore one captured canonical transport image and return fresh consumers.
+/// Validate and restore one canonical transport image.
+///
+/// Validation completes before restored scratch is mutated. Fresh consumers
+/// start from the canonical cursor state encoded in the rings.
 pub(crate) fn restore(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
@@ -108,14 +160,68 @@ pub(crate) fn restore(
     write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
     write_ring(scratch_mem, regions.g2h_ring, &snapshot.g2h_ring)?;
     write_ring(scratch_mem, regions.h2g_ring, &snapshot.h2g_ring)?;
-    attach(layout, scratch_mem)
+    attach_canonical(layout, scratch_mem)
+}
+
+/// Decode one complete host function call from a G2H request.
+///
+/// Control data and external values are copied out of guest-writable scratch.
+/// Unconsumed trailing bytes are rejected.
+pub(crate) fn get_host_function_call(
+    chain: &mut RecvChain<HostMemOps>,
+) -> anyhow::Result<FunctionCall> {
+    let control = read_control(chain)?;
+    let mut external_values = ChainExternalValues::new(chain);
+    FunctionCall::decode_external(&control, &mut external_values)
+}
+
+/// Encode a host function result into a G2H reply.
+///
+/// A result that exceeds the writable capacity is replaced with a bounded
+/// transport error. An error is returned if that fallback also cannot fit.
+pub(crate) fn write_response_from_host_function_call(
+    chain: &mut WritableChain<HostMemOps>,
+    cid: u32,
+    result: &FunctionCallResult,
+) -> anyhow::Result<()> {
+    if try_write_response_from_host_function_call(chain, cid, result)? {
+        return Ok(());
+    }
+
+    let error = FunctionCallResult::new(Err(GuestError::new(
+        ErrorCode::HostFunctionError,
+        "Host response exceeds virtqueue capacity".into(),
+    )));
+
+    if !try_write_response_from_host_function_call(chain, cid, &error)? {
+        bail!(
+            "Writable response capacity {} cannot hold a transport error",
+            chain.capacity()
+        );
+    }
+    Ok(())
+}
+
+/// Decode guest log data and reject trailing external bytes.
+pub(crate) fn read_guest_log_data(
+    chain: &mut RecvChain<HostMemOps>,
+) -> anyhow::Result<GuestLogData> {
+    let control = read_control(chain)?;
+    if chain.remaining() != 0 {
+        bail!("G2H log has {} trailing external bytes", chain.remaining());
+    }
+    GuestLogData::try_from(control.as_slice())
 }
 
 /// Bounded GVA regions derived from validated transport GPAs.
 struct GvaRegions {
+    /// Guest-to-host packed ring image.
     g2h_ring: Range<u64>,
+    /// Host-to-guest packed ring image.
     h2g_ring: Range<u64>,
+    /// Guest-to-host descriptor buffer pool.
     g2h_pool: Range<u64>,
+    /// Host-to-guest descriptor buffer pool.
     h2g_pool: Range<u64>,
 }
 
@@ -123,33 +229,23 @@ struct GvaRegions {
 struct QueueConfig {
     /// Address-independent queue dimensions.
     dims: QueueDims,
-    /// Size of the ring image in bytes including event suppressions.
-    ring_len: usize,
-    /// Size of the buffer pool in bytes.
-    pool_len: usize,
     /// Size of each buffer in the pool in bytes.
     buffer_size: usize,
 }
 
 impl QueueConfig {
     fn new(dims: QueueDims, buffer_size: usize) -> Result<Self> {
-        let ring_len = dims
-            .checked_ring_len()
-            .ok_or_else(|| new_error!("ring size overflow"))?;
-        let pool_len = dims
-            .checked_pool_len()
-            .ok_or_else(|| new_error!("pool size overflow"))?;
-
         if buffer_size == 0 {
             return Err(new_error!("buffer size is zero"));
         }
 
-        Ok(Self {
-            dims,
-            ring_len,
-            pool_len,
-            buffer_size,
-        })
+        Ok(Self { dims, buffer_size })
+    }
+
+    fn layout(&self, ring: &Range<u64>, direction: &str) -> Result<VirtqLayout> {
+        // SAFETY: `ring` is derived from the validated fixed transport arena.
+        unsafe { VirtqLayout::from_base(ring.start, self.dims.depth()) }
+            .map_err(|error| new_error!("invalid {direction} ring layout: {error}"))
     }
 }
 
@@ -170,11 +266,11 @@ impl Config {
     /// Compute the host transport configuration from the memory layout.
     fn from_layout(layout: &SandboxMemoryLayout) -> Result<Self> {
         let g2h = QueueConfig::new(layout.get_g2h_queue_dims(), layout.get_g2h_buffer_size())?;
-
         let h2g = QueueConfig::new(layout.get_h2g_queue_dims(), layout.get_h2g_buffer_size())?;
 
         let h2g_prefill_chains =
-            usize::from(h2g.dims.depth().get()).min(h2g.pool_len / h2g.buffer_size);
+            usize::from(h2g.dims.depth().get()).min(h2g.dims.pool_len() / h2g.buffer_size);
+
         let arena = layout.get_transport_arena();
 
         Ok(Self {
@@ -189,8 +285,11 @@ impl Config {
 /// Canonical in-memory transport state excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
+    /// Scratch size used to derive transport GVAs.
     scratch_size: usize,
+    /// Canonical guest-to-host ring image.
     g2h_ring: Vec<u8>,
+    /// Canonical host-to-guest ring image.
     h2g_ring: Vec<u8>,
 }
 
@@ -215,12 +314,9 @@ impl<'a> Validator<'a> {
         })
     }
 
-    /// Validate the initial G2H queue and return its layout.
+    /// Validate a canonical G2H image and return its layout.
     fn validate_g2h<M: MemOps>(&self, mem: &M, ring: Range<u64>) -> Result<VirtqLayout> {
-        // SAFETY: `ring` spans the configured image and `mem` keeps that image
-        // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.g2h.dims.depth()) }
-            .map_err(|error| new_error!("invalid G2H ring layout: {error}"))?;
+        let layout = self.config.g2h.layout(&ring, "G2H")?;
 
         validate_canon_image(mem, layout, 0, |_, _| false)
             .map_err(|error| new_error!("invalid canonical G2H image: {error}"))?;
@@ -228,7 +324,7 @@ impl<'a> Validator<'a> {
         Ok(layout)
     }
 
-    /// Validate the initial H2G queue and return its layout.
+    /// Validate a canonical H2G image and return its layout.
     ///
     /// Every available chain contains one configured size writable descriptor.
     /// Descriptors must name distinct, slot-aligned ranges inside the H2G pool.
@@ -238,10 +334,7 @@ impl<'a> Validator<'a> {
         ring: Range<u64>,
         pool: Range<u64>,
     ) -> Result<VirtqLayout> {
-        // SAFETY: `ring` spans the configured image and `mem` keeps that image
-        // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.h2g.dims.depth()) }
-            .map_err(|error| new_error!("invalid H2G ring layout: {error}"))?;
+        let layout = self.config.h2g.layout(&ring, "H2G")?;
 
         let bufsz = self.config.h2g.buffer_size;
         let prefill = self.config.h2g_prefill_chains;
@@ -317,8 +410,8 @@ impl<'a> Validator<'a> {
         }
 
         let regions = self.resolve_gva_regions()?;
-        validate_ring_len("G2H", &snapshot.g2h_ring, self.config.g2h.ring_len)?;
-        validate_ring_len("H2G", &snapshot.h2g_ring, self.config.h2g.ring_len)?;
+        validate_ring_len("G2H", &snapshot.g2h_ring, self.config.g2h.dims.ring_len())?;
+        validate_ring_len("H2G", &snapshot.h2g_ring, self.config.h2g.dims.ring_len())?;
 
         let g2h_mem = ImageMem::new(regions.g2h_ring.start, &snapshot.g2h_ring);
         self.validate_g2h(&g2h_mem, regions.g2h_ring.clone())?;
@@ -360,10 +453,10 @@ impl<'a> Validator<'a> {
             self.config.arena.h2g_ring_addr(),
             self.config.arena.g2h_pool_addr(),
             self.config.arena.h2g_pool_addr(),
-            self.config.g2h.ring_len,
-            self.config.h2g.ring_len,
-            self.config.g2h.pool_len,
-            self.config.h2g.pool_len,
+            self.config.g2h.dims.ring_len(),
+            self.config.h2g.dims.ring_len(),
+            self.config.g2h.dims.pool_len(),
+            self.config.h2g.dims.pool_len(),
         );
 
         Ok(GvaRegions {
@@ -375,17 +468,65 @@ impl<'a> Validator<'a> {
     }
 }
 
+/// Copies external values from guest-writable scratch into host-owned storage.
+///
+/// Chunked values become one owned chunk because host calls cannot retain
+/// references into untrusted guest memory.
+struct ChainExternalValues<'a> {
+    request: &'a mut RecvChain<HostMemOps>,
+}
+
+impl<'a> ChainExternalValues<'a> {
+    fn new(request: &'a mut RecvChain<HostMemOps>) -> Self {
+        Self { request }
+    }
+}
+
+impl ExternalValueSource for ChainExternalValues<'_> {
+    fn take_bytes(&mut self, length: usize) -> anyhow::Result<Vec<u8>> {
+        validate_external_length("VecBytes", length, self.request.remaining())?;
+        let mut value = zeroed_vec(length, "external VecBytes")?;
+
+        self.request.read_exact(&mut value)?;
+        Ok(value)
+    }
+
+    fn take_chunks(&mut self, length: usize) -> anyhow::Result<Vec<Bytes>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        validate_external_length("ByteChunks", length, self.request.remaining())?;
+        let mut value = zeroed_vec(length, "external ByteChunks")?;
+        self.request.read_exact(&mut value)?;
+
+        Ok(vec![Bytes::from(value)])
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        if self.request.remaining() != 0 {
+            bail!(
+                "G2H message has {} trailing external bytes",
+                self.request.remaining()
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Read the transport arena GPA from scratch-top metadata.
 fn read_published_arena_gpa(scratch_mem: &HostSharedMemory) -> Result<u64> {
     let offset = hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
     scratch_mem.read::<u64>(scratch_mem.mem_size() - offset)
 }
 
+/// Publish the fixed transport arena GPA in scratch-top metadata.
 fn write_published_arena_gpa(scratch_mem: &HostSharedMemory, arena_gpa: u64) -> Result<()> {
     let offset = hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
     scratch_mem.write::<u64>(scratch_mem.mem_size() - offset, arena_gpa)
 }
 
+/// Copy one ring image from its bounded scratch mapping.
 fn read_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>) -> Result<Vec<u8>> {
     let len = usize::try_from(
         ring.end
@@ -400,12 +541,14 @@ fn read_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>) -> Result<Vec<u8>
     Ok(bytes)
 }
 
+/// Copy one validated ring image into its bounded scratch mapping.
 fn write_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>, bytes: &[u8]) -> Result<()> {
     validate_ring_len("restored", bytes, usize::try_from(ring.end - ring.start)?)?;
     let mem = HostMemOps::new(scratch_mem, ring.clone())?;
     mem.write(ring.start, bytes)
 }
 
+/// Require a captured ring image to match its configured region exactly.
 fn validate_ring_len(direction: &str, bytes: &[u8], expected: usize) -> Result<()> {
     if bytes.len() != expected {
         return Err(new_error!(
@@ -416,12 +559,82 @@ fn validate_ring_len(direction: &str, bytes: &[u8], expected: usize) -> Result<(
     Ok(())
 }
 
+/// Build a GVA range while checking address arithmetic.
 fn checked_region(start: u64, len: usize, tag: &str) -> Result<Range<u64>> {
     let end = start
         .checked_add(u64::try_from(len)?)
         .ok_or_else(|| new_error!("{tag} GVA range overflow"))?;
 
     Ok(start..end)
+}
+
+/// Write a response only when the complete wire message fits.
+///
+/// `false` means no bytes were written, allowing the caller to try a bounded
+/// transport error. Encoding and chain write failures are returned as errors.
+fn try_write_response_from_host_function_call(
+    reply: &mut WritableChain<HostMemOps>,
+    cid: u32,
+    result: &FunctionCallResult,
+) -> anyhow::Result<bool> {
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValueRefs::new();
+
+    let control = result.encode_external(&mut builder, &mut external_values)?;
+    let message = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+        .context("Host function response length overflow")?;
+
+    if message.wire_len() > reply.capacity() {
+        return Ok(false);
+    }
+
+    message.try_for_each_chunk(|chunk| {
+        reply.write_all(chunk)?;
+        Ok::<(), VirtqError>(())
+    })?;
+
+    Ok(true)
+}
+
+/// Copy size-prefixed control data and leave external values unread.
+fn read_control(request: &mut RecvChain<HostMemOps>) -> anyhow::Result<Vec<u8>> {
+    let mut prefix = [0u8; SIZE_PREFIX_LEN];
+    request.read_exact(&mut prefix)?;
+
+    let payload_len = size_prefix_payload_len(&prefix).expect("size prefix length is fixed");
+    if payload_len > request.remaining() {
+        bail!(
+            "G2H control data declares {payload_len} bytes, only {} remain",
+            request.remaining()
+        );
+    }
+
+    let control_len = size_prefixed_len(payload_len).context("G2H control length overflow")?;
+    // Do not trust control_len to be small enough to allocate.
+    let mut control = zeroed_vec(control_len, "G2H control data")?;
+
+    control[..SIZE_PREFIX_LEN].copy_from_slice(&prefix);
+    request.read_exact(&mut control[SIZE_PREFIX_LEN..])?;
+    Ok(control)
+}
+
+/// Allocate zeroed host-owned storage without panicking on reserve failure.
+fn zeroed_vec(length: usize, what: &str) -> anyhow::Result<Vec<u8>> {
+    let mut value = Vec::new();
+    value
+        .try_reserve_exact(length)
+        .with_context(|| format!("Failed to allocate {length} bytes for {what}"))?;
+
+    value.resize(length, 0);
+    Ok(value)
+}
+
+/// Validate a declared external length before allocating its storage.
+fn validate_external_length(kind: &str, length: usize, remaining: usize) -> anyhow::Result<()> {
+    if length > remaining {
+        bail!("External {kind} requires {length} bytes, only {remaining} remain");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -443,6 +656,18 @@ mod tests {
     const G2H_POOL_PAGES: usize = 3;
     const H2G_POOL_PAGES: usize = 2;
     const H2G_BUFFER_SIZE: usize = 3000;
+
+    #[test]
+    fn external_length_is_bounded_before_allocation() {
+        assert!(validate_external_length("VecBytes", usize::MAX, 16).is_err());
+        assert!(validate_external_length("ByteChunks", 17, 16).is_err());
+        assert!(validate_external_length("VecBytes", 16, 16).is_ok());
+    }
+
+    #[test]
+    fn oversized_allocation_fails_without_panicking() {
+        assert!(zeroed_vec(usize::MAX, "test buffer").is_err());
+    }
 
     fn memory_layout() -> SandboxMemoryLayout {
         let mut config = SandboxConfiguration::default();
@@ -585,19 +810,19 @@ mod tests {
 
         assert_eq!(
             regions.g2h_ring.end - regions.g2h_ring.start,
-            config.g2h.ring_len as u64
+            config.g2h.dims.ring_len() as u64
         );
         assert_eq!(
             regions.h2g_ring.end - regions.h2g_ring.start,
-            config.h2g.ring_len as u64
+            config.h2g.dims.ring_len() as u64
         );
         assert_eq!(
             regions.g2h_pool.end - regions.g2h_pool.start,
-            config.g2h.pool_len as u64
+            config.g2h.dims.pool_len() as u64
         );
         assert_eq!(
             regions.h2g_pool.end - regions.h2g_pool.start,
-            config.h2g.pool_len as u64
+            config.h2g.dims.pool_len() as u64
         );
     }
 
@@ -615,15 +840,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_untranslatable_or_overflowing_gva_regions() {
+    fn rejects_untranslatable_gva_regions() {
         let config = attach_config();
-        let arena_gpa = config.arena.base_addr();
         let invalid = hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE) - 1;
         assert!(validate_published(invalid, config).is_err());
-
-        let mut config = config;
-        config.g2h.ring_len = usize::MAX;
-        assert!(validate_published(arena_gpa, config).is_err());
     }
 
     #[test]

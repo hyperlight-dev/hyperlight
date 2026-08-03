@@ -242,10 +242,7 @@ impl MultiUseSandbox {
 
         let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
         let (mut hshm, gshm) = mgr.build()?;
-        let attach_virtq = matches!(
-            snapshot.next_action(),
-            super::snapshot::NextAction::Initialise(_)
-        );
+        let restore_virtq = matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_));
 
         let page_size = u32::try_from(page_size::get())? as usize;
 
@@ -326,9 +323,7 @@ impl MultiUseSandbox {
         #[cfg(gdb)]
         let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
-        if attach_virtq {
-            hshm.attach_virtq()?;
-        } else {
+        if restore_virtq {
             hshm.restore_virtq(snapshot.virtq())?;
         }
 

@@ -16,11 +16,14 @@ limitations under the License.
 
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::outb::{Exception, OutBAction};
+use hyperlight_common::virtq::ReplyChain;
+use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
@@ -28,6 +31,7 @@ use super::host_funcs::FunctionRegistry;
 use crate::hypervisor::regs::CommonRegisters;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::virtq;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 
@@ -65,7 +69,11 @@ pub(super) fn outb_log(
     let log_data: GuestLogData = mgr
         .read_guest_log_data()
         .map_err(|e| HandleOutbError::ReadLogData(e.to_string()))?;
+    emit_guest_log(&log_data);
+    Ok(())
+}
 
+fn emit_guest_log(log_data: &GuestLogData) {
     // Emit guest log data as a tracing event with structured fields.
     //
     // We match on the level at runtime because tracing macros determine their
@@ -134,8 +142,6 @@ pub(super) fn outb_log(
             );
         }
     }
-
-    Ok(())
 }
 
 const ABORT_TERMINATOR: u8 = 0xFF;
@@ -225,6 +231,7 @@ pub(crate) fn handle_outb(
 
             Ok(())
         }
+        OutBAction::VirtqNotify => outb_virtq_call(mem_mgr, host_funcs),
         OutBAction::Abort => outb_abort(mem_mgr, data),
         OutBAction::DebugPrint => {
             let ch: char = match char::from_u32(data) {
@@ -245,6 +252,124 @@ pub(crate) fn handle_outb(
         OutBAction::TraceMemoryFree => trace_info.handle_trace_mem_free(regs, mem_mgr),
     }
 }
+
+/// Drain G2H messages published before this notification.
+fn outb_virtq_call(
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    host_funcs: &Arc<Mutex<FunctionRegistry>>,
+) -> Result<(), HandleOutbError> {
+    let max_recv_len = mem_mgr.layout.get_g2h_queue_dims().pool_len();
+    let Some(consumer) = mem_mgr.g2h_consumer.as_mut() else {
+        return Err(HandleOutbError::ReadHostFunctionCall(
+            "G2H consumer is not attached".into(),
+        ));
+    };
+
+    // Drain entries, processing logs, until we find a request.
+    let (mut request, mut reply, header) = loop {
+        let maybe_next = consumer.poll(max_recv_len).map_err(|error| {
+            HandleOutbError::ReadHostFunctionCall(format!("G2H poll failed: {error}"))
+        })?;
+
+        let Some((mut request, reply)) = maybe_next else {
+            // No entry can be a backpressure or prefill notification.
+            return Ok(());
+        };
+
+        let mut header = [0u8; VirtqMsgHeader::SIZE];
+        request.read_exact(&mut header).map_err(|error| {
+            HandleOutbError::ReadHostFunctionCall(format!("G2H header read failed: {error}"))
+        })?;
+
+        let Some(header) = VirtqMsgHeader::from_bytes(&header) else {
+            return Err(HandleOutbError::ReadHostFunctionCall(
+                "Invalid G2H header".into(),
+            ));
+        };
+
+        match header.msg_kind() {
+            Ok(MsgKind::Log) => {
+                if header.cid != 0 {
+                    return Err(HandleOutbError::ReadHostFunctionCall(
+                        "G2H log has a nonzero correlation ID".into(),
+                    ));
+                }
+
+                if !matches!(reply, ReplyChain::Ack(_)) {
+                    return Err(HandleOutbError::ReadHostFunctionCall(
+                        "G2H log has writable response buffers".into(),
+                    ));
+                }
+
+                let log = virtq::read_guest_log_data(&mut request)
+                    .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
+
+                emit_guest_log(&log);
+
+                consumer.complete(request, reply).map_err(|error| {
+                    HandleOutbError::ReadHostFunctionCall(format!(
+                        "G2H log completion failed: {error}"
+                    ))
+                })?;
+            }
+            Ok(MsgKind::Request) => break (request, reply, header),
+            Ok(kind) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "Expected G2H request, got {kind:?}"
+                )));
+            }
+            Err(kind) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "Unknown G2H message kind {kind:#x}"
+                )));
+            }
+        }
+    };
+
+    if header.cid == 0 {
+        return Err(HandleOutbError::ReadHostFunctionCall(
+            "G2H request has correlation ID zero".into(),
+        ));
+    }
+
+    let ReplyChain::Writable(resp) = &mut reply else {
+        return Err(HandleOutbError::WriteHostFunctionResponse(
+            "G2H request has no writable response buffers".into(),
+        ));
+    };
+
+    let call = virtq::get_host_function_call(&mut request)
+        .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
+
+    if call.function_call_type() != FunctionCallType::Host {
+        return Err(HandleOutbError::ReadHostFunctionCall(
+            "G2H request does not target a host function".into(),
+        ));
+    }
+
+    let name = call.function_name;
+    let args = call.parameters.unwrap_or_default();
+
+    let result = host_funcs
+        .try_lock()
+        .map_err(|err| HandleOutbError::LockFailed(file!(), line!(), err.to_string()))?
+        .call_host_function(&name, args)
+        .map_err(|err| GuestError::new(ErrorCode::HostFunctionError, err.to_string()));
+
+    virtq::write_response_from_host_function_call(
+        resp,
+        header.cid,
+        &FunctionCallResult::new(result),
+    )
+    .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?;
+
+    consumer
+        .complete(request, reply)
+        .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;

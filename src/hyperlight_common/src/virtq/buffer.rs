@@ -128,6 +128,11 @@ impl Segments {
         }
     }
 
+    /// Consume this payload without flattening its segments.
+    pub fn into_chunks(self) -> Vec<Bytes> {
+        self.0.into_vec()
+    }
+
     fn collect(&self, sgs: &[Bytes], len: usize) -> Bytes {
         let mut out = Vec::with_capacity(len);
         out.extend(sgs.iter().flat_map(|seg| seg.iter().copied()));
@@ -389,5 +394,19 @@ mod tests {
 
         assert_eq!(collected.as_ptr(), ptr);
         assert_eq!(collected.as_ref(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn segments_into_chunks_preserves_segment_storage() {
+        let first = Bytes::from(vec![1, 2]);
+        let second = Bytes::from(vec![3, 4]);
+        let first_ptr = first.as_ptr();
+        let second_ptr = second.as_ptr();
+
+        let chunks = Segments::new([first, second]).into_chunks();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].as_ptr(), first_ptr);
+        assert_eq!(chunks[1].as_ptr(), second_ptr);
     }
 }

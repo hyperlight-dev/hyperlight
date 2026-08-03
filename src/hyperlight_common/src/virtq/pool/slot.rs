@@ -70,6 +70,33 @@ impl SlotLayout {
     }
 }
 
+/// Slot usage for one prospective scatter/gather allocation.
+///
+/// The plan reflects current pool availability without reserving slots.
+/// Another allocation can invalidate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocationPlan {
+    lower_slots: usize,
+    upper_slots: usize,
+}
+
+impl AllocationPlan {
+    /// Number of lower-tier slots the allocation would consume.
+    pub fn lower_slots(self) -> usize {
+        self.lower_slots
+    }
+
+    /// Number of upper-tier slots the allocation would consume.
+    pub fn upper_slots(self) -> usize {
+        self.upper_slots
+    }
+
+    /// Total number of slots the allocation would consume.
+    pub fn num_slots(self) -> usize {
+        self.lower_slots + self.upper_slots
+    }
+}
+
 /// Single-tier fixed-slot free list.
 ///
 /// Tracks a fixed set of equal-sized buffer slots. Allocation pops a free slot
@@ -261,6 +288,39 @@ impl Inner {
         self.upper.alloc(len)
     }
 
+    fn plan_alloc(&self, total_len: usize) -> Result<AllocationPlan, AllocError> {
+        if total_len == 0 {
+            return Err(AllocError::InvalidArg);
+        }
+
+        let upper_size = self.upper.slot_size;
+        let mut upper_slots = total_len / upper_size;
+
+        let tail_len = total_len % upper_size;
+        let mut lower_slots = 0;
+
+        if tail_len != 0 {
+            if self
+                .lower
+                .as_ref()
+                .is_some_and(|lower| tail_len <= lower.slot_size && lower.num_free() != 0)
+            {
+                lower_slots = 1;
+            } else {
+                upper_slots = upper_slots.checked_add(1).ok_or(AllocError::Overflow)?;
+            }
+        }
+
+        if upper_slots > self.upper.num_free() {
+            return Err(AllocError::NoSpace);
+        }
+
+        Ok(AllocationPlan {
+            lower_slots,
+            upper_slots,
+        })
+    }
+
     fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
         if let Some(lower) = &mut self.lower
             && lower.contains(addr)
@@ -350,6 +410,19 @@ impl SlotPool {
         })
     }
 
+    /// Plan how the next scatter/gather allocation would use each tier.
+    ///
+    /// The result follows [`BufferProvider::alloc_sg`] segmentation and
+    /// lower-tier fallback without changing free-list order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `total_len` is zero, arithmetic overflows, or the
+    /// current free slots cannot satisfy the allocation.
+    pub fn plan_alloc(&self, total_len: usize) -> Result<AllocationPlan, AllocError> {
+        self.inner.borrow().plan_alloc(total_len)
+    }
+
     /// Return every live slot address in deterministic tier and index order.
     pub fn live_addrs(&self) -> Vec<u64> {
         self.inner.borrow().live_addrs()
@@ -372,6 +445,16 @@ impl SlotPool {
         self.inner.borrow().num_free()
     }
 
+    /// Total number of free slots in the lower tier.
+    pub fn num_free_lower(&self) -> usize {
+        self.inner.borrow().lower.as_ref().map_or(0, Tier::num_free)
+    }
+
+    /// Total number of free slots in the upper tier.
+    pub fn num_free_upper(&self) -> usize {
+        self.inner.borrow().upper.num_free()
+    }
+
     /// Free a previously allocated slot by address.
     pub fn dealloc_addr(&self, addr: u64) -> Result<(), AllocError> {
         self.inner.borrow_mut().dealloc_addr(addr)
@@ -390,6 +473,20 @@ impl SlotPool {
     /// Maximum slot size in bytes.
     pub fn slot_size(&self) -> usize {
         self.inner.borrow().max_alloc_len()
+    }
+
+    /// Slot size in bytes for the lower tier, if present.
+    pub fn lower_slot_size(&self) -> Option<usize> {
+        self.inner
+            .borrow()
+            .lower
+            .as_ref()
+            .map(|lower| lower.slot_size)
+    }
+
+    /// Maximum slot size in bytes for the upper tier.
+    pub fn upper_slot_size(&self) -> usize {
+        self.inner.borrow().upper.slot_size
     }
 
     /// Total number of slots across all tiers.

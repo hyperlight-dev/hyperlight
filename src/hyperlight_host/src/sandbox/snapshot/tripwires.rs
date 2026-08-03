@@ -76,6 +76,7 @@ const _: () = {
     abi_assert!(OutBAction::TraceMemoryAlloc as u16 == 105);
     #[cfg(feature = "mem_profile")]
     abi_assert!(OutBAction::TraceMemoryFree as u16 == 106);
+    abi_assert!(OutBAction::VirtqNotify as u16 == 109);
 };
 
 const _: () = {

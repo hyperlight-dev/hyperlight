@@ -31,7 +31,7 @@ mod slot;
 pub use run::RunPool;
 #[cfg(all(test, loom))]
 pub use run::RunPoolSync;
-pub use slot::{SlotLayout, SlotPool};
+pub use slot::{AllocationPlan, SlotLayout, SlotPool};
 
 /// Buffer allocation failure.
 #[derive(Debug, Error, Copy, Clone)]

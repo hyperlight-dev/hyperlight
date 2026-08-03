@@ -30,6 +30,7 @@ pub mod common; // pub to disable dead_code warning
 use crate::common::{
     new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
     with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+    with_rust_uninit_sandbox_cfg,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
@@ -831,6 +832,31 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
                 .unwrap();
         });
     }
+}
+
+#[test]
+#[ignore]
+fn virtq_repeated_log_delivery_small_ring() {
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_depth(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(LevelFilter::INFO);
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let count = (0..LOGGER.num_log_calls())
+            .filter_map(|index| LOGGER.get_log_call(index))
+            .filter(|call| call.target == "hyperlight_guest" && call.args.contains("log entry"))
+            .count();
+        assert_eq!(count, 20);
+        LOGGER.clear_log_calls();
+    });
 }
 
 /// Tests whether host is able to return Bool as return type

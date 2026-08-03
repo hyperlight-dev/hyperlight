@@ -38,10 +38,6 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
-    let attach_virtq = matches!(
-        hshm.next_action,
-        crate::sandbox::snapshot::NextAction::Initialise(_)
-    );
 
     // Get the host page size. Narrowed to u32 because the guest ABI
     // passes it via a 32-bit register (rdx), but widened back to usize
@@ -112,10 +108,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 
     #[cfg(gdb)]
     let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
-
-    if attach_virtq {
-        hshm.attach_virtq()?;
-    }
 
     Ok(MultiUseSandbox::from_uninit(
         u_sbox.host_funcs,
