@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_call::{
-    FunctionCall, validate_guest_function_call_buffer,
-};
+use hyperlight_common::flatbuffer_wrappers::function_call::validate_guest_function_call_buffer;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
-use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
@@ -445,35 +441,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Reads a host function call from memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.scratch_mem
-            .try_pop_buffer_into::<FunctionCall>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            )
-            .map_err(From::from)
-    }
-
-    /// Writes a host function call result to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_response_from_host_function_call(
-        &mut self,
-        res: &FunctionCallResult,
-    ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
-
-        self.scratch_mem
-            .push_buffer(
-                self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.input_data_size(),
-                data,
-            )
-            .map_err(From::from)
-    }
-
     /// Writes a guest function call to memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
@@ -498,17 +465,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
         self.scratch_mem
             .try_pop_buffer_into::<FunctionCallResult>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            )
-            .map_err(From::from)
-    }
-
-    /// Read guest log data from the `SharedMemory` contained within `self`
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.scratch_mem
-            .try_pop_buffer_into::<GuestLogData>(
                 self.layout.get_output_data_buffer_scratch_host_offset(),
                 self.layout.output_data_size(),
             )
