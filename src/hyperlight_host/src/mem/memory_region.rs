@@ -267,24 +267,26 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
 pub(crate) struct GuestMemoryRegion {}
 
 impl MemoryRegionKind for GuestMemoryRegion {
-    type HostBaseType = ();
+    type HostBaseType = usize;
 
-    fn add(_base: Self::HostBaseType, _size: usize) -> Self::HostBaseType {}
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        base + size
+    }
 }
 
 /// represents a single memory region inside the guest. All memory within a region has
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryRegion_<K: MemoryRegionKind> {
-    /// the range of guest physical addresses
+    /// The range of guest addresses. For `GuestMemoryRegion` this is
+    /// the guest virtual address range (GVA). For `HostGuestMemoryRegion`
+    /// and `CrashDumpMemoryRegion` this is the guest physical address
+    /// range (GPA) or GVA depending on the variant.
     pub guest_region: Range<usize>,
-    /// the guest virtual address at which this region should be mapped.
-    /// For identity-mapped regions this equals `guest_region.start`.
-    /// For non-PIE code it is the ELF's declared virtual address.
-    pub guest_virt_addr: usize,
-    /// the range of host memory addresses
-    ///
-    /// Note that Range<()> = () x () = ().
+    /// The range of host-side addresses. For `HostGuestMemoryRegion` this
+    /// is the host virtual address range (HVA). For `GuestMemoryRegion`
+    /// this is the guest physical address range (GPA). For
+    /// `CrashDumpMemoryRegion` this is the HVA.
     pub host_region: Range<K::HostBaseType>,
     /// memory access flags for the given region
     pub flags: MemoryRegionFlags,
@@ -345,7 +347,6 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
             let host_end = <K as MemoryRegionKind>::add(self.host_base_virt_addr, size);
             self.regions.push(MemoryRegion_ {
                 guest_region: self.guest_base_phys_addr..guest_end,
-                guest_virt_addr: self.guest_base_phys_addr,
                 host_region: self.host_base_virt_addr..host_end,
                 flags,
                 region_type,
@@ -360,7 +361,6 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
         let guest_start = last_region.guest_region.end;
         let new_region = MemoryRegion_ {
             guest_region: guest_start..guest_start + size,
-            guest_virt_addr: guest_start,
             host_region: last_region.host_region.end..host_end,
             flags,
             region_type,
