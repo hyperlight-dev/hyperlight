@@ -12,6 +12,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::func::Registerable;
+use crate::mem::shared_mem::SharedMemory;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, SandboxBuilder, UninitializedSandbox};
 

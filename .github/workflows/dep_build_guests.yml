@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
-      # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
+      # cargo-hyperlight builds a custom sysroot for the Hyperlight guest target.
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
       - name: Sysroot cache
@@ -89,7 +89,6 @@ jobs:
           just move-rust-guests ${{ inputs.config }}
 
       - name: Build non-PIE Rust guests
-        if: inputs.arch == 'X64'
         run: |
           just build-rust-guests-non-pie ${{ inputs.config }}
           just move-rust-guests-non-pie ${{ inputs.config }}
@@ -115,4 +114,3 @@ jobs:
           path: src/tests/c_guests/bin/${{ inputs.config }}/
           retention-days: 1
           if-no-files-found: error
-
