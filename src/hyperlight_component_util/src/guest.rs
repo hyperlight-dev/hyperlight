@@ -315,8 +315,6 @@ fn emit_component<'a, 'b, 'c>(
 
     s.var_offset = 0;
 
-    s.is_export = true;
-
     let exports = ct
         .instance
         .unqualified

@@ -18,9 +18,9 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
-    kebab_to_exports_name, kebab_to_fn, kebab_to_getter, kebab_to_imports_name, kebab_to_namespace,
-    kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, InterfaceDirection, ResourceItemName, State, WitName, find_colliding_import_names,
+    import_member_names, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
+    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{Component, ExternDecl, ExternDesc, Instance, Tyvar};
 use crate::hl::{
@@ -59,19 +59,18 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         fn #n(&mut self, #(#param_decls),*) -> #result_decl {
                             let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
                             let marshalled = {
-                                let mut rts = self.rt.lock().unwrap();
+                                let mut rts = self.rt.lock()?;
                                 #[allow(clippy::unused_unit)]
                                 (#(#marshal,)*)
                             };
                             let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
                                 #hln,
                                 marshalled,
-                            );
-                            let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            )?;
                             #[allow(clippy::unused_unit)]
-                            let mut rts = self.rt.lock().unwrap();
+                            let mut rts = self.rt.lock()?;
                             #[allow(clippy::unused_unit)]
-                            #unmarshal
+                            ::std::result::Result::Ok(#unmarshal)
                         }
                     }
                 }
@@ -129,10 +128,13 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
         .iter()
         .map(|(_, (tv, _))| tv.unwrap())
         .collect::<Vec<_>>();
-    let tvs = tvs
+    let mut tvs = tvs
         .iter()
         .map(|tv| rtypes::emit_var_ref(&mut s, &Tyvar::Bound(*tv)))
         .collect::<Vec<_>>();
+    if let Some(d) = s.direction_arg() {
+        tvs.push(d);
+    }
     let (root_ns, root_base_name) = s.root_component_name.unwrap();
     let wrapper_name = kebab_to_wrapper_name(root_base_name);
     let imports_name = kebab_to_imports_name(root_base_name);
@@ -166,7 +168,7 @@ impl SelfInfo {
             orig_id,
             type_id: vec![format_ident!("I")],
             inner_preamble: quote! {
-                let mut #inner_id = #outer_id.lock().unwrap();
+                let mut #inner_id = #outer_id.lock()?;
                 let mut #inner_id = ::std::ops::DerefMut::deref_mut(&mut #inner_id);
             },
             outer_id,
@@ -245,7 +247,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                 let #outer_id = #orig_id.clone();
                 let captured_rts = rts.clone();
                 sb.register_host_function(#hln, move |#(#pds),*| {
-                    let mut rts = captured_rts.lock().unwrap();
+                    let mut rts = captured_rts.lock()?;
                     #inner_preamble
                     let #ret = #callname(
                         ::std::borrow::BorrowMut::<#(#type_id)::*>::borrow_mut(
@@ -347,7 +349,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
     s.root_component_name = Some((ns.clone(), wn.name));
     s.cur_trait = Some(export_trait.clone());
     s.import_param_var = Some(format_ident!("I"));
-    s.is_export = true;
+    s.direction = InterfaceDirection::Exported;
 
     let exports = ct
         .instance

@@ -132,6 +132,28 @@ fn component_first_camel(s: &str) -> String {
     result
 }
 
+/// Which `hyperlight_host::component::InterfaceDirection` marker to name at
+/// the point we are emitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceDirection {
+    /// Written `Imported`.
+    Imported,
+    /// Written `Exported`.
+    Exported,
+    /// Inside a trait generic over its direction, so name that trait's own
+    /// parameter, `D`.
+    Generic,
+}
+impl InterfaceDirection {
+    pub fn ident(&self) -> Ident {
+        match self {
+            InterfaceDirection::Imported => format_ident!("Imported"),
+            InterfaceDirection::Exported => format_ident!("Exported"),
+            InterfaceDirection::Generic => format_ident!("D"),
+        }
+    }
+}
+
 /// A representation of a trait definition that we will eventually
 /// emit. This is used to allow easily adding onto the trait each time
 /// we see an extern decl.
@@ -149,6 +171,9 @@ pub struct Trait {
     pub tvs: BTreeMap<Ident, (Option<u32>, TokenStream)>,
     /// Raw tokens of the contents of the trait
     pub items: TokenStream,
+    /// The trailing direction parameter declaration, if this trait has one.
+    /// Last so that it can carry a default.
+    pub direction: Option<TokenStream>,
 }
 impl Trait {
     pub fn new() -> Self {
@@ -156,6 +181,7 @@ impl Trait {
             supertraits: BTreeMap::new(),
             tvs: BTreeMap::new(),
             items: TokenStream::new(),
+            direction: None,
         }
     }
     /// Collect the component tyvar indices that correspond to the
@@ -194,11 +220,17 @@ impl Trait {
     /// Build a token stream for the type variable part of the trait
     /// declaration
     pub fn tv_toks(&mut self) -> TokenStream {
+        let mut toks = Vec::new();
         if !self.tvs.is_empty() {
-            let toks = self.tv_toks_inner();
-            quote! { <#toks> }
-        } else {
+            toks.push(self.tv_toks_inner());
+        }
+        if let Some(d) = &self.direction {
+            toks.push(d.clone());
+        }
+        if toks.is_empty() {
             quote! {}
+        } else {
+            quote! { <#(#toks),*> }
         }
     }
     /// Build a token stream for this entire trait definition
@@ -390,8 +422,9 @@ pub struct State<'a, 'b> {
     /// wasmtime guest emit. When that is refactored to use the host
     /// guest emit, this can go away.
     pub is_wasmtime_guest: bool,
-    /// Are we working on an export or an import of the component type?
-    pub is_export: bool,
+    /// The direction the code we are emitting is written against. Guest
+    /// bindings ignore it, since they never wrap a result or a borrow.
+    pub direction: InterfaceDirection,
     /// Set of interface names that collide across different packages
     /// (e.g. "types" appears in both wasi:filesystem/types and wasi:http/types).
     /// When a name is in this set, the parent namespace is prepended to
@@ -448,7 +481,7 @@ impl<'a, 'b> State<'a, 'b> {
             root_component_name: None,
             is_guest,
             is_wasmtime_guest,
-            is_export: false,
+            direction: InterfaceDirection::Imported,
             colliding_import_names: HashSet::new(),
         }
     }
@@ -470,7 +503,7 @@ impl<'a, 'b> State<'a, 'b> {
             root_component_name: self.root_component_name.clone(),
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
-            is_export: self.is_export,
+            direction: self.direction,
             colliding_import_names: self.colliding_import_names.clone(),
         }
     }
@@ -587,6 +620,50 @@ impl<'a, 'b> State<'a, 'b> {
         }
         quote! { #(#s::)* }
     }
+    /// Path to the direction trait and its markers
+    pub fn direction_path(&self) -> TokenStream {
+        quote! { ::hyperlight_host::component }
+    }
+    /// The token that names `d`
+    pub fn direction_marker_for(&self, d: InterfaceDirection) -> TokenStream {
+        let id = d.ident();
+        match d {
+            InterfaceDirection::Generic => quote! { #id },
+            _ => {
+                let dp = self.direction_path();
+                quote! { #dp::#id }
+            }
+        }
+    }
+    /// The token that names the current direction
+    pub fn direction_marker(&self) -> TokenStream {
+        self.direction_marker_for(self.direction)
+    }
+    /// The direction argument to pass when naming an instance or resource
+    /// trait. [`None`] for guest bindings, whose traits take no such
+    /// parameter.
+    pub fn direction_arg(&self) -> Option<TokenStream> {
+        self.direction_arg_at(self.direction)
+    }
+    /// [`State::direction_arg`] for a trait whose direction is fixed by where
+    /// its wit item is defined rather than by where we refer to it from
+    pub fn direction_arg_at(&self, d: InterfaceDirection) -> Option<TokenStream> {
+        if self.is_guest {
+            return None;
+        }
+        Some(self.direction_marker_for(d))
+    }
+    /// The trailing direction parameter to declare on an instance or
+    /// resource trait
+    pub fn direction_param(&self) -> Option<TokenStream> {
+        if self.is_guest {
+            return None;
+        }
+        let dp = self.direction_path();
+        let d = InterfaceDirection::Generic.ident();
+        let dflt = InterfaceDirection::Imported.ident();
+        Some(quote! { #d: #dp::InterfaceDirection = #dp::#dflt })
+    }
     /// Construct a namespace token stream that can be emitted in the
     /// current module to refer to a name in the helper module
     pub fn helper_path(&self) -> TokenStream {
@@ -657,13 +734,11 @@ impl<'a, 'b> State<'a, 'b> {
     /// Add an import/export to [`State::origin`], reflecting that we are now
     /// looking at code underneath it
     ///
-    /// origin_was_export differs from s.is_export in that s.is_export
-    /// keeps track of whether the item overall was imported or exported
-    /// from the root component (taking into account positivity), whereas
-    /// origin_was_export just checks if this particular extern_decl was
-    /// imported or exported from its parent instance (and so e.g. an
-    /// export of an instance that is imported by the root component has
-    /// !s.is_export && origin_was_export)
+    /// `origin_was_export` says whether this particular extern_decl was
+    /// imported or exported from its parent instance, which is not the same
+    /// as whether the item is imported or exported by the root component.
+    /// An export of an instance that the root component imports has
+    /// `origin_was_export` set.
     pub fn push_origin<'c>(&'c mut self, origin_was_export: bool, name: &'b str) -> State<'c, 'b> {
         let mut s = self.clone();
         s.origin.push(if origin_was_export {

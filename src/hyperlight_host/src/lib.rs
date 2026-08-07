@@ -49,6 +49,8 @@ use std::sync::Once;
 pub(crate) mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
+/// Support types for the bindings that `host_bindgen!` generates
+pub mod component;
 /// Dealing with errors, including errors across VM boundaries
 pub mod error;
 /// Wrappers for host and guest functions.

@@ -24,9 +24,10 @@ use quote::{format_ident, quote};
 use syn::Ident;
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
-    kebab_to_cons, kebab_to_exports_name, kebab_to_flags_const, kebab_to_fn, kebab_to_getter,
-    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, InterfaceDirection, ResourceItemName, State, WitName, find_colliding_import_names,
+    import_member_names, kebab_to_cons, kebab_to_exports_name, kebab_to_flags_const, kebab_to_fn,
+    kebab_to_getter, kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var,
+    split_wit_name,
 };
 use crate::etypes::{
     self, Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance,
@@ -35,12 +36,23 @@ use crate::etypes::{
 
 /// When referring to an instance or resource trait, emit a token
 /// stream that instantiates any types it is parametrized by with our
-/// own best understanding of how to name the relevant type variables
+/// own best understanding of how to name the relevant type variables,
+/// followed by the direction we are referring from.
 fn emit_tvis(s: &mut State, tvs: Vec<u32>) -> TokenStream {
-    let tvs = tvs
+    let dir = s.direction;
+    emit_tvis_at(s, tvs, dir)
+}
+
+/// [`emit_tvis`] for a trait whose direction is fixed by where its wit item
+/// is declared rather than by where we refer to it from.
+fn emit_tvis_at(s: &mut State, tvs: Vec<u32>, dir: InterfaceDirection) -> TokenStream {
+    let mut tvs = tvs
         .iter()
         .map(|tv| emit_var_ref(s, &Tyvar::Bound(*tv)))
         .collect::<Vec<_>>();
+    if let Some(d) = s.direction_arg_at(dir) {
+        tvs.push(d);
+    }
     if !tvs.is_empty() {
         quote! { <#(#tvs),*> }
     } else {
@@ -132,7 +144,13 @@ fn emit_resource_ref(s: &mut State, n: u32, path: Vec<ImportExport>) -> TokenStr
     trait_path.push(instance_mod.clone());
     trait_path.push(rtrait.clone());
     let t = s.resolve_trait_immut(true, &trait_path);
-    let tvis = emit_tvis(s, t.tv_idxs());
+    // A resource belongs to the interface that declares it, so one on an
+    // imported instance stays imported even where an export mentions it.
+    let tvis = if instance.imported() {
+        emit_tvis_at(s, t.tv_idxs(), InterfaceDirection::Imported)
+    } else {
+        emit_tvis(s, t.tv_idxs())
+    };
     let trait_ref = if tns.is_empty() {
         quote! { #rp #instance_mod::#rtrait }
     } else {
@@ -367,11 +385,9 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
                     }
                 } else {
                     let vr = emit_var_ref(s, tv);
-                    if s.is_export {
-                        quote! { &#vr }
-                    } else {
-                        quote! { ::hyperlight_common::resource::BorrowedResourceGuard<#vr> }
-                    }
+                    let dp = s.direction_path();
+                    let d = s.direction_marker();
+                    quote! { <#d as #dp::InterfaceDirection>::Borrow<'_, #vr> }
                 }
             }
         },
@@ -573,10 +589,16 @@ pub fn emit_func_param(s: &mut State, p: &Param) -> TokenStream {
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
 pub fn emit_func_result(s: &mut State, r: &etypes::Result<'_>) -> TokenStream {
-    match r {
+    let result = match r {
         Some(vt) => emit_value(s, vt),
         None => quote! { () },
+    };
+    if s.is_guest {
+        return result;
     }
+    let dp = s.direction_path();
+    let d = s.direction_marker();
+    quote! { <#d as #dp::InterfaceDirection>::CallResult<#result> }
 }
 
 /// Emit a Rust typeversion of a component function type. This is only
@@ -654,8 +676,7 @@ fn emit_type_alias<F: Fn(&mut State) -> TokenStream>(
 /// Emit (via returning) a Rust trait item corresponding to this
 /// extern decl
 ///
-/// See note on emit.rs push_origin for the difference between
-/// origin_was_export and s.is_export.
+/// See note on emit.rs push_origin for what origin_was_export means.
 fn emit_extern_decl<'a, 'b, 'c>(
     origin_was_export: bool,
     s: &'c mut State<'a, 'b>,
@@ -681,6 +702,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
                 FnName::Associated(r, n) => {
                     let mut s = s.helper();
                     s.cur_trait = Some(r.clone());
+                    s.direction = InterfaceDirection::Generic;
+                    let dp = s.direction_param();
+                    s.cur_trait().direction = dp;
                     let mut needs_vars = BTreeSet::new();
                     let mut sv = s.with_needs_vars(&mut needs_vars);
                     let params = ft
@@ -746,6 +770,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         s.add_helper_supertrait(rn.clone());
                         let mut s = s.helper();
                         s.cur_trait = Some(rn.clone());
+                        s.direction = InterfaceDirection::Generic;
+                        let dp = s.direction_param();
+                        s.cur_trait().direction = dp;
                         s.cur_trait().items.extend(quote! {
                             type T: ::core::marker::Send;
                         });
@@ -762,16 +789,8 @@ fn emit_extern_decl<'a, 'b, 'c>(
             emit_instance(&mut s, wn.clone(), it);
 
             let nsids = wn.namespace_idents();
-            let repr = s.r#trait(&nsids, kebab_to_type(wn.name));
-            let vs = if !repr.tvs.is_empty() {
-                let vs = repr.tvs.clone();
-                let tvs = vs
-                    .iter()
-                    .map(|(_, (tv, _))| emit_var_ref(&mut s, &Tyvar::Bound(tv.unwrap())));
-                quote! { <#(#tvs),*> }
-            } else {
-                TokenStream::new()
-            };
+            let repr_tvs = s.r#trait(&nsids, kebab_to_type(wn.name)).tv_idxs();
+            let vs = emit_tvis(&mut s, repr_tvs);
 
             let (member_tn, member_getter) = if origin_was_export {
                 (kebab_to_type(wn.name), kebab_to_getter(wn.name))
@@ -821,6 +840,12 @@ fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Inst
         // emitting tokens.
         return;
     }
+
+    // A world can import and export the same interface, so the trait is
+    // generic over direction and each use site picks the marker.
+    s.direction = InterfaceDirection::Generic;
+    let dp = s.direction_param();
+    s.cur_trait().direction = dp;
 
     let mut needs_vars = BTreeSet::new();
     let mut sv = s.with_needs_vars(&mut needs_vars);
@@ -882,6 +907,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         .collect::<VecDeque<_>>();
     s.cur_trait = Some(import_name.clone());
     s.colliding_import_names = find_colliding_import_names(&ct.imports);
+    s.direction = InterfaceDirection::Imported;
     let imports = ct
         .imports
         .iter()
@@ -891,7 +917,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
 
     s.adjust_vars(ct.instance.evars.len() as u32);
     s.import_param_var = Some(format_ident!("I"));
-    s.is_export = true;
+    s.direction = InterfaceDirection::Exported;
 
     let export_name = kebab_to_exports_name(wn.name);
     *s.bound_vars = ct

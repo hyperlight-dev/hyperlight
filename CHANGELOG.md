@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* **Breaking:** `host_bindgen!` returns `hyperlight_host::Result` from every
+  guest-implemented function instead of panicking when the guest traps or the
+  call fails.
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.
   `SandboxConfiguration::guest_msrs` declares the MSRs a guest depends on:
   declared MSRs are captured in a snapshot and restored, while every other MSR
