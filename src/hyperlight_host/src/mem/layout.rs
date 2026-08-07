@@ -57,7 +57,7 @@ use tracing::{Span, instrument};
 use super::memory_region::MemoryRegionType::{self, Code, Heap, InitData, Peb};
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion, MemoryRegion_,
-    MemoryRegionFlags, MemoryRegionKind, MemoryRegionVecBuilder,
+    MemoryRegionFlags, MemoryRegionVecBuilder,
 };
 #[cfg(readable_shared_mem)]
 use super::shared_mem::HostSharedMemory;
@@ -457,11 +457,8 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
-        &self,
-        host_base: K::HostBaseType,
-    ) -> Result<Vec<MemoryRegion_<K>>> {
-        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, host_base);
+    pub(crate) fn get_memory_regions(&self) -> Result<Vec<MemoryRegion_<GuestMemoryRegion>>> {
+        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, Self::BASE_ADDRESS);
 
         // code
         let peb_offset = builder.push_page_aligned(
@@ -579,7 +576,7 @@ impl SandboxMemoryLayout {
         let load_addr = self.get_guest_code_address() as u64;
         let code_virt_base = if is_pie { load_addr } else { elf_base_va };
 
-        let mut regions = self.get_memory_regions_::<GuestMemoryRegion>(Self::BASE_ADDRESS)?;
+        let mut regions = self.get_memory_regions()?;
 
         if !is_pie {
             let code_virt_end = code_virt_base.checked_add(loaded_size).ok_or_else(|| {

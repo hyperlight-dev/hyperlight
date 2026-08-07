@@ -863,7 +863,7 @@ mod tests {
     use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT};
     use crate::hypervisor::virtual_machine::VirtualMachine;
     use crate::mem::layout::SandboxMemoryLayout;
-    use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
+    use crate::mem::memory_region::MemoryRegionFlags;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
     use crate::mem::ptr::RawPtr;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
@@ -1425,11 +1425,7 @@ mod tests {
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
 
-        for rgn in layout
-            .get_memory_regions_::<GuestMemoryRegion>(SandboxMemoryLayout::BASE_ADDRESS)
-            .unwrap()
-            .iter()
-        {
+        for rgn in layout.get_memory_regions().unwrap().iter() {
             let readable = rgn.flags.contains(MemoryRegionFlags::READ);
             let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
