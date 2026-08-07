@@ -372,8 +372,8 @@ impl Snapshot {
             };
 
             let mapping = Mapping {
-                phys_base: rgn.guest_region.start as u64,
-                virt_base: rgn.guest_virt_addr as u64,
+                phys_base: rgn.host_region.start as u64,
+                virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
                 kind,
             };

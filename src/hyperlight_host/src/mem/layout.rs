@@ -579,10 +579,16 @@ impl SandboxMemoryLayout {
         let load_addr = self.get_guest_code_address() as u64;
         let code_virt_base = if is_pie { load_addr } else { elf_base_va };
 
-        let mut regions = self.get_memory_regions_::<GuestMemoryRegion>(())?;
+        let mut regions = self.get_memory_regions_::<GuestMemoryRegion>(Self::BASE_ADDRESS)?;
 
         if !is_pie {
-            let code_virt_end = code_virt_base + loaded_size;
+            let code_virt_end = code_virt_base.checked_add(loaded_size).ok_or_else(|| {
+                new_error!(
+                    "Code mapping overflow: base {:#x} + size {:#x}",
+                    code_virt_base,
+                    loaded_size
+                )
+            })?;
             for rgn in regions.iter() {
                 if rgn.region_type == MemoryRegionType::Code {
                     continue;
@@ -602,10 +608,12 @@ impl SandboxMemoryLayout {
             }
         }
 
-        // Set the Code region's guest_virt_addr to code_virt_base.
+        // Override the Code region's GVA (guest_region) to code_virt_base.
+        // host_region retains the GPA from the builder.
         for rgn in regions.iter_mut() {
             if rgn.region_type == MemoryRegionType::Code {
-                rgn.guest_virt_addr = code_virt_base as usize;
+                let len = rgn.guest_region.len();
+                rgn.guest_region = code_virt_base as usize..(code_virt_base as usize + len);
             }
         }
 

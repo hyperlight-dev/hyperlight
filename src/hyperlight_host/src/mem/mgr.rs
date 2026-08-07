@@ -656,7 +656,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
                         regions.push(CrashDumpRegion {
                             guest_region: virt_base..virt_end,
-                            guest_virt_addr: virt_base,
                             host_region: host_base..host_base + host_len,
                             flags,
                             region_type,

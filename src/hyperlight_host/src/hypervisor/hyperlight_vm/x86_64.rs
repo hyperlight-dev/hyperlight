@@ -1426,7 +1426,7 @@ mod tests {
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
 
         for rgn in layout
-            .get_memory_regions_::<GuestMemoryRegion>(())
+            .get_memory_regions_::<GuestMemoryRegion>(SandboxMemoryLayout::BASE_ADDRESS)
             .unwrap()
             .iter()
         {
@@ -1434,7 +1434,7 @@ mod tests {
             let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
             let mapping = Mapping {
-                phys_base: rgn.guest_region.start as u64,
+                phys_base: rgn.host_region.start as u64,
                 virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
                 kind: MappingKind::Basic(BasicMapping {

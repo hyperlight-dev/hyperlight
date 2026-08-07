@@ -1799,7 +1799,6 @@ fn memory_region_types_are_publicly_accessible() {
         let base: <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType = 0x1000;
         let _region = MemoryRegion_::<HostGuestMemoryRegion> {
             guest_region: 0x1000..0x2000,
-            guest_virt_addr: 0x1000,
             host_region: base..<HostGuestMemoryRegion as MemoryRegionKind>::add(base, 0x1000),
             flags: MemoryRegionFlags::READ,
             region_type: MemoryRegionType::Code,
@@ -1820,7 +1819,6 @@ fn memory_region_types_are_publicly_accessible() {
         };
         let _region = MemoryRegion_::<HostGuestMemoryRegion> {
             guest_region: 0x1000..0x2000,
-            guest_virt_addr: 0x1000,
             host_region: host_base
                 ..<HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, 0x1000),
             flags: MemoryRegionFlags::READ,

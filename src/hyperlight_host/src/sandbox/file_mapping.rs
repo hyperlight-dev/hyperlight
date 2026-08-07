@@ -151,7 +151,6 @@ impl PreparedFileMapping {
                 Ok(MemoryRegion {
                     host_region: host_base..host_end,
                     guest_region: guest_start..guest_end,
-                    guest_virt_addr: guest_start,
                     flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
                     region_type: MemoryRegionType::MappedFile,
                 })
@@ -172,7 +171,6 @@ impl PreparedFileMapping {
                     host_region: *mmap_base as usize
                         ..(*mmap_base as usize).wrapping_add(*mmap_size),
                     guest_region: guest_start..guest_end,
-                    guest_virt_addr: guest_start,
                     flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
                     region_type: MemoryRegionType::MappedFile,
                 })
