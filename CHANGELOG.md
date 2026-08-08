@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Reset XCR0 during x86 snapshot restore by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1718
 * Reseed guest libc `rand()` and `random()` after restoring a snapshot to avoid multiple sandboxes sharing PRNG state by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1667
 * Validate ELF program headers in `ElfInfo::new()` to prevent host process abort from malformed guest binaries. PT_LOAD segments are now bounds-checked, `base_va`/`va_size` are stored as fields, and `load_at()` uses fully checked arithmetic by @danbugs
+* `MultiUseSandbox::from_snapshot` now honours the guest log level set via `SandboxConfiguration::set_max_guest_log_level` instead of ignoring it and falling back to `RUST_LOG` by @sethryanrollins in https://github.com/hyperlight-dev/hyperlight/pull/1699
 
 ## [v0.16.0] - 2026-06-26
 
