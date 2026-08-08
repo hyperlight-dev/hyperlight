@@ -37,6 +37,7 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
+    let max_guest_log_level = u_sbox.config.get_max_guest_log_level();
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
 
     // Get the host page size. Narrowed to u32 because the guest ABI
@@ -100,7 +101,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         seed,
         &mut hshm,
         &u_sbox.host_funcs,
-        u_sbox.max_guest_log_level,
+        max_guest_log_level,
         #[cfg(gdb)]
         dbg_mem_access_hdl,
     )

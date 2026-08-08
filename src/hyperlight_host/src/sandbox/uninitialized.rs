@@ -70,7 +70,6 @@ pub struct UninitializedSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
     pub(crate) mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
-    pub(crate) max_guest_log_level: Option<LevelFilter>,
     pub(crate) config: SandboxConfiguration,
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
@@ -218,7 +217,6 @@ impl UninitializedSandbox {
         let sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
-            max_guest_log_level: None,
             config: sandbox_cfg,
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
@@ -351,9 +349,9 @@ impl UninitializedSandbox {
     /// Sets the maximum log level for guest code execution.
     ///
     /// If not set, the log level is determined by the `RUST_LOG` environment variable,
-    /// defaulting to [`LevelFilter::Error`] if unset.
+    /// defaulting to [`LevelFilter::ERROR`] if unset.
     pub fn set_max_guest_log_level(&mut self, log_level: LevelFilter) {
-        self.max_guest_log_level = Some(log_level);
+        self.config.set_max_guest_log_level(log_level);
     }
 
     /// Registers a host function that the guest can call.
