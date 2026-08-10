@@ -114,14 +114,12 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 /// The fixed transport prefix contains one page-backed ring arena and both
 /// page-backed buffer pools. The result saturates at [`usize::MAX`].
 pub fn min_scratch_size(
-    input_data_size: usize,
-    output_data_size: usize,
     g2h_queue_size: usize,
     h2g_queue_size: usize,
     g2h_pool_pages: usize,
     h2g_pool_pages: usize,
 ) -> usize {
-    let size = arch::min_scratch_size(input_data_size, output_data_size).and_then(|fixed| {
+    let size = arch::min_scratch_size().and_then(|fixed| {
         let g2h = QueueDims::new(g2h_queue_size, g2h_pool_pages)?;
         let h2g = QueueDims::new(h2g_queue_size, h2g_pool_pages)?;
 
@@ -352,18 +350,18 @@ mod tests {
 
     #[test]
     fn minimum_scratch_includes_ring_arena_and_pools() {
-        let fixed = arch::min_scratch_size(0, 0).unwrap();
+        let fixed = arch::min_scratch_size().unwrap();
         let transport_pages = 1 + 8 + 4;
 
         assert_eq!(
             fixed + transport_pages * crate::vmem::PAGE_SIZE,
-            min_scratch_size(0, 0, 64, 32, 8, 4)
+            min_scratch_size(64, 32, 8, 4)
         );
     }
 
     #[test]
     fn minimum_scratch_saturates_on_overflow() {
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, 64, 32, usize::MAX, 4));
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, usize::MAX, 32, 8, 4));
+        assert_eq!(usize::MAX, min_scratch_size(64, 32, usize::MAX, 4));
+        assert_eq!(usize::MAX, min_scratch_size(usize::MAX, 32, 8, 4));
     }
 }
