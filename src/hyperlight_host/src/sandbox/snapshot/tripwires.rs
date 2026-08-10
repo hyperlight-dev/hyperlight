@@ -12,12 +12,14 @@
 //! When an assertion fires, see `docs/snapshot-versioning.md`.
 
 use super::file::{
-    MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, OCI_LAYOUT_VERSION, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, MT_TRANSPORT_CURRENT, OCI_LAYOUT_VERSION,
+    SNAPSHOT_ABI_VERSION,
 };
 
 const EXPECTED_ABI_VERSION: u32 = 3;
 const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v2+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v1";
+const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
 
 /// `assert!` with the shared tripwire failure message. The message must
@@ -37,6 +39,7 @@ const _: () = {
     abi_assert!(SNAPSHOT_ABI_VERSION == EXPECTED_ABI_VERSION);
     abi_assert!(str_eq(MT_CONFIG_CURRENT, EXPECTED_MT_CONFIG));
     abi_assert!(str_eq(MT_SNAPSHOT_CURRENT, EXPECTED_MT_SNAPSHOT));
+    abi_assert!(str_eq(MT_TRANSPORT_CURRENT, EXPECTED_MT_TRANSPORT));
     abi_assert!(str_eq(OCI_LAYOUT_VERSION, EXPECTED_OCI_LAYOUT_VERSION));
 };
 

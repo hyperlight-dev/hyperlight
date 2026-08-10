@@ -567,40 +567,6 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn corrupt_output_size_prefix_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputSizePrefix", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts size prefix, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("SharedMemory(Stack(CorruptPrefix(4294967295, 8)))"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
-fn corrupt_output_back_pointer_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputBackPointer", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts back-pointer, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("SharedMemory(Stack(CorruptBackPointer(57005, 8)))"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
 fn guest_panic_no_alloc() {
     let heap_size = 128 * 1024;
 

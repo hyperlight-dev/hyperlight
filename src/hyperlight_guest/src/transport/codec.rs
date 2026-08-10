@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Guest G2H response decoding.
+//! Guest-side virtqueue message decoding.
 
 use alloc::vec::Vec;
 
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
 use hyperlight_common::transport::{
     MsgHeader, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
@@ -15,21 +16,28 @@ use hyperlight_common::virtq::Segments;
 use crate::bail;
 use crate::error::{GuestErrorContext, Result};
 
-/// Decode `header | size-prefixed control | external values`.
+/// Decode one H2G guest-function request payload.
+///
+/// Chunked external values retain their H2G slot owners until their final
+/// [`Bytes`] clone drops.
+pub(super) fn decode_request(cid: u32, segments: Segments) -> Result<(u32, FunctionCall)> {
+    if cid == 0 {
+        bail!("Guest function request has correlation ID zero");
+    }
+
+    let (control, mut external_values) = decode_payload(segments)?;
+    let call = FunctionCall::decode(&control, &mut external_values)
+        .with_context(|| "failed to decode guest function request")?;
+
+    Ok((cid, call))
+}
+
+/// Decode one G2H host-function response.
 ///
 /// Contiguous byte values are flattened into `Vec<u8>`. Chunked values retain
-/// their transport-backed `Bytes` owners and return pool slots when dropped.
-pub(super) fn decode(mut segments: Segments, cid: u32) -> Result<FunctionCallResult> {
-    // Validate the transport envelope before interpreting the response body.
-    let header = segments
-        .split_to(MsgHeader::SIZE)
-        .context("host function response is missing its header")?
-        .into_bytes();
-
-    let Some(header) = MsgHeader::from_bytes(&header) else {
-        bail!("Host function response has an invalid header");
-    };
-
+/// their transport-backed [`Bytes`] owners.
+pub(super) fn decode_response(segments: Segments, cid: u32) -> Result<FunctionCallResult> {
+    let (header, payload) = split_header(segments)?;
     if header.msg_kind() != Ok(MsgKind::Response) {
         bail!("Host function response has an invalid message kind");
     }
@@ -38,30 +46,44 @@ pub(super) fn decode(mut segments: Segments, cid: u32) -> Result<FunctionCallRes
         bail!("Host function response correlation ID mismatch");
     }
 
-    if header.payload_len as usize != segments.len() {
-        bail!(
-            "Host function response declares {} payload bytes, received {}",
-            header.payload_len,
-            segments.len()
-        );
+    let (control, mut external_values) = decode_payload(payload)?;
+    FunctionCallResult::decode(&control, &mut external_values)
+        .with_context(|| "failed to decode host function response")
+}
+
+fn split_header(mut segments: Segments) -> Result<(MsgHeader, Segments)> {
+    let header = segments
+        .split_to(MsgHeader::SIZE)
+        .context("virtqueue message is missing its header")?
+        .into_bytes();
+
+    let Some(header) = MsgHeader::from_bytes(&header) else {
+        bail!("Virtqueue message has an invalid header");
+    };
+
+    if usize::try_from(header.payload_len).ok() != Some(segments.len()) {
+        bail!("Virtqueue message payload length mismatch");
     }
 
-    // Flatten only the FlatBuffer control data. External byte values remain
-    // segmented for `SegmentSource`.
+    Ok((header, segments))
+}
+
+/// Copy FlatBuffer control data while retaining external payload owners.
+fn decode_payload(mut segments: Segments) -> Result<(Vec<u8>, SegmentSource)> {
     let prefix = segments
         .split_to(SIZE_PREFIX_LEN)
-        .context("host function response is missing its size prefix")?
+        .context("virtqueue message is missing its size prefix")?
         .into_bytes();
 
     let payload_len =
-        size_prefix_payload_len(&prefix).context("host function response has an invalid prefix")?;
+        size_prefix_payload_len(&prefix).context("virtqueue message has an invalid prefix")?;
 
     let payload = segments
         .split_to(payload_len)
-        .context("host function response control data is truncated")?;
+        .context("virtqueue message control data is truncated")?;
 
     let control_len =
-        size_prefixed_len(payload_len).context("host function response control length overflow")?;
+        size_prefixed_len(payload_len).context("virtqueue message control length overflow")?;
 
     let mut control = Vec::with_capacity(control_len);
     control.extend_from_slice(&prefix);
@@ -70,9 +92,7 @@ pub(super) fn decode(mut segments: Segments, cid: u32) -> Result<FunctionCallRes
         control.extend_from_slice(segment);
     }
 
-    let mut external_values = SegmentSource::new(segments);
-    FunctionCallResult::decode_external(&control, &mut external_values)
-        .with_context(|| "failed to decode host function response")
+    Ok((control, SegmentSource::new(segments)))
 }
 
 /// Supplies complete logical external values from transport segments.
@@ -112,7 +132,7 @@ impl ExternalValueSource for SegmentSource {
     fn finish(&mut self) -> anyhow::Result<()> {
         if !self.segments.is_empty() {
             anyhow::bail!(
-                "Host function response has {} trailing external bytes",
+                "Virtqueue message has {} trailing external bytes",
                 self.segments.len()
             );
         }
@@ -139,9 +159,7 @@ mod tests {
         let mut builder = FlatBufferBuilder::new();
         let mut external_values = ExternalValues::new();
 
-        let control = result
-            .encode_external(&mut builder, &mut external_values)
-            .unwrap();
+        let control = result.encode(&mut builder, &mut external_values).unwrap();
 
         let payload_len = u32::try_from(control.len() + external_values.total_len()).unwrap();
         let header = MsgHeader::new(MsgKind::Response, 7, payload_len);
@@ -152,7 +170,7 @@ mod tests {
             external,
         ]);
 
-        let decoded = decode(segments, 7).unwrap().into_inner().unwrap();
+        let decoded = decode_response(segments, 7).unwrap().into_inner().unwrap();
         let ReturnValue::ByteChunks(chunks) = decoded else {
             panic!("expected ByteChunks response");
         };
@@ -168,9 +186,7 @@ mod tests {
         let mut builder = FlatBufferBuilder::new();
         let mut external_values = ExternalValues::new();
 
-        let control = result
-            .encode_external(&mut builder, &mut external_values)
-            .unwrap();
+        let control = result.encode(&mut builder, &mut external_values).unwrap();
 
         let payload_len = u32::try_from(control.len()).unwrap();
 
@@ -182,9 +198,9 @@ mod tests {
             ])
         };
 
-        assert!(decode(segments(payload_len), 7).is_ok());
+        assert!(decode_response(segments(payload_len), 7).is_ok());
         for length in [payload_len - 1, payload_len + 1] {
-            assert!(decode(segments(length), 7).is_err());
+            assert!(decode_response(segments(length), 7).is_err());
         }
     }
 
@@ -203,5 +219,36 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].as_ref(), b"d");
         assert_eq!(chunks[0].as_ptr(), second_ptr.wrapping_add(1));
+    }
+
+    #[test]
+    fn request_byte_chunks_retain_transport_storage() {
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
+        use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+
+        let external = Bytes::from(vec![1, 2, 3, 4]);
+        let external_ptr = external.as_ptr();
+        let call = FunctionCall::new(
+            "echo".into(),
+            Some(vec![ParameterValue::ByteChunks(vec![external.clone()])]),
+            FunctionCallType::Guest,
+            ReturnType::ByteChunks,
+        );
+        let mut builder = FlatBufferBuilder::new();
+        let mut external_values = ExternalValues::new();
+        let control = call.encode(&mut builder, &mut external_values).unwrap();
+        let segments = Segments::new([Bytes::copy_from_slice(control), external]);
+
+        let (cid, decoded) = decode_request(9, segments).unwrap();
+        let ParameterValue::ByteChunks(chunks) =
+            decoded.parameters.unwrap().into_iter().next().unwrap()
+        else {
+            panic!("expected ByteChunks parameter");
+        };
+
+        assert_eq!(cid, 9);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].as_ptr(), external_ptr);
+        assert_eq!(chunks[0].as_ref(), &[1, 2, 3, 4]);
     }
 }
