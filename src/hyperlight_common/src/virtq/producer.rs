@@ -2,6 +2,7 @@
 // Copyright 2026 The Hyperlight Authors.
 
 use alloc::collections::VecDeque;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use bytes::Bytes;
@@ -80,6 +81,86 @@ pub(crate) struct Inflight {
     chain: BufferChain,
 }
 
+/// Compact in-flight chains with constant-time descriptor-ID lookup.
+///
+/// Descriptor IDs span the full ring, but live chains are normally bounded by
+/// the much smaller buffer pool. `by_id` maps each descriptor ID to a packed
+/// `live` index. Removal uses `swap_remove` and repairs the moved entry's map.
+struct InflightTable {
+    by_id: Vec<u16>,
+    live: Vec<Inflight>,
+}
+
+impl InflightTable {
+    const VACANT: u16 = u16::MAX;
+
+    fn new(ring_len: usize) -> Self {
+        Self {
+            by_id: vec![Self::VACANT; ring_len],
+            live: Vec::new(),
+        }
+    }
+
+    fn try_reserve_one(&mut self) -> Result<(), VirtqError> {
+        if self.live.len() > self.by_id.len() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        if self.live.len() == self.by_id.len() {
+            return Err(VirtqError::Backpressure);
+        }
+
+        // Producers with one live chain should not pay for four large inline
+        // chain records.
+        let result = if self.live.capacity() == 0 {
+            self.live.try_reserve_exact(1)
+        } else {
+            self.live.try_reserve(1)
+        };
+
+        result.map_err(|_| VirtqError::BookkeepingAllocation)
+    }
+
+    fn contains(&self, id: u16) -> bool {
+        self.by_id
+            .get(id as usize)
+            .is_some_and(|slot| *slot != Self::VACANT)
+    }
+
+    fn insert(&mut self, inflight: Inflight) {
+        let id = inflight.token.id;
+        debug_assert!(!self.contains(id));
+        debug_assert!(self.live.len() < Self::VACANT as usize);
+
+        let slot = self.live.len() as u16;
+        self.live.push(inflight);
+        self.by_id[id as usize] = slot;
+    }
+
+    fn remove(&mut self, id: u16) -> Option<Inflight> {
+        let slot = self.by_id.get_mut(id as usize)?;
+        if *slot == Self::VACANT {
+            return None;
+        }
+
+        let index = usize::from(*slot);
+        *slot = Self::VACANT;
+
+        let removed = self.live.swap_remove(index);
+        if let Some(moved) = self.live.get(index) {
+            self.by_id[moved.token.id as usize] = index as u16;
+        }
+
+        Some(removed)
+    }
+
+    fn pop(&mut self) -> Option<Inflight> {
+        let inflight = self.live.pop()?;
+        self.by_id[inflight.token.id as usize] = Self::VACANT;
+        Some(inflight)
+    }
+}
+
 /// A high-level virtqueue producer (driver side).
 ///
 /// The producer sends chains to the consumer (device), and receives used chains.
@@ -117,7 +198,7 @@ pub struct VirtqProducer<M, N, P> {
     notifier: N,
     pool: P,
     next_token: u32,
-    inflight: Vec<Option<Inflight>>,
+    inflight: InflightTable,
     pending: VecDeque<UsedChain>,
 }
 
@@ -138,14 +219,15 @@ where
     pub fn new(layout: Layout, mem: M, notifier: N, pool: P) -> Self {
         let inner = RingProducer::new(layout, mem);
         let ring_len = inner.len();
+        let inflight = InflightTable::new(ring_len);
 
         Self {
             inner,
             pool,
             notifier,
+            inflight,
             next_token: 0,
-            inflight: (0..ring_len).map(|_| None).collect(),
-            pending: VecDeque::with_capacity(ring_len),
+            pending: VecDeque::new(),
         }
     }
 
@@ -210,17 +292,19 @@ where
     }
 
     fn publish(&mut self, send: SendChain<M, P>) -> Result<Token, VirtqError> {
+        self.inflight.try_reserve_one()?;
+
         let token_id = self.next_token;
         let id = self.inner.submit_available(send.chain())?;
         let token = Token { seq: token_id, id };
 
         // A free descriptor id must never already be tracked as inflight.
-        if self.inflight[id as usize].is_some() {
+        if self.inflight.contains(id) {
             return Err(VirtqError::InvalidState);
         }
 
         let inf = send.into_inflight(token);
-        self.inflight[id as usize] = Some(inf);
+        self.inflight.insert(inf);
         self.next_token = self.next_token.wrapping_add(1);
 
         Ok(token)
@@ -262,6 +346,44 @@ where
     #[inline]
     pub fn num_free(&self) -> usize {
         self.inner.num_free()
+    }
+
+    /// Number of submitted descriptors not yet polled as used.
+    #[inline]
+    pub fn num_inflight(&self) -> usize {
+        self.inner.num_inflight()
+    }
+
+    /// Reset a stopped producer and release transport-owned allocations.
+    ///
+    /// The peer must not access the ring until its consumer is reset. Buffered
+    /// writable completions are guest-owned and make this operation fail.
+    /// Owner-backed payloads already returned to callers are not tracked as
+    /// in-flight and remain allocated.
+    pub fn reset(&mut self) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        self.inner.reset()?;
+        self.next_token = 0;
+
+        let mut maybe_err = None;
+
+        // Drain all in-flight chains and retire their allocations. This is a best-effort
+        while let Some(inflight) = self.inflight.pop() {
+            let ret = self.retire_elems(inflight.chain.elems().iter().copied());
+            if let Err(err) = ret
+                && maybe_err.is_none()
+            {
+                maybe_err = Some(err);
+            }
+        }
+
+        match maybe_err {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Configure event suppression for used buffer notifications.
@@ -340,6 +462,9 @@ where
         while let Some(chain) = self.poll_ring()? {
             if matches!(chain, UsedChain::Data(_, _)) {
                 debug_assert!(self.pending.len() < self.inner.len());
+                self.pending
+                    .try_reserve(1)
+                    .map_err(|_| VirtqError::BookkeepingAllocation)?;
                 self.pending.push_back(chain);
             }
             count += 1;
@@ -357,8 +482,7 @@ where
 
         let inf = self
             .inflight
-            .get_mut(used.id as usize)
-            .and_then(Option::take)
+            .remove(used.id)
             .ok_or(VirtqError::InvalidState)?;
 
         let written = used.len as usize;
@@ -987,6 +1111,119 @@ mod tests {
         consumer: &mut VirtqConsumer<M, N>,
     ) -> (RecvChain<M>, ReplyChain<M>) {
         consumer.poll(1024).unwrap().unwrap()
+    }
+
+    fn inflight(seq: u32, id: u16) -> Inflight {
+        let chain = BufferChainBuilder::new()
+            .readable(0x1000 + u64::from(id) * 0x10, 8)
+            .build()
+            .unwrap();
+        Inflight {
+            token: Token { seq, id },
+            chain,
+        }
+    }
+
+    #[test]
+    fn inflight_table_repairs_moved_entry_after_removal() {
+        let mut table = InflightTable::new(16);
+        for (seq, id) in [(0, 3), (1, 7), (2, 5)] {
+            table.try_reserve_one().unwrap();
+            table.insert(inflight(seq, id));
+        }
+
+        assert_eq!(table.remove(7).unwrap().token.seq, 1);
+        assert!(!table.contains(7));
+        assert_eq!(table.remove(5).unwrap().token.seq, 2);
+        assert_eq!(table.remove(3).unwrap().token.seq, 0);
+        assert!(table.live.is_empty());
+        assert!(table.remove(7).is_none());
+    }
+
+    #[test]
+    fn producer_bookkeeping_starts_compact_and_lazy() {
+        let ring = make_ring(64);
+        let (producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        assert_eq!(producer.inflight.by_id.len(), ring.len());
+        assert!(producer.inflight.live.is_empty());
+        assert_eq!(producer.inflight.live.capacity(), 0);
+        assert_eq!(producer.pending.capacity(), 0);
+    }
+
+    #[test]
+    fn full_ring_still_reports_backpressure() {
+        let ring = make_ring(4);
+        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().readable(1).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let chain = producer.chain().readable(1).build().unwrap();
+        assert!(matches!(
+            producer.submit(chain),
+            Err(VirtqError::Backpressure)
+        ));
+    }
+
+    #[test]
+    fn reset_reclaims_inflight_slots_and_reuses_ring() {
+        let ring = make_ring(8);
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = SlotPool::new(SlotLayout::new(pool_base, 64, ring.len())).unwrap();
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(ring.layout(), mem, notifier, pool.clone());
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        assert_eq!(pool.num_free(), 0);
+
+        producer.reset().unwrap();
+
+        assert_eq!(producer.num_inflight(), 0);
+        assert_eq!(producer.num_free(), ring.len());
+        assert_eq!(pool.num_free(), ring.len());
+        assert!(producer.inflight.live.is_empty());
+        assert!(
+            producer
+                .inflight
+                .by_id
+                .iter()
+                .all(|slot| *slot == InflightTable::VACANT)
+        );
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+    }
+
+    #[test]
+    fn reset_rejects_buffered_writable_completion() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        let ReplyChain::Writable(mut reply) = reply else {
+            panic!("expected writable reply");
+        };
+
+        reply.write_all(b"retained").unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.reclaim().unwrap();
+
+        assert!(matches!(producer.reset(), Err(VirtqError::InvalidState)));
+
+        drop(producer.poll().unwrap().unwrap());
+        producer.reset().unwrap();
     }
 
     #[derive(Clone)]
