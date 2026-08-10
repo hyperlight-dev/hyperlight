@@ -152,7 +152,6 @@ mod buffer;
 mod consumer;
 mod desc;
 mod event;
-pub mod msg;
 mod pool;
 mod producer;
 mod ring;
