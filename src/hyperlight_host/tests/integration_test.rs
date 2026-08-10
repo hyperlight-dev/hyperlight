@@ -524,8 +524,8 @@ fn guest_malloc_abort() {
     });
 
     // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 128 * 1024;
-    let size_to_allocate = 256 * 1024;
+    let heap_size = 0x8000;
+    let size_to_allocate = 0x10000;
     assert!(
         size_to_allocate > heap_size,
         "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
@@ -568,7 +568,7 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 
 #[test]
 fn guest_panic_no_alloc() {
-    let heap_size = 128 * 1024;
+    let heap_size = 0x8000;
 
     let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
     with_rust_sandbox_from(configure, |mut sbox| {
@@ -579,15 +579,10 @@ fn guest_panic_no_alloc() {
             )
             .unwrap_err();
 
-        // Legacy transport may report its own allocation failure.
         assert!(
             matches!(
                 &res,
-                HyperlightError::GuestAborted(code, msg)
-                    if (*code == ErrorCode::UnknownError as u8
-                        && msg.contains("memory allocation of ")
-                        && msg.contains("bytes failed"))
-                        || *code == ErrorCode::MallocFailed as u8
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
             ),
             "unexpected error: {res:?}"
         );
@@ -1661,8 +1656,6 @@ fn fill_heap_and_cause_exception() {
 
         let err = result.unwrap_err();
         match &err {
-            // Legacy transport may report its own allocation failure.
-            HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8 => {}
             HyperlightError::GuestAborted(code, message) => {
                 assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
 
