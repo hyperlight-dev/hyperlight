@@ -2838,9 +2838,7 @@ fn round_trip_preserves_stack_top_gva() {
 
 #[test]
 fn round_trip_preserves_non_default_scratch_size() {
-    use crate::sandbox::SandboxConfiguration;
-
-    let custom_scratch = SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024;
+    let custom_scratch: usize = 256 * 1024;
     let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
         .scratch_size(custom_scratch)
         .build()
@@ -2861,8 +2859,8 @@ fn persisted_non_default_layout_loads_and_runs() {
     use crate::sandbox::SandboxConfiguration;
 
     let mut config = SandboxConfiguration::default();
-    config.set_input_data_size(0x8000);
-    config.set_output_data_size(0x8000);
+    config.set_g2h_pool_pages(16);
+    config.set_h2g_pool_pages(16);
     config.set_heap_size(0x40_000);
     config.set_scratch_size(0x90_000);
     let mut source = UninitializedSandbox::new(
@@ -2881,8 +2879,8 @@ fn persisted_non_default_layout_loads_and_runs() {
         .save(&path, &OciTag::new("latest").unwrap())
         .unwrap();
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
-    assert_eq!(loaded.layout().input_data_size(), 0x8000);
-    assert_eq!(loaded.layout().output_data_size(), 0x8000);
+    assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
+    assert_eq!(loaded.layout().get_h2g_pool_pages(), 16);
     assert_eq!(loaded.layout().heap_size(), 0x40_000);
     assert_eq!(loaded.layout().get_scratch_size(), 0x90_000);
 
@@ -3308,14 +3306,10 @@ fn read_blob_dir(
 fn from_snapshot_silently_ignores_layout_overrides() {
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
-    let original_input = snapshot.layout().input_data_size();
-    let original_output = snapshot.layout().output_data_size();
     let original_heap = snapshot.layout().heap_size();
     let original_scratch = snapshot.layout().get_scratch_size();
 
     let mut sbox2 = SandboxBuilder::from_snapshot(snapshot.clone())
-        .input_data_size(original_input * 2)
-        .output_data_size(original_output * 2)
         .heap_size((original_heap as u64) * 2)
         .scratch_size(original_scratch * 2)
         .build()
@@ -3324,8 +3318,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     sbox2.call::<i32>("GetStatic", ()).unwrap();
 
     let new_snap = sbox2.snapshot().unwrap();
-    assert_eq!(new_snap.layout().input_data_size(), original_input);
-    assert_eq!(new_snap.layout().output_data_size(), original_output);
     assert_eq!(new_snap.layout().heap_size(), original_heap);
     assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
 }

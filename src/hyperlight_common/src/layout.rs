@@ -113,12 +113,8 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 ///
 /// `transport_len` includes both rings and buffer pools.
 /// The result saturates at [`usize::MAX`].
-pub fn min_scratch_size(
-    input_data_size: usize,
-    output_data_size: usize,
-    transport_len: usize,
-) -> usize {
-    arch::min_scratch_size(input_data_size, output_data_size)
+pub fn min_scratch_size(transport_len: usize) -> usize {
+    arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))
         .unwrap_or(usize::MAX)
 }
@@ -349,15 +345,14 @@ mod tests {
 
     #[test]
     fn minimum_scratch_includes_ring_arena_and_pools() {
-        let fixed = arch::min_scratch_size(0, 0).unwrap();
+        let fixed = arch::min_scratch_size().unwrap();
         let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
 
-        assert_eq!(fixed + transport_len, min_scratch_size(0, 0, transport_len));
+        assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
     }
 
     #[test]
     fn minimum_scratch_saturates_on_overflow() {
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, usize::MAX));
-        assert_eq!(usize::MAX, min_scratch_size(usize::MAX, 1, 0));
+        assert_eq!(usize::MAX, min_scratch_size(usize::MAX));
     }
 }

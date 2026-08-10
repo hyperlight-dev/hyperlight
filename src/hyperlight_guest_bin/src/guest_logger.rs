@@ -2,11 +2,13 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use alloc::format;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
+use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
+use hyperlight_guest::transport;
 use log::{LevelFilter, Metadata, Record};
-
-use crate::GUEST_HANDLE;
 
 // this is private on purpose so that `log` can only be called though the `log!` macros.
 struct GuestLogger {}
@@ -25,11 +27,9 @@ impl log::Log for GuestLogger {
     fn enabled(&self, _: &Metadata) -> bool {
         true
     }
-
     fn log(&self, record: &Record) {
-        let handle = unsafe { GUEST_HANDLE };
         if self.enabled(record.metadata()) {
-            handle.log_message(
+            log_message(
                 record.level().into(),
                 format!("{}", record.args()).as_str(),
                 record.module_path().unwrap_or("Unknown"),
@@ -51,6 +51,40 @@ pub fn log_message(
     file: &str,
     line: u32,
 ) {
-    let handle = unsafe { GUEST_HANDLE };
-    handle.log_message(level, message, module_path, target, file, line);
+    let _send_to_host = || {
+        let log = GuestLogData::new(
+            message.to_string(),
+            module_path.to_string(),
+            level,
+            target.to_string(),
+            file.to_string(),
+            line,
+        );
+        let bytes: Vec<u8> = log
+            .try_into()
+            .expect("Failed to convert GuestLogData to bytes");
+
+        transport::with_ctx(|ctx| {
+            ctx.emit_log(&bytes)
+                .expect("Unable to send log data via virtq");
+        });
+    };
+
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
+    if hyperlight_guest_tracing::is_trace_enabled() {
+        tracing::trace!(
+            event = message,
+            level = ?level,
+            code.filepath = module_path,
+            caller = target,
+            source_file = file,
+            code.lineno = line,
+        );
+    } else {
+        _send_to_host();
+    }
+    #[cfg(not(all(feature = "trace_guest", target_arch = "x86_64")))]
+    {
+        _send_to_host();
+    }
 }
