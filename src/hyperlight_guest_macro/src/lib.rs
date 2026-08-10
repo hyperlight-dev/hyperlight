@@ -191,12 +191,12 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// use hyperlight_guest::error::Result;
 /// use hyperlight_guest::bail;
 /// use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
-/// use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+/// use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 /// #[dispatch]
-/// fn dispatch(fc: FunctionCall) -> Result<Vec<u8>> {
+/// fn dispatch(fc: FunctionCall) -> Result<ReturnValue> {
 ///     let name = &fc.function_name;
 ///     if name == "greet" {
-///         return Ok(get_flatbuffer_result("Hello, world!"));
+///         return Ok(ReturnValue::String("Hello, world!".into()));
 ///     }
 ///     bail!("Unknown function: {name}");
 /// }
@@ -228,9 +228,9 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         const _: () = {
             mod wrapper {
-                use #crate_name::__private::{FunctionCall, HyperlightGuestError, Vec};
+                use #crate_name::__private::{FunctionCall, HyperlightGuestError, ReturnValue};
                 #[unsafe(no_mangle)]
-                pub fn guest_dispatch_function(function_call: FunctionCall) -> ::core::result::Result<Vec<u8>, HyperlightGuestError> {
+                pub fn guest_dispatch_function(function_call: FunctionCall) -> ::core::result::Result<ReturnValue, HyperlightGuestError> {
                     super::#ident(function_call)
                 }
             }

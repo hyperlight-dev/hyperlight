@@ -29,14 +29,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `ChainBuilder::build()` allocates readable and writable requests.
   `writable_avail()` reserves available upper-tier slots within the descriptor
   budget. It may add zero slots to a nonempty chain.
-* Require guest logs and host function calls to use the guest-to-host
-  virtqueue protocol.
+* Require guest logs and all host and guest function calls to use virtqueues.
+* Keep registered Rust guest return values typed until transport encoding so
+  external byte results avoid intermediate FlatBuffer copies.
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+  rejects snapshots without transport state.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
 
 ### Fixed
 * Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
 
 ## [v0.17.0] - 2026-08-27
 

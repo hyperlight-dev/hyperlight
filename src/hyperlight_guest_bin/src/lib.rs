@@ -323,6 +323,7 @@ pub mod __private {
     pub use alloc::vec::Vec;
 
     pub use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+    pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
     pub use hyperlight_common::func::ResultType;
     pub use hyperlight_guest::error::HyperlightGuestError;
     pub use linkme;

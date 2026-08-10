@@ -2,6 +2,7 @@
 // Copyright 2026 The Hyperlight Authors.
 
 use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
 
 use bytes::Bytes;
@@ -184,6 +185,12 @@ pub enum ReplyChain<M: MemOps> {
     Ack(AckChain),
 }
 
+/// One polled chain and its matching completion capability.
+pub type PolledChain<M> = (RecvChain<M>, ReplyChain<M>);
+
+/// An exact batch returned by [`VirtqConsumer::poll_batch`].
+pub type PolledChains<M> = Vec<PolledChain<M>>;
+
 impl<M: MemOps> ReplyChain<M> {
     /// The token identifying this reply.
     #[inline]
@@ -248,6 +255,12 @@ impl<M: MemOps> WritableChain<M> {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.state.total()
+    }
+
+    /// Number of writable descriptors in this chain.
+    #[inline]
+    pub fn desc_count(&self) -> usize {
+        self.state.elems.len()
     }
 
     /// Number of bytes written so far.
@@ -440,11 +453,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     ///
     /// - [`VirtqError::BadChain`] - Descriptor chain format not recognized
     /// - [`VirtqError::RingError`] - Invalid ring state or memory access failure
-    #[allow(clippy::type_complexity)]
-    pub fn poll(
-        &mut self,
-        max_recv_len: usize,
-    ) -> Result<Option<(RecvChain<M>, ReplyChain<M>)>, VirtqError> {
+    pub fn poll(&mut self, max_recv_len: usize) -> Result<Option<PolledChain<M>>, VirtqError> {
         let (id, chain) = match self.inner.poll_available() {
             Ok(x) => x,
             Err(RingError::WouldBlock) => return Ok(None),
@@ -495,6 +504,61 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         };
 
         Ok(Some((chain, reply)))
+    }
+
+    /// Poll `count` chains while keeping at least `keep_avail` available.
+    ///
+    /// Returns `None` and restores the consumer's local state when fewer than
+    /// `count + keep_avail` chains are available. Complete each returned chain
+    /// through [`complete`](Self::complete).
+    ///
+    /// # Arguments
+    ///
+    /// * `count` - Exact number of chains to return.
+    /// * `keep_avail` - Minimum number of chains to leave available.
+    /// * `max_recv_len` - Maximum readable payload size accepted for each chain
+    ///   independently.
+    pub fn poll_batch(
+        &mut self,
+        count: usize,
+        keep_avail: usize,
+        max_recv_len: usize,
+    ) -> Result<Option<PolledChains<M>>, VirtqError> {
+        let Some(total) = count.checked_add(keep_avail) else {
+            return Ok(None);
+        };
+
+        // Every chain consumes at least one descriptor.
+        if total > self.inner.num_free() {
+            return Ok(None);
+        }
+
+        // Polling changes only local bookkeeping until a chain is completed.
+        let cp = self.inner.poll_checkpoint();
+        let next_token = self.next_token;
+
+        let mut batch_cp = None;
+        let mut polled = PolledChains::with_capacity(total);
+
+        while polled.len() < total {
+            if keep_avail != 0 && polled.len() == count {
+                batch_cp = Some((self.inner.poll_checkpoint(), self.next_token));
+            }
+
+            if let Some(chain) = self.poll(max_recv_len)? {
+                polled.push(chain);
+                continue;
+            }
+
+            self.rollback_polled(cp, next_token, polled)?;
+            return Ok(None);
+        }
+
+        if let Some((checkpoint, next_token)) = batch_cp {
+            self.rollback_polled(checkpoint, next_token, polled.drain(count..))?;
+        }
+
+        Ok(Some(polled))
     }
 
     /// Submit both halves of a received chain back to the ring.
@@ -612,6 +676,24 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
 
         self.inner.reset()?;
+        Ok(())
+    }
+
+    fn rollback_polled(
+        &mut self,
+        checkpoint: Checkpoint,
+        next_token: u32,
+        polled: impl IntoIterator<Item = PolledChain<M>>,
+    ) -> Result<(), VirtqError> {
+        // No chain handle may survive when its descriptor becomes pollable again.
+        let ids = polled
+            .into_iter()
+            .map(|(recv, _)| recv.token().id)
+            .collect::<SmallVec<[u16; 16]>>();
+
+        self.inner.rollback_polls(checkpoint, &ids)?;
+        self.next_token = next_token;
+
         Ok(())
     }
 }
@@ -944,6 +1026,157 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn test_poll_batch_rolls_back_partial_batch() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..2 {
+            let chain = producer.chain().writable(16).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let cursor = consumer.avail_cursor();
+        assert!(consumer.poll_batch(3, 0, 0).unwrap().is_none());
+        assert_eq!(consumer.avail_cursor(), cursor);
+        assert_eq!(consumer.inner.num_inflight(), 0);
+        assert_eq!(consumer.next_token, 0);
+        assert!(producer.poll().unwrap().is_none());
+
+        let reserved = consumer.poll_batch(2, 0, 0).unwrap().unwrap();
+        for (recv, reply) in reserved {
+            consumer.complete(recv, reply).unwrap();
+        }
+        assert!(producer.poll().unwrap().is_some());
+        assert!(producer.poll().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_poll_batch_keeps_chains_available() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..3 {
+            let chain = producer.chain().writable(16).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let polled = consumer.poll_batch(2, 1, 0).unwrap().unwrap();
+        assert_eq!(consumer.avail_cursor().head(), 2);
+        assert_eq!(consumer.inner.num_inflight(), 2);
+        assert_eq!(consumer.next_token, 2);
+
+        for (recv, reply) in polled {
+            consumer.complete(recv, reply).unwrap();
+        }
+
+        let (recv, reply) = consumer.poll(0).unwrap().unwrap();
+        assert_eq!(recv.token().seq, 2);
+        consumer.complete(recv, reply).unwrap();
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn test_poll_batch_rolls_back_when_keep_avail_is_unmet() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..2 {
+            let chain = producer.chain().writable(16).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let cursor = consumer.avail_cursor();
+        assert!(consumer.poll_batch(2, 1, 0).unwrap().is_none());
+        assert_eq!(consumer.avail_cursor(), cursor);
+        assert_eq!(consumer.inner.num_inflight(), 0);
+        assert_eq!(consumer.next_token, 0);
+
+        let polled = consumer.poll_batch(2, 0, 0).unwrap().unwrap();
+        for (recv, reply) in polled {
+            consumer.complete(recv, reply).unwrap();
+        }
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn test_poll_batch_preserves_existing_inflight_chain() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..3 {
+            let chain = producer.chain().writable(16).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let existing = consumer.poll(0).unwrap().unwrap();
+        let cursor = consumer.avail_cursor();
+        assert!(consumer.poll_batch(3, 0, 0).unwrap().is_none());
+        assert_eq!(consumer.avail_cursor(), cursor);
+        assert_eq!(consumer.inner.num_inflight(), 1);
+
+        let reserved = consumer.poll_batch(2, 0, 0).unwrap().unwrap();
+        consumer.complete(existing.0, existing.1).unwrap();
+        for (recv, reply) in reserved {
+            consumer.complete(recv, reply).unwrap();
+        }
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn test_poll_batch_rolls_back_multi_descriptor_chain() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        let chain = producer.chain().writable(8).writable(8).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let cursor = consumer.avail_cursor();
+        assert!(consumer.poll_batch(2, 0, 0).unwrap().is_none());
+        assert_eq!(consumer.avail_cursor(), cursor);
+        assert_eq!(consumer.inner.num_inflight(), 0);
+
+        let mut reserved = consumer.poll_batch(1, 0, 0).unwrap().unwrap();
+        let (recv, reply) = reserved.pop().unwrap();
+        let ReplyChain::Writable(writable) = &reply else {
+            panic!("expected writable chain");
+        };
+        assert_eq!(writable.desc_count(), 2);
+        consumer.complete(recv, reply).unwrap();
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn test_poll_batch_rolls_back_across_wrap() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..3 {
+            let chain = producer.chain().writable(16).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+        let reserved = consumer.poll_batch(3, 0, 0).unwrap().unwrap();
+        for (recv, reply) in reserved {
+            consumer.complete(recv, reply).unwrap();
+        }
+        for _ in 0..3 {
+            assert!(producer.poll().unwrap().is_some());
+        }
+
+        let chain = producer.chain().writable(16).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let cursor = consumer.avail_cursor();
+        assert_eq!(cursor.head(), 3);
+        assert!(consumer.poll_batch(2, 0, 0).unwrap().is_none());
+        assert_eq!(consumer.avail_cursor(), cursor);
+
+        let mut reserved = consumer.poll_batch(1, 0, 0).unwrap().unwrap();
+        let (recv, reply) = reserved.pop().unwrap();
+        consumer.complete(recv, reply).unwrap();
         producer.reset().unwrap();
     }
 

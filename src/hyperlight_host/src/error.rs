@@ -52,6 +52,10 @@ pub enum HyperlightError {
     #[error("{0}")]
     Error(String),
 
+    /// The virtqueue transport cannot be used safely.
+    #[error("Virtqueue transport error: {0}")]
+    VirtqTransportError(String),
+
     /// Execution violation
     #[error("Non-executable address {0:#x} tried to be executed")]
     ExecutionAccessViolation(u64),
@@ -313,6 +317,7 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::VirtqTransportError(_)
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
             // as poisoning here too for defense in depth.
             | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,

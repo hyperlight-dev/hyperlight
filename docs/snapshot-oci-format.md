@@ -24,21 +24,25 @@ path/
     <config-digest>                   Hyperlight config JSON
     <snapshot-digest>                 raw memory bytes
                                       (`memory_size` bytes)
+    <transport-digest>                canonical virtqueue rings
 ```
 
-Three blob kinds per tag:
+Four blob kinds per tag:
 
 * **manifest** (`application/vnd.oci.image.manifest.v1+json`). Tiny JSON
   pointer record selected via `index.json`. References one config and
-  one layer by digest.
+  two layers by digest.
 * **config** (`application/vnd.hyperlight.snapshot.config.v2+json`). The
   snapshot descriptor: arch, hypervisor, CPU vendor, ABI version,
   resume address and captured registers, memory and transport layout,
-  registered host functions, snapshot generation counter. Loaded
+  registered host functions, and snapshot generation counter. Loaded
   eagerly and fully parsed.
 * **layer / memory** (`application/vnd.hyperlight.snapshot.memory.v1`).
   The raw guest memory image, exactly `memory_size` bytes. mmap'd on
   restore.
+* **layer / transport**
+  (`application/vnd.hyperlight.snapshot.transport.v1`). A bounded
+  binary image of the canonical G2H and H2G rings.
 
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
@@ -55,8 +59,8 @@ A single saved `Snapshot` consists of exactly:
   config blob for tooling visibility,
 * one **manifest** blob (referenced by that index entry),
 * one **config** blob (referenced by the manifest's `config` field),
-* one **layer** blob (the only entry in the manifest's `layers`
-  array, holding the raw memory image).
+* one memory **layer** blob,
+* one transport **layer** blob.
 
 Saving two snapshots under different tags into the same `path`
 produces two index entries and two manifests. Configs and layers are
@@ -98,12 +102,12 @@ podman), `go-containerregistry` (crane), and `regclient`.
 ## Read semantics
 
 `Snapshot::load(path, reference)` reads a snapshot. It does not check
-the manifest, config, or snapshot blobs against their sha256 digests.
+the manifest, config, memory, or transport blobs against their sha256 digests.
 `reference` is an
 [`OciReference`], either a tag that matches the
 `org.opencontainers.image.ref.name` annotation or the manifest
 digest returned by `save`. `Snapshot::checked_load` adds the digest
-check on those three blobs, catching accidental corruption on disk.
+check on all four blobs, catching accidental corruption on disk.
 Both run every other check (OCI structure, descriptor sizes, schema
 versions, arch / hypervisor / CPU vendor / ABI tags, layout bounds,
 entrypoint bounds). The caller is responsible for trusting the source.
