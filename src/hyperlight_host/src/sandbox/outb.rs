@@ -9,8 +9,8 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError}
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::outb::{Exception, OutBAction};
+use hyperlight_common::transport::MsgKind;
 use hyperlight_common::virtq::ReplyChain;
-use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
@@ -47,7 +47,7 @@ pub enum HandleOutbError {
     MemProfile(String),
 }
 
-fn emit_guest_log(log_data: &GuestLogData) {
+pub(crate) fn emit_guest_log(log_data: &GuestLogData) {
     // Emit guest log data as a tracing event with structured fields.
     //
     // We match on the level at runtime because tracing macros determine their
@@ -212,14 +212,15 @@ fn outb_virtq_call(
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
 ) -> Result<(), HandleOutbError> {
     let max_recv_len = mem_mgr.layout.get_g2h_queue_dims().pool_len();
+
     let Some(consumer) = mem_mgr.g2h_consumer.as_mut() else {
         return Err(HandleOutbError::ReadHostFunctionCall(
             "G2H consumer is not attached".into(),
         ));
     };
 
-    // Drain entries, processing logs, until we find a request.
-    let (mut request, mut reply, header) = loop {
+    // Drain entries, processing logs, until we find one call.
+    let (mut request, reply, header) = loop {
         let maybe_next = consumer.poll(max_recv_len).map_err(|error| {
             HandleOutbError::ReadHostFunctionCall(format!("G2H poll failed: {error}"))
         })?;
@@ -229,18 +230,11 @@ fn outb_virtq_call(
             return Ok(());
         };
 
-        let mut header = [0u8; VirtqMsgHeader::SIZE];
-        request.read_exact(&mut header).map_err(|error| {
-            HandleOutbError::ReadHostFunctionCall(format!("G2H header read failed: {error}"))
-        })?;
-
-        let Some(header) = VirtqMsgHeader::from_bytes(&header) else {
-            return Err(HandleOutbError::ReadHostFunctionCall(
-                "Invalid G2H header".into(),
-            ));
-        };
+        let header = virtq::read_message_header(&mut request)
+            .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
         match header.msg_kind() {
+            Ok(MsgKind::Request) => break (request, reply, header),
             Ok(MsgKind::Log) => {
                 if header.cid != 0 {
                     return Err(HandleOutbError::ReadHostFunctionCall(
@@ -265,7 +259,6 @@ fn outb_virtq_call(
                     ))
                 })?;
             }
-            Ok(MsgKind::Request) => break (request, reply, header),
             Ok(kind) => {
                 return Err(HandleOutbError::ReadHostFunctionCall(format!(
                     "Expected G2H request, got {kind:?}"
@@ -285,11 +278,11 @@ fn outb_virtq_call(
         ));
     }
 
-    let ReplyChain::Writable(resp) = &mut reply else {
-        return Err(HandleOutbError::WriteHostFunctionResponse(
+    let mut resp = reply.into_writable().map_err(|_| {
+        HandleOutbError::WriteHostFunctionResponse(
             "G2H request has no writable response buffers".into(),
-        ));
-    };
+        )
+    })?;
 
     let call = virtq::get_host_function_call(&mut request)
         .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
@@ -309,15 +302,32 @@ fn outb_virtq_call(
         .call_host_function(&name, args)
         .map_err(|err| GuestError::new(ErrorCode::HostFunctionError, err.to_string()));
 
-    virtq::write_response_from_host_function_call(
-        resp,
-        header.cid,
-        &FunctionCallResult::new(result),
-    )
-    .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?;
+    let result = FunctionCallResult::new(result);
+    let resp_capacity = resp.capacity();
+
+    // Capacity is checked before writing, so an oversized result leaves the
+    // chain untouched and can be replaced with a bounded transport error.
+    if !virtq::try_write_response(&mut resp, header.cid, &result)
+        .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?
+    {
+        let fallback = FunctionCallResult::new(Err(GuestError::new(
+            ErrorCode::HostFunctionError,
+            "Host response exceeds virtqueue capacity".into(),
+        )));
+
+        // The guest must receive a response for this correlation id. Failure
+        // to fit even this small error makes the transport unusable.
+        if !virtq::try_write_response(&mut resp, header.cid, &fallback)
+            .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?
+        {
+            return Err(HandleOutbError::WriteHostFunctionResponse(format!(
+                "Writable response capacity {resp_capacity} cannot hold a transport error"
+            )));
+        }
+    }
 
     consumer
-        .complete(request, reply)
+        .complete(request, resp)
         .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?;
 
     Ok(())

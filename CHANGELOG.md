@@ -14,12 +14,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `hl_result_from_*` constructors.
 * Place virtqueue rings and pools in host-owned scratch before page tables.
   Snapshot ABI 3 rejects snapshots created with earlier layouts.
-* Require guest logs and host function calls to use the guest-to-host
-  virtqueue protocol.
+* Require guest logs and all host and guest function calls to use virtqueues.
+* Keep registered Rust guest return values typed until transport encoding so
+  external byte results avoid intermediate FlatBuffer copies.
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+  rejects snapshots without transport state.
 
 ### Removed
 
 ### Fixed
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
 
 ## [v0.17.0] - 2026-08-27
 

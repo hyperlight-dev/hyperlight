@@ -454,6 +454,19 @@ impl RingCursor {
     }
 }
 
+/// Local [`RingConsumer`] state needed to undo a sequence of polls.
+///
+/// The checkpoint is valid until a polled chain is completed.
+#[derive(Clone, Copy)]
+pub struct Checkpoint {
+    /// Position of the next available chain.
+    avail_cursor: RingCursor,
+    /// Position of the next completion.
+    used_cursor: RingCursor,
+    /// Number of descriptors awaiting completion.
+    num_inflight: usize,
+}
+
 /// Producer (driver) side of a packed virtqueue.
 ///
 /// The producer submits buffer chains for the device to process and polls
@@ -1194,6 +1207,62 @@ impl<M: MemOps> RingConsumer<M> {
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
 
         Ok(flags.is_avail(self.avail_cursor.wrap()))
+    }
+
+    /// Capture the local state needed to undo subsequent polls.
+    pub fn poll_checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            avail_cursor: self.avail_cursor,
+            used_cursor: self.used_cursor,
+            num_inflight: self.num_inflight,
+        }
+    }
+
+    /// Undo every chain in `ids` polled after `cp`.
+    ///
+    /// None of the chains may have been completed. On success, the next poll
+    /// observes the first chain again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RingError::InvalidState`] when the IDs, cursors, or inflight
+    /// descriptor count do not match the checkpoint.
+    pub fn rollback_polls(&mut self, cp: Checkpoint, ids: &[u16]) -> Result<(), RingError> {
+        let desc_count = ids.iter().try_fold(0usize, |count, id| {
+            let chain_len = self
+                .id_num
+                .get(*id as usize)
+                .copied()
+                .filter(|len| *len != 0)
+                .ok_or(RingError::InvalidState)?;
+
+            count
+                .checked_add(chain_len as usize)
+                .ok_or(RingError::InvalidState)
+        })?;
+
+        let expected_inflight = cp
+            .num_inflight
+            .checked_add(desc_count)
+            .ok_or(RingError::InvalidState)?;
+
+        let mut expected_cursor = cp.avail_cursor;
+        expected_cursor.advance_by(u16::try_from(desc_count).map_err(|_| RingError::InvalidState)?);
+
+        if self.avail_cursor != expected_cursor
+            || self.used_cursor != cp.used_cursor
+            || self.num_inflight != expected_inflight
+        {
+            return Err(RingError::InvalidState);
+        }
+
+        for id in ids {
+            self.id_num[*id as usize] = 0;
+        }
+
+        self.avail_cursor = cp.avail_cursor;
+        self.num_inflight = cp.num_inflight;
+        Ok(())
     }
 
     /// Submit a used descriptor and return whether to notify the driver.
