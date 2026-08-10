@@ -34,9 +34,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external byte results avoid intermediate FlatBuffer copies.
 * Store canonical virtqueue rings in versioned OCI transport layers. Config v2
   rejects snapshots without transport state.
+* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
+  and 8 pages.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
+* Remove legacy stack I/O, its `GuestHandle` methods, and its sandbox
+  configuration and builder options.
 
 ### Fixed
 * Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.

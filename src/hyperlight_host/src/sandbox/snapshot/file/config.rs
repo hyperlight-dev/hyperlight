@@ -206,8 +206,6 @@ pub(super) struct OciSnapshotConfig {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MemoryLayout {
-    pub(super) input_data_size: usize,
-    pub(super) output_data_size: usize,
     pub(super) heap_size: usize,
     pub(super) code_size: usize,
     pub(super) init_data_size: usize,
@@ -471,8 +469,6 @@ impl OciSnapshotConfig {
         // checked against `snapshot_size` in `load_inner`.
         let max_region = SandboxMemoryLayout::MAX_MEMORY_SIZE;
         for (name, value) in [
-            ("input_data_size", self.layout.input_data_size),
-            ("output_data_size", self.layout.output_data_size),
             ("heap_size", self.layout.heap_size),
             ("code_size", self.layout.code_size),
             ("init_data_size", self.layout.init_data_size),
@@ -834,8 +830,6 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
             layout: MemoryLayout {
-                input_data_size: 0,
-                output_data_size: 0,
                 heap_size: 0,
                 code_size: 0,
                 init_data_size: 0,
@@ -1072,8 +1066,6 @@ mod schema_pin {
     }
   ],
   "layout": {
-    "input_data_size": 1,
-    "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
     "init_data_size": 5,
@@ -1120,8 +1112,6 @@ mod schema_pin {
     "sp_el1": 6
   },
   "layout": {
-    "input_data_size": 1,
-    "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
     "init_data_size": 5,

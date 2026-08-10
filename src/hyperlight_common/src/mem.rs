@@ -14,8 +14,6 @@ pub struct GuestMemoryRegion {
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct HyperlightPEB {
-    pub input_stack: GuestMemoryRegion,
-    pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
 }
@@ -27,21 +25,13 @@ mod tests {
     #[test]
     fn peb_round_trip() {
         let peb = HyperlightPEB {
-            input_stack: GuestMemoryRegion {
+            init_data: GuestMemoryRegion {
                 size: 0x1111,
                 ptr: 0x2222,
             },
-            output_stack: GuestMemoryRegion {
+            guest_heap: GuestMemoryRegion {
                 size: 0x3333,
                 ptr: 0x4444,
-            },
-            init_data: GuestMemoryRegion {
-                size: 0x5555,
-                ptr: 0x6666,
-            },
-            guest_heap: GuestMemoryRegion {
-                size: 0x7777,
-                ptr: 0x8888,
             },
         };
         let bytes = bytemuck::bytes_of(&peb);
