@@ -207,6 +207,8 @@ pub enum VirtqError {
     Backpressure,
     #[error("Allocation exceeds pool capacity")]
     OutOfMemory,
+    #[error("Failed to allocate virtqueue bookkeeping")]
+    BookkeepingAllocation,
     #[error("Invalid chain received")]
     BadChain,
     #[error("Payload data too large: received {recv} bytes, limit {limit} bytes")]

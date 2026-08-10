@@ -1338,8 +1338,8 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(32K).
-    // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
+    // Checks that 1,000 calls work with a 24 KiB stack and 32 KiB heap.
+    // This catches guest stack reset and heap leaks.
     #[test]
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
