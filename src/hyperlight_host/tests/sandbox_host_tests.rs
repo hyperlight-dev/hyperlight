@@ -213,9 +213,7 @@ fn incorrect_parameter_num() {
 #[test]
 fn small_scratch_sandbox() {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(0x48000);
-    cfg.set_input_data_size(0x24000);
-    cfg.set_output_data_size(0x24000);
+    cfg.set_scratch_size(0x1000);
     let a = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg));
 
     assert!(matches!(
@@ -404,7 +402,10 @@ fn guest_external_bytes_round_trip_and_retention() {
 
 #[test]
 fn h2g_capacity_failure_does_not_poison_sandbox() {
-    with_rust_uninit_sandbox(|sandbox| {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+
+    with_rust_uninit_sandbox_cfg(cfg, |sandbox| {
         let mut sandbox = sandbox.evolve().unwrap();
         let retained = vec![0u8; 12_000];
 

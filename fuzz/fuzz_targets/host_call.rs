@@ -33,9 +33,9 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_output_data_size(64 * 1024); // 64 KB output buffer
-        cfg.set_input_data_size(64 * 1024); // 64 KB input buffer
-        cfg.set_scratch_size(512 * 1024); // large scratch region to contain those buffers, any data copies, etc.
+        cfg.set_g2h_pool_pages(16);
+        cfg.set_h2g_pool_pages(16);
+        cfg.set_scratch_size(512 * 1024);
         let u_sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_for_fuzzing_as_pathbuf()),
             Some(cfg)

@@ -743,8 +743,6 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
                 .clone(),
             layout: MemoryLayout {
-                input_data_size: l.input_data_size(),
-                output_data_size: l.output_data_size(),
                 heap_size: l.heap_size(),
                 code_size: l.code_size(),
                 init_data_size: l.init_data_size(),
@@ -962,8 +960,6 @@ impl Snapshot {
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
-        sbox_cfg.set_input_data_size(cfg.layout.input_data_size);
-        sbox_cfg.set_output_data_size(cfg.layout.output_data_size);
         sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
         sbox_cfg.set_g2h_queue_depth(cfg.layout.g2h_queue_depth);

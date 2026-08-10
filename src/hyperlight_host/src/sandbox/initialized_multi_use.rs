@@ -156,10 +156,9 @@ impl MultiUseSandbox {
     ///
     /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
     /// can be supplied to override runtime settings such as timeouts and
-    /// interrupt behavior. Memory layout fields
-    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
-    /// are always taken from the snapshot. Any values supplied in
-    /// `config` for those fields are ignored. On x86_64 the `config` must
+    /// interrupt behavior. Memory layout fields (`heap_size`, `scratch_size`)
+    /// are always taken from the snapshot. Any values supplied in `config`
+    /// for those fields are ignored. On x86_64 the `config` must
     /// declare every guest MSR the snapshot was taken with (see
     /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
     /// or the load fails with an MSR mismatch.
@@ -232,8 +231,6 @@ impl MultiUseSandbox {
         if caller_supplied_config {
             warn_on_layout_override(&config, snapshot.layout());
         }
-        config.set_input_data_size(snapshot.layout().input_data_size());
-        config.set_output_data_size(snapshot.layout().output_data_size());
         config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         let load_info = snapshot.load_info();
@@ -1128,16 +1125,6 @@ fn warn_on_layout_override(
 ) {
     let mismatches: &[(&str, u64, u64)] = &[
         (
-            "input_data_size",
-            caller.get_input_data_size() as u64,
-            snapshot.input_data_size() as u64,
-        ),
-        (
-            "output_data_size",
-            caller.get_output_data_size() as u64,
-            snapshot.output_data_size() as u64,
-        ),
-        (
             "heap_size",
             caller.get_heap_size(),
             snapshot.heap_size() as u64,
@@ -1267,7 +1254,7 @@ mod tests {
         let _ = sbox.snapshot().unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure transport buffers are reclaimed after host call failures.
     #[test]
     fn host_func_error() {
         let path = simple_guest_as_pathbuf();
@@ -1279,7 +1266,7 @@ mod tests {
             .unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
-        // will exhaust io if leaky
+        // Repeated calls exhaust the transport if buffers leak.
         for _ in 0..1000 {
             let result = sandbox
                 .call::<i64>(
@@ -1304,12 +1291,10 @@ mod tests {
             .unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure transport buffers are reclaimed after guest calls.
     #[test]
-    fn io_buffer_reset() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(4096);
-        cfg.set_output_data_size(4096);
+    fn transport_buffers_are_reclaimed() {
+        let cfg = SandboxConfiguration::default();
         let path = simple_guest_as_pathbuf();
         let mut sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1364,8 +1349,6 @@ mod tests {
         // total, and then add some more for the eagerly-copied page
         // tables on amd64
         let min_scratch = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
             cfg.get_g2h_queue_depth(),
             cfg.get_h2g_queue_depth(),
             cfg.get_g2h_pool_pages(),

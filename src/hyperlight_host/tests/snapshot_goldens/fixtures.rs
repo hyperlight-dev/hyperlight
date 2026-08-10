@@ -41,10 +41,10 @@ pub(crate) const CALL_COUNTER_BUMP: i32 = 42;
 /// least one region between generate-time and load-time.
 fn golden_config() -> SandboxConfiguration {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_input_data_size(64 * 1024);
-    cfg.set_output_data_size(64 * 1024);
     cfg.set_heap_size(256 * 1024);
     cfg.set_scratch_size(512 * 1024);
+    cfg.set_g2h_pool_pages(16);
+    cfg.set_h2g_pool_pages(16);
     cfg
 }
 

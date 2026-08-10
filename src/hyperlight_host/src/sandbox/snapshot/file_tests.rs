@@ -3262,14 +3262,10 @@ fn from_snapshot_silently_ignores_layout_overrides() {
 
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
-    let original_input = snapshot.layout().input_data_size();
-    let original_output = snapshot.layout().output_data_size();
     let original_heap = snapshot.layout().heap_size();
     let original_scratch = snapshot.layout().get_scratch_size();
 
     let mut config = SandboxConfiguration::default();
-    config.set_input_data_size(original_input * 2);
-    config.set_output_data_size(original_output * 2);
     config.set_heap_size((original_heap as u64) * 2);
     config.set_scratch_size(original_scratch * 2);
 
@@ -3280,8 +3276,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     sbox2.call::<i32>("GetStatic", ()).unwrap();
 
     let new_snap = sbox2.snapshot().unwrap();
-    assert_eq!(new_snap.layout().input_data_size(), original_input);
-    assert_eq!(new_snap.layout().output_data_size(), original_output);
     assert_eq!(new_snap.layout().heap_size(), original_heap);
     assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
 }

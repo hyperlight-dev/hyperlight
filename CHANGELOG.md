@@ -22,8 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external byte results avoid intermediate FlatBuffer copies.
 * Store canonical virtqueue rings in versioned OCI transport layers. Config v2
   rejects snapshots without transport state.
+* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
+  and 8 pages.
 
 ### Removed
+* Remove legacy stack I/O, its `GuestHandle` methods, and its sandbox
+  configuration options.
 
 ### Fixed
 * Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
