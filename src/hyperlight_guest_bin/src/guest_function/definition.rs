@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::for_each_tuple;
 use hyperlight_common::func::{
     Function, ParameterTuple, ResultType, ReturnValue, SupportedReturnType,
@@ -16,7 +15,7 @@ use hyperlight_common::func::{
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 
 /// The function pointer type for Rust guest functions.
-pub type GuestFunc = fn(FunctionCall) -> Result<Vec<u8>>;
+pub type GuestFunc = fn(FunctionCall) -> Result<ReturnValue>;
 
 /// The definition of a function exposed from the guest to the host.
 ///
@@ -34,7 +33,7 @@ pub struct GuestFunctionDefinition<F: Copy> {
     pub function_pointer: F,
 }
 
-/// Trait for functions that can be converted to a `fn(FunctionCall) -> Result<Vec<u8>>`
+/// Trait for functions that can be converted to a [`GuestFunc`].
 #[doc(hidden)]
 pub trait IntoGuestFunction<Output, Args>
 where
@@ -46,8 +45,8 @@ where
     #[doc(hidden)]
     const ASSERT_ZERO_SIZED: ();
 
-    /// Convert the function into a `fn(FunctionCall) -> Result<Vec<u8>>`
-    fn into_guest_function(self) -> fn(FunctionCall) -> Result<Vec<u8>>;
+    /// Convert the function into a [`GuestFunc`].
+    fn into_guest_function(self) -> GuestFunc;
 }
 
 /// Trait for functions that can be converted to a `GuestFunctionDefinition<GuestFunc>`
@@ -63,22 +62,6 @@ where
         &self,
         name: impl Into<String>,
     ) -> GuestFunctionDefinition<GuestFunc>;
-}
-
-fn into_flatbuffer_result(value: ReturnValue) -> Vec<u8> {
-    match value {
-        ReturnValue::Void(()) => get_flatbuffer_result(()),
-        ReturnValue::Int(i) => get_flatbuffer_result(i),
-        ReturnValue::UInt(u) => get_flatbuffer_result(u),
-        ReturnValue::Long(l) => get_flatbuffer_result(l),
-        ReturnValue::ULong(ul) => get_flatbuffer_result(ul),
-        ReturnValue::Float(f) => get_flatbuffer_result(f),
-        ReturnValue::Double(d) => get_flatbuffer_result(d),
-        ReturnValue::Bool(b) => get_flatbuffer_result(b),
-        ReturnValue::String(s) => get_flatbuffer_result(s.as_str()),
-        ReturnValue::VecBytes(v) => get_flatbuffer_result(v.as_slice()),
-        ReturnValue::ByteChunks(v) => get_flatbuffer_result(v),
-    }
 }
 
 macro_rules! impl_host_function {
@@ -121,7 +104,7 @@ macro_rules! impl_host_function {
                 assert!(core::mem::size_of::<Self>() == 0)
             };
 
-            fn into_guest_function(self) -> fn(FunctionCall) -> Result<Vec<u8>> {
+            fn into_guest_function(self) -> GuestFunc {
                 |fc: FunctionCall| {
                     // SAFETY: This is safe because:
                     //  1. F is zero-sized (enforced by the ASSERT_ZERO_SIZED const).
@@ -131,7 +114,7 @@ macro_rules! impl_host_function {
                     let params = fc.parameters.unwrap_or_default();
                     let params = <($($P,)*) as ParameterTuple>::from_value(params)?;
                     let result = Function::<R::ReturnType, ($($P,)*), HyperlightGuestError>::call(&this, params)?;
-                    Ok(into_flatbuffer_result(result.into_value()))
+                    Ok(result.into_value())
                 }
             }
         }

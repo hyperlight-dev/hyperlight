@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use hyperlight_common::layout::scratch_base_gva;
 use hyperlight_common::virtq::MemOps;
 
-use super::shared_mem::{HostSharedMemory, SharedMemory};
+use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
 use crate::{HyperlightError, Result, new_error};
 
 /// Checked copies and atomics over the scratch GVA range.
