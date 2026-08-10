@@ -32,7 +32,7 @@ use crate::func::host_functions::TypeErasedHostFunction;
 #[derive(Default)]
 /// A Wrapper around details of functions exposed by the Host
 pub struct FunctionRegistry {
-    functions_map: HashMap<String, FunctionEntry>,
+    pub(super) functions_map: HashMap<String, FunctionEntry>,
 }
 
 /// A collection of host functions that can be supplied to a sandbox

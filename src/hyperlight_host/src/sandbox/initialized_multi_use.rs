@@ -40,6 +40,7 @@ use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
+use crate::sandbox::builder::SandboxBuilder;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
@@ -110,6 +111,14 @@ pub struct MultiUseSandbox {
 pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
 
 impl MultiUseSandbox {
+    /// Start building a sandbox.
+    ///
+    /// Returns a [`SandboxBuilder`] with default settings. Adjust it, then call
+    /// one of its `build_from_*` methods to get a `MultiUseSandbox`.
+    pub fn builder() -> SandboxBuilder {
+        SandboxBuilder::new()
+    }
+
     /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
     ///
     /// This function is not equivalent to doing an `evolve` from uninitialized

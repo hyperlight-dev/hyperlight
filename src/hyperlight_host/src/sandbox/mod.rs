@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/// Functionality for creating and configuring `Sandbox`es.
+pub mod builder;
 /// Configuration needed to establish a sandbox.
 pub mod config;
 /// Host-side file mapping preparation for `map_file_cow`.
