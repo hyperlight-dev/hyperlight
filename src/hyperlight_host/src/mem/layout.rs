@@ -67,7 +67,7 @@ limitations under the License.
 use std::fmt::Debug;
 use std::mem::size_of;
 
-use hyperlight_common::layout::TransportArena;
+use hyperlight_common::layout::{QueueDims, TransportArena};
 use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
 use tracing::{Span, instrument};
 
@@ -514,13 +514,13 @@ impl SandboxMemoryLayout {
         self.h2g_pool_pages
     }
 
-    pub(crate) fn get_g2h_queue_dims(&self) -> hyperlight_common::layout::QueueDims {
-        hyperlight_common::layout::QueueDims::new(self.g2h_queue_depth, self.g2h_pool_pages)
+    pub(crate) fn get_g2h_queue_dims(&self) -> QueueDims {
+        QueueDims::new(self.g2h_queue_depth, self.g2h_pool_pages)
             .expect("validated G2H queue dimensions")
     }
 
-    pub(crate) fn get_h2g_queue_dims(&self) -> hyperlight_common::layout::QueueDims {
-        hyperlight_common::layout::QueueDims::new(self.h2g_queue_depth, self.h2g_pool_pages)
+    pub(crate) fn get_h2g_queue_dims(&self) -> QueueDims {
+        QueueDims::new(self.h2g_queue_depth, self.h2g_pool_pages)
             .expect("validated H2G queue dimensions")
     }
 

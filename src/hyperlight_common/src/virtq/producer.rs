@@ -479,9 +479,9 @@ where
 /// A scoped batch of producer submissions.
 ///
 /// Submissions are published immediately, while notification is delayed until
-/// [`finish`](Self::finish). `finish` is explicit because the event-suppression
-/// check can fail; dropping a batch does not notify.
-#[must_use = "call finish to notify the consumer about batched submissions"]
+/// [`finish`](Self::finish). [`finish_without_notify`](Self::finish_without_notify)
+/// supports protocols whose peer is already scheduled to inspect the queue.
+#[must_use = "finish the batch explicitly"]
 pub struct SubmitBatch<'a, M, N, P> {
     producer: &'a mut VirtqProducer<M, N, P>,
     notify_from: Option<RingCursor>,
@@ -527,6 +527,12 @@ where
 
         self.producer.notify_since(notify_from)
     }
+
+    /// Finish the batch without notifying the consumer.
+    ///
+    /// Use this only when another protocol event guarantees that the consumer
+    /// will inspect the published descriptors.
+    pub fn finish_without_notify(self) {}
 }
 
 /// Builder for configuring a descriptor chain's buffer layout.
@@ -1681,6 +1687,23 @@ mod tests {
         let batch = producer.batch();
         assert!(!batch.finish().unwrap());
         assert_eq!(notifier.notification_count(), 0);
+    }
+
+    #[test]
+    fn test_batch_can_finish_without_notification() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let mut batch = producer.batch();
+        let mut chain = batch.chain().readable(4).build().unwrap();
+        chain.write_all(b"data").unwrap();
+        batch.submit(chain).unwrap();
+        batch.finish_without_notify();
+
+        assert_eq!(notifier.notification_count(), 0);
+        let (recv, reply) = poll_received(&mut consumer);
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"data");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]

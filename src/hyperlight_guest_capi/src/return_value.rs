@@ -21,96 +21,94 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
-use hyperlight_common::flatbuffer_wrappers::util::{
-    byte_chunks_from_vec, byte_chunks_to_vec, get_flatbuffer_result,
-};
+use hyperlight_common::flatbuffer_wrappers::util::byte_chunks_to_vec;
 
 use crate::dispatch::take_last_host_return;
-use crate::types::FfiVec;
+use crate::types::{FfiReturnValue, FfiVec};
 
 // The reason for the capitalized type in the function names below
 // is to match the names of the variants in hl_ReturnType,
 // which is used in the C macros in macro.h
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Int(value: i32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Int(value: i32) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::int(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_UInt(value: u32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_UInt(value: u32) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::uint(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Long(value: i64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Long(value: i64) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::long(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_ULong(value: u64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_ULong(value: u64) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::ulong(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Float(value: f32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Float(value: f32) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::float(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Double(value: f64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Double(value: f64) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::double(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Void() -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(());
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Void() -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::void())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_String(value: *const c_char) -> Box<FfiVec> {
-    let str = unsafe { CStr::from_ptr(value) };
-    let vec = get_flatbuffer_result(str.to_string_lossy().as_ref());
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+/// # Safety
+///
+/// `value` must point to a live NUL-terminated string.
+pub unsafe extern "C" fn hl_result_from_String(value: *const c_char) -> Box<FfiReturnValue> {
+    // SAFETY: callers provide a live NUL-terminated string.
+    let value = unsafe { CStr::from_ptr(value) };
+    Box::new(FfiReturnValue::string(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Bytes(data: *const u8, len: usize) -> Box<FfiVec> {
-    let slice = unsafe { core::slice::from_raw_parts(data, len) };
-
-    let vec = get_flatbuffer_result(slice);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+/// # Safety
+///
+/// `data` must reference `len` readable bytes when `len` is nonzero.
+pub unsafe extern "C" fn hl_result_from_Bytes(data: *const u8, len: usize) -> Box<FfiReturnValue> {
+    let value = if len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: callers provide `len` readable bytes.
+        unsafe { core::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    Box::new(FfiReturnValue::vec_bytes(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_ByteChunks(data: *const u8, len: usize) -> Box<FfiVec> {
-    let slice = unsafe { core::slice::from_raw_parts(data, len) };
-    let vec = get_flatbuffer_result(byte_chunks_from_vec(slice.to_vec()));
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+/// # Safety
+///
+/// `data` must reference `len` readable bytes when `len` is nonzero.
+pub unsafe extern "C" fn hl_result_from_ByteChunks(
+    data: *const u8,
+    len: usize,
+) -> Box<FfiReturnValue> {
+    let value = if len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: callers provide `len` readable bytes.
+        unsafe { core::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    Box::new(FfiReturnValue::byte_chunks(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_Bool(value: bool) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result(value);
-
-    Box::new(unsafe { FfiVec::from_vec(vec) })
+pub extern "C" fn hl_result_from_Bool(value: bool) -> Box<FfiReturnValue> {
+    Box::new(FfiReturnValue::boolean(value))
 }
 
 //--- Functions for getting values returned by host functions calls

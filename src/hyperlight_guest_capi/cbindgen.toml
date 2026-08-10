@@ -23,5 +23,6 @@ prefix = "hl_"
 "FfiFunctionCall" = "FunctionCall"
 "FfiParameter" = "Parameter"
 "FfiParameterValue" = "ParameterValue"
+"FfiReturnValue" = "ReturnValue"
+"FfiReturnValueUnion" = "ReturnValueUnion"
 "FfiVec" = "Vec"
-

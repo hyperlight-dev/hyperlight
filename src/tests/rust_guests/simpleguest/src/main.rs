@@ -42,7 +42,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
@@ -55,7 +54,7 @@ use hyperlight_guest_bin::host_comm::{
     call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
+use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
 // `log` is intentionally kept here: the LogMessage guest function exercises the
 // guest-side `log` crate path to verify that guests using `log` are still supported.
 use log::LevelFilter;
@@ -400,6 +399,37 @@ fn echo(value: String) -> String {
 #[guest_function("GetSizePrefixedBuffer")]
 fn get_size_prefixed_buffer(data: Vec<u8>) -> Vec<u8> {
     data
+}
+
+#[guest_function("EchoGuestVecBytes")]
+fn echo_guest_vec_bytes(data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[guest_function("EchoGuestByteChunks")]
+fn echo_guest_byte_chunks(data: Vec<Bytes>) -> Vec<Bytes> {
+    data
+}
+
+static mut RETAINED_GUEST_CHUNKS: Option<Vec<Bytes>> = None;
+
+#[guest_function("RetainGuestByteChunks")]
+fn retain_guest_byte_chunks(data: Vec<Bytes>) -> i32 {
+    let len = data.iter().map(Bytes::len).sum::<usize>();
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { RETAINED_GUEST_CHUNKS = Some(data) };
+    len as i32
+}
+
+#[guest_function("ReleaseGuestByteChunks")]
+fn release_guest_byte_chunks() -> i32 {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        RETAINED_GUEST_CHUNKS.take().map_or(0, |chunks| {
+            chunks.iter().map(Bytes::len).sum::<usize>() as i32
+        })
+    }
 }
 
 #[guest_function("EchoI32")]
@@ -1501,41 +1531,8 @@ fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
 }
 
-#[guest_function("CorruptOutputSizePrefix")]
-fn corrupt_output_size_prefix() -> i32 {
-    unsafe {
-        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
-        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
-
-        // Write a fake stack entry with a ~4 GB size prefix (0xFFFF_FFFB + 4).
-        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
-        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
-        buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
-        buf[12..16].copy_from_slice(&[0u8; 4]);
-        buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
-        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
-        unreachable!();
-    }
-}
-
-#[guest_function("CorruptOutputBackPointer")]
-fn corrupt_output_back_pointer() -> i32 {
-    unsafe {
-        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
-        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
-
-        // Write a fake stack entry with back-pointer 0xDEAD (past stack pointer 24).
-        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
-        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
-        buf[8..16].copy_from_slice(&[0u8; 8]);
-        buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
-        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
-        unreachable!();
-    }
-}
-
 // Interprets the given guest function call as a host function call and dispatches it to the host.
-fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
+fn fuzz_host_function(func: FunctionCall) -> Result<ReturnValue> {
     let mut params = func.parameters.unwrap();
     // first parameter must be string (the name of the host function to call)
     let host_func_name = match params.remove(0) {
@@ -1550,35 +1547,12 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
         }
     };
 
-    let host_return =
-        call_host_function::<ReturnValue>(&host_func_name, Some(params), func.expected_return_type);
-
-    match host_return {
-        Ok(return_value) => match return_value {
-            ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
-            ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
-            ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
-            ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
-            ReturnValue::ByteChunks(chunks) => Ok(get_flatbuffer_result(chunks)),
-        },
-        Err(e) => Err(e),
-    }
+    call_host_function::<ReturnValue>(&host_func_name, Some(params), func.expected_return_type)
 }
 
 #[hyperlight_guest_bin::dispatch]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-fn dispatch(function_call: FunctionCall) -> Result<Vec<u8>> {
-    // This test checks the stack behavior of the input/output buffer
-    // by calling the host before serializing the function call.
-    // If the stack is not working correctly, the input or output buffer will be
-    // overwritten before the function call is serialized, and we will not be able
-    // to verify that the function call name is "ThisIsNotARealFunctionButTheNameIsImportant"
+fn dispatch(function_call: FunctionCall) -> Result<ReturnValue> {
     if function_call.function_name == "FuzzHostFunc" {
         return fuzz_host_function(function_call);
     }
@@ -1614,5 +1588,5 @@ fn dispatch(function_call: FunctionCall) -> Result<Vec<u8>> {
         ));
     }
 
-    Ok(get_flatbuffer_result(99))
+    Ok(ReturnValue::Int(99))
 }

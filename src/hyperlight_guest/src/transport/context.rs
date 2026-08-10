@@ -20,20 +20,21 @@ use alloc::vec::Vec;
 use core::result;
 
 use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::ExternalValueRefs;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterValue, ReturnType, ReturnValue,
+    FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
+use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
-use hyperlight_common::virtq::msg::{EncodedMessage, MsgKind};
+use hyperlight_common::transport::{EncodedMessage, ExternalValueRefs, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
     AllocError, BufferProvider, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier,
-    QueueStats, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    QueueStats, Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError,
+    VirtqProducer,
 };
 
-use super::{GuestMemOps, response};
+use super::{GuestMemOps, codec};
 use crate::bail;
 use crate::error::{GuestErrorContext, Result};
 use crate::exit::out32;
@@ -90,6 +91,8 @@ pub struct GuestContext {
     next_cid: u32,
     /// Used by the C API.
     last_host_result: Option<Result<ReturnValue>>,
+    /// Error set by a C guest function.
+    last_guest_error: Option<GuestError>,
 }
 
 impl GuestContext {
@@ -102,7 +105,7 @@ impl GuestContext {
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
             .with_context(|| "failed to create H2G slot pool")?;
-        let h2g_producer = VirtqProducer::new(h2g.layout, mem, H2gNotifier, h2g_pool);
+        let h2g_producer = VirtqProducer::new(h2g.layout, mem, H2gNotifier, h2g_pool.clone());
 
         let mut ctx = Self {
             g2h_producer,
@@ -111,10 +114,21 @@ impl GuestContext {
             h2g_slot_size: h2g.buffer_size,
             next_cid: 1,
             last_host_result: None,
+            last_guest_error: None,
         };
 
         ctx.prefill_h2g()?;
         Ok(ctx)
+    }
+
+    /// Record an error raised through the C guest API.
+    pub fn set_guest_error(&mut self, error: GuestError) {
+        self.last_guest_error = Some(error);
+    }
+
+    /// Take an error raised through the C guest API.
+    pub fn take_guest_error(&mut self) -> Option<GuestError> {
+        self.last_guest_error.take()
     }
 
     /// Call a host function via the G2H virtqueue.
@@ -147,20 +161,20 @@ impl GuestContext {
         let mut externals = ExternalValueRefs::new();
 
         let control = fc
-            .encode_external(&mut builder, &mut externals)
+            .encode(&mut builder, &mut externals)
             .with_context(|| "failed to encode host function call")?;
 
         // Frame the request and include external values in its total length.
         let cid = self.allocate_cid();
-        let message = EncodedMessage::new(MsgKind::Request, cid, control, externals)
+        let msg = EncodedMessage::new(MsgKind::Request, cid, control, externals)
             .context("G2H message length overflow")?;
 
         // Reserve response capacity from the ring and pool state that remains
         // after this request.
-        let reply_cap = self.reply_capacity(message.wire_len(), return_type)?;
+        let reply_cap = self.reply_capacity(msg.total_len(), return_type)?;
 
         // Submit once more after forcing the host to drain on backpressure.
-        let token = match self.try_send(&message, Some(reply_cap)) {
+        let token = match self.try_send(&msg, Some(reply_cap)) {
             Ok(token) => token,
             Err(error) if error.is_transient() => {
                 self.g2h_producer.notify_backpressure();
@@ -169,7 +183,7 @@ impl GuestContext {
                     bail!("G2H reclaim: {error}");
                 }
 
-                match self.try_send(&message, Some(reply_cap)) {
+                match self.try_send(&msg, Some(reply_cap)) {
                     Ok(token) => token,
                     Err(error) => bail!("G2H call retry: {error}"),
                 }
@@ -200,7 +214,7 @@ impl GuestContext {
 
         // Decode external ByteChunks without flattening their transport-backed
         // segments.
-        let fcr = response::decode(segments, cid)?;
+        let fcr = codec::decode_response(segments, cid)?;
         let ret = fcr.into_inner()?;
 
         let Ok(ret) = T::try_from(ret) else {
@@ -208,6 +222,98 @@ impl GuestContext {
         };
 
         Ok(ret)
+    }
+
+    /// Receive one host-to-guest function call.
+    ///
+    /// External `ByteChunks` retain their owner-backed H2G slots. Contiguous
+    /// `VecBytes` values copy directly into their final `Vec<u8>`.
+    pub fn recv_h2g_call(&mut self) -> Result<(u32, FunctionCall)> {
+        self.g2h_producer
+            .reclaim()
+            .with_context(|| "G2H completion reclaim failed")?;
+
+        let Some(used) = self.h2g_producer.poll()? else {
+            bail!("H2G: expected a guest function call buffer");
+        };
+
+        let mut first = match used {
+            UsedChain::Data(_, segments) => segments,
+            UsedChain::Ack(_) => bail!("H2G: guest function call buffer was ack-only"),
+        };
+
+        let header = first
+            .split_to(MsgHeader::SIZE)
+            .context("H2G buffer is missing its message header")?
+            .into_bytes();
+
+        let Some(header) = MsgHeader::from_bytes(&header) else {
+            bail!("H2G buffer has an invalid message header");
+        };
+        if header.msg_kind() != Ok(MsgKind::Request) || header.cid == 0 {
+            bail!("H2G buffer has invalid request framing");
+        }
+
+        let payload_len =
+            usize::try_from(header.payload_len).context("H2G payload length overflow")?;
+
+        if first.len() > payload_len {
+            bail!("H2G first buffer exceeds the declared payload length");
+        }
+
+        let mut received = first.len();
+        let mut payload = first.into_chunks();
+
+        while received < payload_len {
+            let Some(used) = self.h2g_producer.poll()? else {
+                bail!("H2G: expected a continuation buffer");
+            };
+
+            let segments = match used {
+                UsedChain::Data(_, segments) => segments,
+                UsedChain::Ack(_) => bail!("H2G continuation buffer was ack-only"),
+            };
+
+            if segments.is_empty() {
+                bail!("H2G continuation buffer is empty");
+            }
+
+            received = received
+                .checked_add(segments.len())
+                .context("H2G payload length overflow")?;
+
+            if received > payload_len {
+                bail!("H2G buffers exceed the declared payload length");
+            }
+            payload.extend(segments.into_chunks());
+        }
+
+        codec::decode_request(header.cid, Segments::new(payload))
+    }
+
+    /// Return a guest-function result and replenish H2G receive buffers.
+    pub fn send_h2g_result(&mut self, cid: u32, result: FunctionCallResult) -> Result<()> {
+        self.g2h_producer
+            .reclaim()
+            .with_context(|| "G2H response reclaim failed")?;
+
+        {
+            let mut builder = FlatBufferBuilder::new();
+            let mut external_values = ExternalValueRefs::new();
+
+            let control = result
+                .encode(&mut builder, &mut external_values)
+                .with_context(|| "failed to encode guest function result")?;
+
+            let msg = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+                .context("G2H response length overflow")?;
+
+            self.try_send_deferred(&msg, None)
+                .with_context(|| "G2H response submission failed")?;
+        }
+
+        drop(result);
+        self.prefill_h2g()
     }
 
     /// Send a log message via the G2H queue.
@@ -249,8 +355,10 @@ impl GuestContext {
         }
     }
 
-    /// Pre-fill the H2G queue with writable-only descriptors so the host
-    /// can write incoming call payloads into them.
+    /// Publish one writable H2G chain for each currently free slot.
+    ///
+    /// Retained external values reduce the number of available receive buffers
+    /// until their final owner drops.
     fn prefill_h2g(&mut self) -> Result<()> {
         let mut batch = self.h2g_producer.batch();
 
@@ -258,23 +366,19 @@ impl GuestContext {
             let chain = match batch.chain().writable(self.h2g_slot_size).build() {
                 Ok(chain) => chain,
                 Err(error) if error.is_transient() => {
-                    batch.finish()?;
+                    batch.finish_without_notify();
                     return Ok(());
                 }
-                Err(error) => {
-                    bail!("H2G prefill build: {error}");
-                }
+                Err(error) => bail!("H2G prefill build: {error}"),
             };
 
             match batch.submit(chain) {
                 Ok(_) => {}
                 Err(error) if error.is_transient() => {
-                    batch.finish()?;
+                    batch.finish_without_notify();
                     return Ok(());
                 }
-                Err(error) => {
-                    bail!("H2G prefill submit: {error}");
-                }
+                Err(error) => bail!("H2G prefill submit: {error}"),
             }
         }
     }
@@ -371,8 +475,33 @@ impl GuestContext {
         message: &EncodedMessage<'_>,
         reply_cap: Option<usize>,
     ) -> result::Result<Token, VirtqError> {
+        let chain = self.build_g2h_chain(message, reply_cap)?;
+        self.g2h_producer.submit(chain)
+    }
+
+    /// Submit one G2H message for polling after the existing final halt.
+    fn try_send_deferred(
+        &mut self,
+        message: &EncodedMessage<'_>,
+        reply_cap: Option<usize>,
+    ) -> result::Result<Token, VirtqError> {
+        let chain = self.build_g2h_chain(message, reply_cap)?;
+        let mut batch = self.g2h_producer.batch();
+
+        let token = batch.submit(chain)?;
+        batch.finish_without_notify();
+
+        Ok(token)
+    }
+
+    /// Build and initialize one G2H message chain.
+    fn build_g2h_chain(
+        &self,
+        message: &EncodedMessage<'_>,
+        reply_cap: Option<usize>,
+    ) -> result::Result<SendChain<GuestMemOps, SlotPool>, VirtqError> {
         // Allocate the readable request and optional writable reply together.
-        let chain = self.g2h_producer.chain().readable(message.wire_len());
+        let chain = self.g2h_producer.chain().readable(message.total_len());
 
         let mut chain = match reply_cap {
             Some(reply_cap) => chain.writable(reply_cap),
@@ -380,13 +509,11 @@ impl GuestContext {
         }
         .build()?;
 
-        message.try_for_each_chunk(|chunk| {
+        for chunk in message.chunks() {
             chain.write_all(chunk)?;
-            Ok::<(), VirtqError>(())
-        })?;
+        }
 
-        // Transfer the initialized chain to the producer.
-        self.g2h_producer.submit(chain)
+        Ok(chain)
     }
 
     /// Allocate a new correlation ID for a host function request.
@@ -409,8 +536,7 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
 
 /// Build the uniform H2G pool.
 ///
-/// Every preposted receive buffer has the configured size so the host sees one
-/// predictable capacity for guest calls.
+/// Each slot becomes one independent preposted receive buffer.
 fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotPool, AllocError> {
     let count = pool_len(pages)? / buffer_size;
     SlotPool::new(SlotLayout::new(base, buffer_size, count))

@@ -22,7 +22,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::transport;
@@ -37,9 +36,7 @@ pub fn call_host_function<T>(
 where
     T: TryFrom<ReturnValue>,
 {
-    transport::with_context(|context| {
-        context.call_host_function(function_name, parameters, return_type)
-    })
+    transport::with_ctx(|ctx| ctx.call_host_function(function_name, parameters, return_type))
 }
 
 pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>
@@ -55,10 +52,7 @@ pub fn read_n_bytes_from_user_memory(num: u64) -> Result<Vec<u8>> {
 }
 
 /// Print a message using the host's print function.
-///
-/// This function requires memory to be setup to be used. In particular, the
-/// existence of the input and output memory regions.
-pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<Vec<u8>> {
+pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<ReturnValue> {
     if let ParameterValue::String(message) = function_call.parameters.unwrap().remove(0) {
         let res = call_host_function::<i32>(
             "HostPrint",
@@ -66,7 +60,7 @@ pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<Vec<u
             ReturnType::Int,
         )?;
 
-        Ok(get_flatbuffer_result(res))
+        Ok(ReturnValue::Int(res))
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestError,

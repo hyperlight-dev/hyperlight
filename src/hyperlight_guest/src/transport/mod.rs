@@ -18,9 +18,9 @@ limitations under the License.
 //!
 //! Global context is installed once via [`set_global_context`] and accessed via [`with_context`].
 
+mod codec;
 pub mod context;
 pub mod mem;
-mod response;
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -49,10 +49,10 @@ pub fn is_initialized() -> bool {
 /// # Panics
 ///
 /// Panics if the context is uninitialized or already borrowed.
-pub fn with_context<R>(f: impl FnOnce(&mut GuestContext) -> R) -> R {
+pub fn with_ctx<R>(f: impl FnOnce(&mut GuestContext) -> R) -> R {
     assert!(is_initialized(), "transport context not initialized");
-    let mut context = GLOBAL_CONTEXT.0.borrow_mut();
-    f(context.as_mut().expect("transport context missing"))
+    let mut ctx = GLOBAL_CONTEXT.0.borrow_mut();
+    f(ctx.as_mut().expect("transport context missing"))
 }
 
 /// Install the global transport context.

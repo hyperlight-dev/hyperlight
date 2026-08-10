@@ -19,12 +19,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
 use super::Callable;
@@ -324,7 +322,10 @@ impl MultiUseSandbox {
         let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
         if restore_virtq {
-            hshm.restore_virtq(snapshot.virtq())?;
+            let virtq = snapshot.virtq().ok_or_else(|| {
+                crate::new_error!("running snapshot has no canonical transport state")
+            })?;
+            hshm.restore_virtq(virtq)?;
         }
 
         let sbox = MultiUseSandbox::from_uninit(
@@ -912,8 +913,6 @@ impl MultiUseSandbox {
         self.vm.clear_cancel();
 
         let res = (|| {
-            let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
-
             let fc = FunctionCall::new(
                 function_name.to_string(),
                 Some(args),
@@ -921,10 +920,7 @@ impl MultiUseSandbox {
                 return_type,
             );
 
-            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-            let buffer = fc.encode(&mut builder);
-
-            self.mem_mgr.write_guest_function_call(buffer)?;
+            let cid = self.mem_mgr.write_guest_function_call(&fc)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
                 &mut self.mem_mgr,
@@ -941,7 +937,7 @@ impl MultiUseSandbox {
                 return Err(error);
             }
 
-            let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+            let guest_result = self.mem_mgr.read_h2g_result_from_g2h(cid)?.into_inner();
 
             match guest_result {
                 Ok(val) => Ok(val),
@@ -963,13 +959,7 @@ impl MultiUseSandbox {
         // Clear partial abort bytes so they don't leak across calls.
         self.mem_mgr.abort_buffer.clear();
 
-        // In the happy path we do not need to clear io-buffers from the host because:
-        // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
-        // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
         if let Err(e) = &res {
-            self.mem_mgr.clear_io_buffers();
-
-            // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
         }
 

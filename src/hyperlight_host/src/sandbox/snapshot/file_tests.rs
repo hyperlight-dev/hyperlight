@@ -91,6 +91,25 @@ fn find_snapshot_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
     oci_dir.join("blobs").join("sha256").join(snap_digest)
 }
 
+/// Locate the transport (layer 1) blob inside `oci_dir`.
+fn find_transport_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
+    let index: Value =
+        serde_json::from_slice(&std::fs::read(oci_dir.join("index.json")).unwrap()).unwrap();
+    let manifest_digest = index["manifests"][0]["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    let manifest_path = oci_dir.join("blobs").join("sha256").join(manifest_digest);
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let transport_digest = manifest["layers"][1]["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    oci_dir.join("blobs").join("sha256").join(transport_digest)
+}
+
 // In-memory `from_snapshot` round-trips.
 
 #[test]
@@ -1399,8 +1418,7 @@ fn save_same_tag_same_content_is_idempotent() {
     );
 }
 
-/// Two tags written from one in-memory snapshot share all three blobs
-/// (manifest, config, snapshot).
+/// Two tags written from one in-memory snapshot share all four blobs.
 #[test]
 fn save_shares_blobs_across_tags_with_identical_content() {
     let snap = create_snapshot();
@@ -1414,7 +1432,7 @@ fn save_shares_blobs_across_tags_with_identical_content() {
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.file_name()))
         .collect();
-    assert_eq!(blobs.len(), 3, "expected 3 deduped blobs, got {:?}", blobs);
+    assert_eq!(blobs.len(), 4, "expected 4 deduped blobs, got {:?}", blobs);
 }
 
 /// Replacing one tag in a three-tag layout keeps the other two
@@ -1572,6 +1590,28 @@ fn checked_load_rejects_snapshot_blob_byte_mutation() {
         "expected digest-mismatch error, got: {}",
         msg
     );
+}
+
+#[test]
+fn checked_load_rejects_transport_blob_byte_mutation() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+
+    let transport_path = find_transport_blob(&path);
+    let mut bytes = std::fs::read(&transport_path).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xFF;
+    std::fs::write(&transport_path, bytes).unwrap();
+
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "digest");
 }
 
 /// Config-blob byte mutation must be caught by digest verification
@@ -1876,6 +1916,19 @@ fn unknown_snapshot_layer_media_type_rejected() {
         OciTag::new("latest").unwrap(),
     ));
     assert_err_contains(err, "snapshot layer media type");
+}
+
+#[test]
+fn unknown_transport_layer_media_type_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |m| {
+        m["layers"][1]["mediaType"] = Value::from("application/vnd.example.unknown.v1");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "transport layer media type");
 }
 
 /// Annotations injected by third-party tools (cosign, ORAS, build
@@ -2302,10 +2355,14 @@ fn manifest_uses_correct_config_and_layer_media_types() {
         manifest["config"]["mediaType"].as_str().unwrap(),
         "application/vnd.hyperlight.snapshot.config.v2+json"
     );
-    assert_eq!(manifest["layers"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["layers"].as_array().unwrap().len(), 2);
     assert_eq!(
         manifest["layers"][0]["mediaType"].as_str().unwrap(),
         "application/vnd.hyperlight.snapshot.memory.v1"
+    );
+    assert_eq!(
+        manifest["layers"][1]["mediaType"].as_str().unwrap(),
+        "application/vnd.hyperlight.snapshot.transport.v1"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling

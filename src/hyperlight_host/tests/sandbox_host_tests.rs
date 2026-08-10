@@ -225,7 +225,7 @@ fn small_scratch_sandbox() {
 }
 
 #[test]
-fn iostack_is_working() {
+fn custom_guest_dispatch_is_working() {
     with_all_sandboxes(|mut sandbox| {
         let res: i32 = sandbox
             .call::<i32>("ThisIsNotARealFunctionButTheNameIsImportant", ())
@@ -363,6 +363,70 @@ fn host_external_bytes_round_trip() {
 }
 
 #[test]
+fn guest_external_bytes_round_trip_and_retention() {
+    with_rust_uninit_sandbox(|sandbox| {
+        let mut sandbox = sandbox.evolve().unwrap();
+        let expected: Vec<u8> = (0..9 * 1024).map(|index| (index % 251) as u8).collect();
+
+        let contiguous: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(contiguous, expected);
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+        let chunks: Vec<Bytes> = sandbox.call("EchoGuestByteChunks", input.clone()).unwrap();
+        assert_eq!(
+            chunks
+                .iter()
+                .flat_map(|chunk| chunk.iter().copied())
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        let retained: Vec<u8> = (0..12_000).map(|index| (index % 251) as u8).collect();
+        let retained_len: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&retained)],
+            )
+            .unwrap();
+        assert_eq!(retained_len as usize, retained.len());
+
+        let released_len: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(released_len as usize, retained.len());
+
+        let retried: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(retried, expected);
+    });
+}
+
+#[test]
+fn h2g_capacity_failure_does_not_poison_sandbox() {
+    with_rust_uninit_sandbox(|sandbox| {
+        let mut sandbox = sandbox.evolve().unwrap();
+        let retained = vec![0u8; 12_000];
+
+        sandbox
+            .call::<i32>(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&retained)],
+            )
+            .unwrap();
+
+        let error = sandbox
+            .call::<Vec<u8>>("EchoGuestVecBytes", vec![0u8; 9 * 1024])
+            .unwrap_err();
+
+        assert!(error.to_string().contains("H2G capacity"));
+
+        let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(released as usize, retained.len());
+    });
+}
+
+#[test]
 fn oversized_host_response_returns_transport_error() {
     with_rust_uninit_sandbox(|mut sandbox| {
         sandbox
@@ -384,9 +448,10 @@ fn oversized_host_response_returns_transport_error() {
 }
 
 #[test]
-fn log_then_host_call_with_small_g2h_ring() {
+fn log_then_host_call_with_small_rings() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_queue_depth(4);
+    cfg.set_h2g_queue_depth(4);
     cfg.set_g2h_pool_pages(2);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {

@@ -17,12 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
 * Place virtqueue rings and pools in host-owned scratch before page tables.
   Snapshot ABI 2 rejects snapshots created with earlier layouts.
-* Require guest logs and host function calls to use the guest-to-host
-  virtqueue protocol.
+* Require guest logs and all host and guest function calls to use virtqueues.
+* Keep registered Rust guest return values typed until transport encoding so
+  external byte results avoid intermediate FlatBuffer copies.
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+  rejects snapshots without transport state.
 
 ### Removed
 
 ### Fixed
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
 * Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
 * Reject malformed OCI snapshot metadata and non-regular artifact files during load.
 

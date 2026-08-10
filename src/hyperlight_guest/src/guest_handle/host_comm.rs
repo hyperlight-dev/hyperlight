@@ -67,9 +67,7 @@ impl GuestHandle {
         parameters: Option<Vec<ParameterValue>>,
         return_type: ReturnType,
     ) -> Result<T> {
-        transport::with_context(|context| {
-            context.call_host_function(function_name, parameters, return_type)
-        })
+        transport::with_ctx(|ctx| ctx.call_host_function(function_name, parameters, return_type))
     }
 
     /// Log a message with the specified log level, source, caller, source file, and line number.
@@ -97,9 +95,8 @@ impl GuestHandle {
                 .try_into()
                 .expect("Failed to convert GuestLogData to bytes");
 
-            transport::with_context(|context| {
-                context
-                    .emit_log(&bytes)
+            transport::with_ctx(|ctx| {
+                ctx.emit_log(&bytes)
                     .expect("Unable to send log data via virtq");
             });
         };

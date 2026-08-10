@@ -20,5 +20,8 @@ pub use function_call::*;
 mod parameter;
 pub use parameter::*;
 
+mod return_value;
+pub use return_value::*;
+
 mod vec;
 pub use vec::*;
