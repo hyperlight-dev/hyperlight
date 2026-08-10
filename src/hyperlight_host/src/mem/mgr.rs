@@ -764,17 +764,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             transport_arena.base_addr(),
         )?;
 
-        // Initialise the guest input and output data buffers in
-        // scratch memory. TODO: remove the need for this.
-        self.scratch_mem.write::<u64>(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
-        )?;
-        self.scratch_mem.write::<u64>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
-        )?;
-
         // Copy page tables from `shared_mem` into scratch. PT bytes
         // are appended to the snapshot blob at build time and live
         // just past the end of the guest-visible KVM slot (see

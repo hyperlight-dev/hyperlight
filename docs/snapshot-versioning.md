@@ -13,11 +13,11 @@ A snapshot carries four independently evolvable version markers:
   config blob, defined in
   [src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs](../src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs)).
   This is what the host reads back from a snapshot: the `OutBAction`
-  and `VmAction` port numbers, the input and output buffer stack
-  format, the offset and size of each memory region (including the
-  `HyperlightPEB` size), and the calling convention for guest function
-  entry. A change to any of these breaks older snapshots unless the
-  loader adds a compat path.
+  and `VmAction` port numbers, the virtqueue transport layout, the
+  offset and size of each memory region (including the `HyperlightPEB`
+  size), and the calling convention for guest function entry. A change
+  to any of these breaks older snapshots unless the loader adds a
+  compat path.
 * **Snapshot blob encoding**, `MT_SNAPSHOT_V1`
   (`application/vnd.hyperlight.snapshot.memory.v1`), aliased as
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot

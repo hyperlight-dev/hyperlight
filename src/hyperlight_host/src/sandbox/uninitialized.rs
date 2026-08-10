@@ -460,8 +460,6 @@ mod tests {
         // Non default memory configuration
         let cfg = {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_input_data_size(0x1000);
-            cfg.set_output_data_size(0x1000);
             cfg.set_heap_size(0x1000);
             Some(cfg)
         };
@@ -1163,7 +1161,6 @@ mod tests {
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(16 * 1024 * 1024); // 16MB heap
-            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 256 * 1024);
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1186,7 +1183,7 @@ mod tests {
         // Test 3: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024);
+            cfg.set_scratch_size(256 * 1024); // 256KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1206,38 +1203,11 @@ mod tests {
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 4: Create snapshot with custom input/output buffer sizes
-        {
-            let mut cfg = SandboxConfiguration::default();
-            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 128 * 1024);
-            cfg.set_input_data_size(64 * 1024); // 64KB input
-            cfg.set_output_data_size(64 * 1024); // 64KB output
-
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
-
-            let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
-                    .expect("Failed to create snapshot with custom buffer sizes"),
-            );
-
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot with custom buffers");
-
-            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
-        }
-
-        // Test 5: Create snapshot with all custom settings
+        // Test 4: Create snapshot with custom heap and scratch sizes
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
-            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 1024 * 1024);
-            cfg.set_input_data_size(128 * 1024); // 128KB input
-            cfg.set_output_data_size(128 * 1024); // 128KB output
+            cfg.set_scratch_size(512 * 1024); // 512KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1274,7 +1244,7 @@ mod tests {
             let _evolved3 = sandbox3.evolve().expect("Failed to evolve sandbox3");
         }
 
-        // Test 6: Create snapshot from binary buffer instead of file path
+        // Test 5: Create snapshot from binary buffer instead of file path
         {
             let binary_bytes = fs::read(&binary_path).expect("Failed to read binary file");
 
@@ -1294,7 +1264,7 @@ mod tests {
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 7: Register host functions on sandboxes created from snapshot
+        // Test 6: Register host functions on sandboxes created from snapshot
         {
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1333,7 +1303,7 @@ mod tests {
             assert_eq!(result, ReturnValue::Int(30));
         }
 
-        // Test 8: Create snapshot with init data (guest blob)
+        // Test 7: Create snapshot with init data (guest blob)
         {
             let init_data = [0xCA, 0xFE, 0xBA, 0xBE];
             let guest_env =
@@ -1355,7 +1325,7 @@ mod tests {
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 9: Create snapshot from existing sandbox
+        // Test 8: Create snapshot from existing sandbox
         {
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
             let orig_snapshot = Arc::new(

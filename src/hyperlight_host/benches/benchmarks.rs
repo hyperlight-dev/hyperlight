@@ -356,7 +356,6 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
         let mut config = SandboxConfiguration::default();
-        config.set_input_data_size(2 * SIZE + MIB);
         config.set_h2g_buffer_size(4 * MIB);
         config.set_h2g_pool_pages((2 * SIZE + 8 * MIB).div_ceil(PAGE_SIZE));
         config.set_heap_size(SIZE as u64 * 15);
@@ -520,9 +519,12 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
-        let mut sandbox = SandboxBuilder::from_file(guest_path)
-            .input_data_size(25 * 1024)
-            .build()
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_h2g_pool_pages(8);
+
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
+            .unwrap()
+            .evolve()
             .unwrap();
 
         b.iter_with_setup(
