@@ -161,7 +161,7 @@ impl Config {
         let h2g = QueueConfig::new(layout.get_h2g_queue_dims(), layout.get_h2g_buffer_size())?;
 
         let h2g_prefill_chains =
-            usize::from(h2g.dims.depth().get()).min(h2g.pool_len / h2g.buffer_size);
+            usize::from(h2g.dims.size().get()).min(h2g.pool_len / h2g.buffer_size);
         let arena = layout.get_transport_arena();
 
         Ok(Self {
@@ -206,7 +206,7 @@ impl<'a> Validator<'a> {
     fn validate_g2h<M: MemOps>(&self, mem: &M, ring: Range<u64>) -> Result<VirtqLayout> {
         // SAFETY: `ring` spans the configured image and `mem` keeps that image
         // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.g2h.dims.depth()) }
+        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.g2h.dims.size()) }
             .map_err(|error| new_error!("invalid G2H ring layout: {error}"))?;
 
         validate_canon_image(mem, layout, 0, |_, _| false)
@@ -227,7 +227,7 @@ impl<'a> Validator<'a> {
     ) -> Result<VirtqLayout> {
         // SAFETY: `ring` spans the configured image and `mem` keeps that image
         // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.h2g.dims.depth()) }
+        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.h2g.dims.size()) }
             .map_err(|error| new_error!("invalid H2G ring layout: {error}"))?;
 
         let bufsz = self.config.h2g.buffer_size;
@@ -434,8 +434,8 @@ mod tests {
     fn memory_layout() -> SandboxMemoryLayout {
         let mut config = SandboxConfiguration::default();
         config.set_scratch_size(SCRATCH_SIZE);
-        config.set_g2h_queue_depth(G2H_DEPTH as usize);
-        config.set_h2g_queue_depth(H2G_DEPTH as usize);
+        config.set_g2h_queue_size(G2H_DEPTH as usize);
+        config.set_h2g_queue_size(H2G_DEPTH as usize);
         config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
         config.set_g2h_pool_pages(G2H_POOL_PAGES);
         config.set_h2g_pool_pages(H2G_POOL_PAGES);
