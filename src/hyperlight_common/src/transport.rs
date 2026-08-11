@@ -132,9 +132,9 @@ impl<'a> EncodedMessage<'a> {
         control: &'a [u8],
         externals: ExternalValueRefs<'a>,
     ) -> Option<Self> {
-        let payload_len = control.len() + externals.total_len();
+        let payload_len = control.len().checked_add(externals.total_len())?;
         let payload_len = u32::try_from(payload_len).ok()?;
-        let total_len = MsgHeader::SIZE + payload_len as usize;
+        let total_len = MsgHeader::SIZE.checked_add(payload_len as usize)?;
 
         Some(Self {
             header: MsgHeader::new(kind, cid, payload_len),
@@ -293,6 +293,7 @@ impl Buf for EncodedMessageBuf<'_> {
 #[derive(Debug, Default)]
 pub struct ExternalValueRefs<'a> {
     chunks: Vec<&'a [u8]>,
+    total_len: usize,
 }
 
 impl<'a> ExternalValueRefs<'a> {
@@ -307,26 +308,39 @@ impl<'a> ExternalValueRefs<'a> {
     }
 
     /// Total byte length of all collected values.
-    pub fn total_len(&self) -> usize {
-        self.chunks.iter().map(|chunk| chunk.len()).sum()
+    pub const fn total_len(&self) -> usize {
+        self.total_len
     }
 }
 
 impl<'a> ExternalValueSink<'a> for ExternalValueRefs<'a> {
     fn push_bytes(&mut self, value: &'a [u8]) -> Result<()> {
-        if !value.is_empty() {
-            self.chunks.push(value);
+        if value.is_empty() {
+            return Ok(());
         }
+
+        self.total_len = self
+            .total_len
+            .checked_add(value.len())
+            .ok_or_else(|| anyhow::anyhow!("external value length overflow"))?;
+
+        self.chunks.push(value);
         Ok(())
     }
 
     fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()> {
-        self.chunks.extend(
-            value
-                .iter()
-                .map(Bytes::as_ref)
-                .filter(|chunk| !chunk.is_empty()),
-        );
+        let total_len = value
+            .iter()
+            .try_fold(self.total_len, |len, chunk| len.checked_add(chunk.len()))
+            .ok_or_else(|| anyhow::anyhow!("external value length overflow"))?;
+
+        let chunks = value
+            .iter()
+            .map(Bytes::as_ref)
+            .filter(|chunk| !chunk.is_empty());
+
+        self.chunks.extend(chunks);
+        self.total_len = total_len;
         Ok(())
     }
 }
@@ -410,6 +424,27 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert!(!cursor.has_remaining());
+    }
+
+    #[test]
+    fn encoded_message_rejects_length_overflow() {
+        let external_values = ExternalValueRefs {
+            chunks: Vec::new(),
+            total_len: usize::MAX,
+        };
+
+        assert!(EncodedMessage::new(MsgKind::Request, 7, b"x", external_values).is_none());
+
+        let mut external_values = ExternalValueRefs {
+            chunks: Vec::new(),
+            total_len: usize::MAX,
+        };
+        assert!(external_values.push_bytes(b"x").is_err());
+        assert!(external_values.chunks.is_empty());
+
+        let chunks = [Bytes::from_static(b"x")];
+        assert!(external_values.push_chunks(&chunks).is_err());
+        assert!(external_values.chunks.is_empty());
     }
 
     #[test]
