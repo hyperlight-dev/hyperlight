@@ -33,6 +33,8 @@ pub enum MsgKind {
     Cancel = 0x05,
     /// A guest log message (GuestLogData payload follows).
     Log = 0x06,
+    /// Internal request to prepare canonical transport state for snapshotting.
+    SnapshotCheckpoint = 0x07,
 }
 
 impl TryFrom<u8> for MsgKind {
@@ -46,6 +48,7 @@ impl TryFrom<u8> for MsgKind {
             0x04 => Ok(Self::StreamEnd),
             0x05 => Ok(Self::Cancel),
             0x06 => Ok(Self::Log),
+            0x07 => Ok(Self::SnapshotCheckpoint),
             other => Err(other),
         }
     }
@@ -105,7 +108,7 @@ pub struct EncodedMessage<'a> {
     header: MsgHeader,
     control: &'a [u8],
     externals: ExternalValueRefs<'a>,
-    wire_len: usize,
+    total_len: usize,
 }
 
 impl<'a> EncodedMessage<'a> {
@@ -118,14 +121,27 @@ impl<'a> EncodedMessage<'a> {
     ) -> Option<Self> {
         let payload_len = control.len() + externals.total_len();
         let payload_len = u32::try_from(payload_len).ok()?;
-        let wire_len = MsgHeader::SIZE + payload_len as usize;
+        let total_len = MsgHeader::SIZE + payload_len as usize;
 
         Some(Self {
             header: MsgHeader::new(kind, cid, payload_len),
             control,
             externals,
-            wire_len,
+            total_len,
         })
+    }
+
+    // Build a snapshot checkpoint message with no payload.
+    pub fn new_snapshot_cp() -> Self {
+        let total_len = MsgHeader::SIZE;
+        let externals = ExternalValueRefs::new();
+
+        Self {
+            header: MsgHeader::new(MsgKind::SnapshotCheckpoint, 0, 0),
+            control: &[],
+            externals,
+            total_len,
+        }
     }
 
     /// Borrow the complete wire message as a zero-copy byte cursor.
@@ -134,7 +150,7 @@ impl<'a> EncodedMessage<'a> {
             self.header.as_bytes(),
             self.control,
             &self.externals.chunks,
-            self.wire_len,
+            self.total_len,
         )
     }
 
@@ -177,7 +193,7 @@ impl<'a> EncodedMessage<'a> {
 
     /// Total wire length of all chunks.
     pub const fn total_len(&self) -> usize {
-        self.wire_len
+        self.total_len
     }
 }
 

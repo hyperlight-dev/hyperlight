@@ -85,6 +85,8 @@ pub struct MultiUseSandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
+    /// Whether queue traffic occurred since the last canonical boundary.
+    transport_dirty: bool,
     /// Optional callback to discover page table roots from guest memory.
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
     /// If not set, only CR3 is used as the single root.
@@ -135,6 +137,7 @@ impl MultiUseSandbox {
             mem_mgr: mgr,
             vm,
             snapshot: None,
+            transport_dirty: false,
             pt_root_finder: None,
         }
     }
@@ -375,6 +378,11 @@ impl MultiUseSandbox {
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
+
+        if self.transport_dirty {
+            self.checkpoint_transport_for_snapshot()?;
+        }
+
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
         // Get CR3 from the vCPU
@@ -423,6 +431,37 @@ impl MultiUseSandbox {
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
+        if let Err(error) = self.mem_mgr.begin_snapshot_checkpoint() {
+            if error.is_poison_error() {
+                self.poison();
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = self
+            .vm
+            .dispatch_call_from_host(&mut self.mem_mgr, &self.host_funcs)
+        {
+            let (error, should_poison) = error.promote();
+            if should_poison {
+                self.poison();
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = self.mem_mgr.finish_snapshot_checkpoint() {
+            if error.is_poison_error() {
+                self.poison();
+            }
+            return Err(error);
+        }
+
+        // TODO: Persist guest-owned pool payloads referenced by retained `Bytes`.
+        self.transport_dirty = false;
+        Ok(())
     }
 
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
@@ -615,6 +654,7 @@ impl MultiUseSandbox {
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
+        self.transport_dirty = false;
 
         // Clear poison state when successfully restoring from snapshot.
         //
@@ -901,6 +941,8 @@ impl MultiUseSandbox {
         self.vm.clear_cancel();
 
         let res = (|| {
+            self.transport_dirty = true;
+
             let fc = FunctionCall::new(
                 function_name.to_string(),
                 Some(args),
@@ -1440,6 +1482,28 @@ mod tests {
         sbox.restore(snapshot).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
+    }
+
+    #[test]
+    fn snapshots_checkpoint_only_dirty_transport() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        assert!(!sandbox.transport_dirty);
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        assert!(sandbox.transport_dirty);
+
+        let first = sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
+        let cached = sandbox.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&first, &cached));
+        assert!(!sandbox.transport_dirty);
+
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        assert!(sandbox.transport_dirty);
+        sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
     }
 
     #[test]
