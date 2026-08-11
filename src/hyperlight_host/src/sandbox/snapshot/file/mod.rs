@@ -114,52 +114,75 @@ fn encode_transport(snapshot: &VirtqSnapshot) -> crate::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn read_transport_field<const N: usize>(bytes: &mut &[u8], field: &str) -> crate::Result<[u8; N]> {
+    let (value, remaining) = bytes
+        .split_at_checked(N)
+        .ok_or_else(|| crate::new_error!("snapshot transport {field} is truncated"))?;
+
+    let mut array = [0; N];
+    array.copy_from_slice(value);
+
+    *bytes = remaining;
+    Ok(array)
+}
+
 fn decode_transport(bytes: &[u8]) -> crate::Result<VirtqSnapshot> {
-    if bytes.len() < TRANSPORT_HEADER_LEN {
-        return Err(crate::new_error!("snapshot transport header is truncated"));
-    }
-    if bytes[..TRANSPORT_MAGIC.len()] != TRANSPORT_MAGIC {
+    let total_len = bytes.len();
+    let mut bytes = bytes;
+
+    if read_transport_field(&mut bytes, "magic")? != TRANSPORT_MAGIC {
         return Err(crate::new_error!("snapshot transport magic is invalid"));
     }
 
-    let version = u32::from_le_bytes(bytes[8..12].try_into().expect("checked header length"));
+    let version = u32::from_le_bytes(read_transport_field(&mut bytes, "version")?);
     if version != TRANSPORT_VERSION {
         return Err(crate::new_error!(
             "snapshot transport version mismatch: file has version {version}, this build expects {TRANSPORT_VERSION}"
         ));
     }
-    let reserved = u32::from_le_bytes(bytes[12..16].try_into().expect("checked header length"));
+
+    let reserved = u32::from_le_bytes(read_transport_field(&mut bytes, "reserved field")?);
     if reserved != 0 {
         return Err(crate::new_error!(
             "snapshot transport reserved field is nonzero"
         ));
     }
 
-    let scratch_size = usize::try_from(u64::from_le_bytes(
-        bytes[16..24].try_into().expect("checked header length"),
-    ))?;
-    let g2h_len = usize::try_from(u64::from_le_bytes(
-        bytes[24..32].try_into().expect("checked header length"),
-    ))?;
-    let h2g_len = usize::try_from(u64::from_le_bytes(
-        bytes[32..40].try_into().expect("checked header length"),
-    ))?;
+    let scratch_size = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "scratch size",
+    )?))?;
+
+    let g2h_len = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "G2H ring length",
+    )?))?;
+
+    let h2g_len = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "H2G ring length",
+    )?))?;
+
     let expected_len = TRANSPORT_HEADER_LEN
         .checked_add(g2h_len)
         .and_then(|len| len.checked_add(h2g_len))
         .ok_or_else(|| crate::new_error!("snapshot transport length overflow"))?;
-    if bytes.len() != expected_len {
+
+    if total_len != expected_len {
         return Err(crate::new_error!(
             "snapshot transport length {} does not match header length {expected_len}",
-            bytes.len()
+            total_len
         ));
     }
 
-    let g2h_end = TRANSPORT_HEADER_LEN + g2h_len;
+    let (g2h_ring, h2g_ring) = bytes
+        .split_at_checked(g2h_len)
+        .ok_or_else(|| crate::new_error!("snapshot transport G2H ring is truncated"))?;
+
     Ok(VirtqSnapshot::new(
         scratch_size,
-        bytes[TRANSPORT_HEADER_LEN..g2h_end].to_vec(),
-        bytes[g2h_end..].to_vec(),
+        g2h_ring.to_vec(),
+        h2g_ring.to_vec(),
     ))
 }
 
@@ -1103,6 +1126,24 @@ mod transport_tests {
                 .to_string()
                 .contains("reserved")
         );
+    }
+
+    #[test]
+    fn transport_blob_rejects_truncated_header_fields() {
+        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
+        let bytes = encode_transport(&snapshot).unwrap();
+
+        for (len, field) in [
+            (0, "magic"),
+            (8, "version"),
+            (12, "reserved field"),
+            (16, "scratch size"),
+            (24, "G2H ring length"),
+            (32, "H2G ring length"),
+        ] {
+            let error = decode_transport(&bytes[..len]).unwrap_err();
+            assert!(error.to_string().contains(field), "{error:?}");
+        }
     }
 
     #[test]

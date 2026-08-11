@@ -301,7 +301,7 @@ impl TransportArena {
 
     /// Convert the arena's absolute addresses into offsets from the arena base.
     pub fn to_offsets(&self) -> (usize, usize, usize, usize, usize) {
-        // Already validated by `TransportArena::new`.
+        #[allow(clippy::unwrap_used)] // `new` proves every stored offset fits in `usize`.
         let to_offset = |addr| usize::try_from(addr - self.g2h_ring_addr).unwrap();
 
         (

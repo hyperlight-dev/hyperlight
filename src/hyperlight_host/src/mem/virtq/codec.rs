@@ -167,7 +167,7 @@ fn read_control(request: &mut RecvChain<HostMemOps>) -> anyhow::Result<Vec<u8>> 
     let mut prefix = [0u8; SIZE_PREFIX_LEN];
     request.read_exact(&mut prefix)?;
 
-    let payload_len = size_prefix_payload_len(&prefix).expect("size prefix length is fixed");
+    let payload_len = size_prefix_payload_len(&prefix).context("G2H size prefix is invalid")?;
     if payload_len > request.remaining() {
         bail!(
             "G2H control data declares {payload_len} bytes, only {} remain",
