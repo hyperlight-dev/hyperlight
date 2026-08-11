@@ -25,7 +25,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_guest::error::Result;
 
-use crate::types::FfiParameter;
+use crate::types::{FfiParameter, OwnedFfiParameter};
 
 /// An FFI version of `FunctionCall`
 #[repr(C)]
@@ -36,49 +36,75 @@ pub struct FfiFunctionCall {
     return_type: ReturnType,
 }
 
-impl FfiFunctionCall {
-    /// Create a new `FfiFunctionCall` by consuming a FunctionCall.
-    pub fn from_function_call(value: FunctionCall) -> Result<Self> {
-        let leaked_function_name = CString::new(value.function_name.as_str())
-            .expect("Failed to convert function name to CString")
-            .into_raw();
+pub(crate) struct OwnedFfiFunctionCall {
+    ffi: FfiFunctionCall,
+    _function_name: CString,
+    _parameters: Box<[FfiParameter]>,
+    _parameter_owners: Vec<OwnedFfiParameter>,
+}
 
-        let (parameters, parameter_len) = match value.parameters {
-            Some(p) => {
-                let parameters: Vec<FfiParameter> = p
-                    .into_iter()
-                    .map(|param| FfiParameter::from_parameter_value(param).unwrap())
-                    .collect();
-                let boxed = parameters.into_boxed_slice();
-                let parameters_len = boxed.len();
-                let leaked_param_vec = Box::into_raw(boxed);
-                (leaked_param_vec as *const FfiParameter, parameters_len)
-            }
-            None => (core::ptr::null(), 0),
+impl OwnedFfiFunctionCall {
+    pub(crate) fn from_function_call(value: FunctionCall) -> Result<Self> {
+        let function_name = CString::new(value.function_name.as_str())
+            .expect("Failed to convert function name to CString");
+        let parameter_owners = value
+            .parameters
+            .unwrap_or_default()
+            .into_iter()
+            .map(OwnedFfiParameter::from_parameter_value)
+            .collect::<Result<Vec<_>>>()?;
+        let parameters = parameter_owners
+            .iter()
+            .map(OwnedFfiParameter::ffi)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let parameters_len = parameters.len();
+        let parameters_ptr = if parameters.is_empty() {
+            core::ptr::null()
+        } else {
+            parameters.as_ptr()
+        };
+        let ffi = FfiFunctionCall {
+            function_name: function_name.as_ptr(),
+            parameters: parameters_ptr,
+            parameters_len,
+            return_type: value.expected_return_type,
         };
 
         Ok(Self {
-            function_name: leaked_function_name,
-            parameters,
-            parameters_len: parameter_len,
-            return_type: value.expected_return_type,
+            ffi,
+            _function_name: function_name,
+            _parameters: parameters,
+            _parameter_owners: parameter_owners,
         })
     }
 
+    pub(crate) fn as_ffi(&self) -> &FfiFunctionCall {
+        &self.ffi
+    }
+}
+
+impl FfiFunctionCall {
     /// Copies the parameters of `self` into a new `Vec<ParameterValue>`.
     /// # Safety
-    /// `self` must be an unmodified version of what `from_function_call` returned.
+    /// Every pointer in `self` must reference a live value of the declared
+    /// length.
     pub unsafe fn copy_parameters(&self) -> Vec<ParameterValue> {
-        let slice = unsafe { slice::from_raw_parts(self.parameters, self.parameters_len) };
+        let slice = if self.parameters_len == 0 {
+            &[]
+        } else {
+            // SAFETY: required by the caller.
+            unsafe { slice::from_raw_parts(self.parameters, self.parameters_len) }
+        };
         slice
             .iter()
             .map(|param| unsafe { param.copy_to_parameter_value() })
             .collect()
     }
 
-    /// Copies the function name of `self into a new `String`.
+    /// Copies the function name of `self` into a new `String`.
     /// # Safety
-    /// `self` must be an unmodified version of what `from_function_call` returned.
+    /// `function_name` must point to a live NUL-terminated string.
     pub unsafe fn copy_function_name(&self) -> String {
         unsafe {
             CStr::from_ptr(self.function_name)
@@ -89,25 +115,8 @@ impl FfiFunctionCall {
 
     /// Copies the return type of `self` into a new `ReturnType`.
     /// # Safety
-    /// `self` must be an unmodified version of what `from_function_call` returned.
+    /// `return_type` must contain a valid [`ReturnType`] discriminant.
     pub unsafe fn copy_return_type(&self) -> ReturnType {
         self.return_type
-    }
-}
-
-impl Drop for FfiFunctionCall {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.function_name.is_null() {
-                drop(CString::from_raw(self.function_name as *mut c_char));
-            }
-            if !self.parameters.is_null() {
-                let slice = Box::from_raw(slice::from_raw_parts_mut(
-                    self.parameters as *mut FfiParameter,
-                    self.parameters_len,
-                ));
-                drop(slice);
-            }
-        }
     }
 }

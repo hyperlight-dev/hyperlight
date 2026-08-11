@@ -157,6 +157,14 @@ guest writable scratch is untrusted. External values remove intermediate
 serialization copies. They do not guarantee that every direction is
 end-to-end zero copy.
 
+C guest function parameters expose `ByteChunks` as a borrowed
+`hl_ByteChunks` array. Each `hl_ByteChunk` contains a pointer and length. The
+descriptor array is allocated, but its payload pointers reference the
+underlying `Bytes` directly. The view is valid until the guest function
+returns. `hl_get_host_return_value_as_ByteChunks` returns an owning view that
+must be released with `hl_free_byte_chunks`. Chunk arrays produced by C are
+copied by `hl_result_from_ByteChunks`.
+
 The wire format does not preserve the sender's `Vec<Bytes>` boundaries. It
 records one total length, not each source chunk length. The receiver sees the
 logical byte sequence split where it intersects transport buffers:

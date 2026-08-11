@@ -21,10 +21,9 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
-use hyperlight_common::flatbuffer_wrappers::util::byte_chunks_to_vec;
 
 use crate::dispatch::take_last_host_return;
-use crate::types::{FfiReturnValue, FfiVec};
+use crate::types::{FfiByteChunks, FfiReturnValue, FfiVec, OwnedFfiByteChunks};
 
 // The reason for the capitalized type in the function names below
 // is to match the names of the variants in hl_ReturnType,
@@ -92,18 +91,10 @@ pub unsafe extern "C" fn hl_result_from_Bytes(data: *const u8, len: usize) -> Bo
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `data` must reference `len` readable bytes when `len` is nonzero.
-pub unsafe extern "C" fn hl_result_from_ByteChunks(
-    data: *const u8,
-    len: usize,
-) -> Box<FfiReturnValue> {
-    let value = if len == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: callers provide `len` readable bytes.
-        unsafe { core::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    Box::new(FfiReturnValue::byte_chunks(value))
+/// Every pointer in `value` must reference its declared number of bytes.
+pub unsafe extern "C" fn hl_result_from_ByteChunks(value: FfiByteChunks) -> Box<FfiReturnValue> {
+    // SAFETY: required by the caller.
+    Box::new(unsafe { FfiReturnValue::byte_chunks(value) })
 }
 
 #[unsafe(no_mangle)]
@@ -165,8 +156,18 @@ pub extern "C" fn hl_get_host_return_value_as_VecBytes() -> Box<FfiVec> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_get_host_return_value_as_ByteChunks() -> Box<FfiVec> {
+pub extern "C" fn hl_get_host_return_value_as_ByteChunks() -> *mut FfiByteChunks {
     let chunks: Vec<Bytes> = take_last_host_return();
 
-    Box::new(unsafe { FfiVec::from_vec(byte_chunks_to_vec(&chunks)) })
+    OwnedFfiByteChunks::into_raw(chunks)
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `value` must be null or a pointer returned by
+/// [`hl_get_host_return_value_as_ByteChunks`] that has not already been freed.
+pub unsafe extern "C" fn hl_free_byte_chunks(value: *mut FfiByteChunks) {
+    // SAFETY: required by the caller.
+    unsafe { OwnedFfiByteChunks::free(value) };
 }

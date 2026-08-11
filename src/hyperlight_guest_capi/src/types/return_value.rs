@@ -21,9 +21,8 @@ use core::ffi::{CStr, c_char};
 use core::mem::ManuallyDrop;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ReturnType, ReturnValue};
-use hyperlight_common::flatbuffer_wrappers::util::byte_chunks_from_vec;
 
-use super::FfiVec;
+use super::{FfiByteChunks, FfiVec};
 
 /// The value held by an [`FfiReturnValue`].
 #[repr(C)]
@@ -39,7 +38,7 @@ pub union FfiReturnValueUnion {
     pub Bool: bool,
     pub String: *mut c_char,
     pub VecBytes: FfiVec,
-    pub ByteChunks: FfiVec,
+    pub ByteChunks: FfiByteChunks,
 }
 
 /// An owned FFI return value.
@@ -126,12 +125,15 @@ impl FfiReturnValue {
         }
     }
 
-    pub fn byte_chunks(value: Vec<u8>) -> Self {
+    /// # Safety
+    ///
+    /// Every pointer in `value` must reference its declared number of bytes.
+    pub unsafe fn byte_chunks(value: FfiByteChunks) -> Self {
         Self {
             tag: ReturnType::ByteChunks,
-            // SAFETY: `FfiReturnValue` reclaims the allocation when consumed or dropped.
             value: FfiReturnValueUnion {
-                ByteChunks: unsafe { FfiVec::from_vec(value) },
+                // SAFETY: required by the caller.
+                ByteChunks: unsafe { value.copy_owned() },
             },
         }
     }
@@ -161,7 +163,7 @@ impl FfiReturnValue {
                 }
                 ReturnType::VecBytes => ReturnValue::VecBytes(value.value.VecBytes.into_vec()),
                 ReturnType::ByteChunks => {
-                    ReturnValue::ByteChunks(byte_chunks_from_vec(value.value.ByteChunks.into_vec()))
+                    ReturnValue::ByteChunks(value.value.ByteChunks.into_owned_bytes())
                 }
             }
         }
@@ -175,7 +177,7 @@ impl Drop for FfiReturnValue {
             match self.tag {
                 ReturnType::String => drop(CString::from_raw(self.value.String)),
                 ReturnType::VecBytes => drop(self.value.VecBytes.into_vec()),
-                ReturnType::ByteChunks => drop(self.value.ByteChunks.into_vec()),
+                ReturnType::ByteChunks => self.value.ByteChunks.drop_owned(),
                 _ => {}
             }
         }

@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+mod byte_chunks;
+pub use byte_chunks::*;
+
 mod function_call;
 pub use function_call::*;
 

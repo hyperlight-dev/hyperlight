@@ -20,6 +20,8 @@ prefix_with_name = true
 prefix = "hl_"
 
 [export.rename]
+"FfiByteChunk" = "ByteChunk"
+"FfiByteChunks" = "ByteChunks"
 "FfiFunctionCall" = "FunctionCall"
 "FfiParameter" = "Parameter"
 "FfiParameterValue" = "ParameterValue"

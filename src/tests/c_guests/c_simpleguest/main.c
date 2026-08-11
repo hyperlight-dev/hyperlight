@@ -332,6 +332,36 @@ const char* guest_fn_checks_if_host_returns_string_value() {
   return hl_get_host_return_value_as_String();
 }
 
+hl_ReturnValue *round_trip_host_byte_chunks(const hl_FunctionCall *params) {
+  hl_ByteChunks input = params->parameters[0].value.ByteChunks;
+  assert(input.count > 1);
+
+  for (uintptr_t i = 0; i < input.count; i++) {
+    assert(input.chunks[i].data != NULL || input.chunks[i].len == 0);
+  }
+
+  hl_Parameter host_param = {
+      .tag = hl_ParameterType_ByteChunks,
+      .value = {.ByteChunks = input},
+  };
+
+  const hl_FunctionCall host_call = {
+      .function_name = "HostEchoByteChunks",
+      .parameters = &host_param,
+      .parameters_len = 1,
+      .return_type = hl_ReturnType_ByteChunks,
+  };
+  hl_call_host_function(&host_call);
+
+  hl_ByteChunks *output = hl_get_host_return_value_as_ByteChunks();
+  assert(output != NULL);
+  assert(output->count > 1);
+
+  hl_ReturnValue *result = hl_result_from_ByteChunks(*output);
+  hl_free_byte_chunks(output);
+  return result;
+}
+
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_float_value, Float, 2, Float, Float)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_double_value, Double, 2, Double, Double)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 0)
@@ -409,6 +439,7 @@ void hyperlight_main(void)
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
+    hl_register_function_definition("RoundTripHostByteChunks", round_trip_host_byte_chunks, 1, (hl_ParameterType[]){hl_ParameterType_ByteChunks}, hl_ReturnType_ByteChunks);
 }
 
 // This dispatch function is only used when the host dispatches a guest function

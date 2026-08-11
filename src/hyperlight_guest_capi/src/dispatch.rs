@@ -30,7 +30,7 @@ use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
 use hyperlight_guest_bin::host_comm::call_host_function;
 
-use crate::types::{FfiFunctionCall, FfiReturnValue};
+use crate::types::{FfiFunctionCall, FfiReturnValue, OwnedFfiFunctionCall};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
     GuestFunctionRegister::new();
 
@@ -60,8 +60,8 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValu
         registered_func.verify_parameters(&function_call_parameter_types)?;
 
         let function_name = function_call.function_name.clone();
-        let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
-        let function_result = (registered_func.function_pointer)(&ffi_func_call);
+        let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
+        let function_result = (registered_func.function_pointer)(ffi_func_call.as_ffi());
         if function_result.is_null() {
             if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
                 return Err(HyperlightGuestError::new(error.code, error.message));
@@ -89,8 +89,8 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValu
         // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
         // to not do that.
         let function_name = function_call.function_name.clone();
-        let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
-        let function_result = unsafe { c_guest_dispatch_function(&ffi_func_call) };
+        let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
+        let function_result = unsafe { c_guest_dispatch_function(ffi_func_call.as_ffi()) };
         if function_result.is_null() {
             if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
                 return Err(HyperlightGuestError::new(error.code, error.message));
