@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::func::Bytes;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, SandboxBuilder};
@@ -868,6 +869,38 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
             res,
             "Guest Function, string added by Host Function".to_string()
         );
+    });
+}
+
+#[test]
+fn c_guest_accesses_byte_chunks() {
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+    };
+    with_c_sandbox_from(configure, |mut sandbox| {
+        let expected = (0..10 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+
+        for _ in 0..2 {
+            let output: Vec<Bytes> = sandbox
+                .call("RoundTripHostByteChunks", input.clone())
+                .unwrap();
+
+            assert_eq!(
+                output
+                    .iter()
+                    .flat_map(|chunk| chunk.iter().copied())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     });
 }
 
