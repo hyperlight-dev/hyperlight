@@ -29,13 +29,13 @@ struct ScratchTopMetadata {
     /// Number of pages reserved for the H2G pool.
     h2g_pool_pages: u64,
     /// Host-published H2G descriptor count.
-    h2g_queue_depth: u64,
+    h2g_queue_size: u64,
     /// Host-published capacity of each G2H upper-tier buffer.
     g2h_buffer_size: u64,
     /// Number of pages reserved for the G2H pool.
     g2h_pool_pages: u64,
     /// Host-published G2H descriptor count.
-    g2h_queue_depth: u64,
+    g2h_queue_size: u64,
     /// Host-published GPA of the fixed transport arena.
     transport_arena_gpa: u64,
     /// Seed request for libc's pseudorandom number generator.
@@ -54,14 +54,14 @@ const fn scratch_top_offset(field_offset: usize) -> u64 {
     (size_of::<ScratchTopMetadata>() - field_offset) as u64
 }
 
-pub const SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET: u64 =
-    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_queue_depth));
+pub const SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_queue_size));
 pub const SCRATCH_TOP_G2H_POOL_PAGES_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_pool_pages));
 pub const SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, g2h_buffer_size));
-pub const SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET: u64 =
-    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_queue_depth));
+pub const SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_queue_size));
 pub const SCRATCH_TOP_H2G_POOL_PAGES_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, h2g_pool_pages));
 pub const SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET: u64 =
@@ -88,10 +88,10 @@ const _: () = {
     assert!(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET == 0x20);
     assert!(SCRATCH_TOP_LIBC_RNG_SEED_OFFSET == 0x28);
     assert!(SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET == 0x30);
-    assert!(SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET == 0x38);
+    assert!(SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET == 0x38);
     assert!(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET == 0x40);
     assert!(SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET == 0x48);
-    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET == 0x50);
+    assert!(SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET == 0x50);
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x58);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x60);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
@@ -116,14 +116,14 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 pub fn min_scratch_size(
     input_data_size: usize,
     output_data_size: usize,
-    g2h_queue_depth: usize,
-    h2g_queue_depth: usize,
+    g2h_queue_size: usize,
+    h2g_queue_size: usize,
     g2h_pool_pages: usize,
     h2g_pool_pages: usize,
 ) -> usize {
     let size = arch::min_scratch_size(input_data_size, output_data_size).and_then(|fixed| {
-        let g2h = QueueDims::new(g2h_queue_depth, g2h_pool_pages)?;
-        let h2g = QueueDims::new(h2g_queue_depth, h2g_pool_pages)?;
+        let g2h = QueueDims::new(g2h_queue_size, g2h_pool_pages)?;
+        let h2g = QueueDims::new(h2g_queue_size, h2g_pool_pages)?;
 
         let transport_len = TransportArena::checked_query_size(g2h, h2g)?;
         fixed.checked_add(transport_len)
@@ -135,27 +135,27 @@ pub fn min_scratch_size(
 /// Validated address independent dimensions for one transport queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueueDims {
-    depth: NonZeroU16,
+    size: NonZeroU16,
     pool_pages: NonZeroUsize,
 }
 
 impl QueueDims {
     /// Validate one queue descriptor count and pool page count.
-    pub fn new(depth: usize, pool_pages: usize) -> Option<Self> {
-        let depth = u16::try_from(depth).ok()?;
-        let depth = NonZeroU16::new(depth)?;
+    pub fn new(size: usize, pool_pages: usize) -> Option<Self> {
+        let size = u16::try_from(size).ok()?;
+        let size = NonZeroU16::new(size)?;
 
-        if !depth.get().is_power_of_two() {
+        if !size.get().is_power_of_two() {
             return None;
         }
 
         let pool_pages = NonZeroUsize::new(pool_pages)?;
-        Some(Self { depth, pool_pages })
+        Some(Self { size, pool_pages })
     }
 
     /// Number of descriptors in the queue.
-    pub const fn depth(&self) -> NonZeroU16 {
-        self.depth
+    pub const fn size(&self) -> NonZeroU16 {
+        self.size
     }
 
     /// Number of pages in the queue's buffer pool.
@@ -165,7 +165,7 @@ impl QueueDims {
 
     /// Compute the ring length, returning `None` on arithmetic overflow.
     pub fn checked_ring_len(&self) -> Option<usize> {
-        virtq::Layout::checked_query_size(usize::from(self.depth.get()))
+        virtq::Layout::checked_query_size(usize::from(self.size.get()))
     }
 
     /// Compute the pool length, returning `None` on arithmetic overflow.
@@ -281,7 +281,7 @@ impl TransportArena {
 
     /// Convert the arena's absolute addresses into offsets from the arena base.
     pub fn to_offsets(&self) -> (usize, usize, usize, usize) {
-        // Already validated by `TransportArena::new`.
+        #[allow(clippy::unwrap_used)] // `new` proves every stored offset fits in `usize`.
         let to_offset = |addr| usize::try_from(addr - self.g2h_ring_addr).unwrap();
 
         (
