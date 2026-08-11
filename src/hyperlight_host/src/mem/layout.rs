@@ -260,9 +260,9 @@ pub(crate) struct SandboxMemoryLayout {
     /// The size of the scratch region in physical memory.
     scratch_size: usize,
     /// Number of descriptors in the G2H virtqueue.
-    g2h_queue_depth: usize,
+    g2h_queue_size: usize,
     /// Number of descriptors in the H2G virtqueue.
-    h2g_queue_depth: usize,
+    h2g_queue_size: usize,
     /// Capacity of each G2H upper-tier buffer.
     g2h_buffer_size: usize,
     /// Capacity of each H2G buffer.
@@ -297,8 +297,8 @@ impl Debug for SandboxMemoryLayout {
             &format_args!("{:#x}", self.init_data_size),
         )
         .field("Scratch Size", &format_args!("{:#x}", self.scratch_size))
-        .field("G2H Queue Depth", &self.g2h_queue_depth)
-        .field("H2G Queue Depth", &self.h2g_queue_depth)
+        .field("G2H Queue Size", &self.g2h_queue_size)
+        .field("H2G Queue Size", &self.h2g_queue_size)
         .field("G2H Buffer Size", &self.g2h_buffer_size)
         .field("H2G Buffer Size", &self.h2g_buffer_size)
         .field("G2H Pool Pages", &self.g2h_pool_pages)
@@ -341,8 +341,8 @@ impl SandboxMemoryLayout {
             init_data_size,
             init_data_permissions,
             scratch_size,
-            g2h_queue_depth,
-            h2g_queue_depth,
+            g2h_queue_size,
+            h2g_queue_size,
             g2h_buffer_size,
             h2g_buffer_size,
             g2h_pool_pages,
@@ -355,8 +355,8 @@ impl SandboxMemoryLayout {
             && *init_data_size == other.init_data_size
             && *init_data_permissions == other.init_data_permissions
             && *scratch_size == other.scratch_size
-            && *g2h_queue_depth == other.g2h_queue_depth
-            && *h2g_queue_depth == other.h2g_queue_depth
+            && *g2h_queue_size == other.g2h_queue_size
+            && *h2g_queue_size == other.h2g_queue_size
             && *g2h_buffer_size == other.g2h_buffer_size
             && *h2g_buffer_size == other.h2g_buffer_size
             && *g2h_pool_pages == other.g2h_pool_pages
@@ -392,15 +392,15 @@ impl SandboxMemoryLayout {
                 "scratch size {scratch_size} must be a multiple of {PAGE_SIZE_USIZE}"
             ));
         }
-        let g2h_queue_depth = cfg.get_g2h_queue_depth();
-        let h2g_queue_depth = cfg.get_h2g_queue_depth();
+        let g2h_queue_size = cfg.get_g2h_queue_size();
+        let h2g_queue_size = cfg.get_h2g_queue_size();
         let g2h_buffer_size = cfg.get_g2h_buffer_size();
         let h2g_buffer_size = cfg.get_h2g_buffer_size();
         let g2h_pool_pages = cfg.get_g2h_pool_pages();
         let h2g_pool_pages = cfg.get_h2g_pool_pages();
         let min_scratch_size = hyperlight_common::layout::min_scratch_size(
-            g2h_queue_depth,
-            h2g_queue_depth,
+            g2h_queue_size,
+            h2g_queue_size,
             g2h_pool_pages,
             h2g_pool_pages,
         );
@@ -415,8 +415,8 @@ impl SandboxMemoryLayout {
             init_data_permissions,
             pt_size: None,
             scratch_size,
-            g2h_queue_depth,
-            h2g_queue_depth,
+            g2h_queue_size,
+            h2g_queue_size,
             g2h_buffer_size,
             h2g_buffer_size,
             g2h_pool_pages,
@@ -448,13 +448,13 @@ impl SandboxMemoryLayout {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_g2h_queue_depth(&self) -> usize {
-        self.g2h_queue_depth
+    pub(crate) fn get_g2h_queue_size(&self) -> usize {
+        self.g2h_queue_size
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_h2g_queue_depth(&self) -> usize {
-        self.h2g_queue_depth
+    pub(crate) fn get_h2g_queue_size(&self) -> usize {
+        self.h2g_queue_size
     }
 
     #[allow(dead_code)]
@@ -478,12 +478,12 @@ impl SandboxMemoryLayout {
     }
 
     pub(crate) fn get_g2h_queue_dims(&self) -> QueueDims {
-        QueueDims::new(self.g2h_queue_depth, self.g2h_pool_pages)
+        QueueDims::new(self.g2h_queue_size, self.g2h_pool_pages)
             .expect("validated G2H queue dimensions")
     }
 
     pub(crate) fn get_h2g_queue_dims(&self) -> QueueDims {
-        QueueDims::new(self.h2g_queue_depth, self.h2g_pool_pages)
+        QueueDims::new(self.h2g_queue_size, self.h2g_pool_pages)
             .expect("validated H2G queue dimensions")
     }
 
@@ -510,8 +510,8 @@ impl SandboxMemoryLayout {
     /// independent field and must be set separately.
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
-            self.g2h_queue_depth,
-            self.h2g_queue_depth,
+            self.g2h_queue_size,
+            self.h2g_queue_size,
             self.g2h_pool_pages,
             self.h2g_pool_pages,
         );
@@ -819,8 +819,8 @@ mod tests {
     fn transport_memory_is_part_of_minimum_scratch_size() {
         let mut cfg = SandboxConfiguration::default();
         let minimum = hyperlight_common::layout::min_scratch_size(
-            cfg.get_g2h_queue_depth(),
-            cfg.get_h2g_queue_depth(),
+            cfg.get_g2h_queue_size(),
+            cfg.get_h2g_queue_size(),
             cfg.get_g2h_pool_pages(),
             cfg.get_h2g_pool_pages(),
         );
@@ -899,8 +899,8 @@ mod tests {
             |l| l.code_size += PAGE_SIZE_USIZE,
             |l| l.init_data_size += PAGE_SIZE_USIZE,
             |l| l.scratch_size += PAGE_SIZE_USIZE,
-            |l| l.g2h_queue_depth *= 2,
-            |l| l.h2g_queue_depth *= 2,
+            |l| l.g2h_queue_size *= 2,
+            |l| l.h2g_queue_size *= 2,
             |l| l.g2h_buffer_size *= 2,
             |l| l.h2g_buffer_size *= 2,
             |l| l.g2h_pool_pages += 1,

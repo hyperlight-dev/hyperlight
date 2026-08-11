@@ -748,8 +748,8 @@ impl Snapshot {
                 init_data_size: l.init_data_size(),
                 init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
-                g2h_queue_depth: l.get_g2h_queue_depth(),
-                h2g_queue_depth: l.get_h2g_queue_depth(),
+                g2h_queue_size: l.get_g2h_queue_size(),
+                h2g_queue_size: l.get_h2g_queue_size(),
                 g2h_buffer_size: l.get_g2h_buffer_size(),
                 h2g_buffer_size: l.get_h2g_buffer_size(),
                 g2h_pool_pages: l.get_g2h_pool_pages(),
@@ -962,8 +962,8 @@ impl Snapshot {
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
         sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
-        sbox_cfg.set_g2h_queue_depth(cfg.layout.g2h_queue_depth);
-        sbox_cfg.set_h2g_queue_depth(cfg.layout.h2g_queue_depth);
+        sbox_cfg.set_g2h_queue_size(cfg.layout.g2h_queue_size);
+        sbox_cfg.set_h2g_queue_size(cfg.layout.h2g_queue_size);
         sbox_cfg.set_g2h_buffer_size(cfg.layout.g2h_buffer_size);
         sbox_cfg.set_h2g_buffer_size(cfg.layout.h2g_buffer_size);
         sbox_cfg.set_g2h_pool_pages(cfg.layout.g2h_pool_pages);

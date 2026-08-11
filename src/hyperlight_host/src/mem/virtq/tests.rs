@@ -137,8 +137,8 @@ impl TestVirtq {
 pub(crate) fn memory_layout() -> SandboxMemoryLayout {
     let mut config = SandboxConfiguration::default();
     config.set_scratch_size(SCRATCH_SIZE);
-    config.set_g2h_queue_depth(16);
-    config.set_h2g_queue_depth(8);
+    config.set_g2h_queue_size(16);
+    config.set_h2g_queue_size(8);
     config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
     config.set_g2h_pool_pages(3);
     config.set_h2g_pool_pages(3);

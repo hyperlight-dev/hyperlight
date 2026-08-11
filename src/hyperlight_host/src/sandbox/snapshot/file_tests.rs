@@ -2856,8 +2856,8 @@ fn round_trip_preserves_transport_layout() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_scratch_size(512 * 1024);
     cfg.set_heap_size(512 * 1024);
-    cfg.set_g2h_queue_depth(128);
-    cfg.set_h2g_queue_depth(16);
+    cfg.set_g2h_queue_size(128);
+    cfg.set_h2g_queue_size(16);
     cfg.set_g2h_buffer_size(8192);
     cfg.set_h2g_buffer_size(2048);
     cfg.set_g2h_pool_pages(16);
@@ -2879,8 +2879,8 @@ fn round_trip_preserves_transport_layout() {
         .unwrap();
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
 
-    assert_eq!(loaded.layout().get_g2h_queue_depth(), 128);
-    assert_eq!(loaded.layout().get_h2g_queue_depth(), 16);
+    assert_eq!(loaded.layout().get_g2h_queue_size(), 128);
+    assert_eq!(loaded.layout().get_h2g_queue_size(), 16);
     assert_eq!(loaded.layout().get_g2h_buffer_size(), 8192);
     assert_eq!(loaded.layout().get_h2g_buffer_size(), 2048);
     assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);

@@ -451,8 +451,8 @@ fn oversized_host_response_returns_transport_error() {
 #[test]
 fn log_then_host_call_with_small_rings() {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_g2h_queue_depth(4);
-    cfg.set_h2g_queue_depth(4);
+    cfg.set_g2h_queue_size(4);
+    cfg.set_h2g_queue_size(4);
     cfg.set_g2h_pool_pages(2);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {

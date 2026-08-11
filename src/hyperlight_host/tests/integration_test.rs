@@ -796,7 +796,7 @@ fn virtq_repeated_log_delivery_small_ring() {
     LOGGER.clear_log_calls();
 
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_g2h_queue_depth(4);
+    cfg.set_g2h_queue_size(4);
     cfg.set_g2h_pool_pages(2);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {

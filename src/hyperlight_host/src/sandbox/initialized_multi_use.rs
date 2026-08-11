@@ -1399,8 +1399,8 @@ mod tests {
         // total, and then add some more for the eagerly-copied page
         // tables on amd64
         let min_scratch = hyperlight_common::layout::min_scratch_size(
-            cfg.get_g2h_queue_depth(),
-            cfg.get_h2g_queue_depth(),
+            cfg.get_g2h_queue_size(),
+            cfg.get_h2g_queue_size(),
             cfg.get_g2h_pool_pages(),
             cfg.get_h2g_pool_pages(),
         );

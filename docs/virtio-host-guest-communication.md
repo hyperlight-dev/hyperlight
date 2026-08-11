@@ -65,7 +65,7 @@ The default layout is:
 | H2G pool | 8 pages |
 | Arena | 21 pages total |
 
-Offsets after the G2H ring depend on configured queue depths and pool pages.
+Offsets after the G2H ring depend on configured queue sizes and pool pages.
 `TransportArena` addresses are GPAs. The guest converts them to scratch GVAs
 when constructing rings and pools. Descriptor buffer addresses are GVAs.
 
@@ -87,12 +87,12 @@ before it knows the size of the next host written payload. Uniform slots let
 the host calculate how many buffers it needs without negotiating a size class
 or searching the ring.
 
-Queue depths, upper buffer sizes, and pool page counts are configurable when
+Queue sizes, upper buffer sizes, and pool page counts are configurable when
 the sandbox is created.
 
 ### Initialization
 
-The host writes the normalized queue depths, pool page counts, buffer sizes,
+The host writes the normalized queue sizes, pool page counts, buffer sizes,
 and arena GPA into fixed metadata at the top of scratch. It creates both
 consumers at cursor zero without reading uninitialized ring contents.
 
@@ -103,7 +103,7 @@ On the first VM entry, the guest:
 3. Converts each transport GPA into its scratch GVA.
 4. Creates both packed ring producers and slot pools.
 5. Prefills H2G with one writable descriptor per available H2G slot, bounded
-   by queue depth.
+   by queue size.
 6. Publishes the resulting `GuestContext`.
 
 The host consumers observe the descriptors after guest initialization.
@@ -314,7 +314,7 @@ The canonical state is:
 
 * G2H is empty at cursor zero.
 * H2G starts at cursor zero with one writable descriptor per complete free
-  slot, bounded by queue depth.
+  slot, bounded by queue size.
 * Guest producer and pool bookkeeping matches the rings.
 * Driver and device event suppression is normalized.
 * Host consumers start at cursor zero.

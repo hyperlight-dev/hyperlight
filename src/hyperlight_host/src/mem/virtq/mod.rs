@@ -193,7 +193,7 @@ impl QueueConfig {
 
     fn layout(&self, ring: &Range<u64>) -> Result<VirtqLayout> {
         // SAFETY: `ring` is derived from the validated fixed transport arena.
-        unsafe { VirtqLayout::from_base(ring.start, self.dims.depth()) }
+        unsafe { VirtqLayout::from_base(ring.start, self.dims.size()) }
             .map_err(|error| new_error!("invalid ring layout: {error}"))
     }
 }
@@ -218,7 +218,7 @@ impl Config {
         let h2g = QueueConfig::new(layout.get_h2g_queue_dims(), layout.get_h2g_buffer_size())?;
 
         let h2g_prefill_descs =
-            usize::from(h2g.dims.depth().get()).min(h2g.dims.pool_len() / h2g.buffer_size);
+            usize::from(h2g.dims.size().get()).min(h2g.dims.pool_len() / h2g.buffer_size);
 
         let arena = layout.get_transport_arena();
 

@@ -220,8 +220,8 @@ pub(super) struct MemoryLayout {
     /// Memory region flag bits. `None` means default permissions.
     pub(super) init_data_permissions: Option<u32>,
     pub(super) scratch_size: usize,
-    pub(super) g2h_queue_depth: usize,
-    pub(super) h2g_queue_depth: usize,
+    pub(super) g2h_queue_size: usize,
+    pub(super) h2g_queue_size: usize,
     pub(super) g2h_buffer_size: usize,
     pub(super) h2g_buffer_size: usize,
     pub(super) g2h_pool_pages: usize,
@@ -490,8 +490,8 @@ impl OciSnapshotConfig {
         }
 
         let mut transport = crate::sandbox::SandboxConfiguration::default();
-        transport.set_g2h_queue_depth(self.layout.g2h_queue_depth);
-        transport.set_h2g_queue_depth(self.layout.h2g_queue_depth);
+        transport.set_g2h_queue_size(self.layout.g2h_queue_size);
+        transport.set_h2g_queue_size(self.layout.h2g_queue_size);
         transport.set_g2h_buffer_size(self.layout.g2h_buffer_size);
         transport.set_h2g_buffer_size(self.layout.h2g_buffer_size);
         transport.set_g2h_pool_pages(self.layout.g2h_pool_pages);
@@ -499,14 +499,14 @@ impl OciSnapshotConfig {
 
         for (name, saved, normalized) in [
             (
-                "g2h_queue_depth",
-                self.layout.g2h_queue_depth,
-                transport.get_g2h_queue_depth(),
+                "g2h_queue_size",
+                self.layout.g2h_queue_size,
+                transport.get_g2h_queue_size(),
             ),
             (
-                "h2g_queue_depth",
-                self.layout.h2g_queue_depth,
-                transport.get_h2g_queue_depth(),
+                "h2g_queue_size",
+                self.layout.h2g_queue_size,
+                transport.get_h2g_queue_size(),
             ),
             (
                 "g2h_buffer_size",
@@ -835,8 +835,8 @@ mod tests {
                 init_data_size: 0,
                 init_data_permissions: None,
                 scratch_size: 0,
-                g2h_queue_depth: 64,
-                h2g_queue_depth: 32,
+                g2h_queue_size: 64,
+                h2g_queue_size: 32,
                 g2h_buffer_size: PAGE_SIZE,
                 h2g_buffer_size: PAGE_SIZE,
                 g2h_pool_pages: 8,
@@ -1071,8 +1071,8 @@ mod schema_pin {
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
-    "g2h_queue_depth": 64,
-    "h2g_queue_depth": 32,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
     "g2h_buffer_size": 4096,
     "h2g_buffer_size": 4096,
     "g2h_pool_pages": 8,
@@ -1117,8 +1117,8 @@ mod schema_pin {
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
-    "g2h_queue_depth": 64,
-    "h2g_queue_depth": 32,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
     "g2h_buffer_size": 4096,
     "h2g_buffer_size": 4096,
     "g2h_pool_pages": 8,
