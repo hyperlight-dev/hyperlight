@@ -50,6 +50,14 @@ type G2hProducer = VirtqProducer<GuestMemOps, OutbNotifier>;
 /// Type alias for the guest-side H2G producer.
 type H2gProducer = VirtqProducer<GuestMemOps, NoopNotifier>;
 
+/// Work selected by one H2G dispatch entry.
+pub enum DispatchAction {
+    /// Invoke one guest function and return its correlation ID.
+    Call(u32, FunctionCall),
+    /// Prepare canonical transport state for snapshot capture.
+    SnapshotCheckpoint,
+}
+
 /// Configuration for one queue passed to [`GuestContext::new`].
 #[derive(Debug)]
 pub struct QueueConfig {
@@ -234,11 +242,11 @@ impl GuestContext {
         Ok(ret)
     }
 
-    /// Receive one host-to-guest function call.
+    /// Receive one host-to-guest dispatch action.
     ///
     /// External `ByteChunks` retain their owner-backed H2G slots. Contiguous
     /// `VecBytes` values copy directly into their final `Vec<u8>`.
-    pub fn recv_h2g_call(&mut self) -> Result<(u32, FunctionCall)> {
+    pub fn recv_h2g_dispatch(&mut self) -> Result<DispatchAction> {
         self.g2h_producer
             .reclaim()
             .with_context(|| "G2H completion reclaim failed")?;
@@ -260,8 +268,13 @@ impl GuestContext {
         let Some(header) = MsgHeader::from_bytes(&header) else {
             bail!("H2G buffer has an invalid message header");
         };
-        if header.msg_kind() != Ok(MsgKind::Request) || header.cid == 0 {
-            bail!("H2G buffer has invalid request framing");
+
+        match header.msg_kind() {
+            Ok(MsgKind::SnapshotCheckpoint) => {
+                return Ok(DispatchAction::SnapshotCheckpoint);
+            }
+            Ok(MsgKind::Request) if header.cid != 0 => {}
+            _ => bail!("H2G buffer has invalid request framing"),
         }
 
         let payload_len =
@@ -298,7 +311,8 @@ impl GuestContext {
             payload.extend(segments.into_chunks());
         }
 
-        codec::decode_request(header.cid, Segments::new(payload))
+        let (cid, call) = codec::decode_request(header.cid, Segments::new(payload))?;
+        Ok(DispatchAction::Call(cid, call))
     }
 
     /// Return a guest-function result and replenish H2G receive buffers.
@@ -323,6 +337,21 @@ impl GuestContext {
         }
 
         drop(result);
+        self.prefill_h2g()
+    }
+
+    /// Canonicalize both queues while the host consumers are stopped.
+    pub fn prepare_snapshot(&mut self) -> Result<()> {
+        self.g2h_producer
+            .reclaim()
+            .with_context(|| "G2H snapshot reclaim failed")?;
+        self.g2h_producer
+            .reset()
+            .with_context(|| "G2H snapshot reset failed")?;
+        self.h2g_producer
+            .reset()
+            .with_context(|| "H2G snapshot reset failed")?;
+
         self.prefill_h2g()
     }
 
