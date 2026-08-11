@@ -85,9 +85,9 @@ pub struct SandboxConfiguration {
     /// representing an unset value, to keep this `#[repr(C)]` struct FFI-safe.
     max_guest_log_level: u64,
     /// Number of descriptors in the G2H virtqueue.
-    g2h_queue_depth: usize,
+    g2h_queue_size: usize,
     /// Number of descriptors in the H2G virtqueue.
-    h2g_queue_depth: usize,
+    h2g_queue_size: usize,
     /// Capacity of each G2H upper-tier buffer.
     g2h_buffer_size: usize,
     /// Capacity of each H2G buffer.
@@ -122,9 +122,9 @@ impl SandboxConfiguration {
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x55000;
     /// The default G2H virtqueue descriptor count.
-    pub const DEFAULT_G2H_QUEUE_DEPTH: usize = 64;
+    pub const DEFAULT_G2H_QUEUE_SIZE: usize = 64;
     /// The default H2G virtqueue descriptor count.
-    pub const DEFAULT_H2G_QUEUE_DEPTH: usize = 32;
+    pub const DEFAULT_H2G_QUEUE_SIZE: usize = 32;
     /// The default G2H upper-tier buffer size.
     pub const DEFAULT_G2H_BUFFER_SIZE: usize = PAGE_SIZE;
     /// The default H2G buffer size.
@@ -134,9 +134,9 @@ impl SandboxConfiguration {
     /// The default total number of H2G pool pages.
     pub const DEFAULT_H2G_POOL_PAGES: usize = 4;
     /// The minimum G2H virtqueue descriptor count.
-    const MIN_QUEUE_DEPTH: usize = 2;
+    const MIN_QUEUE_SIZE: usize = 2;
     /// The maximum G2H virtqueue descriptor count.
-    const MAX_QUEUE_DEPTH: usize = 32_768;
+    const MAX_QUEUE_SIZE: usize = 32_768;
     /// The minimum configured transport buffer size.
     const MIN_BUFFER_SIZE: usize = G2H_LOWER_SLOT_SIZE;
     /// The maximum configured transport buffer size.
@@ -167,8 +167,8 @@ impl SandboxConfiguration {
             heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
             max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
-            g2h_queue_depth: Self::DEFAULT_G2H_QUEUE_DEPTH,
-            h2g_queue_depth: Self::DEFAULT_H2G_QUEUE_DEPTH,
+            g2h_queue_size: Self::DEFAULT_G2H_QUEUE_SIZE,
+            h2g_queue_size: Self::DEFAULT_H2G_QUEUE_SIZE,
             g2h_buffer_size: Self::DEFAULT_G2H_BUFFER_SIZE,
             h2g_buffer_size: Self::DEFAULT_H2G_BUFFER_SIZE,
             g2h_pool_pages: Self::DEFAULT_G2H_POOL_PAGES,
@@ -358,30 +358,30 @@ impl SandboxConfiguration {
 
     /// Get the G2H virtqueue descriptor count.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn get_g2h_queue_depth(&self) -> usize {
-        self.g2h_queue_depth
+    pub fn get_g2h_queue_size(&self) -> usize {
+        self.g2h_queue_size
     }
 
     /// Set the G2H virtqueue descriptor count.
     ///
     /// Values are rounded up to a power of two in `2..=32768`.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_g2h_queue_depth(&mut self, depth: usize) {
-        self.g2h_queue_depth = Self::normalize_queue_depth(depth);
+    pub fn set_g2h_queue_size(&mut self, size: usize) {
+        self.g2h_queue_size = Self::normalize_queue_size(size);
     }
 
     /// Get the H2G virtqueue descriptor count.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn get_h2g_queue_depth(&self) -> usize {
-        self.h2g_queue_depth
+    pub fn get_h2g_queue_size(&self) -> usize {
+        self.h2g_queue_size
     }
 
     /// Set the H2G virtqueue descriptor count.
     ///
     /// Values are rounded up to a power of two in `2..=32768`.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_h2g_queue_depth(&mut self, depth: usize) {
-        self.h2g_queue_depth = Self::normalize_queue_depth(depth);
+    pub fn set_h2g_queue_size(&mut self, size: usize) {
+        self.h2g_queue_size = Self::normalize_queue_size(size);
     }
 
     /// Get the capacity of each G2H upper-tier buffer.
@@ -473,9 +473,8 @@ impl SandboxConfiguration {
             .unwrap_or(Self::DEFAULT_HEAP_SIZE)
     }
 
-    fn normalize_queue_depth(depth: usize) -> usize {
-        depth
-            .clamp(Self::MIN_QUEUE_DEPTH, Self::MAX_QUEUE_DEPTH)
+    fn normalize_queue_size(size: usize) -> usize {
+        size.clamp(Self::MIN_QUEUE_SIZE, Self::MAX_QUEUE_SIZE)
             .next_power_of_two()
     }
 
@@ -620,12 +619,12 @@ mod tests {
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
         assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
         assert_eq!(
-            SandboxConfiguration::DEFAULT_G2H_QUEUE_DEPTH,
-            cfg.get_g2h_queue_depth()
+            SandboxConfiguration::DEFAULT_G2H_QUEUE_SIZE,
+            cfg.get_g2h_queue_size()
         );
         assert_eq!(
-            SandboxConfiguration::DEFAULT_H2G_QUEUE_DEPTH,
-            cfg.get_h2g_queue_depth()
+            SandboxConfiguration::DEFAULT_H2G_QUEUE_SIZE,
+            cfg.get_h2g_queue_size()
         );
         assert_eq!(
             SandboxConfiguration::DEFAULT_G2H_BUFFER_SIZE,
@@ -671,9 +670,9 @@ mod tests {
     }
 
     #[test]
-    fn queue_depths_are_normalized() {
+    fn queue_sizes_are_normalized() {
         let mut cfg = SandboxConfiguration::default();
-        for (depth, expected) in [
+        for (size, expected) in [
             (0, 2),
             (1, 2),
             (2, 2),
@@ -683,10 +682,10 @@ mod tests {
             (32_769, 32_768),
             (usize::MAX, 32_768),
         ] {
-            cfg.set_g2h_queue_depth(depth);
-            cfg.set_h2g_queue_depth(depth);
-            assert_eq!(expected, cfg.get_g2h_queue_depth());
-            assert_eq!(expected, cfg.get_h2g_queue_depth());
+            cfg.set_g2h_queue_size(size);
+            cfg.set_h2g_queue_size(size);
+            assert_eq!(expected, cfg.get_g2h_queue_size());
+            assert_eq!(expected, cfg.get_h2g_queue_size());
         }
     }
 

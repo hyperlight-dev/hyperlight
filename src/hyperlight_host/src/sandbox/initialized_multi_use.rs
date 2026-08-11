@@ -250,8 +250,8 @@ impl MultiUseSandbox {
         config.set_output_data_size(snapshot.layout().output_data_size());
         config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
-        config.set_g2h_queue_depth(snapshot.layout().get_g2h_queue_depth());
-        config.set_h2g_queue_depth(snapshot.layout().get_h2g_queue_depth());
+        config.set_g2h_queue_size(snapshot.layout().get_g2h_queue_size());
+        config.set_h2g_queue_size(snapshot.layout().get_h2g_queue_size());
         config.set_g2h_buffer_size(snapshot.layout().get_g2h_buffer_size());
         config.set_h2g_buffer_size(snapshot.layout().get_h2g_buffer_size());
         config.set_g2h_pool_pages(snapshot.layout().get_g2h_pool_pages());
@@ -1182,14 +1182,14 @@ fn warn_on_layout_override(
             snapshot.get_scratch_size() as u64,
         ),
         (
-            "g2h_queue_depth",
-            caller.get_g2h_queue_depth() as u64,
-            snapshot.get_g2h_queue_depth() as u64,
+            "g2h_queue_size",
+            caller.get_g2h_queue_size() as u64,
+            snapshot.get_g2h_queue_size() as u64,
         ),
         (
-            "h2g_queue_depth",
-            caller.get_h2g_queue_depth() as u64,
-            snapshot.get_h2g_queue_depth() as u64,
+            "h2g_queue_size",
+            caller.get_h2g_queue_size() as u64,
+            snapshot.get_h2g_queue_size() as u64,
         ),
         (
             "g2h_buffer_size",
@@ -1444,8 +1444,8 @@ mod tests {
             hyperlight_common::layout::min_scratch_size(
                 defaults.get_input_data_size(),
                 defaults.get_output_data_size(),
-                defaults.get_g2h_queue_depth(),
-                defaults.get_h2g_queue_depth(),
+                defaults.get_g2h_queue_size(),
+                defaults.get_h2g_queue_size(),
                 defaults.get_g2h_pool_pages(),
                 defaults.get_h2g_pool_pages(),
             )
