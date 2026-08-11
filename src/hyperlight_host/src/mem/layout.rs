@@ -426,11 +426,13 @@ impl SandboxMemoryLayout {
         self.h2g_pool_pages
     }
 
+    #[allow(clippy::expect_used)] // `new` validates these dimensions.
     pub(crate) fn get_g2h_queue_dims(&self) -> QueueDims {
         QueueDims::new(self.g2h_queue_size, self.g2h_pool_pages)
             .expect("validated G2H queue dimensions")
     }
 
+    #[allow(clippy::expect_used)] // `new` validates these dimensions.
     pub(crate) fn get_h2g_queue_dims(&self) -> QueueDims {
         QueueDims::new(self.h2g_queue_size, self.h2g_pool_pages)
             .expect("validated H2G queue dimensions")
@@ -707,6 +709,7 @@ impl SandboxMemoryLayout {
     }
 
     /// Exact transport placement in the fixed scratch prefix.
+    #[allow(clippy::expect_used)] // The base and dimensions are validated by `new`.
     pub(crate) fn get_transport_arena(&self) -> TransportArena {
         let base_gpa = hyperlight_common::layout::scratch_base_gpa(self.scratch_size);
 
