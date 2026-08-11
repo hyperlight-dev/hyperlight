@@ -32,6 +32,7 @@ pub(crate) fn initialize() {
     let h2g_ring_gva = scratch_gva(arena.h2g_ring_addr());
     let g2h_pool_gva = scratch_gva(arena.g2h_pool_addr());
     let h2g_pool_gva = scratch_gva(arena.h2g_pool_addr());
+    let mbx_gva = scratch_gva(arena.mbx_addr());
 
     // SAFETY: Both ring ranges lie in the mapped, host-assigned scratch arena.
     let g2h_layout =
@@ -40,7 +41,7 @@ pub(crate) fn initialize() {
     let h2g_layout =
         unsafe { Layout::from_base(h2g_ring_gva, h2g.size()) }.expect("H2G layout is invalid");
 
-    // SAFETY: Initialization exclusively owns the queues on the guest vCPU.
+    // SAFETY: Initialization owns the disjoint queues, pools, and mailbox on the vCPU.
     // Scratch remains mapped for the guest's lifetime.
     let context = unsafe {
         GuestContext::new(
@@ -56,6 +57,7 @@ pub(crate) fn initialize() {
                 pool_pages: h2g_pages,
                 buffer_size: h2g_bufsz,
             },
+            mbx_gva,
         )
     }
     .expect("failed to create guest context");

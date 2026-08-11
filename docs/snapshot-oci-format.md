@@ -44,6 +44,9 @@ Four blob kinds per tag:
   (`application/vnd.hyperlight.snapshot.transport.v1`). A bounded
   binary image of the canonical G2H and H2G rings.
 
+The runtime queue protocol and canonical checkpoint are described in
+[Virtqueue host and guest communication](./virtio-host-guest-communication.md).
+
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
 
