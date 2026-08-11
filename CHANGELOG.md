@@ -36,8 +36,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Consumers validate descriptors and payload accesses during use.
 * Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
   ownership. `BufferMap` supplies complete owners exposing initialized bytes.
-* `VirtqProducer::reset` is unsafe and requires a stopped peer with no live
-  consumer-side chain handles.
+* `VirtqProducer::reset` and `GuestContext::prepare_snapshot` are unsafe.
+  Peers must stay stopped with no live consumer-side chain handles until
+  their consumers are reset or replaced.
 * `ChainBuilder::build()` allocates readable and writable requests.
   `writable_avail()` reserves available upper-tier slots within the descriptor
   budget. It may add zero slots to a nonempty chain.
@@ -48,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects snapshots without transport state.
 * Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
   keep their deferred result path.
+* Reject snapshot capture while guest-owned transport buffers are retained.
 * Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
   and 8 pages.
 

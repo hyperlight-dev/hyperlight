@@ -45,6 +45,9 @@ Four blob kinds per tag:
   binary image of the canonical G2H and H2G rings. Loading checks ring
   sizes and canonical state against the config.
 
+The runtime queue protocol and canonical checkpoint are described in
+[Virtqueue host and guest communication](./virtio-host-guest-communication.md).
+
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
 
