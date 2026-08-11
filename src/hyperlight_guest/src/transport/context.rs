@@ -16,8 +16,8 @@ use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::transport::{EncodedMessage, ExternalValueRefs, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
-    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, Segments,
-    SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps, Notifier, QueueStats,
+    Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
 };
 
 use super::{GuestMemOps, codec};
@@ -95,14 +95,20 @@ impl ReplyCapacity {
 
 /// Virtqueue runtime state for guest-host communication.
 pub struct GuestContext {
+    /// Access to the shared transport arena.
+    mem: GuestMemOps,
     /// Guest-to-host driver.
     g2h_producer: G2hProducer,
-    /// G2H pool state used to size writable replies.
+    /// G2H pool state used to count retained buffers.
     g2h_pool: SlotPool,
     /// Host-to-guest driver.
     h2g_producer: H2gProducer,
+    /// H2G pool state used to count retained buffers.
+    h2g_pool: SlotPool,
     /// Size of each prefilled H2G buffer.
     h2g_slot_size: usize,
+    /// Snapshot checkpoint mailbox GVA.
+    mbx_gva: u64,
     /// Correlation ID assigned to the next host-function request.
     next_cid: u32,
     /// Used by the C API.
@@ -113,7 +119,7 @@ pub struct GuestContext {
 
 impl GuestContext {
     /// Create a new context with G2H and H2G queues.
-    pub fn new(g2h: QueueConfig, h2g: QueueConfig) -> Result<Self> {
+    pub fn new(g2h: QueueConfig, h2g: QueueConfig, mbx_gva: u64) -> Result<Self> {
         let g2h_pool = g2h_pool(g2h.pool_gva, g2h.pool_pages, g2h.buffer_size)
             .with_context(|| "failed to create G2H pool")?;
         let mem = GuestMemOps::for_scratch();
@@ -121,13 +127,16 @@ impl GuestContext {
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
             .with_context(|| "failed to create H2G slot pool")?;
-        let h2g_producer = VirtqProducer::new(h2g.layout, mem, H2gNotifier, h2g_pool);
+        let h2g_producer = VirtqProducer::new(h2g.layout, mem, H2gNotifier, h2g_pool.clone());
 
         let mut ctx = Self {
+            mem,
             g2h_producer,
             g2h_pool,
             h2g_producer,
+            h2g_pool,
             h2g_slot_size: h2g.buffer_size,
+            mbx_gva,
             next_cid: 1,
             last_host_result: None,
             last_guest_error: None,
@@ -348,7 +357,34 @@ impl GuestContext {
             .reset()
             .with_context(|| "H2G snapshot reset failed")?;
 
-        self.prefill_h2g()
+        // [`SlotPool`] clones share one allocation bitmap with their producer.
+        // Producer reset releases every allocation still tracked by queue
+        // bookkeeping. At this checkpoint boundary, any allocation left in the
+        // bitmap is therefore held by an owner-backed `Bytes` returned to guest
+        // code. `num_live` gives the exact number of retained slots across both
+        // size tiers. Multiple `Bytes` clones or slices backed by one owner still
+        // count as one slot.
+        //
+        // This runs before H2G prefill because posted receive buffers are
+        // transport-owned allocations and must not be counted. The result only
+        // answers whether retained buffers exist. It does not identify their
+        // addresses, capacities, or initialized lengths.
+        let guest_owned = self
+            .g2h_pool
+            .num_live()
+            .checked_add(self.h2g_pool.num_live())
+            .ok_or(VirtqError::InvalidState)?;
+        let guest_owned = u64::try_from(guest_owned).map_err(|_| VirtqError::InvalidState)?;
+
+        // TODO: Publish a retained-buffer manifest with pool-relative offsets and
+        // initialized lengths so the host can snapshot sanitized payload ranges.
+        // The count-only mailbox currently rejects every retained-buffer snapshot.
+        self.mem
+            .write(self.mbx_gva, &guest_owned.to_le_bytes())
+            .map_err(|_| VirtqError::MemoryWriteError)?;
+
+        self.prefill_h2g()?;
+        Ok(())
     }
 
     /// Send a log message via the G2H queue.
