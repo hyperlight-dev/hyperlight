@@ -446,10 +446,10 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_arch = "x86_64")]
-    use super::GuestMsrError;
     use hyperlight_common::vmem::PAGE_SIZE;
 
+    #[cfg(target_arch = "x86_64")]
+    use super::GuestMsrError;
     use super::SandboxConfiguration;
 
     #[test]

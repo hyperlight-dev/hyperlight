@@ -2863,13 +2863,12 @@ fn round_trip_preserves_transport_layout() {
     cfg.set_g2h_pool_pages(16);
     cfg.set_h2g_pool_pages(6);
 
-    let mut sbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    )
-    .unwrap()
-    .evolve()
-    .unwrap();
+    let bin = GuestBinary::FilePath(simple_guest_as_pathbuf());
+    let mut sbox = UninitializedSandbox::new(bin, Some(cfg))
+        .unwrap()
+        .evolve()
+        .unwrap();
+
     let snapshot = sbox.snapshot().unwrap();
     let expected = snapshot.layout().get_transport_arena();
 

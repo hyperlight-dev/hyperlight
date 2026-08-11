@@ -1459,7 +1459,7 @@ mod tests {
 
     #[test]
     fn snapshots_checkpoint_only_dirty_transport() {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn snapshots_reject_retained_transport_buffers_without_poisoning() {
-        let path = simple_guest_as_string().unwrap();
+        let path = simple_guest_as_pathbuf();
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         sandbox
             .register("HostEchoByteChunks", |value: Vec<Bytes>| value)
