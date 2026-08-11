@@ -258,6 +258,7 @@ impl Buf for EncodedMessageBuf<'_> {
             return &[];
         }
 
+        #[allow(clippy::expect_used)] // `remaining` is derived from the chunks.
         let chunk = self.current().expect("message length mismatch");
         &chunk[self.offset..]
     }
@@ -269,6 +270,7 @@ impl Buf for EncodedMessageBuf<'_> {
         let mut cnt = cnt;
 
         while cnt != 0 {
+            #[allow(clippy::expect_used)] // `remaining` advances with `index`.
             let chunk = self.current().expect("message length mismatch");
             let advanced = cnt.min(chunk.len() - self.offset);
 
