@@ -656,7 +656,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// status is only a retained slot count.
     ///
     /// TODO: This will change to allow the guest to publish a more detailed snapshot
-    /// status about what buffer ranges were retained so we can inlcude them in the
+    /// status about what buffer ranges were retained so we can include them in the
     /// snapshot. For now we simply error if the guest has retained any buffers.
     pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<u64> {
         let Some(g2h) = self.g2h_consumer.as_mut() else {
