@@ -641,10 +641,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.snapshot_count,
         )?;
 
-        // Record the G2H and H2G queue depths, pool page counts, and buffer sizes.
+        // Record the G2H and H2G queue sizes, pool page counts, and buffer sizes.
         self.update_scratch_bookkeeping_item(
-            SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET,
-            u64::try_from(self.layout.get_g2h_queue_depth())?,
+            SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET,
+            u64::try_from(self.layout.get_g2h_queue_size())?,
         )?;
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_G2H_POOL_PAGES_OFFSET,
@@ -655,8 +655,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
             u64::try_from(self.layout.get_g2h_buffer_size())?,
         )?;
         self.update_scratch_bookkeeping_item(
-            SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET,
-            u64::try_from(self.layout.get_h2g_queue_depth())?,
+            SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET,
+            u64::try_from(self.layout.get_h2g_queue_size())?,
         )?;
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_H2G_POOL_PAGES_OFFSET,
