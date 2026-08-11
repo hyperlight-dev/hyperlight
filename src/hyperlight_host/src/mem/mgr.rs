@@ -476,6 +476,21 @@ impl SandboxMemoryManager<HostSharedMemory> {
             return Err(new_error!("H2G request exceeds the wire payload limit"));
         };
 
+        self.write_h2g_message(&message)?;
+
+        self.next_guest_cid = cid.wrapping_add(1);
+        if self.next_guest_cid == 0 {
+            self.next_guest_cid = 1;
+        }
+
+        Ok(cid)
+    }
+
+    fn write_h2g_message(&mut self, message: &EncodedMessage<'_>) -> Result<()> {
+        let Some(consumer) = self.h2g_consumer.as_mut() else {
+            return Err(new_error!("H2G consumer is not attached"));
+        };
+
         let buffer_size = self.layout.get_h2g_buffer_size();
         let buffer_count = message.total_len().div_ceil(buffer_size);
 
@@ -484,18 +499,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // for a control call that releases them. External payloads therefore
         // require one extra chain. poll_exact_with_spare checks the chain and
         // leaves it available for the next call.
-        let spare_buffers = usize::from(message.external_len() != 0);
-
-        let consumer = self.h2g_consumer.as_mut().ok_or_else(|| {
-            HyperlightError::VirtqTransportError("H2G consumer is not attached".into())
-        })?;
+        let spare_buffers = match message.header().msg_kind() {
+            Ok(MsgKind::SnapshotCheckpoint) => 0,
+            Ok(_) => usize::from(message.external_len() != 0),
+            Err(_) => unreachable!("validated upstream"),
+        };
 
         // H2G receive buffers are writable-only, so any readable payload is malformed.
         let maybe_buffers = consumer
             .poll_exact_with_spare(buffer_count, spare_buffers, 0)
-            .map_err(|error| {
-                HyperlightError::VirtqTransportError(format!("H2G poll failed: {error}"))
-            })?;
+            .map_err(|err| HyperlightError::TransportError(format!("H2G poll failed: {err}")))?;
 
         let Some(buffers) = maybe_buffers else {
             return Err(new_error!(
@@ -510,36 +523,32 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         for (recv, reply) in buffers {
             let ReplyChain::Writable(mut buffer) = reply else {
-                return Err(HyperlightError::VirtqTransportError(
+                return Err(HyperlightError::TransportError(
                     "H2G receive buffer is not writable".into(),
                 ));
             };
 
             if buffer.desc_count() != 1 || buffer.capacity() != buffer_size {
-                return Err(HyperlightError::VirtqTransportError(
+                return Err(HyperlightError::TransportError(
                     "H2G receive buffer has an invalid shape".into(),
                 ));
             }
 
             while message.has_remaining() && buffer.remaining() != 0 {
-                let written = buffer.write(message.chunk()).map_err(|error| {
-                    HyperlightError::VirtqTransportError(format!("H2G write failed: {error}"))
+                let written = buffer.write(message.chunk()).map_err(|err| {
+                    HyperlightError::TransportError(format!("H2G write failed: {err}"))
                 })?;
 
                 message.advance(written);
             }
 
-            consumer.complete(recv, buffer).map_err(|error| {
-                HyperlightError::VirtqTransportError(format!("H2G completion failed: {error}"))
+            consumer.complete(recv, buffer).map_err(|err| {
+                HyperlightError::TransportError(format!("H2G completion failed: {err}"))
             })?;
         }
 
         debug_assert!(!message.has_remaining());
-        self.next_guest_cid = cid.wrapping_add(1);
-        if self.next_guest_cid == 0 {
-            self.next_guest_cid = 1;
-        }
-        Ok(cid)
+        Ok(())
     }
 
     /// Read a guest function result from the G2H virtqueue.
@@ -548,30 +557,28 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let max_recv_len = self.layout.get_g2h_queue_dims().pool_len();
 
         let Some(consumer) = self.g2h_consumer.as_mut() else {
-            return Err(HyperlightError::VirtqTransportError(
+            return Err(HyperlightError::TransportError(
                 "G2H consumer is not attached".into(),
             ));
         };
 
         loop {
-            let maybe_next = consumer.poll(max_recv_len).map_err(|error| {
-                HyperlightError::VirtqTransportError(format!("G2H poll failed: {error}"))
+            let maybe_next = consumer.poll(max_recv_len).map_err(|err| {
+                HyperlightError::TransportError(format!("G2H poll failed: {err}"))
             })?;
 
             let Some((mut recv, reply)) = maybe_next else {
-                return Err(HyperlightError::VirtqTransportError(
+                return Err(HyperlightError::TransportError(
                     "G2H has no guest function result after halt".into(),
                 ));
             };
 
-            let header = virtq::read_message_header(&mut recv).map_err(|error| {
-                HyperlightError::VirtqTransportError(format!(
-                    "Failed to read G2H result header: {error}"
-                ))
+            let header = virtq::read_message_header(&mut recv).map_err(|err| {
+                HyperlightError::TransportError(format!("Failed to read G2H result header: {err}"))
             })?;
 
             if !matches!(&reply, ReplyChain::Ack(_)) {
-                return Err(HyperlightError::VirtqTransportError(
+                return Err(HyperlightError::TransportError(
                     "G2H result entry has writable buffers".into(),
                 ));
             }
@@ -579,20 +586,18 @@ impl SandboxMemoryManager<HostSharedMemory> {
             match header.msg_kind() {
                 Ok(MsgKind::Log) => {
                     if header.cid != 0 {
-                        return Err(HyperlightError::VirtqTransportError(
+                        return Err(HyperlightError::TransportError(
                             "G2H log has a correlation ID".into(),
                         ));
                     }
 
-                    let log = virtq::read_guest_log_data(&mut recv).map_err(|error| {
-                        HyperlightError::VirtqTransportError(format!(
-                            "Failed to read G2H log: {error}"
-                        ))
+                    let log = virtq::read_guest_log_data(&mut recv).map_err(|err| {
+                        HyperlightError::TransportError(format!("Failed to read G2H log: {err}"))
                     })?;
 
-                    consumer.complete(recv, reply).map_err(|error| {
-                        HyperlightError::VirtqTransportError(format!(
-                            "Failed to complete G2H log: {error}"
+                    consumer.complete(recv, reply).map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to complete G2H log: {err}"
                         ))
                     })?;
 
@@ -600,37 +605,60 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 }
                 Ok(MsgKind::Response) => {
                     if header.cid != cid {
-                        return Err(HyperlightError::VirtqTransportError(
+                        return Err(HyperlightError::TransportError(
                             "G2H guest function result correlation ID mismatch".into(),
                         ));
                     }
 
                     let result = virtq::read_guest_function_call_result(&mut recv);
-                    consumer.complete(recv, reply).map_err(|error| {
-                        HyperlightError::VirtqTransportError(format!(
-                            "Failed to complete G2H guest function result: {error}"
+                    consumer.complete(recv, reply).map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to complete G2H guest function result: {err}"
                         ))
                     })?;
 
-                    return result.map_err(|error| {
-                        HyperlightError::VirtqTransportError(format!(
-                            "Failed to decode G2H guest function result: {error}"
+                    return result.map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to decode G2H guest function result: {err}"
                         ))
                     });
                 }
                 Ok(kind) => {
-                    return Err(HyperlightError::VirtqTransportError(format!(
+                    return Err(HyperlightError::TransportError(format!(
                         "Expected G2H guest function result, got {kind:?}"
                     )));
                 }
                 Err(kind) => {
-                    return Err(HyperlightError::VirtqTransportError(format!(
+                    return Err(HyperlightError::TransportError(format!(
                         "Unknown G2H message kind {kind:#x}"
                     )));
                 }
             }
         }
     }
+
+    /// Publish an internal request for guest-side snapshot canonicalization.
+    pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
+        let message = EncodedMessage::new_snapshot_cp();
+        self.write_h2g_message(&message)
+    }
+
+    /// Reset host consumers after guest-side snapshot canonicalization.
+    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<()> {
+        let Some(g2h) = self.g2h_consumer.as_mut() else {
+            return Err(new_error!("G2H consumer is not attached"));
+        };
+
+        let Some(h2g) = self.h2g_consumer.as_mut() else {
+            return Err(new_error!("H2G consumer is not attached"));
+        };
+
+        g2h.reset()?;
+        h2g.reset()?;
+
+        Ok(())
+    }
+
 
     /// This function restores a memory snapshot from a given snapshot.
     pub(crate) fn restore_snapshot(
@@ -733,7 +761,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
         )?;
-
         // Record the G2H and H2G queue depths, pool page counts, and buffer sizes.
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET,
@@ -1029,7 +1056,7 @@ mod h2g_tests {
 
             assert!(error.to_string().contains(expected), "{error:#}");
             assert!(error.is_poison_error());
-            assert!(matches!(error, HyperlightError::VirtqTransportError(_)));
+            assert!(matches!(error, HyperlightError::TransportError(_)));
         }
     }
 
@@ -1047,7 +1074,7 @@ mod h2g_tests {
 
         assert!(error.to_string().contains("Memory write"), "{error:#}");
         assert!(error.is_poison_error());
-        assert!(matches!(error, HyperlightError::VirtqTransportError(_)));
+        assert!(matches!(error, HyperlightError::TransportError(_)));
         assert_eq!(
             manager.h2g_consumer.as_ref().unwrap().used_cursor().head(),
             1
@@ -1090,7 +1117,7 @@ mod h2g_tests {
             "{error:#}"
         );
         assert!(error.is_poison_error());
-        assert!(matches!(error, HyperlightError::VirtqTransportError(_)));
+        assert!(matches!(error, HyperlightError::TransportError(_)));
     }
 
     #[test]
@@ -1128,6 +1155,23 @@ mod h2g_tests {
             cursor
         );
         assert_eq!(manager.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn writes_header_only_snapshot_checkpoint() {
+        let prepared = PreparedVirtq::new();
+        let mut manager = h2g_manager(&prepared);
+        let buffer = prepared.h2g_desc(0).addr;
+
+        manager.begin_snapshot_checkpoint().unwrap();
+
+        let wire = prepared.h2g_buffer(0, buffer);
+        let header = MsgHeader::from_bytes(&wire).unwrap();
+        assert_eq!(wire.len(), MsgHeader::SIZE);
+        assert_eq!(header.msg_kind(), Ok(MsgKind::SnapshotCheckpoint));
+        assert_eq!(header.cid, 0);
+        assert_eq!(header.payload_len, 0);
+        assert_eq!(manager.next_guest_cid, 1);
     }
 
     #[test]

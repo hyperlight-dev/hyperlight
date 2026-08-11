@@ -166,6 +166,12 @@ impl InflightTable {
 
         Some(removed)
     }
+
+    fn pop(&mut self) -> Option<Inflight> {
+        let inflight = self.live.pop()?;
+        self.by_id[inflight.token.id as usize] = Self::VACANT;
+        Some(inflight)
+    }
 }
 
 /// A high-level virtqueue producer (driver side).
@@ -359,6 +365,38 @@ where
     #[inline]
     pub fn num_inflight(&self) -> usize {
         self.inner.num_inflight()
+    }
+
+    /// Reset a stopped producer and release transport-owned allocations.
+    ///
+    /// The peer must not access the ring until its consumer is reset. Buffered
+    /// writable completions are guest-owned and make this operation fail.
+    /// Owner-backed payloads already returned to callers are not tracked as
+    /// in-flight and remain allocated.
+    pub fn reset(&mut self) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        self.inner.reset()?;
+        self.next_token = 0;
+
+        let mut maybe_err = None;
+
+        // Drain all in-flight chains and retire their allocations. This is a best-effort
+        while let Some(inflight) = self.inflight.pop() {
+            let ret = self.retire_elems(inflight.chain.elems().iter().copied());
+            if let Err(err) = ret
+                && maybe_err.is_none()
+            {
+                maybe_err = Some(err);
+            }
+        }
+
+        match maybe_err {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Configure event suppression for used buffer notifications.
@@ -1147,6 +1185,64 @@ mod tests {
             producer.submit(chain),
             Err(VirtqError::Backpressure)
         ));
+    }
+
+    #[test]
+    fn reset_reclaims_inflight_slots_and_reuses_ring() {
+        let ring = make_ring(8);
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = SlotPool::new(SlotLayout::new(pool_base, 64, ring.len())).unwrap();
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(ring.layout(), mem, notifier, pool.clone());
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        assert_eq!(pool.num_free(), 0);
+
+        producer.reset().unwrap();
+
+        assert_eq!(producer.num_inflight(), 0);
+        assert_eq!(producer.num_free(), ring.len());
+        assert_eq!(pool.num_free(), ring.len());
+        assert!(producer.inflight.live.is_empty());
+        assert!(
+            producer
+                .inflight
+                .by_id
+                .iter()
+                .all(|slot| *slot == InflightTable::VACANT)
+        );
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+    }
+
+    #[test]
+    fn reset_rejects_buffered_writable_completion() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        let ReplyChain::Writable(mut reply) = reply else {
+            panic!("expected writable reply");
+        };
+
+        reply.write_all(b"retained").unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.reclaim().unwrap();
+
+        assert!(matches!(producer.reset(), Err(VirtqError::InvalidState)));
+
+        drop(producer.poll().unwrap().unwrap());
+        producer.reset().unwrap();
     }
 
     #[derive(Clone)]
