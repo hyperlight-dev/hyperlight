@@ -999,6 +999,7 @@ mod tests {
         let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x30000);
         pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0);
         pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x410);
+        pin_eq!(arena.mbx_addr() - scratch_base_gpa, 0x618);
         pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x1000);
         pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xd000);
         pin_eq!(arena.end_addr() - scratch_base_gpa, 0x15000);
@@ -1040,6 +1041,7 @@ mod tests {
         let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x40000);
         pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0);
         pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x410);
+        pin_eq!(arena.mbx_addr() - scratch_base_gpa, 0x618);
         pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x1000);
         pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xd000);
         pin_eq!(arena.end_addr() - scratch_base_gpa, 0x15000);

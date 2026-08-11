@@ -16,6 +16,7 @@ limitations under the License.
 
 use core::ops::Range;
 
+use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
     DescFlags, Descriptor, MemOps, SlotLayout, SlotPool, VirtqProducer,
 };
@@ -29,45 +30,33 @@ use crate::sandbox::SandboxConfiguration;
 pub(crate) const SCRATCH_SIZE: usize = 0x20_000;
 pub(crate) const H2G_BUFFER_SIZE: usize = 3000;
 
-pub(crate) fn memory_layout() -> SandboxMemoryLayout {
-    let mut config = SandboxConfiguration::default();
-    config.set_scratch_size(SCRATCH_SIZE);
-    config.set_g2h_queue_depth(16);
-    config.set_h2g_queue_depth(8);
-    config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
-    config.set_g2h_pool_pages(3);
-    config.set_h2g_pool_pages(3);
-    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
-}
-
-fn host_scratch() -> HostSharedMemory {
-    ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap().build().0
-}
-
-pub(crate) struct PreparedVirtq {
+pub(crate) struct TestVirtq {
     pub(crate) scratch: HostSharedMemory,
-    g2h_mem: HostMemOps,
-    h2g_mem: HostMemOps,
-    g2h_ring: Range<u64>,
-    h2g_ring: Range<u64>,
+    pub(crate) g2h_mem: HostMemOps,
+    pub(crate) h2g_mem: HostMemOps,
+    pub(crate) g2h_ring: Range<u64>,
+    pub(crate) h2g_ring: Range<u64>,
     pub(crate) g2h_pool: Range<u64>,
     pub(crate) h2g_pool: Range<u64>,
-    g2h_layout: VirtqLayout,
-    h2g_layout: VirtqLayout,
+    pub(crate) g2h_layout: VirtqLayout,
+    pub(crate) h2g_layout: VirtqLayout,
 }
 
-impl PreparedVirtq {
+impl TestVirtq {
     pub(crate) fn new() -> Self {
         let scratch = host_scratch();
         let layout = memory_layout();
+
         let validator = Validator::new(&layout).unwrap();
         let config = validator.config;
         let regions = validator.resolve_gva_regions().unwrap();
 
-        let g2h_layout = config.g2h.layout(&regions.g2h_ring, "G2H").unwrap();
-        let h2g_layout = config.h2g.layout(&regions.h2g_ring, "H2G").unwrap();
+        let g2h_layout = config.g2h.layout(&regions.g2h_ring).unwrap();
+        let h2g_layout = config.h2g.layout(&regions.h2g_ring).unwrap();
         let arena = regions.g2h_ring.start..regions.h2g_pool.end;
+
         let mem = HostMemOps::new(&scratch, arena).unwrap();
+
         let h2g_pool = SlotPool::new(SlotLayout::new(
             regions.h2g_pool.start,
             config.h2g.buffer_size,
@@ -77,6 +66,7 @@ impl PreparedVirtq {
 
         let mut producer = VirtqProducer::new(h2g_layout, mem, HostNotifier, h2g_pool.clone());
         let mut batch = producer.batch();
+
         for _ in 0..config.h2g_prefill_descs {
             let chain = batch
                 .chain()
@@ -85,7 +75,9 @@ impl PreparedVirtq {
                 .unwrap();
             batch.submit(chain).unwrap();
         }
+
         batch.finish_without_notify();
+
         write_published_arena_gpa(&scratch, config.arena.base_addr()).unwrap();
 
         Self {
@@ -142,6 +134,22 @@ impl PreparedVirtq {
     }
 }
 
+pub(crate) fn memory_layout() -> SandboxMemoryLayout {
+    let mut config = SandboxConfiguration::default();
+    config.set_scratch_size(SCRATCH_SIZE);
+    config.set_g2h_queue_depth(16);
+    config.set_h2g_queue_depth(8);
+    config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
+    config.set_g2h_pool_pages(3);
+    config.set_h2g_pool_pages(3);
+
+    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
+}
+
+fn host_scratch() -> HostSharedMemory {
+    ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap().build().0
+}
+
 fn read_desc(mem: &HostMemOps, layout: VirtqLayout, index: u16) -> Descriptor {
     mem.read_val(layout.desc_table_addr() + u64::from(index) * Descriptor::SIZE as u64)
         .unwrap()
@@ -190,32 +198,32 @@ fn rejects_incorrect_published_arena() {
 
 #[test]
 fn validates_initial_virtq_images() {
-    PreparedVirtq::new().validate().unwrap();
+    TestVirtq::new().validate().unwrap();
 }
 
 #[test]
 fn snapshots_and_restores_canonical_image() {
-    let prepared = PreparedVirtq::new();
+    let queue = TestVirtq::new();
     let layout = memory_layout();
     let stale_pool = [0xa5; 16];
-    let pool_mem = HostMemOps::new(&prepared.scratch, prepared.h2g_pool.clone()).unwrap();
-    pool_mem
-        .write(prepared.h2g_pool.start, &stale_pool)
-        .unwrap();
+    let pool_mem = HostMemOps::new(&queue.scratch, queue.h2g_pool.clone()).unwrap();
 
-    let captured = snapshot(&layout, &prepared.scratch).unwrap();
+    pool_mem.write(queue.h2g_pool.start, &stale_pool).unwrap();
+
+    let captured = snapshot(&layout, &queue.scratch).unwrap();
     let restored = host_scratch();
     let allocator = layout.get_first_free_scratch_gpa();
-    let allocator_offset =
-        restored.mem_size() - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+    let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+
     restored.write::<u64>(allocator_offset, allocator).unwrap();
 
     restore(&layout, &restored, &captured).unwrap();
     let restored_snapshot = snapshot(&layout, &restored).unwrap();
-    let restored_pool = HostMemOps::new(&restored, prepared.h2g_pool.clone()).unwrap();
+    let restored_pool = HostMemOps::new(&restored, queue.h2g_pool.clone()).unwrap();
     let mut pool_bytes = [0; 16];
+
     restored_pool
-        .read(prepared.h2g_pool.start, &mut pool_bytes)
+        .read(queue.h2g_pool.start, &mut pool_bytes)
         .unwrap();
 
     assert_eq!(restored_snapshot, captured);
@@ -225,9 +233,10 @@ fn snapshots_and_restores_canonical_image() {
 
 #[test]
 fn rejects_corrupt_snapshot_ring_before_restore() {
-    let prepared = PreparedVirtq::new();
+    let queue = TestVirtq::new();
     let layout = memory_layout();
-    let mut captured = snapshot(&layout, &prepared.scratch).unwrap();
+    let mut captured = snapshot(&layout, &queue.scratch).unwrap();
+
     captured.h2g_ring.fill(0);
     let restored = host_scratch();
 
@@ -237,13 +246,16 @@ fn rejects_corrupt_snapshot_ring_before_restore() {
 
 #[test]
 fn restores_with_grown_page_tables() {
-    let prepared = PreparedVirtq::new();
+    let queue = TestVirtq::new();
     let layout = memory_layout();
-    let captured = snapshot(&layout, &prepared.scratch).unwrap();
+    let captured = snapshot(&layout, &queue.scratch).unwrap();
+
     let mut grown_layout = layout;
+
     grown_layout
         .set_pt_size(layout.get_pt_size() + vmem::PAGE_SIZE)
         .unwrap();
+
     let restored = host_scratch();
 
     restore(&grown_layout, &restored, &captured).unwrap();
@@ -255,11 +267,11 @@ fn restores_with_grown_page_tables() {
 
 #[test]
 fn rejects_nonzero_g2h_descriptors() {
-    let prepared = PreparedVirtq::new();
-    let mut desc = prepared.g2h_desc(0);
-    desc.addr = prepared.g2h_pool.start;
-    prepared.set_g2h_desc(0, desc);
-    assert!(prepared.validate().is_err());
+    let queue = TestVirtq::new();
+    let mut desc = queue.g2h_desc(0);
+    desc.addr = queue.g2h_pool.start;
+    queue.set_g2h_desc(0, desc);
+    assert!(queue.validate().is_err());
 }
 
 #[test]
@@ -280,11 +292,12 @@ fn rejects_invalid_h2g_descriptors() {
         Corruption::Misaligned,
         Corruption::Overlapping,
     ] {
-        let prepared = PreparedVirtq::new();
-        let mut desc = prepared.h2g_desc(0);
+        let queue = TestVirtq::new();
+        let mut desc = queue.h2g_desc(0);
+
         let index = match corruption {
             Corruption::OutsidePool => {
-                desc.addr = prepared.g2h_pool.start;
+                desc.addr = queue.g2h_pool.start;
                 0
             }
             Corruption::Readable => {
@@ -301,13 +314,13 @@ fn rejects_invalid_h2g_descriptors() {
             }
             Corruption::Overlapping => {
                 let first_addr = desc.addr;
-                desc = prepared.h2g_desc(1);
+                desc = queue.h2g_desc(1);
                 desc.addr = first_addr;
                 1
             }
         };
 
-        prepared.set_h2g_desc(index, desc);
-        assert!(prepared.validate().is_err(), "{corruption:?}");
+        queue.set_h2g_desc(index, desc);
+        assert!(queue.validate().is_err(), "{corruption:?}");
     }
 }

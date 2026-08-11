@@ -443,10 +443,13 @@ fn test_slot_pool_alloc_sg_splits() {
 #[test]
 fn test_tiered_slot_pool_live_addrs_are_deterministic() {
     let pool = make_tiered_slot_pool(2, 2);
+    assert_eq!(pool.num_live(), 0);
+
     let lower_high = pool.alloc(128).unwrap();
     let upper_high = pool.alloc(1024).unwrap();
     let lower_low = pool.alloc(128).unwrap();
 
+    assert_eq!(pool.num_live(), 3);
     assert_eq!(
         pool.live_addrs(),
         vec![lower_low.addr, lower_high.addr, upper_high.addr]

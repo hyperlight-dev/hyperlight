@@ -350,7 +350,7 @@ impl Inner {
     }
 
     fn live_addrs(&self) -> Vec<u64> {
-        let mut addrs = Vec::with_capacity(self.count() - self.num_free());
+        let mut addrs = Vec::with_capacity(self.num_live());
         if let Some(lower) = &self.lower {
             lower.append_live_addrs(&mut addrs);
         }
@@ -370,6 +370,10 @@ impl Inner {
 
     fn num_free(&self) -> usize {
         self.lower.as_ref().map_or(0, Tier::num_free) + self.upper.num_free()
+    }
+
+    fn num_live(&self) -> usize {
+        self.count() - self.num_free()
     }
 
     fn layouts(&self) -> (Option<SlotLayout>, SlotLayout) {
@@ -443,6 +447,11 @@ impl SlotPool {
     /// Total number of free slots across all tiers.
     pub fn num_free(&self) -> usize {
         self.inner.borrow().num_free()
+    }
+
+    /// Total number of currently allocated slots across all tiers.
+    pub fn num_live(&self) -> usize {
+        self.inner.borrow().num_live()
     }
 
     /// Total number of free slots in the lower tier.

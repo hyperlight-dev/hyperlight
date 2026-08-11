@@ -45,6 +45,7 @@ pub(crate) fn initialize() {
     let h2g_ring_gva = scratch_gva(arena.h2g_ring_addr());
     let g2h_pool_gva = scratch_gva(arena.g2h_pool_addr());
     let h2g_pool_gva = scratch_gva(arena.h2g_pool_addr());
+    let mbx_gva = scratch_gva(arena.mbx_addr());
 
     let g2h_layout =
         unsafe { Layout::from_base(g2h_ring_gva, g2h.depth()) }.expect("G2H layout is invalid");
@@ -65,6 +66,7 @@ pub(crate) fn initialize() {
             pool_pages: h2g_pages,
             buffer_size: h2g_bufsz,
         },
+        mbx_gva,
     )
     .expect("failed to create guest context");
 

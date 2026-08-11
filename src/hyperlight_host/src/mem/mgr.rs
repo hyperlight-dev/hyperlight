@@ -638,13 +638,27 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Publish an internal request for guest-side snapshot canonicalization.
+    ///
+    /// The pending marker distinguishes a completed checkpoint with no retained
+    /// buffers from a guest that halted without publishing mailbox status.
     pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
+        let offset = self.snapshot_mbx_offset()?;
+        self.scratch_mem.write(offset, u64::MAX.to_le_bytes())?;
+
         let message = EncodedMessage::new_snapshot_cp();
         self.write_h2g_message(&message)
     }
 
-    /// Reset host consumers after guest-side snapshot canonicalization.
-    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<()> {
+    /// Reset host consumers and read the guest-side snapshot status.
+    ///
+    /// Consumer reset completes the canonical queue before the status is interpreted.
+    /// A retained-buffer rejection therefore leaves both queues usable. The current
+    /// status is only a retained slot count.
+    ///
+    /// TODO: This will change to allow the guest to publish a more detailed snapshot
+    /// status about what buffer ranges were retained so we can inlcude them in the
+    /// snapshot. For now we simply error if the guest has retained any buffers.
+    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<u64> {
         let Some(g2h) = self.g2h_consumer.as_mut() else {
             return Err(new_error!("G2H consumer is not attached"));
         };
@@ -656,9 +670,27 @@ impl SandboxMemoryManager<HostSharedMemory> {
         g2h.reset()?;
         h2g.reset()?;
 
-        Ok(())
+        let offset = self.snapshot_mbx_offset()?;
+        let guest_owned = u64::from_le_bytes(self.scratch_mem.read(offset)?);
+        if guest_owned == u64::MAX {
+            return Err(HyperlightError::TransportError(
+                "Guest did not publish snapshot checkpoint status".to_string(),
+            ));
+        }
+
+        Ok(guest_owned)
     }
 
+    /// Get the offset of the snapshot mailbox in scratch memory.
+    fn snapshot_mbx_offset(&self) -> Result<usize> {
+        let arena = self.layout.get_transport_arena();
+        Ok(usize::try_from(
+            arena
+                .mbx_addr()
+                .checked_sub(arena.base_addr())
+                .ok_or_else(|| new_error!("Snapshot mailbox precedes transport arena"))?,
+        )?)
+    }
 
     /// This function restores a memory snapshot from a given snapshot.
     pub(crate) fn restore_snapshot(
@@ -990,69 +1022,72 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-mod h2g_tests {
-    use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_common::transport::{
-        MsgHeader, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
+        MsgHeader, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
     };
     use hyperlight_common::virtq::DescFlags;
-    use hyperlight_common::vmem;
+    #[cfg(target_arch = "x86_64")]
+    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    #[cfg(target_arch = "x86_64")]
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
-    use super::SandboxMemoryManager;
-    use crate::HyperlightError;
-    #[cfg(unshared_snapshot_mem)]
-    use crate::mem::shared_mem::ExclusiveSharedMemory;
-    use crate::mem::shared_mem::HostSharedMemory;
-    #[cfg(not(unshared_snapshot_mem))]
-    use crate::mem::shared_mem::ReadonlySharedMemory;
-    use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, PreparedVirtq, memory_layout};
-    use crate::sandbox::snapshot::NextAction;
+    use super::*;
+    #[cfg(target_arch = "x86_64")]
+    use crate::GuestBinary;
+    use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, TestVirtq, memory_layout};
+    #[cfg(target_arch = "x86_64")]
+    use crate::sandbox::SandboxConfiguration;
 
-    fn h2g_manager(prepared: &PreparedVirtq) -> SandboxMemoryManager<HostSharedMemory> {
+    fn manager(queue: &TestVirtq) -> SandboxMemoryManager<HostSharedMemory> {
         #[cfg(not(unshared_snapshot_mem))]
         let shared_mem =
             ReadonlySharedMemory::from_bytes(&vec![0; vmem::PAGE_SIZE], vmem::PAGE_SIZE).unwrap();
+
         #[cfg(unshared_snapshot_mem)]
         let shared_mem = ExclusiveSharedMemory::new(vmem::PAGE_SIZE)
             .unwrap()
             .build()
             .0;
 
-        let mut manager = SandboxMemoryManager::new(
+        let mut mgr = SandboxMemoryManager::new(
             memory_layout(),
             shared_mem,
-            prepared.scratch.clone(),
+            queue.scratch.clone(),
             NextAction::None,
         );
-        manager.h2g_consumer = Some(prepared.h2g_consumer());
-        manager
+
+        mgr.h2g_consumer = Some(queue.h2g_consumer());
+        mgr
     }
 
     fn h2g_call(bytes: usize) -> FunctionCall {
-        let parameters = (bytes != 0).then(|| vec![ParameterValue::VecBytes(vec![0xa5; bytes])]);
+        let params = (bytes != 0).then(|| vec![ParameterValue::VecBytes(vec![0xa5; bytes])]);
         FunctionCall::new(
             "call".to_string(),
-            parameters,
+            params,
             FunctionCallType::Guest,
             ReturnType::Void,
         )
     }
 
     #[test]
-    fn rejects_malformed_h2g_buffers() {
+    fn rejects_invalid_h2g_descriptors() {
         for (len, expected) in [
             (H2G_BUFFER_SIZE as u32, "Payload data too large"),
             (0, "not writable"),
         ] {
-            let prepared = PreparedVirtq::new();
-            let mut manager = h2g_manager(&prepared);
-            let mut desc = prepared.h2g_desc(0);
+            let queue = TestVirtq::new();
+            let mut mgr = manager(&queue);
+            let mut desc = queue.h2g_desc(0);
+
             desc.flags &= !DescFlags::WRITE.bits();
             desc.len = len;
-            prepared.set_h2g_desc(0, desc);
+            queue.set_h2g_desc(0, desc);
 
-            let error = manager.write_guest_function_call(&h2g_call(0)).unwrap_err();
+            let error = mgr.write_guest_function_call(&h2g_call(0)).unwrap_err();
 
             assert!(error.to_string().contains(expected), "{error:#}");
             assert!(error.is_poison_error());
@@ -1062,59 +1097,53 @@ mod h2g_tests {
 
     #[test]
     fn partial_h2g_write_is_fatal() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
-        let mut desc = prepared.h2g_desc(1);
-        desc.addr = prepared.h2g_pool.end;
-        prepared.set_h2g_desc(1, desc);
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let mut desc = queue.h2g_desc(1);
 
-        let error = manager
+        desc.addr = queue.h2g_pool.end;
+        queue.set_h2g_desc(1, desc);
+
+        let error = mgr
             .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE + 1024))
             .unwrap_err();
 
         assert!(error.to_string().contains("Memory write"), "{error:#}");
         assert!(error.is_poison_error());
         assert!(matches!(error, HyperlightError::TransportError(_)));
-        assert_eq!(
-            manager.h2g_consumer.as_ref().unwrap().used_cursor().head(),
-            1
-        );
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().used_cursor().head(), 1);
     }
 
     #[test]
     fn insufficient_h2g_capacity_rolls_back() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
-        let cursor = manager.h2g_consumer.as_ref().unwrap().avail_cursor();
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
 
-        let error = manager
+        let error = mgr
             .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE * 4))
             .unwrap_err();
 
         assert!(error.to_string().contains("H2G capacity"), "{error:#}");
         assert!(!error.is_poison_error());
-        assert_eq!(
-            manager.h2g_consumer.as_ref().unwrap().avail_cursor(),
-            cursor
-        );
-        assert_eq!(manager.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
     }
 
     #[test]
     fn missing_g2h_result_is_fatal() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
-        manager.g2h_consumer = Some(prepared.g2h_consumer());
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.g2h_consumer = Some(queue.g2h_consumer());
 
-        let Err(error) = manager.read_h2g_result_from_g2h(1) else {
+        let Err(error) = mgr.read_h2g_result_from_g2h(1) else {
             panic!("expected missing G2H result");
         };
 
         assert!(
             error
                 .to_string()
-                .contains("G2H has no guest function result"),
-            "{error:#}"
+                .contains("G2H has no guest function result")
         );
         assert!(error.is_poison_error());
         assert!(matches!(error, HyperlightError::TransportError(_)));
@@ -1122,85 +1151,82 @@ mod h2g_tests {
 
     #[test]
     fn writes_dense_h2g_request_and_reserves_control_buffer() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
         let external_len = H2G_BUFFER_SIZE * 2;
-        let buffers: Vec<_> = (0..4).map(|index| prepared.h2g_desc(index).addr).collect();
+        let buffers: Vec<_> = (0..4).map(|index| queue.h2g_desc(index).addr).collect();
 
-        let cid = manager
+        let cid = mgr
             .write_guest_function_call(&h2g_call(external_len))
             .unwrap();
 
-        let used = manager.h2g_consumer.as_ref().unwrap().avail_cursor().head();
+        let used = mgr.h2g_consumer.as_ref().unwrap().avail_cursor().head();
         let wire: Vec<u8> = (0..used)
-            .flat_map(|index| prepared.h2g_buffer(index, buffers[index as usize]))
+            .flat_map(|index| queue.h2g_buffer(index, buffers[index as usize]))
             .collect();
+
         let header = MsgHeader::from_bytes(&wire[..MsgHeader::SIZE]).unwrap();
         assert_eq!(header.msg_kind(), Ok(MsgKind::Request));
         assert_eq!(header.cid, cid);
         assert_eq!(header.payload_len as usize, wire.len() - MsgHeader::SIZE);
 
-        let control_payload =
+        let control =
             size_prefix_payload_len(&wire[MsgHeader::SIZE..MsgHeader::SIZE + SIZE_PREFIX_LEN])
                 .unwrap();
-        let control_len = size_prefixed_len(control_payload).unwrap();
+
+        let control_len = size_prefixed_len(control).unwrap();
         let external = &wire[MsgHeader::SIZE + control_len..];
         assert_eq!(external, vec![0xa5; external_len]);
 
-        let cursor = manager.h2g_consumer.as_ref().unwrap().avail_cursor();
-        let error = manager.write_guest_function_call(&h2g_call(1)).unwrap_err();
+        let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
+        let error = mgr.write_guest_function_call(&h2g_call(1)).unwrap_err();
+
         assert!(error.to_string().contains("H2G capacity"), "{error:#}");
-        assert_eq!(
-            manager.h2g_consumer.as_ref().unwrap().avail_cursor(),
-            cursor
-        );
-        assert_eq!(manager.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
     }
 
     #[test]
     fn writes_header_only_snapshot_checkpoint() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
-        let buffer = prepared.h2g_desc(0).addr;
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let buffer = queue.h2g_desc(0).addr;
 
-        manager.begin_snapshot_checkpoint().unwrap();
+        mgr.begin_snapshot_checkpoint().unwrap();
 
-        let wire = prepared.h2g_buffer(0, buffer);
+        let wire = queue.h2g_buffer(0, buffer);
         let header = MsgHeader::from_bytes(&wire).unwrap();
+
         assert_eq!(wire.len(), MsgHeader::SIZE);
         assert_eq!(header.msg_kind(), Ok(MsgKind::SnapshotCheckpoint));
         assert_eq!(header.cid, 0);
         assert_eq!(header.payload_len, 0);
-        assert_eq!(manager.next_guest_cid, 1);
+        assert_eq!(mgr.next_guest_cid, 1);
+
+        let mbx = mgr.snapshot_mbx_offset().unwrap();
+
+        assert_eq!(
+            mgr.scratch_mem.read::<[u8; 8]>(mbx).unwrap(),
+            u64::MAX.to_le_bytes()
+        );
     }
 
     #[test]
     fn guest_cid_wraps_without_zero() {
-        let prepared = PreparedVirtq::new();
-        let mut manager = h2g_manager(&prepared);
-        manager.next_guest_cid = u32::MAX;
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.next_guest_cid = u32::MAX;
 
         assert_eq!(
-            manager.write_guest_function_call(&h2g_call(0)).unwrap(),
+            mgr.write_guest_function_call(&h2g_call(0)).unwrap(),
             u32::MAX
         );
-        assert_eq!(manager.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
     }
-}
 
-#[cfg(test)]
-#[cfg(target_arch = "x86_64")]
-mod tests {
-    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-    use hyperlight_testing::simple_guest_as_pathbuf;
-
-    use super::SandboxMemoryManager;
-    use crate::GuestBinary;
-    use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::snapshot::Snapshot;
-
-    /// Build a Snapshot for the given configuration and verify the
+    /// Build a snapshot for the given configuration and verify the
     /// NULL page is not mapped in its page tables.
+    #[cfg(target_arch = "x86_64")]
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
         let path = simple_guest_as_pathbuf();
         let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
@@ -1217,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn test_page_tables_for_various_configurations() {
         let test_cases: [(&str, SandboxConfiguration); 4] = [
             ("default", { SandboxConfiguration::default() }),
@@ -1244,13 +1271,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn build_creates_virtq_consumers_before_initialization() {
-        let path = simple_guest_as_string().expect("failed to get simple guest path");
-        let snapshot =
-            Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
-                .unwrap();
-        let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
+        let path = simple_guest_as_pathbuf();
+        let bin = GuestBinary::FilePath(path);
+        let snapshot = Snapshot::from_env(bin, SandboxConfiguration::default()).unwrap();
 
+        let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
         let (mgr, _) = mgr.build().unwrap();
 
         assert!(mgr.g2h_consumer.is_some());

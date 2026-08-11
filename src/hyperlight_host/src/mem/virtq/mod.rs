@@ -73,8 +73,8 @@ pub(crate) fn create_consumers(
 ) -> Result<(G2hConsumer, H2gConsumer)> {
     let validator = Validator::new(layout)?;
     let regions = validator.resolve_gva_regions()?;
-    let g2h_layout = validator.config.g2h.layout(&regions.g2h_ring, "G2H")?;
-    let h2g_layout = validator.config.h2g.layout(&regions.h2g_ring, "H2G")?;
+    let g2h_layout = validator.config.g2h.layout(&regions.g2h_ring)?;
+    let h2g_layout = validator.config.h2g.layout(&regions.h2g_ring)?;
 
     build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
 }
@@ -92,11 +92,10 @@ fn attach_canonical(
     let g2h_layout = validator.validate_g2h(&g2h_ring_mem, regions.g2h_ring.clone())?;
 
     let h2g_ring_mem = HostMemOps::new(scratch_mem, regions.h2g_ring.clone())?;
-    let h2g_layout = validator.validate_h2g(
-        &h2g_ring_mem,
-        regions.h2g_ring.clone(),
-        regions.h2g_pool.clone(),
-    )?;
+    // Why Range is not Copy?
+    let h2g_ring = regions.h2g_ring.clone();
+    let h2g_pool = regions.h2g_pool.clone();
+    let h2g_layout = validator.validate_h2g(&h2g_ring_mem, h2g_ring, h2g_pool)?;
 
     build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
 }
@@ -192,10 +191,10 @@ impl QueueConfig {
         Ok(Self { dims, buffer_size })
     }
 
-    fn layout(&self, ring: &Range<u64>, direction: &str) -> Result<VirtqLayout> {
+    fn layout(&self, ring: &Range<u64>) -> Result<VirtqLayout> {
         // SAFETY: `ring` is derived from the validated fixed transport arena.
         unsafe { VirtqLayout::from_base(ring.start, self.dims.depth()) }
-            .map_err(|error| new_error!("invalid {direction} ring layout: {error}"))
+            .map_err(|error| new_error!("invalid ring layout: {error}"))
     }
 }
 
@@ -286,7 +285,7 @@ impl<'a> Validator<'a> {
 
     /// Validate a canonical G2H image and return its layout.
     fn validate_g2h<M: MemOps>(&self, mem: &M, ring: Range<u64>) -> Result<VirtqLayout> {
-        let layout = self.config.g2h.layout(&ring, "G2H")?;
+        let layout = self.config.g2h.layout(&ring)?;
 
         validate_canon_image(mem, layout, 0, |_, _| false)
             .map_err(|error| new_error!("invalid canonical G2H image: {error}"))?;
@@ -304,8 +303,7 @@ impl<'a> Validator<'a> {
         ring: Range<u64>,
         pool: Range<u64>,
     ) -> Result<VirtqLayout> {
-        let layout = self.config.h2g.layout(&ring, "H2G")?;
-
+        let layout = self.config.h2g.layout(&ring)?;
         let bufsz = self.config.h2g.buffer_size;
         let prefill = self.config.h2g_prefill_descs;
 
