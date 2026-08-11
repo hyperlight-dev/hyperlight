@@ -15,6 +15,7 @@ use crossbeam_channel::{RecvError, SendError};
 use flatbuffers::InvalidFlatbuffer;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::virtq::VirtqError;
 use thiserror::Error;
 
 use crate::hypervisor::hyperlight_vm::HyperlightVmError;
@@ -54,7 +55,7 @@ pub enum HyperlightError {
 
     /// The virtqueue transport cannot be used safely.
     #[error("Virtqueue transport error: {0}")]
-    VirtqTransportError(String),
+    TransportError(String),
 
     /// Execution violation
     #[error("Non-executable address {0:#x} tried to be executed")]
@@ -277,6 +278,12 @@ impl From<Infallible> for HyperlightError {
     }
 }
 
+impl From<VirtqError> for HyperlightError {
+    fn from(error: VirtqError) -> Self {
+        Self::TransportError(error.to_string())
+    }
+}
+
 impl From<&str> for HyperlightError {
     fn from(s: &str) -> Self {
         HyperlightError::Error(s.to_string())
@@ -317,7 +324,7 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::MemoryAccessViolation(_, _, _)
-            | HyperlightError::VirtqTransportError(_)
+            | HyperlightError::TransportError(_)
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
             // as poisoning here too for defense in depth.
             | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
@@ -413,6 +420,14 @@ mod tests {
         DispatchGuestCallError, HandleIoError, HyperlightVmError, RunVmError,
     };
     use crate::sandbox::outb::HandleOutbError;
+
+    #[test]
+    fn virtq_error_converts_to_poisoning_transport_error() {
+        let error = HyperlightError::from(VirtqError::InvalidState);
+
+        assert!(matches!(error, HyperlightError::TransportError(_)));
+        assert!(error.is_poison_error());
+    }
 
     /// Test that ExecutionCancelledByHost promotes to HyperlightError::ExecutionCanceledByHost
     #[test]
