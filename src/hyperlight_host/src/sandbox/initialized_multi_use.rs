@@ -166,6 +166,14 @@ impl MultiUseSandbox {
     /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
     /// or the load fails with an MSR mismatch.
     ///
+    /// [`SandboxConfiguration::set_max_guest_log_level`](crate::sandbox::SandboxConfiguration::set_max_guest_log_level)
+    /// sets the maximum log level passed to the guest. This only takes effect
+    /// for snapshots that still need their guest entrypoint run
+    /// (`NextAction::Initialise`). For a snapshot taken from an
+    /// already-initialized guest, the level was baked into the captured memory
+    /// when the guest first ran, so a configured value has no effect and a
+    /// warning is logged.
+    ///
     /// # Examples
     ///
     /// From a snapshot taken on another sandbox:
@@ -238,6 +246,7 @@ impl MultiUseSandbox {
         config.set_output_data_size(snapshot.layout().output_data_size());
         config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
+        let max_guest_log_level = config.get_max_guest_log_level();
         let load_info = snapshot.load_info();
 
         let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
@@ -284,13 +293,28 @@ impl MultiUseSandbox {
         #[cfg(gdb)]
         let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
 
+        // `max_guest_log_level` is consumed by `initialise` when it runs the
+        // guest entrypoint, which only happens for a preinitialised
+        // (`NextAction::Initialise`) snapshot. A `Call` snapshot already ran
+        // its entrypoint and baked the log level into the captured memory, so
+        // warn instead of silently ignoring the configured value.
+        if max_guest_log_level.is_some()
+            && matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_))
+        {
+            tracing::warn!(
+                "max_guest_log_level was configured for from_snapshot, but the snapshot is \
+                 an already-initialized (Call) snapshot; the log level is baked into the \
+                 snapshot's memory and the configured value has no effect"
+            );
+        }
+
         // noop for NextAction::Call
         vm.initialise(
             peb_addr,
             seed,
             &mut hshm,
             &host_funcs,
-            None,
+            max_guest_log_level,
             #[cfg(gdb)]
             dbg_mem_access_hdl,
         )
@@ -4017,6 +4041,81 @@ mod tests {
                 MultiUseSandbox::from_snapshot(Arc::new(snap), HostFunctions::default(), None)
                     .unwrap();
             assert_eq!(sbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+        }
+
+        /// `max_guest_log_level` configured through the
+        /// `SandboxConfiguration` passed to `from_snapshot` is honored for a
+        /// pre-init (`NextAction::Initialise`) snapshot: the guest runs its
+        /// entrypoint with the configured filter, so a higher level lets more
+        /// guest log messages through than a lower one. Before this was
+        /// plumbed, `from_snapshot` always passed `None` (falling back to
+        /// `RUST_LOG`), so both counts below would be equal.
+        ///
+        /// Ignored because it installs a process-global `log` logger; run
+        /// in isolation via the `test-isolated` Justfile recipe.
+        #[test]
+        #[ignore]
+        fn max_guest_log_level_is_honored_from_snapshot() {
+            use hyperlight_common::log_level::GuestLogFilter;
+            use hyperlight_testing::logger::{LOGGER, Logger};
+            use tracing_core::LevelFilter;
+
+            Logger::initialize_test_logger();
+            LOGGER.set_max_level(log::LevelFilter::Trace);
+
+            // Build a fresh pre-init sandbox with the given guest log level,
+            // emit one guest log message at each level, and count how many
+            // reached the host (guest logs carry target "hyperlight_guest").
+            let count_guest_logs = |max_level: LevelFilter| -> usize {
+                let snap = Snapshot::from_env(
+                    GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+                    SandboxConfiguration::default(),
+                )
+                .unwrap();
+                let mut config = SandboxConfiguration::default();
+                config.set_max_guest_log_level(max_level);
+                let mut sbox = MultiUseSandbox::from_snapshot(
+                    Arc::new(snap),
+                    HostFunctions::default(),
+                    Some(config),
+                )
+                .unwrap();
+
+                // Drop any log records emitted while the guest initialised.
+                LOGGER.clear_log_calls();
+
+                for level in [
+                    LevelFilter::TRACE,
+                    LevelFilter::DEBUG,
+                    LevelFilter::INFO,
+                    LevelFilter::WARN,
+                    LevelFilter::ERROR,
+                ] {
+                    let encoded: u64 = GuestLogFilter::from(level).into();
+                    sbox.call::<()>("LogMessage", ("hello".to_string(), encoded as i32))
+                        .unwrap();
+                }
+
+                let count = (0..LOGGER.num_log_calls())
+                    .filter_map(|i| LOGGER.get_log_call(i))
+                    .filter(|c| c.target == "hyperlight_guest")
+                    .count();
+                LOGGER.clear_log_calls();
+                count
+            };
+
+            let trace_count = count_guest_logs(LevelFilter::TRACE);
+            let error_count = count_guest_logs(LevelFilter::ERROR);
+
+            assert!(
+                error_count >= 1,
+                "an ERROR-level guest log must reach the host, got {error_count}"
+            );
+            assert!(
+                trace_count > error_count,
+                "TRACE must let more guest logs through than ERROR (trace={trace_count}, \
+                 error={error_count}); equal counts mean max_guest_log_level was ignored"
+            );
         }
 
         /// Two sandboxes built from clones of one `Arc<Snapshot>` can

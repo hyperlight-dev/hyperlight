@@ -17,9 +17,11 @@ limitations under the License.
 use std::cmp::max;
 use std::time::Duration;
 
+use hyperlight_common::log_level::GuestLogFilter;
 #[cfg(target_os = "linux")]
 use libc::c_int;
 use tracing::{Span, instrument};
+use tracing_core::LevelFilter;
 
 /// Used for passing debug configuration to a sandbox
 #[cfg(gdb)]
@@ -86,6 +88,13 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// The maximum log level enabled for guest code execution.
+    ///
+    /// If unset, the level is determined from the `RUST_LOG` environment
+    /// variable, defaulting to [`LevelFilter::ERROR`] when no level is found.
+    /// Stored as the guest ABI's numeric log-filter value, with `u64::MAX`
+    /// representing an unset value, to keep this `#[repr(C)]` struct FFI-safe.
+    max_guest_log_level: u64,
     /// Declared guest MSRs, stored inline to keep this type `Copy`.
     #[cfg(target_arch = "x86_64")]
     guest_msrs: [u32; Self::MAX_GUEST_MSRS],
@@ -116,6 +125,7 @@ impl SandboxConfiguration {
     /// own range, so 16 is the portable limit across backends.
     #[cfg(target_arch = "x86_64")]
     pub const MAX_GUEST_MSRS: usize = 16;
+    const MAX_GUEST_LOG_LEVEL_UNSET: u64 = u64::MAX;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -135,6 +145,7 @@ impl SandboxConfiguration {
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
             heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
+            max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
@@ -299,6 +310,27 @@ impl SandboxConfiguration {
         self.scratch_size = scratch_size;
     }
 
+    /// Sets the maximum log level for guest code execution.
+    ///
+    /// If not set, the level is determined from the `RUST_LOG` environment
+    /// variable, defaulting to [`LevelFilter::ERROR`] when no level is found.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_max_guest_log_level(&mut self, log_level: LevelFilter) {
+        self.max_guest_log_level = GuestLogFilter::from(log_level).into();
+    }
+
+    pub(crate) fn get_max_guest_log_level(&self) -> Option<LevelFilter> {
+        if self.max_guest_log_level == Self::MAX_GUEST_LOG_LEVEL_UNSET {
+            None
+        } else {
+            Some(
+                GuestLogFilter::try_from(self.max_guest_log_level)
+                    .expect("SandboxConfiguration stores a valid guest log filter")
+                    .into(),
+            )
+        }
+    }
+
     #[cfg(crashdump)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_core_dump(&self) -> bool {
@@ -348,6 +380,25 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     use super::GuestMsrError;
     use super::SandboxConfiguration;
+    use tracing_core::LevelFilter;
+
+    #[test]
+    fn max_guest_log_level_defaults_to_none_and_round_trips_all_levels() {
+        let mut cfg = SandboxConfiguration::default();
+        assert_eq!(cfg.get_max_guest_log_level(), None);
+
+        for level in [
+            LevelFilter::OFF,
+            LevelFilter::ERROR,
+            LevelFilter::WARN,
+            LevelFilter::INFO,
+            LevelFilter::DEBUG,
+            LevelFilter::TRACE,
+        ] {
+            cfg.set_max_guest_log_level(level);
+            assert_eq!(cfg.get_max_guest_log_level(), Some(level));
+        }
+    }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
