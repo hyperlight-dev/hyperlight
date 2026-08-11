@@ -118,7 +118,11 @@ pub(crate) fn internal_dispatch_function() {
     match result {
         Some((cid, result)) => transport::with_ctx(|ctx| ctx.send_h2g_result(cid, result))
             .expect("Failed to send function call result"),
-        None => transport::with_ctx(|ctx| ctx.prepare_snapshot())
-            .expect("Failed to prepare snapshot transport"),
+        None => transport::with_ctx(|ctx| {
+            // SAFETY: Host chain accesses are complete. The checkpoint protocol
+            // keeps consumers stopped until the host resets them.
+            unsafe { ctx.prepare_snapshot() }
+        })
+        .expect("Failed to prepare snapshot transport"),
     }
 }

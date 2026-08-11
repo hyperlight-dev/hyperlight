@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
+use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
     DescFlags, Descriptor, MemOps, RingError, SlotLayout, SlotPool, VirtqError, VirtqProducer,
 };
@@ -13,21 +14,6 @@ use crate::sandbox::SandboxConfiguration;
 
 pub(crate) const SCRATCH_SIZE: usize = 0x20_000;
 pub(crate) const H2G_BUFFER_SIZE: usize = 3000;
-
-pub(crate) fn memory_layout() -> SandboxMemoryLayout {
-    let mut config = SandboxConfiguration::default();
-    config.set_scratch_size(SCRATCH_SIZE);
-    config.set_g2h_queue_size(16);
-    config.set_h2g_queue_size(8);
-    config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
-    config.set_g2h_pool_pages(3);
-    config.set_h2g_pool_pages(3);
-    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
-}
-
-fn host_scratch() -> HostSharedMemory {
-    ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap().build().0
-}
 
 /// Empty G2H and prefilled H2G rings in host-backed scratch.
 pub(crate) struct TestCase {
@@ -102,6 +88,22 @@ impl TestCase {
     }
 }
 
+pub(crate) fn memory_layout() -> SandboxMemoryLayout {
+    let mut config = SandboxConfiguration::default();
+    config.set_scratch_size(SCRATCH_SIZE);
+    config.set_g2h_queue_size(16);
+    config.set_h2g_queue_size(8);
+    config.set_h2g_buffer_size(H2G_BUFFER_SIZE);
+    config.set_g2h_pool_pages(3);
+    config.set_h2g_pool_pages(3);
+
+    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
+}
+
+fn host_scratch() -> HostSharedMemory {
+    ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap().build().0
+}
+
 fn read_desc(mem: &HostMemOps, layout: VirtqLayout, index: u16) -> Descriptor {
     mem.read_val(layout.desc_table_addr() + u64::from(index) * Descriptor::SIZE as u64)
         .unwrap()
@@ -121,13 +123,18 @@ fn snapshots_and_restores_rings() {
     let layout = memory_layout();
     let stale_pool = [0xa5; 16];
     case.mem.write(case.h2g_pool_base, &stale_pool).unwrap();
-    case.scratch.copy_from_slice(&[0x5a; 16], 0).unwrap();
+    let spare_offset =
+        (case.h2g_pool_base - hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)) as usize
+            + layout.get_h2g_queue_dims().pool_len();
+    case.scratch
+        .copy_from_slice(&[0x5a; 16], spare_offset)
+        .unwrap();
 
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
     let restored = host_scratch();
     let allocator = layout.get_first_free_scratch_gpa();
-    let allocator_offset =
-        restored.mem_size() - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+    let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+
     restored.write::<u64>(allocator_offset, allocator).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
@@ -140,7 +147,7 @@ fn snapshots_and_restores_rings() {
 
     assert_eq!(restored_snapshot, captured);
     assert_eq!(restored.read::<u64>(allocator_offset).unwrap(), allocator);
-    assert_eq!(restored.read::<[u8; 16]>(0).unwrap(), [0; 16]);
+    assert_eq!(restored.read::<[u8; 16]>(spare_offset).unwrap(), [0; 16]);
     assert_eq!(pool_bytes, [0; 16]);
     assert!(g2h.poll(0).unwrap().is_none());
     let (recv, reply) = h2g.poll(0).unwrap().unwrap();
@@ -243,6 +250,7 @@ fn restores_with_finalized_layout() {
     let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
 
     let mut grown_layout = layout;
+
     grown_layout
         .set_pt_size(layout.get_pt_size() + vmem::PAGE_SIZE)
         .unwrap();
@@ -265,7 +273,7 @@ fn restores_with_finalized_layout() {
 #[test]
 fn uses_scratch_payloads_outside_pools() {
     let case = TestCase::new();
-    let addr = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE) + 1;
+    let addr = case.h2g_pool_base + memory_layout().get_h2g_queue_dims().pool_len() as u64;
     case.mem.write(addr, &[1, 2, 3]).unwrap();
 
     let mut g2h_desc = Descriptor::new(addr, 3, 0, DescFlags::empty());

@@ -16,8 +16,8 @@ use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
-    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, Segments,
-    SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps, Notifier, QueueStats,
+    Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
 };
 
 use super::{GuestMemOps, codec};
@@ -100,6 +100,8 @@ pub struct GuestContext {
     h2g_producer: H2gProducer,
     /// Size of each prefilled H2G buffer.
     h2g_slot_size: usize,
+    /// Snapshot checkpoint mailbox GVA.
+    mbx_gva: u64,
     /// Correlation ID assigned to the next host-function request.
     next_cid: u32,
     /// Used by the C API.
@@ -114,9 +116,11 @@ impl GuestContext {
     /// # Safety
     ///
     /// The caller must run in an initialized single-vCPU Hyperlight guest and
-    /// exclusively own both queues and their pools. Scratch must remain mapped
-    /// while the context or any returned buffer views exist.
-    pub unsafe fn new(g2h: QueueConfig, h2g: QueueConfig) -> Result<Self> {
+    /// exclusively own both queues, their pools, and the writable `u64` mailbox
+    /// at `mbx_gva`. The mailbox must lie in scratch, disjoint from both queues
+    /// and pools. Scratch must remain mapped while the context or any returned
+    /// buffer views exist.
+    pub unsafe fn new(g2h: QueueConfig, h2g: QueueConfig, mbx_gva: u64) -> Result<Self> {
         let g2h_pool = g2h_pool(g2h.pool_gva, g2h.pool_pages, g2h.buffer_size)
             .with_context(|| "failed to create G2H pool")?;
         // SAFETY: The caller supplies the guest execution and scratch lifetime requirements.
@@ -132,6 +136,7 @@ impl GuestContext {
             g2h_producer,
             h2g_producer,
             h2g_slot_size: h2g.buffer_size,
+            mbx_gva,
             next_cid: 1,
             last_host_result: None,
             last_guest_error: None,
@@ -340,17 +345,49 @@ impl GuestContext {
         self.prefill_h2g()
     }
 
-    /// Canonicalize both queues while the host consumers are stopped.
-    pub fn prepare_snapshot(&mut self) -> Result<()> {
+    /// Canonicalize both queues and publish the retained allocation count.
+    ///
+    /// # Safety
+    ///
+    /// All host consumer chain handles must be dropped. Both consumers must
+    /// stay stopped until they are reset or replaced.
+    ///
+    /// ```compile_fail,E0133
+    /// # use hyperlight_guest::transport::GuestContext;
+    /// fn checkpoint(context: &mut GuestContext) {
+    ///     context.prepare_snapshot().unwrap();
+    /// }
+    /// ```
+    pub unsafe fn prepare_snapshot(&mut self) -> Result<()> {
         self.g2h_producer
             .reclaim()
             .with_context(|| "G2H snapshot reclaim failed")?;
+
+        // SAFETY: The caller keeps host consumers quiescent until reset or replacement.
+        unsafe {
+            self.g2h_producer
+                .reset()
+                .with_context(|| "G2H snapshot reset failed")?;
+            self.h2g_producer
+                .reset()
+                .with_context(|| "H2G snapshot reset failed")?;
+        }
+
+        // Only guest-retained allocations remain between reset and H2G prefill.
+        let guest_owned = self
+            .g2h_producer
+            .pool()
+            .num_live()
+            .checked_add(self.h2g_producer.pool().num_live())
+            .ok_or(VirtqError::InvalidState)?;
+        let guest_owned = u64::try_from(guest_owned).map_err(|_| VirtqError::InvalidState)?;
+
+        // TODO: Publish a retained-buffer manifest with pool-relative offsets and
+        // initialized lengths so the host can snapshot sanitized payload ranges.
         self.g2h_producer
-            .reset()
-            .with_context(|| "G2H snapshot reset failed")?;
-        self.h2g_producer
-            .reset()
-            .with_context(|| "H2G snapshot reset failed")?;
+            .memory()
+            .write(self.mbx_gva, &guest_owned.to_le_bytes())
+            .map_err(|_| VirtqError::MemoryWriteError)?;
 
         self.prefill_h2g()
     }
