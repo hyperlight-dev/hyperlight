@@ -2831,7 +2831,7 @@ fn round_trip_preserves_stack_top_gva() {
 fn round_trip_preserves_non_default_scratch_size() {
     use crate::sandbox::SandboxConfiguration;
     let mut cfg = SandboxConfiguration::default();
-    let custom_scratch: usize = 256 * 1024;
+    let custom_scratch = SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024;
     cfg.set_scratch_size(custom_scratch);
     let mut sbox =
         UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
