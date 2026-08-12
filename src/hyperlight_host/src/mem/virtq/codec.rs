@@ -10,8 +10,8 @@ use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::transport::{
-    EncodedMessage, ExternalValueRefs, MsgHeader, MsgKind, SIZE_PREFIX_LEN,
-    size_prefix_payload_len, size_prefixed_len,
+    EncodedMessage, ExternalValues, MsgHeader, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len,
+    size_prefixed_len,
 };
 use hyperlight_common::virtq::{RecvChain, WritableChain};
 
@@ -116,19 +116,19 @@ pub(crate) fn try_write_response(
     result: &FunctionCallResult,
 ) -> anyhow::Result<bool> {
     let mut builder = FlatBufferBuilder::new();
-    let mut external_values = ExternalValueRefs::new();
+    let mut externals = ExternalValues::new();
 
-    let control = result.encode(&mut builder, &mut external_values)?;
-    let Some(message) = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
-    else {
-        anyhow::bail!("Host function response length overflow");
+    let control = result.encode(&mut builder, &mut externals)?;
+
+    let Some(msg) = EncodedMessage::new(MsgKind::Response, cid, control, externals) else {
+        bail!("Host function response length overflow");
     };
 
-    if message.total_len() > reply.capacity() {
+    if msg.total_len() > reply.capacity() {
         return Ok(false);
     }
 
-    for chunk in message.chunks() {
+    for chunk in msg.chunks() {
         reply.write_all(chunk)?;
     }
 

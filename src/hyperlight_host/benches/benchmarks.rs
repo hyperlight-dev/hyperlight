@@ -12,7 +12,7 @@ use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, ParameterValue, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_common::transport::ExternalValueRefs;
+use hyperlight_common::transport::ExternalValues;
 use hyperlight_common::vmem::PAGE_SIZE;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
@@ -468,7 +468,7 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
                     function_call.parameters.as_deref().unwrap_or_default(),
                 );
                 let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-                let mut exts = ExternalValueRefs::new();
+                let mut exts = ExternalValues::new();
 
                 let control = function_call.encode(&mut builder, &mut exts).unwrap();
                 std::hint::black_box((control, exts.total_len()));
@@ -477,7 +477,7 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
     }
 
     let mut builder = FlatBufferBuilder::new();
-    let mut external_values = ExternalValueRefs::new();
+    let mut external_values = ExternalValues::new();
 
     let vec_control = vec_call
         .encode(&mut builder, &mut external_values)
@@ -493,7 +493,7 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
     });
 
     let mut builder = FlatBufferBuilder::new();
-    let mut external_values = ExternalValueRefs::new();
+    let mut external_values = ExternalValues::new();
 
     let chunk_control = chunk_call
         .encode(&mut builder, &mut external_values)

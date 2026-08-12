@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use crate::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
     use crate::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-    use crate::transport::ExternalValueRefs;
+    use crate::transport::ExternalValues;
 
     /// Helper function to check that estimation is within reasonable bounds (±25%)
     fn assert_estimation_accuracy(
@@ -132,7 +132,7 @@ mod tests {
         );
         // Important that this FlatBufferBuilder is created with capacity 0 so it grows to its needed capacity
         let mut builder = FlatBufferBuilder::new();
-        let mut external_values = ExternalValueRefs::new();
+        let mut external_values = ExternalValues::new();
         let _buffer = fc.encode(&mut builder, &mut external_values).unwrap();
         let actual = builder.collapse().0.capacity();
 
