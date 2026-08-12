@@ -19,6 +19,8 @@ mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
+#[cfg(all(test, not(gdb), any(kvm, mshv3, target_os = "windows")))]
+pub(crate) mod test_support;
 #[cfg(gdb)]
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -45,7 +47,7 @@ use crate::hypervisor::virtual_machine::{
 };
 use crate::hypervisor::{InterruptHandle, InterruptHandleImpl};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
+use crate::mem::mgr::{BaseMappingUpdate, SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -268,6 +270,32 @@ pub enum UpdateRegionError {
     MapMemory(#[from] MapMemoryError),
     #[error("VM unmap memory error: {0}")]
     UnmapMemory(#[from] UnmapMemoryError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum BaseMappingUpdateError {
+    #[error("{0}")]
+    Recoverable(#[source] UpdateRegionError),
+    #[error("Mapping update failed: {update}. Restoring the prior mapping failed: {recovery}")]
+    Unrecoverable {
+        update: UpdateRegionError,
+        recovery: UpdateRegionError,
+    },
+}
+
+impl From<UpdateRegionError> for BaseMappingUpdateError {
+    fn from(error: UpdateRegionError) -> Self {
+        Self::Recoverable(error)
+    }
+}
+
+impl BaseMappingUpdateError {
+    fn into_update_error(self) -> UpdateRegionError {
+        match self {
+            Self::Recoverable(error) => error,
+            Self::Unrecoverable { recovery, .. } => recovery,
+        }
+    }
 }
 
 /// Errors that can occur when accessing the root page table state
@@ -528,17 +556,43 @@ impl HyperlightVm {
     pub(crate) fn update_snapshot_mapping(
         &mut self,
         snapshot: SnapshotSharedMemory<GuestSharedMemory>,
-    ) -> Result<(), UpdateRegionError> {
+    ) -> Result<Option<SnapshotSharedMemory<GuestSharedMemory>>, UpdateRegionError> {
+        self.update_snapshot_mapping_transactionally(snapshot)
+            .map_err(BaseMappingUpdateError::into_update_error)
+    }
+
+    fn update_snapshot_mapping_transactionally(
+        &mut self,
+        snapshot: SnapshotSharedMemory<GuestSharedMemory>,
+    ) -> Result<Option<SnapshotSharedMemory<GuestSharedMemory>>, BaseMappingUpdateError> {
         let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         let rgn = snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
 
-        if let Some(old_snapshot) = self.snapshot_memory.replace(snapshot) {
+        if let Some(old_snapshot) = self.snapshot_memory.as_ref() {
             let old_rgn = old_snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
-            self.vm.unmap_memory((self.snapshot_slot, &old_rgn))?;
+            self.vm
+                .unmap_memory((self.snapshot_slot, &old_rgn))
+                .map_err(UpdateRegionError::from)?;
         }
-        unsafe { self.vm.map_memory((self.snapshot_slot, &rgn))? };
+        // SAFETY: `snapshot` owns the mapped region and is stored in `self` on success.
+        let map_result = unsafe { self.vm.map_memory((self.snapshot_slot, &rgn)) };
+        if let Err(err) = map_result {
+            let update = UpdateRegionError::from(err);
+            if let Some(old_snapshot) = self.snapshot_memory.as_ref() {
+                let old_rgn = old_snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
+                // SAFETY: `old_snapshot` remains owned by `self` throughout rollback.
+                let recovery_result = unsafe { self.vm.map_memory((self.snapshot_slot, &old_rgn)) };
+                if let Err(err) = recovery_result {
+                    return Err(BaseMappingUpdateError::Unrecoverable {
+                        update,
+                        recovery: err.into(),
+                    });
+                }
+            }
+            return Err(BaseMappingUpdateError::Recoverable(update));
+        }
 
-        Ok(())
+        Ok(self.snapshot_memory.replace(snapshot))
     }
 
     /// Update the scratch mapping to point to a new GuestSharedMemory
@@ -546,16 +600,93 @@ impl HyperlightVm {
         &mut self,
         scratch: GuestSharedMemory,
     ) -> Result<(), UpdateRegionError> {
+        self.update_scratch_mapping_transactionally(scratch)
+            .map_err(BaseMappingUpdateError::into_update_error)
+    }
+
+    fn update_scratch_mapping_transactionally(
+        &mut self,
+        scratch: GuestSharedMemory,
+    ) -> Result<(), BaseMappingUpdateError> {
         let guest_base = hyperlight_common::layout::scratch_base_gpa(scratch.mem_size());
         let rgn = scratch.mapping_at(guest_base, MemoryRegionType::Scratch);
 
-        if let Some(old_scratch) = self.scratch_memory.replace(scratch) {
+        if let Some(old_scratch) = self.scratch_memory.as_ref() {
             let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
             let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
-            self.vm.unmap_memory((self.scratch_slot, &old_rgn))?;
+            self.vm
+                .unmap_memory((self.scratch_slot, &old_rgn))
+                .map_err(UpdateRegionError::from)?;
         }
-        unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
+        // SAFETY: `scratch` owns the mapped region and is stored in `self` on success.
+        let map_result = unsafe { self.vm.map_memory((self.scratch_slot, &rgn)) };
+        if let Err(err) = map_result {
+            let update = UpdateRegionError::from(err);
+            if let Some(old_scratch) = self.scratch_memory.as_ref() {
+                let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
+                let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
+                // SAFETY: `old_scratch` remains owned by `self` throughout rollback.
+                let recovery_result = unsafe { self.vm.map_memory((self.scratch_slot, &old_rgn)) };
+                if let Err(err) = recovery_result {
+                    return Err(BaseMappingUpdateError::Unrecoverable {
+                        update,
+                        recovery: err.into(),
+                    });
+                }
+            }
+            return Err(BaseMappingUpdateError::Recoverable(update));
+        }
+        self.scratch_memory = Some(scratch);
 
+        Ok(())
+    }
+
+    pub(crate) fn update_base_mappings(
+        &mut self,
+        update: BaseMappingUpdate,
+    ) -> Result<(), BaseMappingUpdateError> {
+        match update {
+            BaseMappingUpdate::Keep => Ok(()),
+            BaseMappingUpdate::ReplaceSnapshot(snapshot) => self
+                .update_snapshot_mapping_transactionally(snapshot)
+                .map(|_| ()),
+            BaseMappingUpdate::ReplaceAll { snapshot, scratch } => {
+                self.replace_base_mappings(snapshot, scratch)
+            }
+        }
+    }
+
+    fn replace_base_mappings(
+        &mut self,
+        snapshot: SnapshotSharedMemory<GuestSharedMemory>,
+        scratch: GuestSharedMemory,
+    ) -> Result<(), BaseMappingUpdateError> {
+        let old_snapshot = self.update_snapshot_mapping_transactionally(snapshot)?;
+        if let Err(error) = self.update_scratch_mapping_transactionally(scratch) {
+            let update = match error {
+                BaseMappingUpdateError::Recoverable(update) => update,
+                error @ BaseMappingUpdateError::Unrecoverable { .. } => return Err(error),
+            };
+            if let Some(old_snapshot) = old_snapshot
+                && let Err(error) = self.update_snapshot_mapping_transactionally(old_snapshot)
+            {
+                return Err(BaseMappingUpdateError::Unrecoverable {
+                    update,
+                    recovery: error.into_update_error(),
+                });
+            }
+            return Err(BaseMappingUpdateError::Recoverable(update));
+        }
+        Ok(())
+    }
+
+    #[cfg(gdb)]
+    pub(crate) fn clear_guest_debug_state(&mut self) -> Result<(), DebugError> {
+        self.sw_breakpoints.clear();
+        if let Some(entry_addr) = self.one_shot_entry_bp {
+            self.vm.remove_hw_breakpoint(entry_addr)?;
+            self.one_shot_entry_bp = None;
+        }
         Ok(())
     }
 

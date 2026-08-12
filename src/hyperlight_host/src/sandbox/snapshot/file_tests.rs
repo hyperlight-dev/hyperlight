@@ -363,7 +363,7 @@ fn disk_snapshot_non_superset_guest_msrs_rejected() {
         format!("{err:?}").contains("InvalidSnapshotMsrIndex"),
         "expected an MSR reset-set mismatch, got: {err:?}"
     );
-    assert!(target.poisoned());
+    assert!(target.status().is_poisoned());
 }
 
 #[test]

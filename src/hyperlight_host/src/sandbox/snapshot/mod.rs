@@ -828,15 +828,23 @@ mod tests {
         )
         .unwrap();
 
-        // Restore snapshot A
-        mgr.restore_snapshot(&snapshot_a).unwrap();
-        mgr.shared_mem
+        // Build a manager from snapshot A
+        let (mut mgr_a, _) = SandboxMemoryManager::from_snapshot(&snapshot_a)
+            .unwrap()
+            .build()
+            .unwrap();
+        mgr_a
+            .shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_a.len()], &pattern_a[..]))
             .unwrap();
 
-        // Restore snapshot B
-        mgr.restore_snapshot(&snapshot_b).unwrap();
-        mgr.shared_mem
+        // Build a manager from snapshot B
+        let (mut mgr_b, _) = SandboxMemoryManager::from_snapshot(&snapshot_b)
+            .unwrap()
+            .build()
+            .unwrap();
+        mgr_b
+            .shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
     }

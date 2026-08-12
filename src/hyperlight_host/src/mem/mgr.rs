@@ -151,10 +151,55 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) abort_buffer: Vec<u8>,
     /// Generation counter: how many snapshots have been taken from
     /// this sandbox's execution path from init to here. Incremented
-    /// on each `snapshot` call; on `restore_snapshot` we inherit the
+    /// on each `snapshot` call; on restore we inherit the
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
+}
+
+pub(crate) enum BaseMappingUpdate {
+    /// Reuse both mappings. The target already maps this read-only snapshot,
+    /// and its scratch mapping has the required size.
+    Keep,
+    /// Replace only the snapshot mapping. The scratch mapping has the required size,
+    /// but the target maps another snapshot. Writable snapshots also use this state
+    /// because each restore creates a new writable copy.
+    ReplaceSnapshot(SnapshotSharedMemory<GuestSharedMemory>),
+    /// Replace both mappings because the current scratch mapping has the wrong size.
+    /// Share the read-only snapshot memory or create a writable copy, as configured.
+    ReplaceAll {
+        snapshot: SnapshotSharedMemory<GuestSharedMemory>,
+        scratch: GuestSharedMemory,
+    },
+}
+
+pub(crate) struct PreparedMemoryRestore {
+    manager: SandboxMemoryManager<HostSharedMemory>,
+    mapping_update: BaseMappingUpdate,
+}
+
+impl PreparedMemoryRestore {
+    pub(crate) fn reset_reused_scratch(&mut self) -> Result<()> {
+        if !matches!(self.mapping_update, BaseMappingUpdate::ReplaceAll { .. }) {
+            self.manager.scratch_mem.zero()?;
+            self.manager.update_scratch_bookkeeping()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_parts(self) -> (SandboxMemoryManager<HostSharedMemory>, BaseMappingUpdate) {
+        (self.manager, self.mapping_update)
+    }
+
+    #[cfg(all(test, not(unshared_snapshot_mem)))]
+    pub(crate) fn keeps_mappings(&self) -> bool {
+        matches!(self.mapping_update, BaseMappingUpdate::Keep)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replaces_snapshot(&self) -> bool {
+        matches!(self.mapping_update, BaseMappingUpdate::ReplaceSnapshot(_))
+    }
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -338,10 +383,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
         mgr.original_entrypoint = s.original_entrypoint();
-        // Inherit the snapshot's generation number for the same
-        // reason `restore_snapshot` does: the guest-visible counter
-        // reflects "which snapshot is the sandbox currently a clone
-        // of", not "how many snapshots this partition has taken".
+        // The guest-visible counter identifies the snapshot generation
+        // that this sandbox is a clone of.
         mgr.snapshot_count = s.snapshot_generation();
         Ok(mgr)
     }
@@ -388,6 +431,41 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    pub(crate) fn prepare_restore(&self, snapshot: &Snapshot) -> Result<PreparedMemoryRestore> {
+        let mut candidate = self.clone();
+        let mapping_update = if snapshot.layout().get_scratch_size() != self.scratch_mem.mem_size()
+        {
+            let (snapshot_host, snapshot_guest) = snapshot.memory().to_mgr_snapshot_mem()?.build();
+            let (scratch_host, scratch_guest) =
+                ExclusiveSharedMemory::new(snapshot.layout().get_scratch_size())?.build();
+            candidate.shared_mem = snapshot_host;
+            candidate.scratch_mem = scratch_host;
+            BaseMappingUpdate::ReplaceAll {
+                snapshot: snapshot_guest,
+                scratch: scratch_guest,
+            }
+        } else if *snapshot.memory() == self.shared_mem {
+            BaseMappingUpdate::Keep
+        } else {
+            let (host, guest) = snapshot.memory().to_mgr_snapshot_mem()?.build();
+            candidate.shared_mem = host;
+            BaseMappingUpdate::ReplaceSnapshot(guest)
+        };
+
+        candidate.layout = *snapshot.layout();
+        candidate.next_action = snapshot.next_action();
+        candidate.snapshot_count = snapshot.snapshot_generation();
+        candidate.original_entrypoint = snapshot.original_entrypoint();
+        if matches!(mapping_update, BaseMappingUpdate::ReplaceAll { .. }) {
+            candidate.update_scratch_bookkeeping()?;
+        }
+
+        Ok(PreparedMemoryRestore {
+            manager: candidate,
+            mapping_update,
+        })
+    }
+
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -469,59 +547,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 break;
             };
         }
-    }
-
-    /// This function restores a memory snapshot from a given snapshot.
-    pub(crate) fn restore_snapshot(
-        &mut self,
-        snapshot: &Snapshot,
-    ) -> Result<(
-        Option<SnapshotSharedMemory<GuestSharedMemory>>,
-        Option<GuestSharedMemory>,
-    )> {
-        let gsnapshot = if *snapshot.memory() == self.shared_mem {
-            // If the snapshot memory is already the correct memory,
-            // which is readonly, don't bother with restoring it,
-            // since its contents must be the same.  Note that in the
-            // #[cfg(unshared_snapshot_mem)] case, this condition will
-            // never be true, since even immediately after a restore,
-            // self.shared_mem is a (writable) copy, not the original
-            // shared_mem.
-            None
-        } else {
-            let new_snapshot_mem = snapshot.memory().to_mgr_snapshot_mem()?;
-            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
-            self.shared_mem = hsnapshot;
-            Some(gsnapshot)
-        };
-        let new_scratch_size = snapshot.layout().get_scratch_size();
-        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
-            self.scratch_mem.zero()?;
-            None
-        } else {
-            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
-            let (hscratch, gscratch) = new_scratch_mem.build();
-            // Even though this destroys the reference to the host
-            // side of the old scratch mapping, the VM should still
-            // own the reference to the guest side of the old scratch
-            // mapping, so it won't actually be deallocated until it
-            // has been unmapped from the VM.
-            self.scratch_mem = hscratch;
-
-            Some(gscratch)
-        };
-        self.layout = *snapshot.layout();
-        // Inherit the snapshot's own generation number — the
-        // guest-visible counter reflects "which snapshot is the
-        // sandbox currently a clone of", not "how many restores have
-        // happened into this (possibly-reused) partition".
-        self.snapshot_count = snapshot.snapshot_generation();
-        // Carry the guest ELF entry point across restore so crashdumps
-        // report the restored image's entry.
-        self.original_entrypoint = snapshot.original_entrypoint();
-
-        self.update_scratch_bookkeeping()?;
-        Ok((gsnapshot, gscratch))
     }
 
     #[inline]
