@@ -112,17 +112,17 @@ pub(crate) fn try_write_response(
     result: &FunctionCallResult,
 ) -> anyhow::Result<bool> {
     let mut builder = FlatBufferBuilder::new();
-    let mut external_values = ExternalValues::new();
+    let mut externals = ExternalValues::new();
 
-    let control = result.encode(&mut builder, &mut external_values)?;
-    let message = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+    let control = result.encode(&mut builder, &mut externals)?;
+    let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
         .context("Host function response length overflow")?;
 
-    if message.total_len() > reply.capacity() {
+    if msg.total_len() > reply.capacity() {
         return Ok(false);
     }
 
-    for chunk in message.chunks() {
+    for chunk in msg.chunks() {
         reply.write_all(chunk)?;
     }
 
