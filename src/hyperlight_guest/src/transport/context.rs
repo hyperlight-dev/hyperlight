@@ -14,7 +14,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
-use hyperlight_common::transport::{EncodedMessage, ExternalValueRefs, MsgHeader, MsgKind};
+use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
     AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps, Notifier, QueueStats,
     Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
@@ -183,7 +183,7 @@ impl GuestContext {
         );
 
         let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-        let mut externals = ExternalValueRefs::new();
+        let mut externals = ExternalValues::new();
 
         let control = fc
             .encode(&mut builder, &mut externals)
@@ -328,13 +328,13 @@ impl GuestContext {
 
         {
             let mut builder = FlatBufferBuilder::new();
-            let mut external_values = ExternalValueRefs::new();
+            let mut externals = ExternalValues::new();
 
             let control = result
-                .encode(&mut builder, &mut external_values)
+                .encode(&mut builder, &mut externals)
                 .with_context(|| "failed to encode guest function result")?;
 
-            let msg = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+            let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
                 .context("G2H response length overflow")?;
 
             self.try_send_deferred(&msg, ReplyCapacity::None)
@@ -395,7 +395,7 @@ impl GuestContext {
     ///
     /// Returns an error when the message cannot be framed or submitted.
     pub fn emit_log(&mut self, log_data: &[u8]) -> Result<()> {
-        let message = EncodedMessage::new(MsgKind::Log, 0, log_data, ExternalValueRefs::new())
+        let message = EncodedMessage::new(MsgKind::Log, 0, log_data, ExternalValues::new())
             .context("G2H message length overflow")?;
         self.send_g2h_oneshot(&message)
     }
@@ -494,9 +494,9 @@ impl GuestContext {
     fn try_send_deferred(
         &mut self,
         message: &EncodedMessage<'_>,
-        reply_cap: ReplyCapacity,
+        reply_capacity: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
-        let chain = self.build_g2h_chain(message, reply_cap)?;
+        let chain = self.build_g2h_chain(message, reply_capacity)?;
         let mut batch = self.g2h_producer.batch();
 
         let token = batch.submit(chain)?;
@@ -612,7 +612,7 @@ mod tests {
     use super::*;
 
     fn encoded_message(external: &[u8]) -> EncodedMessage<'_> {
-        let mut values = ExternalValueRefs::new();
+        let mut values = ExternalValues::new();
         values.push_bytes(external).unwrap();
         EncodedMessage::new(MsgKind::Request, 1, b"control", values).unwrap()
     }
