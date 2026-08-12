@@ -42,6 +42,7 @@ fuzz_target!(
                 // to call with.
                 HyperlightError::HostFunctionNotFound(_) => {}
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg == format!("HostFunction {} was not found", host_func_name) => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg == "Host response exceeds virtqueue capacity" => {}
                 HyperlightError::UnexpectedNoOfArguments(_, _) => {},
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The number of arguments to the function is wrong") => {}
                 HyperlightError::ParameterValueConversionFailure(_, _) => {},
