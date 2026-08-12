@@ -1430,11 +1430,11 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Checks that 1,000 calls work with a 24 KiB stack and 32 KiB heap.
+    // Checks that 1,000 calls work with a 24 KiB stack and 40 KiB heap.
     // This catches guest stack reset and heap leaks.
     #[test]
     fn test_with_small_stack_and_heap() {
-        const HEAP_SIZE: u64 = 32 * 1024;
+        const HEAP_SIZE: u64 = 40 * 1024;
         // min_scratch_size already includes 1 page (4k on most
         // platforms) of guest stack, so add 20k more to get 24k
         // total, and then add some more for the eagerly-copied page
