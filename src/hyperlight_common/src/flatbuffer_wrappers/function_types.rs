@@ -323,103 +323,94 @@ pub enum ReturnType {
     ByteChunks,
 }
 
+enum DecodedExternalBytes {
+    VecBytes(Vec<u8>),
+    ByteChunks(Vec<Bytes>),
+}
+
+fn decode_external_bytes<S>(
+    metadata: hlexternalbytes<'_>,
+    externals: &mut S,
+) -> Result<DecodedExternalBytes>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    // The length delimits this value in the ordered external payload stream.
+    let length = usize::try_from(metadata.length()).map_err(|_| {
+        anyhow!(
+            "External byte length {} does not fit in usize",
+            metadata.length()
+        )
+    })?;
+
+    // `chunked` selects the logical API type. Sources define chunk boundaries.
+    if metadata.chunked() {
+        let value = externals.take_chunks(length)?;
+        let actual = try_byte_chunks_len(&value)
+            .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?;
+
+        if actual != length {
+            bail!("External ByteChunks length mismatch: declared {length}, received {actual}",);
+        }
+        Ok(DecodedExternalBytes::ByteChunks(value))
+    } else {
+        let value = externals.take_bytes(length)?;
+        let value_len = value.len();
+
+        if value_len != length {
+            bail!("External VecBytes length mismatch: declared {length}, received {value_len}",);
+        }
+        Ok(DecodedExternalBytes::VecBytes(value))
+    }
+}
+
 pub(crate) fn decode_parameter_value<S>(
-    parameter: Parameter<'_>,
-    external_values: &mut S,
+    param: Parameter<'_>,
+    externals: &mut S,
 ) -> Result<ParameterValue>
 where
     S: ExternalValueSource + ?Sized,
 {
-    match parameter.value_type() {
-        FbParameterValue::hlexternalbytes => {}
+    match param.value_type() {
+        FbParameterValue::hlexternalbytes => {
+            let Some(metadata) = param.value_as_hlexternalbytes() else {
+                bail!("External byte parameter metadata is missing");
+            };
+
+            match decode_external_bytes(metadata, externals)? {
+                DecodedExternalBytes::VecBytes(value) => Ok(ParameterValue::VecBytes(value)),
+                DecodedExternalBytes::ByteChunks(value) => Ok(ParameterValue::ByteChunks(value)),
+            }
+        }
         FbParameterValue::hlvecbytes | FbParameterValue::hlbytechunks => {
             bail!("Embedded byte parameters are not supported")
         }
-        _ => return parameter.try_into(),
-    }
-
-    let marker = parameter
-        .value_as_hlexternalbytes()
-        .ok_or_else(|| anyhow!("Failed to get external byte parameter marker"))?;
-    let length = usize::try_from(marker.length()).map_err(|_| {
-        anyhow!(
-            "External byte parameter length {} does not fit in usize",
-            marker.length()
-        )
-    })?;
-
-    if marker.chunked() {
-        let value = external_values.take_chunks(length)?;
-        let actual_length = try_byte_chunks_len(&value)
-            .ok_or_else(|| anyhow!("External ByteChunks parameter length overflow"))?;
-        if actual_length != length {
-            bail!(
-                "External ByteChunks parameter length mismatch: declared {}, received {}",
-                length,
-                actual_length
-            );
-        }
-        Ok(ParameterValue::ByteChunks(value))
-    } else {
-        let value = external_values.take_bytes(length)?;
-        if value.len() != length {
-            bail!(
-                "External VecBytes parameter length mismatch: declared {}, received {}",
-                length,
-                value.len()
-            );
-        }
-        Ok(ParameterValue::VecBytes(value))
+        _ => param.try_into(),
     }
 }
 
 fn decode_return_value<S>(
     return_value: ReturnValueBox<'_>,
-    external_values: &mut S,
+    externals: &mut S,
 ) -> Result<ReturnValue>
 where
     S: ExternalValueSource + ?Sized,
 {
     match return_value.value_type() {
-        FbReturnValue::hlexternalbytes => {}
+        FbReturnValue::hlexternalbytes => {
+            let Some(metadata) = return_value.value_as_hlexternalbytes() else {
+                bail!("External byte parameter metadata is missing");
+            };
+
+            match decode_external_bytes(metadata, externals)? {
+                DecodedExternalBytes::VecBytes(value) => Ok(ReturnValue::VecBytes(value)),
+                DecodedExternalBytes::ByteChunks(value) => Ok(ReturnValue::ByteChunks(value)),
+            }
+        }
         FbReturnValue::hlsizeprefixedbuffer | FbReturnValue::hlsizeprefixedbytechunks => {
             bail!("Embedded byte returns are not supported")
         }
-        _ => return return_value.try_into(),
-    }
-
-    let marker = return_value
-        .value_as_hlexternalbytes()
-        .ok_or_else(|| anyhow!("Failed to get external byte return marker"))?;
-    let length = usize::try_from(marker.length()).map_err(|_| {
-        anyhow!(
-            "External byte return length {} does not fit in usize",
-            marker.length()
-        )
-    })?;
-
-    if marker.chunked() {
-        let value = external_values.take_chunks(length)?;
-        let actual_length = try_byte_chunks_len(&value)
-            .ok_or_else(|| anyhow!("External ByteChunks return length overflow"))?;
-        if actual_length != length {
-            bail!(
-                "External ByteChunks return length mismatch: declared {}, received {}",
-                length,
-                actual_length
-            );
-        }
-        Ok(ReturnValue::ByteChunks(value))
-    } else {
-        let value = external_values.take_bytes(length)?;
-        if value.len() != length {
-            bail!(
-                "External VecBytes return length mismatch: declared {}, received {}",
-                length,
-                value.len()
-            );
-        }
-        Ok(ReturnValue::VecBytes(value))
+        _ => return_value.try_into(),
     }
 }
 
@@ -983,12 +974,14 @@ mod tests {
     fn encode_success_result() {
         let mut builder = FlatBufferBuilder::new();
         let mut external_values = TestExternalValues::default();
+
         let test_data = FunctionCallResult::new(Ok(ReturnValue::Int(42)))
             .encode(&mut builder, &mut external_values)
             .unwrap();
 
         let function_call_result =
             FunctionCallResult::decode(test_data, &mut external_values).unwrap();
+
         let result = function_call_result.into_inner().unwrap();
         assert_eq!(result, ReturnValue::Int(42));
     }
@@ -1000,6 +993,7 @@ mod tests {
             ErrorCode::GuestFunctionNotFound,
             "Function not found".to_string(),
         );
+
         let mut external_values = TestExternalValues::default();
         let test_data = FunctionCallResult::new(Err(test_error.clone()))
             .encode(&mut builder, &mut external_values)
@@ -1007,6 +1001,7 @@ mod tests {
 
         let function_call_result =
             FunctionCallResult::decode(test_data, &mut external_values).unwrap();
+
         let error = function_call_result.into_inner().unwrap_err();
         assert_eq!(error.code, test_error.code);
         assert_eq!(error.message, test_error.message);
@@ -1047,6 +1042,7 @@ mod tests {
         ] {
             let mut builder = FlatBufferBuilder::new();
             let mut external_values = TestExternalValues::default();
+
             let encoded = FunctionCallResult::new(Ok(expected.clone()))
                 .encode(&mut builder, &mut external_values)
                 .unwrap();
@@ -1054,20 +1050,24 @@ mod tests {
             assert!(encoded.len() < 4096);
             let encoded_result = size_prefixed_root::<FbFunctionCallResult>(encoded).unwrap();
             let return_value = encoded_result.result_as_return_value_box().unwrap();
+
             assert_eq!(return_value.value_type(), FbReturnValue::hlexternalbytes);
-            let marker = return_value.value_as_hlexternalbytes().unwrap();
+
+            let metadata = return_value.value_as_hlexternalbytes().unwrap();
             let (length, chunked) = match &expected {
                 ReturnValue::VecBytes(value) => (value.len(), false),
                 ReturnValue::ByteChunks(value) => (try_byte_chunks_len(value).unwrap(), true),
                 _ => unreachable!(),
             };
-            assert_eq!(marker.length(), length as u64);
-            assert_eq!(marker.chunked(), chunked);
+
+            assert_eq!(metadata.length(), length as u64);
+            assert_eq!(metadata.chunked(), chunked);
 
             let decoded = FunctionCallResult::decode(encoded, &mut external_values)
                 .unwrap()
                 .into_inner()
                 .unwrap();
+
             assert_eq!(decoded, expected);
             assert!(external_values.values.is_empty());
         }
@@ -1089,12 +1089,14 @@ mod tests {
 
         let mut wrong_type =
             TestExternalValues::from_values([TestExternalValue::VecBytes(vec![1, 2, 3])]);
+
         assert!(FunctionCallResult::decode(encoded, &mut wrong_type).is_err());
 
         let mut wrong_length =
             TestExternalValues::from_values([TestExternalValue::ByteChunks(vec![
                 Bytes::from_static(b"12"),
             ])]);
+
         assert!(FunctionCallResult::decode(encoded, &mut wrong_length).is_err());
     }
 

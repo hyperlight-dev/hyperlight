@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use anyhow::Result;
 use bytes::Bytes;
 
-/// Receives external byte values while their FlatBuffer markers are encoded.
+/// Receives external byte values while their FlatBuffer metadata is encoded.
 ///
 /// Values are delivered in their logical order without flattening chunked
 /// values. The value lifetime allows a sink to retain references until the

@@ -120,7 +120,7 @@ impl MsgHeader {
 pub struct EncodedMessage<'a> {
     header: MsgHeader,
     control: &'a [u8],
-    externals: ExternalValueRefs<'a>,
+    externals: ExternalValues<'a>,
     total_len: usize,
 }
 
@@ -130,7 +130,7 @@ impl<'a> EncodedMessage<'a> {
         kind: MsgKind,
         cid: u32,
         control: &'a [u8],
-        externals: ExternalValueRefs<'a>,
+        externals: ExternalValues<'a>,
     ) -> Option<Self> {
         let payload_len = control.len().checked_add(externals.total_len())?;
         let payload_len = u32::try_from(payload_len).ok()?;
@@ -147,7 +147,7 @@ impl<'a> EncodedMessage<'a> {
     // Build a snapshot checkpoint message with no payload.
     pub fn new_snapshot_cp() -> Self {
         let total_len = MsgHeader::SIZE;
-        let externals = ExternalValueRefs::new();
+        let externals = ExternalValues::new();
 
         Self {
             header: MsgHeader::new(MsgKind::SnapshotCheckpoint, 0, 0),
@@ -291,12 +291,12 @@ impl Buf for EncodedMessageBuf<'_> {
 
 /// Borrowed external values collected while encoding a FlatBuffer.
 #[derive(Debug, Default)]
-pub struct ExternalValueRefs<'a> {
+pub struct ExternalValues<'a> {
     chunks: Vec<&'a [u8]>,
     total_len: usize,
 }
 
-impl<'a> ExternalValueRefs<'a> {
+impl<'a> ExternalValues<'a> {
     /// Create an empty collection.
     pub fn new() -> Self {
         Self::default()
@@ -313,7 +313,7 @@ impl<'a> ExternalValueRefs<'a> {
     }
 }
 
-impl<'a> ExternalValueSink<'a> for ExternalValueRefs<'a> {
+impl<'a> ExternalValueSink<'a> for ExternalValues<'a> {
     fn push_bytes(&mut self, value: &'a [u8]) -> Result<()> {
         if value.is_empty() {
             return Ok(());
@@ -397,7 +397,7 @@ mod tests {
             bytes::Bytes::from_static(b"ef"),
             bytes::Bytes::from_static(b"gh"),
         ];
-        let mut external_values = ExternalValueRefs::new();
+        let mut external_values = ExternalValues::new();
         external_values.push_bytes(b"cd").unwrap();
         external_values.push_chunks(&chunks).unwrap();
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn encoded_message_buf_skips_empty_chunks() {
-        let mut external_values = ExternalValueRefs::new();
+        let mut external_values = ExternalValues::new();
         external_values.chunks.push(&[]);
         external_values.push_bytes(b"ab").unwrap();
 
@@ -428,14 +428,14 @@ mod tests {
 
     #[test]
     fn encoded_message_rejects_length_overflow() {
-        let external_values = ExternalValueRefs {
+        let external_values = ExternalValues {
             chunks: Vec::new(),
             total_len: usize::MAX,
         };
 
         assert!(EncodedMessage::new(MsgKind::Request, 7, b"x", external_values).is_none());
 
-        let mut external_values = ExternalValueRefs {
+        let mut external_values = ExternalValues {
             chunks: Vec::new(),
             total_len: usize::MAX,
         };

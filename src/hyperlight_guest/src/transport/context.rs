@@ -27,7 +27,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
-use hyperlight_common::transport::{EncodedMessage, ExternalValueRefs, MsgHeader, MsgKind};
+use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
     AllocError, BufferProvider, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps,
     Notifier, QueueStats, Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError,
@@ -175,7 +175,7 @@ impl GuestContext {
         );
 
         let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-        let mut externals = ExternalValueRefs::new();
+        let mut externals = ExternalValues::new();
 
         let control = fc
             .encode(&mut builder, &mut externals)
@@ -322,13 +322,13 @@ impl GuestContext {
 
         {
             let mut builder = FlatBufferBuilder::new();
-            let mut external_values = ExternalValueRefs::new();
+            let mut externals = ExternalValues::new();
 
             let control = result
-                .encode(&mut builder, &mut external_values)
+                .encode(&mut builder, &mut externals)
                 .with_context(|| "failed to encode guest function result")?;
 
-            let msg = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+            let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
                 .context("G2H response length overflow")?;
 
             self.try_send_deferred(&msg, None)
@@ -349,20 +349,27 @@ impl GuestContext {
         // Producer reset releases every allocation still tracked by queue
         // bookkeeping. At this checkpoint boundary, any allocation left in the
         // bitmap is therefore held by an owner-backed `Bytes` returned to guest
-        // code. `num_live` gives the exact number of retained slots across both
-        // size tiers. Multiple `Bytes` clones or slices backed by one owner still
-        // count as one slot.
+        // code. Subtracting the free slot count from the total slot count gives the
+        // exact number of retained slots across both size tiers. Multiple `Bytes`
+        // clones or slices backed by one owner still count as one slot.
         //
         // This runs before H2G prefill because posted receive buffers are
-        // transport-owned allocations and must not be counted. The result only
+        // transport owned allocations and must not be counted. The result only
         // answers whether retained buffers exist. It does not identify their
         // addresses, capacities, or initialized lengths.
-        let guest_owned = self
+        let g2h = self
             .g2h_pool
-            .num_live()
-            .checked_add(self.h2g_pool.num_live())
+            .count()
+            .checked_sub(self.g2h_pool.num_free())
             .ok_or(VirtqError::InvalidState)?;
-        let guest_owned = u64::try_from(guest_owned).map_err(|_| VirtqError::InvalidState)?;
+
+        let h2g = self
+            .h2g_pool
+            .count()
+            .checked_sub(self.h2g_pool.num_free())
+            .ok_or(VirtqError::InvalidState)?;
+
+        let guest_owned = g2h.checked_add(h2g).ok_or(VirtqError::InvalidState)?;
 
         // TODO: Publish a retained-buffer manifest with pool-relative offsets and
         // initialized lengths so the host can snapshot sanitized payload ranges.
@@ -383,7 +390,7 @@ impl GuestContext {
     ///
     /// Returns an error when the message cannot be framed or submitted.
     pub fn emit_log(&mut self, log_data: &[u8]) -> Result<()> {
-        let message = EncodedMessage::new(MsgKind::Log, 0, log_data, ExternalValueRefs::new())
+        let message = EncodedMessage::new(MsgKind::Log, 0, log_data, ExternalValues::new())
             .context("G2H message length overflow")?;
         self.send_g2h_oneshot(&message)
     }

@@ -185,26 +185,15 @@ mod trace {
         }
     }
 
-    /// Returns information about the current trace state needed by the host to read the spans.
+    /// Returns information about the current trace state needed by the host.
+    ///
+    /// Returns `None` if tracing code already holds the state lock. Exception and
+    /// abort paths can then proceed without the pending trace data.
     pub fn serialized_data() -> Option<(u64, u64)> {
         if let Some(w) = GUEST_STATE.get()
             && let Some(state_mutex) = w.upgrade()
         {
-            // We want to protect against re-entrancy issues produced by tracing code that locks
-            // the state and then causes an exception that tries to lock the state again.
-            //
-            // For example:
-            // - 1. A span is created, locking the state
-            // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
-            // - 3. The exception handler uses the tracing API to send the trace data to the host
-            // or just create spans/events for logging purposes.
-            // - 4. The tracing API tries to lock the state again, causing a deadlock.
-            // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
-            // the issue.
-            let state = state_mutex
-                .try_lock()
-                .expect("Unable to lock GuestState in `serialized_data`");
-
+            let state = state_mutex.try_lock()?;
             state.serialized_data()
         } else {
             None

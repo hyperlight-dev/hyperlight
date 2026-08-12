@@ -19,7 +19,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValueRefs, MsgKind};
+use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MsgKind};
 use hyperlight_common::virtq::ReplyChain;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
@@ -468,15 +468,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let cap = estimate_flatbuffer_capacity(&call.function_name, params);
 
         let mut builder = FlatBufferBuilder::with_capacity(cap);
-        let mut ext_vals = ExternalValueRefs::new();
+        let mut externals = ExternalValues::new();
 
-        let control = call.encode(&mut builder, &mut ext_vals)?;
+        let control = call.encode(&mut builder, &mut externals)?;
 
-        let Some(message) = EncodedMessage::new(MsgKind::Request, cid, control, ext_vals) else {
+        let Some(msg) = EncodedMessage::new(MsgKind::Request, cid, control, externals) else {
             return Err(new_error!("H2G request exceeds the wire payload limit"));
         };
 
-        self.write_h2g_message(&message)?;
+        self.write_h2g_message(&msg)?;
 
         self.next_guest_cid = cid.wrapping_add(1);
         if self.next_guest_cid == 0 {
@@ -672,6 +672,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         let offset = self.snapshot_mbx_offset()?;
         let guest_owned = u64::from_le_bytes(self.scratch_mem.read(offset)?);
+
         if guest_owned == u64::MAX {
             return Err(HyperlightError::TransportError(
                 "Guest did not publish snapshot checkpoint status".to_string(),

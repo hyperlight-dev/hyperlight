@@ -464,9 +464,9 @@ mod tests {
         ] {
             let parameter = encoded_parameters.get(index);
             assert_eq!(parameter.value_type(), FbParameterValue::hlexternalbytes);
-            let marker = parameter.value_as_hlexternalbytes().unwrap();
-            assert_eq!(marker.length(), length);
-            assert_eq!(marker.chunked(), chunked);
+            let metadata = parameter.value_as_hlexternalbytes().unwrap();
+            assert_eq!(metadata.length(), length);
+            assert_eq!(metadata.chunked(), chunked);
         }
 
         let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();

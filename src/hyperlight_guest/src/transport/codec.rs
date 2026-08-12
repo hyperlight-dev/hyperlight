@@ -159,7 +159,7 @@ mod tests {
 
     use flatbuffers::FlatBufferBuilder;
     use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
-    use hyperlight_common::transport::ExternalValueRefs;
+    use hyperlight_common::transport::ExternalValues;
 
     use super::*;
 
@@ -169,7 +169,7 @@ mod tests {
         let external_ptr = external.as_ptr();
         let result = FunctionCallResult::new(Ok(ReturnValue::ByteChunks(vec![external.clone()])));
         let mut builder = FlatBufferBuilder::new();
-        let mut external_values = ExternalValueRefs::new();
+        let mut external_values = ExternalValues::new();
         let control = result.encode(&mut builder, &mut external_values).unwrap();
         let payload_len = control.len() + external.len();
         let header = MsgHeader::new(MsgKind::Response, 7, u32::try_from(payload_len).unwrap());
@@ -220,7 +220,7 @@ mod tests {
             ReturnType::ByteChunks,
         );
         let mut builder = FlatBufferBuilder::new();
-        let mut external_values = ExternalValueRefs::new();
+        let mut external_values = ExternalValues::new();
         let control = call.encode(&mut builder, &mut external_values).unwrap();
         let segments = Segments::new([Bytes::copy_from_slice(control), external]);
 
