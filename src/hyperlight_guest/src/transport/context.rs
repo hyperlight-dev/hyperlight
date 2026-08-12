@@ -328,13 +328,13 @@ impl GuestContext {
 
         {
             let mut builder = FlatBufferBuilder::new();
-            let mut external_values = ExternalValues::new();
+            let mut externals = ExternalValues::new();
 
             let control = result
-                .encode(&mut builder, &mut external_values)
+                .encode(&mut builder, &mut externals)
                 .with_context(|| "failed to encode guest function result")?;
 
-            let msg = EncodedMessage::new(MsgKind::Response, cid, control, external_values)
+            let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
                 .context("G2H response length overflow")?;
 
             self.try_send_deferred(&msg, ReplyCapacity::None)
@@ -483,9 +483,9 @@ impl GuestContext {
     fn try_send_deferred(
         &mut self,
         message: &EncodedMessage<'_>,
-        reply_cap: ReplyCapacity,
+        reply_capacity: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
-        let chain = self.build_g2h_chain(message, reply_cap)?;
+        let chain = self.build_g2h_chain(message, reply_capacity)?;
         let mut batch = self.g2h_producer.batch();
 
         let token = batch.submit(chain)?;
