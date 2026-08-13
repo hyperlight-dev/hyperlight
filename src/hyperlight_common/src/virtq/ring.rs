@@ -90,6 +90,26 @@ pub struct BufferElement {
     pub writable: bool,
 }
 
+impl BufferElement {
+    /// Create a readable buffer element
+    pub fn readable(addr: u64) -> Self {
+        Self {
+            addr,
+            len: 0,
+            writable: false,
+        }
+    }
+
+    /// Create a writable buffer element
+    pub fn writable(addr: u64, len: u32) -> Self {
+        Self {
+            addr,
+            len,
+            writable: true,
+        }
+    }
+}
+
 /// A buffer returned from the ring after being used by the device.
 ///
 /// When the device completes processing a buffer chain, it returns this
