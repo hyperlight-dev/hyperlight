@@ -194,6 +194,11 @@ impl<'a> EncodedMessage<'a> {
         self.payload_len() - self.control.len()
     }
 
+    /// Length of the header and control prefix before external bytes.
+    pub const fn prefix_len(&self) -> usize {
+        MsgHeader::SIZE + self.control.len()
+    }
+
     /// Logical payload length after the header.
     pub const fn payload_len(&self) -> usize {
         self.header.payload_len as usize
@@ -405,6 +410,7 @@ mod tests {
         let visited: Vec<_> = message.chunks().map(<[u8]>::to_vec).collect();
 
         assert_eq!(message.total_len(), MsgHeader::SIZE + 8);
+        assert_eq!(message.prefix_len(), MsgHeader::SIZE + 2);
         assert_eq!(message.payload_len(), 8);
         assert_eq!(visited[1..], [b"ab", b"cd", b"ef", b"gh"]);
     }

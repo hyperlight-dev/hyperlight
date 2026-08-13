@@ -420,7 +420,7 @@ impl From<BufferElement> for Allocation {
     fn from(value: BufferElement) -> Self {
         Allocation {
             addr: value.addr,
-            len: value.len as usize,
+            len: value.len,
         }
     }
 }
@@ -521,7 +521,6 @@ pub(crate) mod test_utils {
         base: u64,
         next: Arc<AtomicU64>,
         size: usize,
-        max_alloc_len: usize,
         allocations: Arc<Mutex<BTreeMap<u64, usize>>>,
     }
 
@@ -531,33 +530,23 @@ pub(crate) mod test_utils {
                 base,
                 next: Arc::new(AtomicU64::new(base)),
                 size,
-                max_alloc_len: usize::MAX,
-                allocations: Arc::new(Mutex::new(BTreeMap::new())),
-            }
-        }
-
-        pub(crate) fn new_with_max_alloc_len(base: u64, size: usize, max_alloc_len: usize) -> Self {
-            Self {
-                base,
-                next: Arc::new(AtomicU64::new(base)),
-                size,
-                max_alloc_len,
                 allocations: Arc::new(Mutex::new(BTreeMap::new())),
             }
         }
     }
 
     impl BufferProvider for TestPool {
-        fn max_alloc_len(&self) -> usize {
-            self.max_alloc_len
+        fn preferred_segment_len(&self) -> usize {
+            u32::MAX as usize
         }
 
         fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
             if len == 0 {
                 return Err(AllocError::InvalidArg);
             }
+            let len = u32::try_from(len).map_err(|_| AllocError::OutOfMemory)?;
 
-            let addr = self.next.fetch_add(len as u64, Ordering::Relaxed);
+            let addr = self.next.fetch_add(u64::from(len), Ordering::Relaxed);
             let end = addr + len as u64;
             if end > self.base + self.size as u64 {
                 return Err(AllocError::NoSpace);
@@ -565,8 +554,28 @@ pub(crate) mod test_utils {
             self.allocations
                 .lock()
                 .expect("poisoned mutex")
-                .insert(addr, len);
+                .insert(addr, len as usize);
+
             Ok(Allocation { addr, len })
+        }
+
+        fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+        where
+            I: IntoIterator<Item = usize>,
+        {
+            let mut regions = Regions::new();
+            for len in lengths {
+                match self.alloc(len) {
+                    Ok(alloc) => regions.push(Allocations::from_iter([alloc])),
+                    Err(error) => return Err(error),
+                }
+            }
+
+            if regions.is_empty() {
+                return Err(AllocError::InvalidArg);
+            }
+
+            Ok(regions)
         }
 
         fn dealloc(&self, addr: u64) -> Result<(), AllocError> {

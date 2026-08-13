@@ -29,9 +29,8 @@ use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
 use hyperlight_common::virtq::{
-    AllocError, BufferProvider, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps,
-    Notifier, QueueStats, Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError,
-    VirtqProducer,
+    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps, Notifier, QueueStats,
+    Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
 };
 
 use super::{GuestMemOps, codec};
@@ -74,6 +73,7 @@ pub enum DispatchAction {
 }
 
 /// Configuration for one queue passed to [`GuestContext::new`].
+#[derive(Debug)]
 pub struct QueueConfig {
     /// Ring descriptor layout in shared memory.
     pub layout: Layout,
@@ -85,13 +85,34 @@ pub struct QueueConfig {
     pub buffer_size: usize,
 }
 
+/// Writable capacity reserved on a G2H request chain.
+#[derive(Clone, Copy)]
+enum ReplyCapacity {
+    /// The chain carries no reply.
+    None,
+    /// Reserve at least this many reply bytes.
+    Bounded(usize),
+    /// Reserve every available preferred allocation.
+    Available,
+}
+
+impl ReplyCapacity {
+    /// Select reply capacity for one host function return type.
+    fn for_return_type(return_type: ReturnType) -> Self {
+        match return_type {
+            ReturnType::String | ReturnType::VecBytes | ReturnType::ByteChunks => Self::Available,
+            _ => Self::Bounded(G2H_LOWER_SLOT_SIZE),
+        }
+    }
+}
+
 /// Virtqueue runtime state for guest-host communication.
 pub struct GuestContext {
     /// Access to the shared transport arena.
     mem: GuestMemOps,
     /// Guest-to-host driver.
     g2h_producer: G2hProducer,
-    /// G2H pool state used to size writable replies.
+    /// G2H pool state used to count retained buffers.
     g2h_pool: SlotPool,
     /// Host-to-guest driver.
     h2g_producer: H2gProducer,
@@ -150,8 +171,8 @@ impl GuestContext {
 
     /// Call a host function via the G2H virtqueue.
     ///
-    /// Control data and borrowed external values form one readable request.
-    /// The same chain carries bounded writable buffers for the response.
+    /// Slot-aligned external values use a separate readable region. The same
+    /// chain carries bounded writable buffers for the response.
     ///
     /// # Errors
     ///
@@ -186,12 +207,10 @@ impl GuestContext {
         let msg = EncodedMessage::new(MsgKind::Request, cid, control, externals)
             .context("G2H message length overflow")?;
 
-        // Reserve response capacity from the ring and pool state that remains
-        // after this request.
-        let reply_cap = self.reply_capacity(msg.total_len(), return_type)?;
+        let reply_cap = ReplyCapacity::for_return_type(return_type);
 
         // Submit once more after forcing the host to drain on backpressure.
-        let token = match self.try_send(&msg, Some(reply_cap)) {
+        let token = match self.try_send(&msg, reply_cap) {
             Ok(token) => token,
             Err(error) if error.is_transient() => {
                 self.g2h_producer.notify_backpressure();
@@ -200,7 +219,7 @@ impl GuestContext {
                     bail!("G2H reclaim: {error}");
                 }
 
-                match self.try_send(&msg, Some(reply_cap)) {
+                match self.try_send(&msg, reply_cap) {
                     Ok(token) => token,
                     Err(error) => bail!("G2H call retry: {error}"),
                 }
@@ -331,7 +350,7 @@ impl GuestContext {
             let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
                 .context("G2H response length overflow")?;
 
-            self.try_send_deferred(&msg, None)
+            self.try_send_deferred(&msg, ReplyCapacity::None)
                 .with_context(|| "G2H response submission failed")?;
         }
 
@@ -449,71 +468,12 @@ impl GuestContext {
         }
     }
 
-    /// Size writable reply buffers after accounting for the request.
-    ///
-    /// Variable returns use every remaining upper-tier slot allowed by ring
-    /// descriptor headroom. Fixed returns reserve one lower-sized allocation,
-    /// with the pool's normal upper-tier fallback.
-    fn reply_capacity(&mut self, req_len: usize, return_type: ReturnType) -> Result<usize> {
-        if let Some(cap) = self.try_reply_capacity(req_len, return_type)? {
-            return Ok(cap);
-        }
-
-        // A deferred batch can own all available slots or descriptors. Force
-        // one host drain and reclaim before reporting insufficient capacity.
-        if self.g2h_producer.num_inflight() != 0 {
-            self.g2h_producer.notify_backpressure();
-
-            if let Err(error) = self.g2h_producer.reclaim() {
-                bail!("G2H reclaim: {error}");
-            }
-
-            if let Some(capacity) = self.try_reply_capacity(req_len, return_type)? {
-                return Ok(capacity);
-            }
-        }
-
-        bail!("No virtqueue capacity remains for a host function response");
-    }
-
-    /// Calculate reply capacity without allocating request buffers.
-    ///
-    /// `None` means current ring or pool occupancy leaves no response capacity.
-    fn try_reply_capacity(&self, req_len: usize, return_type: ReturnType) -> Result<Option<usize>> {
-        let plan = match self.g2h_pool.plan_alloc(req_len) {
-            Ok(request) => request,
-            Err(AllocError::NoSpace) => return Ok(None),
-            Err(error) => bail!("G2H request allocation plan: {error}"),
-        };
-
-        let free_descs = self
-            .g2h_producer
-            .num_free()
-            .saturating_sub(plan.num_slots());
-
-        let (free_slots, slot_size) = match return_type {
-            ReturnType::String | ReturnType::VecBytes | ReturnType::ByteChunks => (
-                self.g2h_pool.num_free_upper() - plan.upper_slots(),
-                self.g2h_pool.max_alloc_len(),
-            ),
-            _ => (
-                usize::from(self.g2h_pool.num_free() > plan.num_slots()),
-                self.g2h_pool
-                    .lower_slot_size()
-                    .unwrap_or_else(|| self.g2h_pool.max_alloc_len()),
-            ),
-        };
-
-        let capacity = free_slots.min(free_descs) * slot_size;
-        Ok((capacity != 0).then_some(capacity))
-    }
-
     /// Submit a one-way G2H message without polling its acknowledgement.
     ///
     /// Completed acknowledgements remain available for normal polling or
     /// reclamation when later submissions encounter backpressure.
     fn send_g2h_oneshot(&mut self, message: &EncodedMessage<'_>) -> Result<()> {
-        match self.try_send(message, None) {
+        match self.try_send(message, ReplyCapacity::None) {
             Ok(_) => Ok(()),
             Err(error) if error.is_transient() => {
                 // VM exit so host drains and completes G2H entries.
@@ -523,7 +483,7 @@ impl GuestContext {
                     bail!("G2H one-way reclaim: {error}");
                 }
 
-                match self.try_send(message, None) {
+                match self.try_send(message, ReplyCapacity::None) {
                     Ok(_) => Ok(()),
                     Err(error) => bail!("G2H one-way retry: {error}"),
                 }
@@ -534,12 +494,11 @@ impl GuestContext {
 
     /// Build and submit one G2H descriptor chain.
     ///
-    /// The readable region contains the header, control message, and external
-    /// values. `reply_cap` adds a writable region for a host function reply.
+    /// `reply_cap` defines optional host-function reply space.
     fn try_send(
         &mut self,
         message: &EncodedMessage<'_>,
-        reply_cap: Option<usize>,
+        reply_cap: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
         let chain = self.build_g2h_chain(message, reply_cap)?;
         self.g2h_producer.submit(chain)
@@ -549,9 +508,9 @@ impl GuestContext {
     fn try_send_deferred(
         &mut self,
         message: &EncodedMessage<'_>,
-        reply_cap: Option<usize>,
+        reply_capacity: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
-        let chain = self.build_g2h_chain(message, reply_cap)?;
+        let chain = self.build_g2h_chain(message, reply_capacity)?;
         let mut batch = self.g2h_producer.batch();
 
         let token = batch.submit(chain)?;
@@ -564,17 +523,30 @@ impl GuestContext {
     fn build_g2h_chain(
         &self,
         message: &EncodedMessage<'_>,
-        reply_cap: Option<usize>,
+        reply_cap: ReplyCapacity,
     ) -> result::Result<SendChain<GuestMemOps, SlotPool>, VirtqError> {
-        // Allocate the readable request and optional writable reply together.
-        let chain = self.g2h_producer.chain().readable(message.total_len());
+        let segment_len = self.g2h_producer.preferred_segment_len();
+        let num_free = self.g2h_pool.num_free();
 
-        let mut chain = match reply_cap {
-            Some(reply_cap) => chain.writable(reply_cap),
-            None => chain,
+        let lengths = || message_region_lengths(message, segment_len);
+
+        let reply_cap = match reply_cap {
+            ReplyCapacity::None => None,
+            ReplyCapacity::Bounded(cap) => Some(cap),
+            ReplyCapacity::Available => Some(self.g2h_pool.max_alloc(lengths(), num_free)?),
+        };
+
+        let mut builder = self.g2h_producer.chain();
+
+        for len in lengths() {
+            builder = builder.readable(len);
         }
-        .build()?;
 
+        if let Some(cap) = reply_cap {
+            builder = builder.writable(cap);
+        }
+
+        let mut chain = builder.build()?;
         for chunk in message.chunks() {
             chain.write_all(chunk)?;
         }
@@ -592,6 +564,23 @@ impl GuestContext {
         }
         cid
     }
+}
+
+/// Group message bytes into logical readable region lengths.
+fn message_region_lengths(
+    message: &EncodedMessage<'_>,
+    segment_len: usize,
+) -> impl Iterator<Item = usize> {
+    let external_len = message.external_len();
+    let split_external = external_len != 0 && external_len.is_multiple_of(segment_len);
+
+    let first_len = if split_external {
+        message.prefix_len()
+    } else {
+        message.total_len()
+    };
+
+    core::iter::once(first_len).chain(split_external.then_some(external_len))
 }
 
 fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
@@ -628,4 +617,30 @@ fn g2h_pool(base: u64, pages: usize, upper_size: usize) -> result::Result<SlotPo
     let lower = SlotLayout::new(base, G2H_LOWER_SLOT_SIZE, G2H_LOWER_SLOT_COUNT);
     let upper = SlotLayout::new(lower.end_addr()?, upper_size, upper_count);
     SlotPool::new_tiered(lower, upper)
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::ExternalValueSink;
+
+    use super::*;
+
+    fn encoded_message(external: &[u8]) -> EncodedMessage<'_> {
+        let mut values = ExternalValues::new();
+        values.push_bytes(external).unwrap();
+        EncodedMessage::new(MsgKind::Request, 1, b"control", values).unwrap()
+    }
+
+    #[test]
+    fn message_regions_split_only_aligned_external_values() {
+        let aligned = [0; 4096];
+        let message = encoded_message(&aligned);
+        let regions = message_region_lengths(&message, 4096).collect::<Vec<_>>();
+        assert_eq!(regions, [message.prefix_len(), aligned.len()]);
+
+        let unaligned = [0; 4095];
+        let message = encoded_message(&unaligned);
+        let regions = message_region_lengths(&message, 4096).collect::<Vec<_>>();
+        assert_eq!(regions, [message.total_len()]);
+    }
 }

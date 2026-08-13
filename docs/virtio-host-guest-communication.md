@@ -81,6 +81,11 @@ scalar function arguments, and scalar results fit in a small slot. Giving each
 of them a full upper slot would waste most of that slot and reduce the number
 of concurrent allocations the pool can hold.
 
+G2H senders allocate the header and control prefix separately when the external
+byte stream aligns to the upper slot size. A small prefix uses a lower slot
+while the external payload fills complete upper slots. Unaligned streams stay
+combined to avoid adding a descriptor.
+
 The H2G pool contains uniform configured size slots. The same tier selection
 does not fit its preposted receive model. The guest publishes writable buffers
 before it knows the size of the next host written payload. Uniform slots let
@@ -226,8 +231,8 @@ values.
 
 The complete flow is:
 
-1. The guest encodes a `FunctionCall` and calculates bounded response
-   capacity from free G2H descriptors and slots.
+1. The guest encodes a `FunctionCall`. The G2H producer allocates its readable
+   regions and reserves writable response capacity.
 2. The guest submits one G2H chain. Its readable region contains the request.
    Its writable region reserves the response.
 3. The guest notifies the host through `OutBAction::VirtqNotify`.

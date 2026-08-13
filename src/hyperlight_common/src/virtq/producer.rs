@@ -275,6 +275,11 @@ where
         ChainBuilder::new(self.inner.mem().clone(), self.pool.clone())
     }
 
+    /// Preferred size of one bulk payload segment.
+    pub fn preferred_segment_len(&self) -> usize {
+        self.pool.preferred_segment_len()
+    }
+
     /// Begin a batch of submissions.
     ///
     /// Chains submitted through the returned [`SubmitBatch`] are published to
@@ -552,7 +557,7 @@ where
                 self.pool.clone(),
                 Allocation {
                     addr: elem.addr,
-                    len: elem.len as usize,
+                    len: elem.len,
                 },
             );
             let mem = self.inner.mem().clone();
@@ -703,64 +708,70 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
     /// # Errors
     ///
     /// - [`VirtqError::InvalidState`] - No buffers requested
-    /// - [`VirtqError::Alloc`] - Pool exhausted
+    /// - [`VirtqError::Alloc`] - Buffer allocation failed
     pub fn build(self) -> Result<SendChain<M, P>, VirtqError> {
         if self.rd_caps.is_empty() && self.wr_caps.is_empty() {
             return Err(VirtqError::InvalidState);
         }
 
-        let rd_capacity = self.rd_caps.iter().sum();
-        let mut allocs = AllocTxn::new(&self.pool);
+        let rd_capacity = self.rd_caps.iter().try_fold(0usize, |total, &cap| {
+            total.checked_add(cap).ok_or(AllocError::Overflow)
+        })?;
+
+        let lengths = self.rd_caps.iter().chain(&self.wr_caps).copied();
+        let regions = self.pool.alloc_regions(lengths)?;
+
+        debug_assert_eq!(regions.len(), self.rd_caps.len() + self.wr_caps.len());
+
+        let mut regions = regions.into_iter();
         let mut rd_caps = SmallVec::<[usize; 4]>::new();
         let mut rd_elems = SmallVec::<[BufferElement; 4]>::new();
         let mut wr_elems = SmallVec::<[BufferElement; 4]>::new();
 
-        // Allocate readable buffers, splitting into multiple descriptors if needed.
         // The buffer element lengths are initialized to zero and updated as the
         // `SendChain` writes.
-        for &cap in &self.rd_caps {
-            let sgs = allocs.alloc_sg(cap)?;
+        for (&cap, allocs) in Iterator::zip(self.rd_caps.iter(), regions.by_ref()) {
             let mut remaining = cap;
 
-            for alloc in sgs {
-                let _ = checked_descriptor_len(alloc.len)?;
-                let seg_cap = remaining.min(alloc.len);
+            for alloc in allocs {
+                debug_assert_ne!(remaining, 0);
+
+                let seg_cap = remaining.min(alloc.len as usize);
+                let elem = BufferElement::readable(alloc.addr);
 
                 rd_caps.push(seg_cap);
-                rd_elems.push(BufferElement {
-                    addr: alloc.addr,
-                    len: 0,
-                    writable: false,
-                });
+                rd_elems.push(elem);
+
                 remaining -= seg_cap;
             }
 
-            if remaining != 0 {
-                return Err(VirtqError::InvalidState);
-            }
+            // The sum of the allocation lengths must equal the requested capacity.
+            debug_assert_eq!(remaining, 0);
         }
 
-        // Allocate writable buffers, with the same caveat about splitting as readable buffers.
         // Writable buffer elements are initialized with their full capacity for the device to
         // write into.
-        for &cap in &self.wr_caps {
-            let sgs = allocs.alloc_sg(cap)?;
-            for alloc in sgs {
-                let len = checked_descriptor_len(alloc.len)?;
-                wr_elems.push(BufferElement {
-                    addr: alloc.addr,
-                    len,
-                    writable: true,
-                });
+        for (&cap, allocs) in Iterator::zip(self.wr_caps.iter(), regions.by_ref()) {
+            let mut remaining = cap;
+
+            for alloc in allocs {
+                debug_assert_ne!(remaining, 0);
+                let elem = BufferElement::writable(alloc.addr, alloc.len);
+
+                wr_elems.push(elem);
+                remaining = remaining.saturating_sub(alloc.len as usize);
             }
+            debug_assert_eq!(remaining, 0);
         }
+
+        // All requested readable and writable buffers must have been allocated.
+        debug_assert!(regions.next().is_none());
 
         let chain = BufferChainBuilder::new()
             .readables(rd_elems)
             .writables(wr_elems)
-            .build()?;
-
-        allocs.commit();
+            .build()
+            .expect("validated regions produce a nonempty chain");
 
         Ok(SendChain {
             mem: self.mem,
@@ -771,51 +782,6 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
             rd_written: 0,
             write_mode: WriteMode::Unset,
         })
-    }
-}
-
-/// Build-scoped allocation transaction.
-///
-/// `SendChain` and `Inflight` intentionally retain lightweight descriptor
-/// metadata instead of one allocation guard and cloned pool handle per
-/// descriptor. While a valid `BufferChain` is being built, this transaction
-/// provides aggregate RAII: it records every allocated address before the
-/// caller can perform fallible validation and returns them all on drop.
-/// [`commit`](Self::commit) disarms rollback once `SendChain` can take
-/// responsibility for reclaiming the completed chain.
-struct AllocTxn<'a, P: BufferProvider> {
-    pool: &'a P,
-    addrs: SmallVec<[u64; 8]>,
-}
-
-impl<'a, P: BufferProvider> AllocTxn<'a, P> {
-    fn new(pool: &'a P) -> Self {
-        Self {
-            pool,
-            addrs: SmallVec::new(),
-        }
-    }
-
-    fn alloc_sg(&mut self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        let allocs = self.pool.alloc_sg(total_len)?;
-        self.addrs.extend(allocs.iter().map(|alloc| alloc.addr));
-        Ok(allocs)
-    }
-
-    fn commit(mut self) {
-        self.addrs.clear();
-    }
-}
-
-impl<P: BufferProvider> Drop for AllocTxn<'_, P> {
-    fn drop(&mut self) {
-        for addr in self.addrs.drain(..) {
-            let result = self.pool.dealloc(addr);
-            debug_assert!(
-                result.is_ok(),
-                "allocation rollback dealloc failed: {result:?}"
-            );
-        }
     }
 }
 
@@ -895,10 +861,22 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
         Inflight { token, chain }
     }
 
-    /// Number of producer-written readable descriptors in this chain.
+    /// Total number of descriptors in this chain.
     #[inline]
     pub fn desc_count(&self) -> usize {
+        self.chain().len()
+    }
+
+    /// Number of readable descriptors in this chain.
+    #[inline]
+    pub fn rd_desc_count(&self) -> usize {
         self.chain().readables().len()
+    }
+
+    /// Number of writable descriptors in this chain.
+    #[inline]
+    pub fn wr_desc_count(&self) -> usize {
+        self.chain().writables().len()
     }
 
     /// Total producer-written readable capacity in bytes.
@@ -932,7 +910,7 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
     /// - [`VirtqError::NoPayloadSegment`] - no readable buffer allocated
     /// - [`VirtqError::MemoryWriteError`] - underlying write failed
     pub fn write(&mut self, buf: &[u8]) -> Result<usize, VirtqError> {
-        if self.desc_count() == 0 {
+        if self.rd_desc_count() == 0 {
             return Err(VirtqError::NoPayloadSegment);
         }
 
@@ -985,7 +963,7 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
     /// - [`VirtqError::MemoryWriteError`] - underlying write failed
     #[inline]
     pub fn write_all(&mut self, buf: &[u8]) -> Result<&mut Self, VirtqError> {
-        if self.desc_count() == 0 {
+        if self.rd_desc_count() == 0 {
             return Err(VirtqError::NoPayloadSegment);
         }
 
@@ -1123,13 +1101,33 @@ fn checked_descriptor_len(len: usize) -> Result<u32, VirtqError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::virtq::ring::tests::{TestMem, make_consumer, make_ring};
+    use crate::virtq::ring::tests::{OwnedRing, TestMem, make_consumer, make_ring};
     use crate::virtq::test_utils::*;
 
     fn poll_received<M: MemOps + Clone, N: Notifier>(
         consumer: &mut VirtqConsumer<M, N>,
     ) -> (RecvChain<M>, ReplyChain<M>) {
         consumer.poll(1024).unwrap().unwrap()
+    }
+
+    fn make_slot_producer(
+        ring: &OwnedRing,
+        slot_size: usize,
+    ) -> (
+        VirtqProducer<TestMem, TestNotifier, SlotPool>,
+        VirtqConsumer<TestMem, TestNotifier>,
+    ) {
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+
+        let lower = SlotLayout::new(pool_base, slot_size / 2, ring.len());
+        let upper = SlotLayout::new(lower.end_addr().unwrap(), slot_size, ring.len());
+        let pool = SlotPool::new_tiered(lower, upper).unwrap();
+
+        let notifier = TestNotifier::new();
+        let producer = VirtqProducer::new(ring.layout(), mem.clone(), notifier.clone(), pool);
+        let consumer = VirtqConsumer::new(ring.layout(), mem, notifier);
+        (producer, consumer)
     }
 
     fn inflight(seq: u32, id: u16) -> Inflight {
@@ -1295,7 +1293,9 @@ mod tests {
         let (producer, _consumer, _notifier) = make_test_producer(&ring);
 
         let se = producer.chain().readable(16).writable(32).build().unwrap();
-        assert_eq!(se.desc_count(), 1);
+        assert_eq!(se.desc_count(), 2);
+        assert_eq!(se.rd_desc_count(), 1);
+        assert_eq!(se.wr_desc_count(), 1);
         assert_eq!(se.capacity(), 16);
     }
 
@@ -1327,15 +1327,47 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_multi_readable_appends_across_calls() {
+    fn test_chain_independent_readables_preserve_pool_tiers() {
         let ring = make_ring(16);
         let layout = ring.layout();
         let mem = ring.mem();
-        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new_with_max_alloc_len(pool_base, 0x8000, 4);
+
+        let lower = SlotLayout::new(
+            mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100,
+            256,
+            1,
+        );
+
+        let upper = SlotLayout::new(lower.end_addr().unwrap(), 4096, 1);
+        let pool = SlotPool::new_tiered(lower, upper).unwrap();
         let notifier = TestNotifier::new();
-        let mut producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
-        let mut consumer = VirtqConsumer::new(layout, mem, notifier);
+        let producer = VirtqProducer::new(layout, mem, notifier, pool.clone());
+
+        let send = producer
+            .chain()
+            .readable(128)
+            .readable(4096)
+            .build()
+            .unwrap();
+
+        let readables = send.chain().readables();
+
+        assert_eq!(readables.len(), 2);
+        assert_eq!(readables[0].addr, lower.base_addr);
+        assert_eq!(readables[1].addr, upper.base_addr);
+        assert_eq!(pool.num_free_lower(), 0);
+        assert_eq!(pool.num_free_upper(), 0);
+
+        drop(send);
+
+        assert_eq!(pool.num_free_lower(), 1);
+        assert_eq!(pool.num_free_upper(), 1);
+    }
+
+    #[test]
+    fn test_chain_multi_readable_appends_across_calls() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer) = make_slot_producer(&ring, 4);
 
         let mut send = producer.chain().readable(8).build().unwrap();
         send.write_all(b"abc").unwrap();
@@ -1355,17 +1387,11 @@ mod tests {
     #[test]
     fn test_chain_readable_splits_logical_capacity() {
         let ring = make_ring(16);
-        let layout = ring.layout();
-        let mem = ring.mem();
-        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new_with_max_alloc_len(pool_base, 0x8000, 4);
-        let notifier = TestNotifier::new();
-        let mut producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
-        let mut consumer = VirtqConsumer::new(layout, mem, notifier);
+        let (mut producer, mut consumer) = make_slot_producer(&ring, 4);
 
         let mut se = producer.chain().readable(10).writable(32).build().unwrap();
 
-        assert_eq!(se.desc_count(), 3);
+        assert_eq!(se.rd_desc_count(), 3);
         assert_eq!(se.capacity(), 10);
 
         se.write_all(b"abcdefghij").unwrap();
@@ -1397,13 +1423,7 @@ mod tests {
     #[test]
     fn test_chain_writable_splits_logical_capacity() {
         let ring = make_ring(16);
-        let layout = ring.layout();
-        let mem = ring.mem();
-        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new_with_max_alloc_len(pool_base, 0x8000, 4);
-        let notifier = TestNotifier::new();
-        let mut producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
-        let mut consumer = VirtqConsumer::new(layout, mem, notifier);
+        let (mut producer, mut consumer) = make_slot_producer(&ring, 4);
 
         let se = producer.chain().writable(10).build().unwrap();
         let token = producer.submit(se).unwrap();
@@ -1699,15 +1719,10 @@ mod tests {
     #[test]
     fn test_send_chain_single_segment_writer_rejects_auto_split_chain() {
         let ring = make_ring(16);
-        let layout = ring.layout();
-        let mem = ring.mem();
-        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new_with_max_alloc_len(pool_base, 0x8000, 4);
-        let notifier = TestNotifier::new();
-        let producer = VirtqProducer::new(layout, mem, notifier, pool);
+        let (producer, _consumer) = make_slot_producer(&ring, 4);
 
         let mut se = producer.chain().readable(8).build().unwrap();
-        assert_eq!(se.desc_count(), 2);
+        assert_eq!(se.rd_desc_count(), 2);
         assert!(matches!(
             se.with_seg(2, |_| Ok::<usize, VirtqError>(0)),
             Err(VirtqError::NoPayloadSegment)
@@ -1786,31 +1801,6 @@ mod tests {
         let se = producer.chain().readable(64).writable(128).build().unwrap();
         let tok = producer.submit(se).unwrap();
         assert!(tok.id < 16);
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn test_chain_build_rolls_back_unrepresentable_allocations() {
-        let ring = make_ring(16);
-        let slot_size = u32::MAX as usize + 1;
-        let layout = SlotLayout::new(0, slot_size, 1);
-        let pool = SlotPool::new(layout).unwrap();
-        let mem = ring.mem();
-        let producer = VirtqProducer::new(ring.layout(), mem, TestNotifier::new(), pool.clone());
-
-        assert!(matches!(
-            producer.chain().readable(1).build(),
-            Err(VirtqError::PayloadTooLarge { recv, limit })
-                if recv == slot_size && limit == u32::MAX as usize
-        ));
-        assert_eq!(pool.num_free(), 1);
-
-        assert!(matches!(
-            producer.chain().writable(1).build(),
-            Err(VirtqError::PayloadTooLarge { recv, limit })
-                if recv == slot_size && limit == u32::MAX as usize
-        ));
-        assert_eq!(pool.num_free(), 1);
     }
 
     #[test]
