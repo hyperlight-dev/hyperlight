@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add per-direction virtqueue configuration and account its allocations in
+  scratch sizing.
 
 ### Changed
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.
@@ -13,10 +15,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resets to a clean default. On KVM the guest may only read or write declared
   MSRs, on MSHV and WHP this is not enforced. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
 * **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
+* Expose C guest `ByteChunks` values as pointer and length arrays.
+* Place virtqueue rings and pools in host-owned scratch before page tables.
+  Snapshot ABI 2 rejects snapshots created with earlier layouts.
+* Require guest logs and all host and guest function calls to use virtqueues.
+* Keep registered Rust guest return values typed until transport encoding so
+  external byte results avoid intermediate FlatBuffer copies.
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+  rejects snapshots without transport state.
+* Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
+  keep their deferred result path.
+* Reject snapshot capture while guest-owned transport buffers are retained.
+* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
+  and 8 pages.
 
 ### Removed
+* Remove legacy stack I/O, its `GuestHandle` methods, and its sandbox
+  configuration options.
 
 ### Fixed
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
 * Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
 * Reject malformed OCI snapshot metadata and non-regular artifact files during load.
 * Reset XCR0 during x86 snapshot restore.

@@ -25,13 +25,13 @@ float echo_float(float f) { return f; }
 
 double echo_double(double d) { return d; }
 
-hl_Vec *set_byte_array_to_zero(const hl_FunctionCall* params) {
+hl_ReturnValue *set_byte_array_to_zero(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
   uint8_t *x = malloc(input.len);
   for (uintptr_t i = 0; i < input.len; i++) {
     x[i] = 0;
   }
-  return hl_flatbuffer_result_from_Bytes(x, input.len);
+  return hl_result_from_Bytes(x, input.len);
 }
 
 int print_output(const char *message) {
@@ -213,9 +213,9 @@ int set_static(void) {
   return length;
 }
 
-hl_Vec *get_size_prefixed_buffer(const hl_FunctionCall* params) {
+hl_ReturnValue *get_size_prefixed_buffer(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
-  return hl_flatbuffer_result_from_Bytes(input.data, input.len);
+  return hl_result_from_Bytes(input.data, input.len);
 }
 
 int guest_abort_with_code(int32_t code) {
@@ -239,10 +239,10 @@ int log_message(const char *message, int64_t level) {
   return -1;
 }
 
-hl_Vec *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
+hl_ReturnValue *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
   assert(input.len == 24 * 1024);
-  return hl_flatbuffer_result_from_Bytes(input.data, 8 * 1024);
+  return hl_result_from_Bytes(input.data, 8 * 1024);
 }
 
 int guest_function(const char *from_host) {
@@ -332,6 +332,36 @@ const char* guest_fn_checks_if_host_returns_string_value() {
   return hl_get_host_return_value_as_String();
 }
 
+hl_ReturnValue *round_trip_host_byte_chunks(const hl_FunctionCall *params) {
+  hl_ByteChunks input = params->parameters[0].value.ByteChunks;
+  assert(input.count > 1);
+
+  for (uintptr_t i = 0; i < input.count; i++) {
+    assert(input.chunks[i].data != NULL || input.chunks[i].len == 0);
+  }
+
+  hl_Parameter host_param = {
+      .tag = hl_ParameterType_ByteChunks,
+      .value = {.ByteChunks = input},
+  };
+
+  const hl_FunctionCall host_call = {
+      .function_name = "HostEchoByteChunks",
+      .parameters = &host_param,
+      .parameters_len = 1,
+      .return_type = hl_ReturnType_ByteChunks,
+  };
+  hl_call_host_function(&host_call);
+
+  hl_ByteChunks *output = hl_get_host_return_value_as_ByteChunks();
+  assert(output != NULL);
+  assert(output->count > 1);
+
+  hl_ReturnValue *result = hl_result_from_ByteChunks(*output);
+  hl_free_byte_chunks(output);
+  return result;
+}
+
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_float_value, Float, 2, Float, Float)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_double_value, Double, 2, Double, Double)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 0)
@@ -409,16 +439,17 @@ void hyperlight_main(void)
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
+    hl_register_function_definition("RoundTripHostByteChunks", round_trip_host_byte_chunks, 1, (hl_ParameterType[]){hl_ParameterType_ByteChunks}, hl_ReturnType_ByteChunks);
 }
 
 // This dispatch function is only used when the host dispatches a guest function
 // call but there is no registered guest function with the given name.
-hl_Vec *c_guest_dispatch_function(const hl_FunctionCall *function_call) {
+hl_ReturnValue *c_guest_dispatch_function(const hl_FunctionCall *function_call) {
   const char *func_name = function_call->function_name;
   if (strcmp(func_name, "ThisIsNotARealFunctionButTheNameIsImportant") == 0) {
     // TODO DO A LOG HERE
-    // This is special case for test `iostack_is_working
-    return hl_flatbuffer_result_from_Int(99);
+    // This is a special case for test `custom_guest_dispatch_is_working`.
+    return hl_result_from_Int(99);
   }
 
   return NULL;

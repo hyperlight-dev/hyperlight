@@ -766,7 +766,7 @@ pub fn emit_hl_marshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStrea
 /// are no names in it (a unit type)
 pub fn emit_hl_marshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
     match rt {
-        None => quote! { ::alloc::vec::Vec::new() },
+        None => quote! { ::alloc::vec::Vec::<u8>::new() },
         Some(vt) => {
             let toks = emit_hl_marshal_value(s, id, vt);
             quote! { { #toks } }

@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use alloc::collections::VecDeque;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use bytes::Bytes;
@@ -93,6 +94,86 @@ pub(crate) struct Inflight {
     chain: BufferChain,
 }
 
+/// Compact in-flight chains with constant-time descriptor-ID lookup.
+///
+/// Descriptor IDs span the full ring, but live chains are normally bounded by
+/// the much smaller buffer pool. `by_id` maps each descriptor ID to a packed
+/// `live` index. Removal uses `swap_remove` and repairs the moved entry's map.
+struct InflightTable {
+    by_id: Vec<u16>,
+    live: Vec<Inflight>,
+}
+
+impl InflightTable {
+    const VACANT: u16 = u16::MAX;
+
+    fn new(ring_len: usize) -> Self {
+        Self {
+            by_id: vec![Self::VACANT; ring_len],
+            live: Vec::new(),
+        }
+    }
+
+    fn try_reserve_one(&mut self) -> Result<(), VirtqError> {
+        if self.live.len() > self.by_id.len() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        if self.live.len() == self.by_id.len() {
+            return Err(VirtqError::Backpressure);
+        }
+
+        // Producers with one live chain should not pay for four large inline
+        // chain records.
+        let result = if self.live.capacity() == 0 {
+            self.live.try_reserve_exact(1)
+        } else {
+            self.live.try_reserve(1)
+        };
+
+        result.map_err(|_| VirtqError::BookkeepingAllocation)
+    }
+
+    fn contains(&self, id: u16) -> bool {
+        self.by_id
+            .get(id as usize)
+            .is_some_and(|slot| *slot != Self::VACANT)
+    }
+
+    fn insert(&mut self, inflight: Inflight) {
+        let id = inflight.token.id;
+        debug_assert!(!self.contains(id));
+        debug_assert!(self.live.len() < Self::VACANT as usize);
+
+        let slot = self.live.len() as u16;
+        self.live.push(inflight);
+        self.by_id[id as usize] = slot;
+    }
+
+    fn remove(&mut self, id: u16) -> Option<Inflight> {
+        let slot = self.by_id.get_mut(id as usize)?;
+        if *slot == Self::VACANT {
+            return None;
+        }
+
+        let index = usize::from(*slot);
+        *slot = Self::VACANT;
+
+        let removed = self.live.swap_remove(index);
+        if let Some(moved) = self.live.get(index) {
+            self.by_id[moved.token.id as usize] = index as u16;
+        }
+
+        Some(removed)
+    }
+
+    fn pop(&mut self) -> Option<Inflight> {
+        let inflight = self.live.pop()?;
+        self.by_id[inflight.token.id as usize] = Self::VACANT;
+        Some(inflight)
+    }
+}
+
 /// A high-level virtqueue producer (driver side).
 ///
 /// The producer sends chains to the consumer (device), and receives used chains.
@@ -130,7 +211,7 @@ pub struct VirtqProducer<M, N, P> {
     notifier: N,
     pool: P,
     next_token: u32,
-    inflight: Vec<Option<Inflight>>,
+    inflight: InflightTable,
     pending: VecDeque<UsedChain>,
 }
 
@@ -151,18 +232,23 @@ where
     pub fn new(layout: Layout, mem: M, notifier: N, pool: P) -> Self {
         let inner = RingProducer::new(layout, mem);
         let ring_len = inner.len();
+        let inflight = InflightTable::new(ring_len);
 
         Self {
             inner,
             pool,
             notifier,
+            inflight,
             next_token: 0,
-            inflight: (0..ring_len).map(|_| None).collect(),
-            pending: VecDeque::with_capacity(ring_len),
+            pending: VecDeque::new(),
         }
     }
 
-    fn dealloc_elems(
+    /// Retire allocations from a completed descriptor chain.
+    ///
+    /// Every element is attempted so one deallocation failure does not strand
+    /// later allocations; the first failure is returned after cleanup.
+    fn retire_elems(
         &self,
         elems: impl IntoIterator<Item = BufferElement>,
     ) -> Result<(), VirtqError> {
@@ -219,17 +305,19 @@ where
     }
 
     fn publish(&mut self, send: SendChain<M, P>) -> Result<Token, VirtqError> {
+        self.inflight.try_reserve_one()?;
+
         let token_id = self.next_token;
         let id = self.inner.submit_available(send.chain())?;
         let token = Token { seq: token_id, id };
 
         // A free descriptor id must never already be tracked as inflight.
-        if self.inflight[id as usize].is_some() {
+        if self.inflight.contains(id) {
             return Err(VirtqError::InvalidState);
         }
 
         let inf = send.into_inflight(token);
-        self.inflight[id as usize] = Some(inf);
+        self.inflight.insert(inf);
         self.next_token = self.next_token.wrapping_add(1);
 
         Ok(token)
@@ -273,6 +361,44 @@ where
         self.inner.num_free()
     }
 
+    /// Number of submitted descriptors not yet polled as used.
+    #[inline]
+    pub fn num_inflight(&self) -> usize {
+        self.inner.num_inflight()
+    }
+
+    /// Reset a stopped producer and release transport-owned allocations.
+    ///
+    /// The peer must not access the ring until its consumer is reset. Buffered
+    /// writable completions are guest-owned and make this operation fail.
+    /// Owner-backed payloads already returned to callers are not tracked as
+    /// in-flight and remain allocated.
+    pub fn reset(&mut self) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        self.inner.reset()?;
+        self.next_token = 0;
+
+        let mut maybe_err = None;
+
+        // Drain all in-flight chains and retire their allocations. This is a best-effort
+        while let Some(inflight) = self.inflight.pop() {
+            let ret = self.retire_elems(inflight.chain.elems().iter().copied());
+            if let Err(err) = ret
+                && maybe_err.is_none()
+            {
+                maybe_err = Some(err);
+            }
+        }
+
+        match maybe_err {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// Configure event suppression for used buffer notifications.
     ///
     /// This controls when the device (consumer) signals us about completed buffers:
@@ -301,39 +427,6 @@ where
                 .enable_used_notifications_desc(cursor.head(), cursor.wrap())?,
         }
         Ok(())
-    }
-
-    /// Reset ring, inflight, and pool state to initial values.
-    ///
-    /// # Safety
-    ///
-    /// No outstanding [`UsedChain::Data`] buffers, borrowed segment views, or
-    /// peer accesses to previously submitted descriptors may exist. Resetting
-    /// recycles the same backing addresses, so outstanding zero-copy buffers or
-    /// stale descriptor users could alias memory that is handed out again.
-    ///
-    /// TODO(virtq): find a way to allow guest to keep used chains across resets.
-    pub unsafe fn reset(&mut self) {
-        self.inflight.iter_mut().for_each(|slot| *slot = None);
-        self.pending.clear();
-        self.inner.reset();
-        self.pool.reset();
-    }
-
-    /// Replace the pool and reset ring, inflight, and pending state.
-    ///
-    /// # Safety
-    ///
-    /// No outstanding [`UsedChain::Data`] buffers, borrowed segment views, or
-    /// peer accesses to previously submitted descriptors may exist. The new pool
-    /// may manage the same shared-memory addresses as the old pool, so old
-    /// zero-copy buffers must not outlive this transition.
-    pub unsafe fn reset_with_pool(&mut self, pool: P) {
-        self.pending.clear();
-        self.inflight.iter_mut().for_each(|slot| *slot = None);
-        self.inner.reset();
-        self.pool = pool;
-        self.pool.reset();
     }
 }
 
@@ -382,6 +475,9 @@ where
         while let Some(chain) = self.poll_ring()? {
             if matches!(chain, UsedChain::Data(_, _)) {
                 debug_assert!(self.pending.len() < self.inner.len());
+                self.pending
+                    .try_reserve(1)
+                    .map_err(|_| VirtqError::BookkeepingAllocation)?;
                 self.pending.push_back(chain);
             }
             count += 1;
@@ -399,14 +495,13 @@ where
 
         let inf = self
             .inflight
-            .get_mut(used.id as usize)
-            .and_then(Option::take)
+            .remove(used.id)
             .ok_or(VirtqError::InvalidState)?;
 
         let written = used.len as usize;
         let Inflight { token, chain } = inf;
 
-        self.dealloc_elems(chain.readables().iter().copied())?;
+        self.retire_elems(chain.readables().iter().copied())?;
 
         let used = if chain.writables().is_empty() {
             UsedChain::Ack(token)
@@ -439,14 +534,14 @@ where
 
         if remaining != 0 {
             let elems = owned.iter().map(|(elem, _)| *elem).chain(free);
-            self.dealloc_elems(elems)?;
+            self.retire_elems(elems)?;
             return Err(VirtqError::InvalidState);
         }
 
         for (elem, len) in &owned {
             if unsafe { self.inner.mem().as_slice(elem.addr, *len) }.is_err() {
                 let elems = owned.iter().map(|(elem, _)| *elem).chain(free);
-                let _ = self.dealloc_elems(elems);
+                let _ = self.retire_elems(elems);
                 return Err(VirtqError::MemoryReadError);
             }
         }
@@ -469,7 +564,7 @@ where
             sgs.push(Bytes::from_owner(owner));
         }
 
-        self.dealloc_elems(free)?;
+        self.retire_elems(free)?;
 
         Ok(Segments::from_smallvec(sgs))
     }
@@ -502,9 +597,9 @@ where
 /// A scoped batch of producer submissions.
 ///
 /// Submissions are published immediately, while notification is delayed until
-/// [`finish`](Self::finish). `finish` is explicit because the event-suppression
-/// check can fail; dropping a batch does not notify.
-#[must_use = "call finish to notify the consumer about batched submissions"]
+/// [`finish`](Self::finish). [`finish_without_notify`](Self::finish_without_notify)
+/// supports protocols whose peer is already scheduled to inspect the queue.
+#[must_use = "finish the batch explicitly"]
 pub struct SubmitBatch<'a, M, N, P> {
     producer: &'a mut VirtqProducer<M, N, P>,
     notify_from: Option<RingCursor>,
@@ -550,6 +645,12 @@ where
 
         self.producer.notify_since(notify_from)
     }
+
+    /// Finish the batch without notifying the consumer.
+    ///
+    /// Use this only when another protocol event guarantees that the consumer
+    /// will inspect the published descriptors.
+    pub fn finish_without_notify(self) {}
 }
 
 /// Builder for configuring a descriptor chain's buffer layout.
@@ -608,7 +709,8 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
             return Err(VirtqError::InvalidState);
         }
 
-        let mut rollback = Rollback::new(&self.pool);
+        let rd_capacity = self.rd_caps.iter().sum();
+        let mut allocs = AllocTxn::new(&self.pool);
         let mut rd_caps = SmallVec::<[usize; 4]>::new();
         let mut rd_elems = SmallVec::<[BufferElement; 4]>::new();
         let mut wr_elems = SmallVec::<[BufferElement; 4]>::new();
@@ -617,7 +719,7 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
         // The buffer element lengths are initialized to zero and updated as the
         // `SendChain` writes.
         for &cap in &self.rd_caps {
-            let sgs = self.pool.alloc_sg(cap)?;
+            let sgs = allocs.alloc_sg(cap)?;
             let mut remaining = cap;
 
             for alloc in sgs {
@@ -631,7 +733,6 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
                     writable: false,
                 });
                 remaining -= seg_cap;
-                rollback.allocs.push(alloc);
             }
 
             if remaining != 0 {
@@ -643,7 +744,7 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
         // Writable buffer elements are initialized with their full capacity for the device to
         // write into.
         for &cap in &self.wr_caps {
-            let sgs = self.pool.alloc_sg(cap)?;
+            let sgs = allocs.alloc_sg(cap)?;
             for alloc in sgs {
                 let len = checked_descriptor_len(alloc.len)?;
                 wr_elems.push(BufferElement {
@@ -651,7 +752,6 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
                     len,
                     writable: true,
                 });
-                rollback.allocs.push(alloc);
             }
         }
 
@@ -660,43 +760,61 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
             .writables(wr_elems)
             .build()?;
 
-        rollback.release();
+        allocs.commit();
 
         Ok(SendChain {
             mem: self.mem,
             pool: self.pool,
             chain: Some(chain),
             rd_caps,
-            rd_capacity: self.rd_caps.iter().sum(),
+            rd_capacity,
             rd_written: 0,
             write_mode: WriteMode::Unset,
         })
     }
 }
 
-struct Rollback<'a, P: BufferProvider> {
+/// Build-scoped allocation transaction.
+///
+/// `SendChain` and `Inflight` intentionally retain lightweight descriptor
+/// metadata instead of one allocation guard and cloned pool handle per
+/// descriptor. While a valid `BufferChain` is being built, this transaction
+/// provides aggregate RAII: it records every allocated address before the
+/// caller can perform fallible validation and returns them all on drop.
+/// [`commit`](Self::commit) disarms rollback once `SendChain` can take
+/// responsibility for reclaiming the completed chain.
+struct AllocTxn<'a, P: BufferProvider> {
     pool: &'a P,
-    allocs: SmallVec<[Allocation; 8]>,
+    addrs: SmallVec<[u64; 8]>,
 }
 
-impl<'a, P: BufferProvider> Rollback<'a, P> {
+impl<'a, P: BufferProvider> AllocTxn<'a, P> {
     fn new(pool: &'a P) -> Self {
         Self {
             pool,
-            allocs: SmallVec::new(),
+            addrs: SmallVec::new(),
         }
     }
 
-    fn release(mut self) {
-        self.allocs.clear();
+    fn alloc_sg(&mut self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
+        let allocs = self.pool.alloc_sg(total_len)?;
+        self.addrs.extend(allocs.iter().map(|alloc| alloc.addr));
+        Ok(allocs)
+    }
+
+    fn commit(mut self) {
+        self.addrs.clear();
     }
 }
 
-impl<P: BufferProvider> Drop for Rollback<'_, P> {
+impl<P: BufferProvider> Drop for AllocTxn<'_, P> {
     fn drop(&mut self) {
-        for alloc in self.allocs.drain(..) {
-            let result = self.pool.dealloc(alloc.addr);
-            debug_assert!(result.is_ok(), "rollback dealloc failed: {result:?}");
+        for addr in self.addrs.drain(..) {
+            let result = self.pool.dealloc(addr);
+            debug_assert!(
+                result.is_ok(),
+                "allocation rollback dealloc failed: {result:?}"
+            );
         }
     }
 }
@@ -752,10 +870,12 @@ pub struct SendChain<M: MemOps, P: BufferProvider> {
 // public lifetime, so these `expect`s cannot fail.
 #[allow(clippy::expect_used)]
 impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
+    #[inline(always)]
     fn chain(&self) -> &BufferChain {
         self.chain.as_ref().expect("SendChain missing BufferChain")
     }
 
+    #[inline(always)]
     fn chain_mut(&mut self) -> &mut BufferChain {
         self.chain.as_mut().expect("SendChain missing BufferChain")
     }
@@ -775,22 +895,26 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
         Inflight { token, chain }
     }
 
-    /// Number of producer-written readable segments in this chain.
-    pub fn segment_count(&self) -> usize {
+    /// Number of producer-written readable descriptors in this chain.
+    #[inline]
+    pub fn desc_count(&self) -> usize {
         self.chain().readables().len()
     }
 
     /// Total producer-written readable capacity in bytes.
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.rd_capacity
     }
 
     /// Number of producer-written readable bytes written so far.
+    #[inline]
     pub fn written(&self) -> usize {
         self.rd_written
     }
 
     /// Remaining producer-written readable capacity.
+    #[inline]
     pub fn remaining(&self) -> usize {
         self.capacity() - self.written()
     }
@@ -800,14 +924,15 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
     /// Appends at the current aggregate write position and scatters across
     /// readable segments in chain order. Uses [`MemOps::write`] (volatile on
     /// host side). If `buf` is larger than the remaining capacity, writes as
-    /// many bytes as will fit.
+    /// many bytes as will fit. If a later memory write fails, the cursor and
+    /// written length retain any earlier chunks written by the same call.
     ///
     /// # Errors
     ///
     /// - [`VirtqError::NoPayloadSegment`] - no readable buffer allocated
     /// - [`VirtqError::MemoryWriteError`] - underlying write failed
     pub fn write(&mut self, buf: &[u8]) -> Result<usize, VirtqError> {
-        if self.segment_count() == 0 {
+        if self.desc_count() == 0 {
             return Err(VirtqError::NoPayloadSegment);
         }
 
@@ -816,40 +941,34 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
         let mut remaining = &buf[..buf.len().min(self.remaining())];
         let mut written = 0;
 
-        let SendChain {
-            mem,
-            chain,
-            rd_caps,
-            ..
-        } = self;
-
-        let readables = chain
-            .as_mut()
-            .expect("SendChain missing BufferChain")
-            .readables_mut();
-
-        for (readable, &cap) in readables.iter_mut().zip(rd_caps.iter()) {
+        for index in 0..self.rd_caps.len() {
             if remaining.is_empty() {
                 break;
             }
 
-            let written_len = readable.len as usize;
-            let free = cap - written_len;
-            if free == 0 {
+            let cap = self.rd_caps[index];
+            let elem = self.chain().readables()[index];
+            let desc_off = elem.len as usize;
+            let len = (cap - desc_off).min(remaining.len());
+            if len == 0 {
                 continue;
             }
 
-            let n = free.min(remaining.len());
-            let addr = readable.addr + written_len as u64;
-            mem.write(addr, &remaining[..n])
+            let addr = elem
+                .addr
+                .checked_add(desc_off as u64)
+                .ok_or(VirtqError::MemoryWriteError)?;
+
+            self.mem
+                .write(addr, &remaining[..len])
                 .map_err(|_| VirtqError::MemoryWriteError)?;
 
-            readable.len += n as u32;
-            written += n;
-            remaining = &remaining[n..];
+            self.chain_mut().readables_mut()[index].len += len as u32;
+            self.rd_written += len;
+            written += len;
+            remaining = &remaining[len..];
         }
 
-        self.rd_written += written;
         Ok(written)
     }
 
@@ -864,8 +983,9 @@ impl<M: MemOps, P: BufferProvider> SendChain<M, P> {
     /// - [`VirtqError::PayloadTooLarge`] - buf exceeds remaining capacity
     /// - [`VirtqError::NoPayloadSegment`] - no readable buffer allocated
     /// - [`VirtqError::MemoryWriteError`] - underlying write failed
+    #[inline]
     pub fn write_all(&mut self, buf: &[u8]) -> Result<&mut Self, VirtqError> {
-        if self.segment_count() == 0 {
+        if self.desc_count() == 0 {
             return Err(VirtqError::NoPayloadSegment);
         }
 
@@ -1008,8 +1128,121 @@ mod tests {
 
     fn poll_received<M: MemOps + Clone, N: Notifier>(
         consumer: &mut VirtqConsumer<M, N>,
-    ) -> (RecvChain, ReplyChain<M>) {
+    ) -> (RecvChain<M>, ReplyChain<M>) {
         consumer.poll(1024).unwrap().unwrap()
+    }
+
+    fn inflight(seq: u32, id: u16) -> Inflight {
+        let chain = BufferChainBuilder::new()
+            .readable(0x1000 + u64::from(id) * 0x10, 8)
+            .build()
+            .unwrap();
+        Inflight {
+            token: Token { seq, id },
+            chain,
+        }
+    }
+
+    #[test]
+    fn inflight_table_repairs_moved_entry_after_removal() {
+        let mut table = InflightTable::new(16);
+        for (seq, id) in [(0, 3), (1, 7), (2, 5)] {
+            table.try_reserve_one().unwrap();
+            table.insert(inflight(seq, id));
+        }
+
+        assert_eq!(table.remove(7).unwrap().token.seq, 1);
+        assert!(!table.contains(7));
+        assert_eq!(table.remove(5).unwrap().token.seq, 2);
+        assert_eq!(table.remove(3).unwrap().token.seq, 0);
+        assert!(table.live.is_empty());
+        assert!(table.remove(7).is_none());
+    }
+
+    #[test]
+    fn producer_bookkeeping_starts_compact_and_lazy() {
+        let ring = make_ring(64);
+        let (producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        assert_eq!(producer.inflight.by_id.len(), ring.len());
+        assert!(producer.inflight.live.is_empty());
+        assert_eq!(producer.inflight.live.capacity(), 0);
+        assert_eq!(producer.pending.capacity(), 0);
+    }
+
+    #[test]
+    fn full_ring_still_reports_backpressure() {
+        let ring = make_ring(4);
+        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().readable(1).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        let chain = producer.chain().readable(1).build().unwrap();
+        assert!(matches!(
+            producer.submit(chain),
+            Err(VirtqError::Backpressure)
+        ));
+    }
+
+    #[test]
+    fn reset_reclaims_inflight_slots_and_reuses_ring() {
+        let ring = make_ring(8);
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = SlotPool::new(SlotLayout::new(pool_base, 64, ring.len())).unwrap();
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(ring.layout(), mem, notifier, pool.clone());
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+
+        assert_eq!(pool.num_free(), 0);
+
+        producer.reset().unwrap();
+
+        assert_eq!(producer.num_inflight(), 0);
+        assert_eq!(producer.num_free(), ring.len());
+        assert_eq!(pool.num_free(), ring.len());
+        assert!(producer.inflight.live.is_empty());
+        assert!(
+            producer
+                .inflight
+                .by_id
+                .iter()
+                .all(|slot| *slot == InflightTable::VACANT)
+        );
+
+        for _ in 0..ring.len() {
+            let chain = producer.chain().writable(64).build().unwrap();
+            producer.submit(chain).unwrap();
+        }
+    }
+
+    #[test]
+    fn reset_rejects_buffered_writable_completion() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        let ReplyChain::Writable(mut reply) = reply else {
+            panic!("expected writable reply");
+        };
+
+        reply.write_all(b"retained").unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.reclaim().unwrap();
+
+        assert!(matches!(producer.reset(), Err(VirtqError::InvalidState)));
+
+        drop(producer.poll().unwrap().unwrap());
+        producer.reset().unwrap();
     }
 
     #[derive(Clone)]
@@ -1062,7 +1295,7 @@ mod tests {
         let (producer, _consumer, _notifier) = make_test_producer(&ring);
 
         let se = producer.chain().readable(16).writable(32).build().unwrap();
-        assert_eq!(se.segment_count(), 1);
+        assert_eq!(se.desc_count(), 1);
         assert_eq!(se.capacity(), 16);
     }
 
@@ -1085,11 +1318,38 @@ mod tests {
         let token = producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello world");
-        assert_eq!(recv.segments().segment_count(), 2);
-        assert_eq!(recv.segments().as_slice()[0].as_ref(), b"hello");
-        assert_eq!(recv.segments().as_slice()[1].as_ref(), b" world");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello world");
+        let segments = recv.to_segments().unwrap();
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.as_slice()[0].as_ref(), b"hello");
+        assert_eq!(segments.as_slice()[1].as_ref(), b" world");
+        consumer.complete(recv, reply).unwrap();
+    }
+
+    #[test]
+    fn test_chain_multi_readable_appends_across_calls() {
+        let ring = make_ring(16);
+        let layout = ring.layout();
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = TestPool::new_with_max_alloc_len(pool_base, 0x8000, 4);
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
+        let mut consumer = VirtqConsumer::new(layout, mem, notifier);
+
+        let mut send = producer.chain().readable(8).build().unwrap();
+        send.write_all(b"abc").unwrap();
+        send.write_all(b"def").unwrap();
+        assert_eq!(send.written(), 6);
+        assert_eq!(send.remaining(), 2);
+
+        producer.submit(send).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        let segments = recv.to_segments().unwrap();
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.as_slice()[0].as_ref(), b"abcd");
+        assert_eq!(segments.as_slice()[1].as_ref(), b"ef");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1105,7 +1365,7 @@ mod tests {
 
         let mut se = producer.chain().readable(10).writable(32).build().unwrap();
 
-        assert_eq!(se.segment_count(), 3);
+        assert_eq!(se.desc_count(), 3);
         assert_eq!(se.capacity(), 10);
 
         se.write_all(b"abcdefghij").unwrap();
@@ -1114,12 +1374,13 @@ mod tests {
         let token = producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"abcdefghij");
-        assert_eq!(recv.segments().segment_count(), 3);
-        assert_eq!(recv.segments().as_slice()[0].as_ref(), b"abcd");
-        assert_eq!(recv.segments().as_slice()[1].as_ref(), b"efgh");
-        assert_eq!(recv.segments().as_slice()[2].as_ref(), b"ij");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"abcdefghij");
+        let segments = recv.to_segments().unwrap();
+        assert_eq!(segments.segment_count(), 3);
+        assert_eq!(segments.as_slice()[0].as_ref(), b"abcd");
+        assert_eq!(segments.as_slice()[1].as_ref(), b"efgh");
+        assert_eq!(segments.as_slice()[2].as_ref(), b"ij");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1147,14 +1408,14 @@ mod tests {
         let se = producer.chain().writable(10).build().unwrap();
         let token = producer.submit(se).unwrap();
 
-        let (_recv, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
         assert_eq!(wc.capacity(), 10);
 
         wc.write_all(b"abcdefghij").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         assert_eq!(used.token(), token);
@@ -1186,8 +1447,8 @@ mod tests {
 
         producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"headbody");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"headbody");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1209,9 +1470,10 @@ mod tests {
 
         producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"headbody");
-        assert_eq!(recv.segments().segment_count(), 2);
-        consumer.complete(reply).unwrap();
+        let segments = recv.to_segments().unwrap();
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.to_bytes().as_ref(), b"headbody");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1225,9 +1487,10 @@ mod tests {
 
         producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"headbody");
-        assert_eq!(recv.segments().segment_count(), 2);
-        consumer.complete(reply).unwrap();
+        let segments = recv.to_segments().unwrap();
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.to_bytes().as_ref(), b"headbody");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1238,14 +1501,14 @@ mod tests {
         let se = producer.chain().writable(5).writable(6).build().unwrap();
         let token = producer.submit(se).unwrap();
 
-        let (_recv, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
         assert_eq!(wc.capacity(), 11);
 
         wc.write_all(b"hello world").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         assert_eq!(used.token(), token);
@@ -1264,13 +1527,13 @@ mod tests {
         let se = producer.chain().writable(5).writable(6).build().unwrap();
         producer.submit(se).unwrap();
 
-        let (_recv, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
 
         wc.write_all(b"hello wo").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         let segments = used.segments().unwrap();
@@ -1288,8 +1551,8 @@ mod tests {
         let se = producer.chain().writable(5).writable(6).build().unwrap();
         producer.submit(se).unwrap();
 
-        let (_recv, reply) = poll_received(&mut consumer);
-        consumer.complete(reply).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         let segments = used.segments().unwrap();
@@ -1342,8 +1605,8 @@ mod tests {
 
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), tok);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello world");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello world");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1362,8 +1625,8 @@ mod tests {
 
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), tok);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello world");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello world");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1378,8 +1641,8 @@ mod tests {
 
         producer.submit(se).unwrap();
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello wo");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello wo");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1397,8 +1660,8 @@ mod tests {
         let _tok = producer.submit(se).unwrap();
 
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1417,8 +1680,8 @@ mod tests {
         let _tok = producer.submit(se).unwrap();
 
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1444,7 +1707,7 @@ mod tests {
         let producer = VirtqProducer::new(layout, mem, notifier, pool);
 
         let mut se = producer.chain().readable(8).build().unwrap();
-        assert_eq!(se.segment_count(), 2);
+        assert_eq!(se.desc_count(), 2);
         assert!(matches!(
             se.with_seg(2, |_| Ok::<usize, VirtqError>(0)),
             Err(VirtqError::NoPayloadSegment)
@@ -1525,6 +1788,31 @@ mod tests {
         assert!(tok.id < 16);
     }
 
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn test_chain_build_rolls_back_unrepresentable_allocations() {
+        let ring = make_ring(16);
+        let slot_size = u32::MAX as usize + 1;
+        let layout = SlotLayout::new(0, slot_size, 1);
+        let pool = SlotPool::new(layout).unwrap();
+        let mem = ring.mem();
+        let producer = VirtqProducer::new(ring.layout(), mem, TestNotifier::new(), pool.clone());
+
+        assert!(matches!(
+            producer.chain().readable(1).build(),
+            Err(VirtqError::PayloadTooLarge { recv, limit })
+                if recv == slot_size && limit == u32::MAX as usize
+        ));
+        assert_eq!(pool.num_free(), 1);
+
+        assert!(matches!(
+            producer.chain().writable(1).build(),
+            Err(VirtqError::PayloadTooLarge { recv, limit })
+                if recv == slot_size && limit == u32::MAX as usize
+        ));
+        assert_eq!(pool.num_free(), 1);
+    }
+
     #[test]
     fn test_submit_notifies() {
         let ring = make_ring(16);
@@ -1588,12 +1876,12 @@ mod tests {
         assert_eq!(notifier.notification_count(), initial_count + 1);
 
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"first");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"first");
+        consumer.complete(recv, reply).unwrap();
 
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"second");
-        consumer.complete(reply).unwrap();
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"second");
+        consumer.complete(recv, reply).unwrap();
     }
 
     #[test]
@@ -1633,6 +1921,23 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_can_finish_without_notification() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let mut batch = producer.batch();
+        let mut chain = batch.chain().readable(4).build().unwrap();
+        chain.write_all(b"data").unwrap();
+        batch.submit(chain).unwrap();
+        batch.finish_without_notify();
+
+        assert_eq!(notifier.notification_count(), 0);
+        let (recv, reply) = poll_received(&mut consumer);
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"data");
+        consumer.complete(recv, reply).unwrap();
+    }
+
+    #[test]
     fn test_write_only_round_trip() {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
@@ -1642,11 +1947,11 @@ mod tests {
 
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert!(recv.to_bytes().is_empty());
+        assert!(recv.to_bytes().unwrap().is_empty());
 
         if let ReplyChain::Writable(mut wc) = reply {
             wc.write_all(b"filled-by-consumer").unwrap();
-            consumer.complete(wc).unwrap();
+            consumer.complete(recv, wc).unwrap();
         } else {
             panic!("expected Writable");
         }
@@ -1668,9 +1973,9 @@ mod tests {
 
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"fire-and-forget");
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"fire-and-forget");
         assert!(matches!(reply, ReplyChain::Ack(_)));
-        consumer.complete(reply).unwrap();
+        consumer.complete(recv, reply).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         assert!(matches!(used, UsedChain::Ack(t) if t == token));
@@ -1686,10 +1991,10 @@ mod tests {
         let token = producer.submit(se).unwrap();
 
         let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"request data");
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"request data");
         if let ReplyChain::Writable(mut wc) = reply {
             wc.write_all(b"response data").unwrap();
-            consumer.complete(wc).unwrap();
+            consumer.complete(recv, wc).unwrap();
         } else {
             panic!("expected Writable");
         }
@@ -1715,10 +2020,10 @@ mod tests {
         se.write_all(b"request data").unwrap();
         producer.submit(se).unwrap();
 
-        let (_recv, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         if let ReplyChain::Writable(mut wc) = reply {
             wc.write_all(b"response data").unwrap();
-            consumer.complete(wc).unwrap();
+            consumer.complete(recv, wc).unwrap();
         } else {
             panic!("expected Writable");
         }
@@ -1763,53 +2068,5 @@ mod tests {
             Err(VirtqError::RingError(RingError::InvalidState))
         ));
         assert_eq!(producer.inner.num_inflight(), 1);
-    }
-
-    #[test]
-    fn test_virtq_producer_reset() {
-        let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit and complete a round trip
-        let mut se = producer.chain().readable(32).writable(64).build().unwrap();
-        se.write_all(b"hello").unwrap();
-        producer.submit(se).unwrap();
-
-        let (recv, reply) = poll_received(&mut consumer);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello");
-        consumer.complete(reply).unwrap();
-        let _ = producer.poll().unwrap().unwrap();
-
-        // Now reset
-        // SAFETY: the used chain was dropped before reset and no peer can
-        // access the reset test ring concurrently.
-        unsafe {
-            producer.reset();
-        }
-
-        // All inflight slots should be cleared
-        assert_eq!(producer.inner.num_inflight(), 0);
-        // Ring state should be back to initial
-        assert_eq!(producer.inner.num_free(), producer.inner.len());
-    }
-
-    #[test]
-    fn test_virtq_producer_reset_clears_inflight() {
-        let ring = make_ring(16);
-        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit without completing
-        let se = producer.chain().writable(64).build().unwrap();
-        producer.submit(se).unwrap();
-
-        assert_eq!(producer.inner.num_inflight(), 1);
-
-        // SAFETY: no peer can access the reset test ring concurrently.
-        unsafe {
-            producer.reset();
-        }
-
-        assert_eq!(producer.inner.num_inflight(), 0);
-        assert_eq!(producer.inner.num_free(), producer.inner.len());
     }
 }

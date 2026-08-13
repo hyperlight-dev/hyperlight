@@ -82,6 +82,16 @@ where
     f(sandbox);
 }
 
+/// Runs a test with a Rust guest UninitializedSandbox using custom configuration.
+pub fn with_rust_uninit_sandbox_cfg<F>(cfg: SandboxConfiguration, f: F)
+where
+    F: FnOnce(UninitializedSandbox),
+{
+    let sandbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), Some(cfg)).unwrap();
+    f(sandbox);
+}
+
 // =============================================================================
 // C guest helpers
 // =============================================================================

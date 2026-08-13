@@ -17,12 +17,12 @@ limitations under the License.
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use hyperlight_common::virtq::{BufferPool, BufferProvider, RecyclePool};
+use hyperlight_common::virtq::{BufferProvider, RunPool, SlotLayout, SlotPool};
 
 // Helper to create a pool for benchmarking
-fn make_pool<const L: usize, const U: usize>(size: usize) -> BufferPool<L, U> {
+fn make_run_pool<const L: usize, const U: usize>(size: usize) -> RunPool<L, U> {
     let base = 0x10000;
-    BufferPool::<L, U>::new(base, size).unwrap()
+    RunPool::<L, U>::new(base, size).unwrap()
 }
 
 // Single allocation performance
@@ -32,7 +32,7 @@ fn bench_alloc_single(c: &mut Criterion) {
     for size in [64, 128, 256, 512, 1024, 1500, 4096].iter() {
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+            let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
             b.iter(|| {
                 let alloc = pool.alloc(black_box(size)).unwrap();
                 pool.dealloc(alloc.addr).unwrap();
@@ -49,7 +49,7 @@ fn bench_alloc_lifo(c: &mut Criterion) {
     for size in [256, 1500, 4096].iter() {
         group.throughput(Throughput::Elements(100));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+            let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
             b.iter(|| {
                 for _ in 0..100 {
                     let alloc = pool.alloc(black_box(size)).unwrap();
@@ -66,7 +66,7 @@ fn bench_alloc_fragmented(c: &mut Criterion) {
     let mut group = c.benchmark_group("alloc_fragmented");
 
     group.bench_function("fragmented_256", |b| {
-        let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+        let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
 
         // Create fragmentation pattern: allocate many, free every other
         let mut allocations = Vec::new();
@@ -92,7 +92,7 @@ fn bench_free(c: &mut Criterion) {
 
     for size in [256, 1500, 4096].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+            let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
             b.iter(|| {
                 let alloc = pool.alloc(size).unwrap();
                 pool.dealloc(black_box(alloc.addr)).unwrap();
@@ -109,7 +109,7 @@ fn bench_free_list_reuse(c: &mut Criterion) {
 
     // With cursor optimization (LIFO)
     group.bench_function("lifo_pattern", |b| {
-        let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+        let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
         b.iter(|| {
             let alloc = pool.alloc(256).unwrap();
             pool.dealloc(alloc.addr).unwrap();
@@ -120,7 +120,7 @@ fn bench_free_list_reuse(c: &mut Criterion) {
 
     // Without cursor benefit (FIFO-like)
     group.bench_function("fifo_pattern", |b| {
-        let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+        let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
         let mut queue = Vec::new();
 
         // Pre-fill queue
@@ -149,7 +149,7 @@ fn bench_segmented_payload(c: &mut Criterion) {
             BenchmarkId::from_parameter(payload_size),
             &payload_size,
             |b, &payload_size| {
-                let pool = make_pool::<256, 4096>(4 * 1024 * 1024);
+                let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
                 b.iter(|| {
                     let sgs = pool.alloc_sg(black_box(payload_size)).unwrap();
                     for sg in sgs {
@@ -163,11 +163,12 @@ fn bench_segmented_payload(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_recycle_pool(c: &mut Criterion) {
-    let mut group = c.benchmark_group("recycle_pool");
+fn bench_slot_pool(c: &mut Criterion) {
+    let mut group = c.benchmark_group("slot_pool");
 
     group.bench_function("alloc_dealloc_4096", |b| {
-        let pool = RecyclePool::new(0x80000, 4 * 1024 * 1024, 4096).unwrap();
+        let layout = SlotLayout::new(0x80000, 4096, 1024);
+        let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(4096)).unwrap();
             pool.dealloc(alloc.addr).unwrap();
@@ -175,7 +176,8 @@ fn bench_recycle_pool(c: &mut Criterion) {
     });
 
     group.bench_function("alloc_dealloc_128", |b| {
-        let pool = RecyclePool::new(0x80000, 4 * 1024 * 1024, 256).unwrap();
+        let layout = SlotLayout::new(0x80000, 256, 16 * 1024);
+        let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(128)).unwrap();
             pool.dealloc(alloc.addr).unwrap();
@@ -183,7 +185,8 @@ fn bench_recycle_pool(c: &mut Criterion) {
     });
 
     group.bench_function("alloc_dealloc_1500", |b| {
-        let pool = RecyclePool::new(0x80000, 4 * 1024 * 1024, 4096).unwrap();
+        let layout = SlotLayout::new(0x80000, 4096, 1024);
+        let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(1500)).unwrap();
             pool.dealloc(alloc.addr).unwrap();
@@ -191,7 +194,8 @@ fn bench_recycle_pool(c: &mut Criterion) {
     });
 
     group.bench_function("alloc_sg_64k", |b| {
-        let pool = RecyclePool::new(0x80000, 4 * 1024 * 1024, 4096).unwrap();
+        let layout = SlotLayout::new(0x80000, 4096, 1024);
+        let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let sgs = pool.alloc_sg(black_box(64 * 1024)).unwrap();
             for sg in sgs {
@@ -211,7 +215,7 @@ criterion_group!(
     bench_free,
     bench_free_list_reuse,
     bench_segmented_payload,
-    bench_recycle_pool,
+    bench_slot_pool,
 );
 
 criterion_main!(benches);

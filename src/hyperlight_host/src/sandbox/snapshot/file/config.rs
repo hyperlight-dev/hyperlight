@@ -157,7 +157,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v1+json`.
+/// `application/vnd.hyperlight.snapshot.config.v2+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -214,14 +214,18 @@ pub(super) struct OciSnapshotConfig {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MemoryLayout {
-    pub(super) input_data_size: usize,
-    pub(super) output_data_size: usize,
     pub(super) heap_size: usize,
     pub(super) code_size: usize,
     pub(super) init_data_size: usize,
     /// Memory region flag bits. `None` means default permissions.
     pub(super) init_data_permissions: Option<u32>,
     pub(super) scratch_size: usize,
+    pub(super) g2h_queue_size: usize,
+    pub(super) h2g_queue_size: usize,
+    pub(super) g2h_buffer_size: usize,
+    pub(super) h2g_buffer_size: usize,
+    pub(super) g2h_pool_pages: usize,
+    pub(super) h2g_pool_pages: usize,
     pub(super) snapshot_size: usize,
     pub(super) pt_size: Option<usize>,
 }
@@ -254,6 +258,7 @@ enum ParameterTypeRepr {
     String,
     Bool,
     VecBytes,
+    ByteChunks,
 }
 
 /// JSON-friendly mirror of
@@ -271,6 +276,7 @@ enum ReturnTypeRepr {
     Bool,
     Void,
     VecBytes,
+    ByteChunks,
 }
 
 impl From<&ParameterType> for ParameterTypeRepr {
@@ -285,6 +291,7 @@ impl From<&ParameterType> for ParameterTypeRepr {
             ParameterType::String => Self::String,
             ParameterType::Bool => Self::Bool,
             ParameterType::VecBytes => Self::VecBytes,
+            ParameterType::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -301,6 +308,7 @@ impl From<ParameterTypeRepr> for ParameterType {
             ParameterTypeRepr::String => Self::String,
             ParameterTypeRepr::Bool => Self::Bool,
             ParameterTypeRepr::VecBytes => Self::VecBytes,
+            ParameterTypeRepr::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -318,6 +326,7 @@ impl From<&ReturnType> for ReturnTypeRepr {
             ReturnType::Bool => Self::Bool,
             ReturnType::Void => Self::Void,
             ReturnType::VecBytes => Self::VecBytes,
+            ReturnType::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -335,6 +344,7 @@ impl From<ReturnTypeRepr> for ReturnType {
             ReturnTypeRepr::Bool => Self::Bool,
             ReturnTypeRepr::Void => Self::Void,
             ReturnTypeRepr::VecBytes => Self::VecBytes,
+            ReturnTypeRepr::ByteChunks => Self::ByteChunks,
         }
     }
 }
@@ -460,12 +470,14 @@ impl OciSnapshotConfig {
         // checked against `snapshot_size` in `load_inner`.
         let max_region = SandboxMemoryLayout::MAX_MEMORY_SIZE;
         for (name, value) in [
-            ("input_data_size", self.layout.input_data_size),
-            ("output_data_size", self.layout.output_data_size),
             ("heap_size", self.layout.heap_size),
             ("code_size", self.layout.code_size),
             ("init_data_size", self.layout.init_data_size),
             ("scratch_size", self.layout.scratch_size),
+            ("g2h_buffer_size", self.layout.g2h_buffer_size),
+            ("h2g_buffer_size", self.layout.h2g_buffer_size),
+            ("g2h_pool_pages", self.layout.g2h_pool_pages),
+            ("h2g_pool_pages", self.layout.h2g_pool_pages),
         ] {
             if value > max_region {
                 return Err(crate::new_error!(
@@ -473,6 +485,55 @@ impl OciSnapshotConfig {
                     name,
                     value,
                     max_region
+                ));
+            }
+        }
+
+        let mut transport = crate::sandbox::SandboxConfiguration::default();
+        transport.set_g2h_queue_size(self.layout.g2h_queue_size);
+        transport.set_h2g_queue_size(self.layout.h2g_queue_size);
+        transport.set_g2h_buffer_size(self.layout.g2h_buffer_size);
+        transport.set_h2g_buffer_size(self.layout.h2g_buffer_size);
+        transport.set_g2h_pool_pages(self.layout.g2h_pool_pages);
+        transport.set_h2g_pool_pages(self.layout.h2g_pool_pages);
+
+        for (name, saved, normalized) in [
+            (
+                "g2h_queue_size",
+                self.layout.g2h_queue_size,
+                transport.get_g2h_queue_size(),
+            ),
+            (
+                "h2g_queue_size",
+                self.layout.h2g_queue_size,
+                transport.get_h2g_queue_size(),
+            ),
+            (
+                "g2h_buffer_size",
+                self.layout.g2h_buffer_size,
+                transport.get_g2h_buffer_size(),
+            ),
+            (
+                "h2g_buffer_size",
+                self.layout.h2g_buffer_size,
+                transport.get_h2g_buffer_size(),
+            ),
+            (
+                "g2h_pool_pages",
+                self.layout.g2h_pool_pages,
+                transport.get_g2h_pool_pages(),
+            ),
+            (
+                "h2g_pool_pages",
+                self.layout.h2g_pool_pages,
+                transport.get_h2g_pool_pages(),
+            ),
+        ] {
+            if saved != normalized {
+                return Err(crate::new_error!(
+                    "snapshot layout field {} ({}) is not a valid transport value",
+                    name,
+                    saved
                 ));
             }
         }
@@ -693,6 +754,7 @@ mod tests {
             ParameterType::String,
             ParameterType::Bool,
             ParameterType::VecBytes,
+            ParameterType::ByteChunks,
         ];
         for p in variants {
             let back: ParameterType = ParameterTypeRepr::from(&p).into();
@@ -715,6 +777,7 @@ mod tests {
             ReturnType::Bool,
             ReturnType::Void,
             ReturnType::VecBytes,
+            ReturnType::ByteChunks,
         ];
         for r in variants {
             let back: ReturnType = ReturnTypeRepr::from(&r).into();
@@ -767,13 +830,17 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
             layout: MemoryLayout {
-                input_data_size: 0,
-                output_data_size: 0,
                 heap_size: 0,
                 code_size: 0,
                 init_data_size: 0,
                 init_data_permissions: None,
                 scratch_size: 0,
+                g2h_queue_size: 64,
+                h2g_queue_size: 32,
+                g2h_buffer_size: PAGE_SIZE,
+                h2g_buffer_size: PAGE_SIZE,
+                g2h_pool_pages: 8,
+                h2g_pool_pages: 4,
                 snapshot_size: PAGE_SIZE,
                 pt_size: None,
             },
@@ -840,7 +907,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 1,
+  "abi_version": 2,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
@@ -999,13 +1066,17 @@ mod schema_pin {
     }
   ],
   "layout": {
-    "input_data_size": 1,
-    "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
+    "g2h_buffer_size": 4096,
+    "h2g_buffer_size": 4096,
+    "g2h_pool_pages": 8,
+    "h2g_pool_pages": 4,
     "snapshot_size": 9,
     "pt_size": null
   },
@@ -1026,7 +1097,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 1,
+  "abi_version": 2,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
@@ -1041,13 +1112,17 @@ mod schema_pin {
     "sp_el1": 6
   },
   "layout": {
-    "input_data_size": 1,
-    "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
+    "g2h_buffer_size": 4096,
+    "h2g_buffer_size": 4096,
+    "g2h_pool_pages": 8,
+    "h2g_pool_pages": 4,
     "snapshot_size": 9,
     "pt_size": null
   },
@@ -1086,7 +1161,7 @@ mod schema_pin {
         assert_eq!(
             actual_value, pinned_value,
             "Snapshot config JSON schema changed. If the change can break \
-             existing snapshots on disk, bump `MT_CONFIG_V1` in \
+             existing snapshots on disk, bump `MT_CONFIG_CURRENT` in \
              `super::media_types` and follow `docs/snapshot-versioning.md`. \
              Either way, paste the actual output below into the matching \
              `PINNED_*`.\n\nactual:\n{actual}"

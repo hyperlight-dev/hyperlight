@@ -62,7 +62,7 @@ use loom::thread;
 
 use super::*;
 use crate::virtq::desc::Descriptor;
-use crate::virtq::pool::BufferPoolSync;
+use crate::virtq::pool::RunPoolSync;
 
 #[derive(Debug)]
 pub struct MemErr;
@@ -329,7 +329,7 @@ fn virtq_ping_pong() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 8, pool_base, pool_size));
-        let pool = BufferPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
+        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
         let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
@@ -356,12 +356,12 @@ fn virtq_ping_pong() {
                 }
                 thread::yield_now();
             };
-            assert_eq!(recv.to_bytes().as_ref(), b"ping");
+            assert_eq!(recv.to_bytes().unwrap().as_ref(), b"ping");
             let ReplyChain::Writable(mut wc) = reply else {
                 panic!("expected writable reply");
             };
             wc.write_all(b"pong").unwrap();
-            cons.complete(wc).unwrap();
+            cons.complete(recv, wc).unwrap();
         });
 
         t_prod.join().unwrap();
@@ -377,7 +377,7 @@ fn virtq_ack_only() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 4, pool_base, pool_size));
-        let pool = BufferPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
+        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
         let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
@@ -403,9 +403,9 @@ fn virtq_ack_only() {
                 }
                 thread::yield_now();
             };
-            assert_eq!(recv.to_bytes().as_ref(), b"ping");
+            assert_eq!(recv.to_bytes().unwrap().as_ref(), b"ping");
             assert!(matches!(reply, ReplyChain::Ack(_)));
-            cons.complete(reply).unwrap();
+            cons.complete(recv, reply).unwrap();
         });
 
         t_prod.join().unwrap();
@@ -421,7 +421,7 @@ fn virtq_out_of_order_completions() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 8, pool_base, pool_size));
-        let pool = BufferPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
+        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
         let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
@@ -471,7 +471,7 @@ fn virtq_out_of_order_completions() {
                 }
                 thread::yield_now();
             };
-            assert_eq!(recv1.to_bytes().as_ref(), b"first");
+            assert_eq!(recv1.to_bytes().unwrap().as_ref(), b"first");
 
             let (recv2, reply2) = loop {
                 if let Some(r) = cons.poll(1024).unwrap() {
@@ -479,17 +479,17 @@ fn virtq_out_of_order_completions() {
                 }
                 thread::yield_now();
             };
-            assert_eq!(recv2.to_bytes().as_ref(), b"second");
+            assert_eq!(recv2.to_bytes().unwrap().as_ref(), b"second");
 
             let ReplyChain::Writable(second) = reply2 else {
                 panic!("expected writable reply");
             };
-            cons.complete(second).unwrap();
+            cons.complete(recv2, second).unwrap();
 
             let ReplyChain::Writable(first) = reply1 else {
                 panic!("expected writable reply");
             };
-            cons.complete(first).unwrap();
+            cons.complete(recv1, first).unwrap();
         });
 
         t_prod.join().unwrap();
@@ -513,7 +513,7 @@ fn virtq_event_suppression_reconfig() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 4, pool_base, pool_size));
-        let pool = BufferPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
+        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
         let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);

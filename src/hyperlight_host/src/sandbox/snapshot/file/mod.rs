@@ -39,13 +39,15 @@ use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
 };
 pub(super) use self::media_types::{
-    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1,
+    MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+use crate::mem::virtq::VirtqSnapshot;
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
@@ -61,6 +63,10 @@ pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
 /// `oci-layout`, `index.json`, the OCI image manifest, and the
 /// Hyperlight config blob. Bounds the allocation done before parsing.
 const MAX_JSON_BLOB_SIZE: u64 = 1024 * 1024;
+const MAX_TRANSPORT_BLOB_SIZE: u64 = 2 * 1024 * 1024;
+const TRANSPORT_MAGIC: [u8; 8] = *b"HLVQSNAP";
+const TRANSPORT_VERSION: u32 = 1;
+const TRANSPORT_HEADER_LEN: usize = 40;
 
 /// Reject a JSON artifact larger than the cap the loader reads with
 /// [`read_bounded`]. The writer holds to the same cap so every layout
@@ -75,6 +81,109 @@ fn check_json_blob_size(what: &str, len: usize) -> crate::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn encode_transport(snapshot: &VirtqSnapshot) -> crate::Result<Vec<u8>> {
+    let g2h_len = snapshot.g2h_ring().len();
+    let h2g_len = snapshot.h2g_ring().len();
+
+    let total_len = TRANSPORT_HEADER_LEN
+        .checked_add(g2h_len)
+        .and_then(|len| len.checked_add(h2g_len))
+        .ok_or_else(|| crate::new_error!("snapshot transport length overflow"))?;
+
+    if total_len as u64 > MAX_TRANSPORT_BLOB_SIZE {
+        return Err(crate::new_error!(
+            "transport blob of {total_len} bytes exceeds the {MAX_TRANSPORT_BLOB_SIZE} byte maximum"
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(total_len)
+        .map_err(|error| crate::new_error!("failed to allocate transport blob: {error}"))?;
+
+    bytes.extend_from_slice(&TRANSPORT_MAGIC);
+    bytes.extend_from_slice(&TRANSPORT_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(snapshot.scratch_size())?.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(g2h_len)?.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(h2g_len)?.to_le_bytes());
+    bytes.extend_from_slice(snapshot.g2h_ring());
+    bytes.extend_from_slice(snapshot.h2g_ring());
+    Ok(bytes)
+}
+
+fn read_transport_field<const N: usize>(bytes: &mut &[u8], field: &str) -> crate::Result<[u8; N]> {
+    let (value, remaining) = bytes
+        .split_at_checked(N)
+        .ok_or_else(|| crate::new_error!("snapshot transport {field} is truncated"))?;
+
+    let mut array = [0; N];
+    array.copy_from_slice(value);
+
+    *bytes = remaining;
+    Ok(array)
+}
+
+fn decode_transport(bytes: &[u8]) -> crate::Result<VirtqSnapshot> {
+    let total_len = bytes.len();
+    let mut bytes = bytes;
+
+    if read_transport_field(&mut bytes, "magic")? != TRANSPORT_MAGIC {
+        return Err(crate::new_error!("snapshot transport magic is invalid"));
+    }
+
+    let version = u32::from_le_bytes(read_transport_field(&mut bytes, "version")?);
+    if version != TRANSPORT_VERSION {
+        return Err(crate::new_error!(
+            "snapshot transport version mismatch: file has version {version}, this build expects {TRANSPORT_VERSION}"
+        ));
+    }
+
+    let reserved = u32::from_le_bytes(read_transport_field(&mut bytes, "reserved field")?);
+    if reserved != 0 {
+        return Err(crate::new_error!(
+            "snapshot transport reserved field is nonzero"
+        ));
+    }
+
+    let scratch_size = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "scratch size",
+    )?))?;
+
+    let g2h_len = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "G2H ring length",
+    )?))?;
+
+    let h2g_len = usize::try_from(u64::from_le_bytes(read_transport_field(
+        &mut bytes,
+        "H2G ring length",
+    )?))?;
+
+    let expected_len = TRANSPORT_HEADER_LEN
+        .checked_add(g2h_len)
+        .and_then(|len| len.checked_add(h2g_len))
+        .ok_or_else(|| crate::new_error!("snapshot transport length overflow"))?;
+
+    if total_len != expected_len {
+        return Err(crate::new_error!(
+            "snapshot transport length {} does not match header length {expected_len}",
+            total_len
+        ));
+    }
+
+    let (g2h_ring, h2g_ring) = bytes
+        .split_at_checked(g2h_len)
+        .ok_or_else(|| crate::new_error!("snapshot transport G2H ring is truncated"))?;
+
+    Ok(VirtqSnapshot::new(
+        scratch_size,
+        g2h_ring.to_vec(),
+        h2g_ring.to_vec(),
+    ))
 }
 
 /// Select one manifest descriptor from `index` by `reference`.
@@ -283,6 +392,27 @@ fn open_snapshot_blob(
         verify_blob_file("snapshot", &mut snap_file, &snap_hex)?;
     }
     Ok(snap_file)
+}
+
+fn load_transport_blob(
+    blobs_dir: &Path,
+    transport_desc: &Descriptor,
+    verify_blobs: bool,
+) -> crate::Result<Vec<u8>> {
+    let transport_hex = parse_oci_digest(transport_desc.digest())?;
+    let transport_path = blobs_dir.join(&transport_hex);
+    let bytes = read_bounded(&transport_path, MAX_TRANSPORT_BLOB_SIZE)?;
+    if bytes.len() as u64 != transport_desc.size() {
+        return Err(crate::new_error!(
+            "transport blob size mismatch: descriptor says {}, file is {}",
+            transport_desc.size(),
+            bytes.len()
+        ));
+    }
+    if verify_blobs {
+        verify_blob_bytes("transport", &bytes, &transport_hex)?;
+    }
+    Ok(bytes)
 }
 
 impl Snapshot {
@@ -518,6 +648,14 @@ impl Snapshot {
         let snapshot_digest = Digest256::from_bytes(memory_bytes);
         put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
 
+        // Transport blob: the canonical ring image omitted from memory.
+        let transport = self.virtq.as_ref().ok_or_else(|| {
+            crate::new_error!("initialized snapshot has no canonical transport state")
+        })?;
+        let transport_bytes = encode_transport(transport)?;
+        let transport_digest = Digest256::from_bytes(&transport_bytes);
+        put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
+
         // Config blob.
         let cfg_digest = Digest256::from_bytes(cfg_bytes);
         put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
@@ -535,6 +673,12 @@ impl Snapshot {
             .size(memory_size as u64)
             .build()
             .map_err(|e| crate::new_error!("failed to build snapshot descriptor: {}", e))?;
+        let transport_descriptor = DescriptorBuilder::default()
+            .media_type(MediaType::Other(MT_TRANSPORT_CURRENT.to_string()))
+            .digest(oci_digest(&transport_digest)?)
+            .size(transport_bytes.len() as u64)
+            .build()
+            .map_err(|e| crate::new_error!("failed to build transport descriptor: {}", e))?;
         // `artifactType` is set equal to `config.mediaType` per OCI
         // image-spec "Guidelines for Artifact Usage". Registries
         // surface this on the distribution-spec referrers API. Tools
@@ -544,7 +688,7 @@ impl Snapshot {
             .media_type(MediaType::ImageManifest)
             .artifact_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
             .config(config_descriptor)
-            .layers(vec![snapshot_descriptor])
+            .layers(vec![snapshot_descriptor, transport_descriptor])
             .build()
             .map_err(|e| crate::new_error!("failed to build OCI manifest: {}", e))?;
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -593,6 +737,10 @@ impl Snapshot {
                 ));
             }
         };
+        let transport = self.virtq.as_ref().ok_or_else(|| {
+            crate::new_error!("initialized snapshot has no canonical transport state")
+        })?;
+        transport.preflight(&self.layout)?;
 
         let host_functions = match &self.host_functions.host_functions {
             Some(v) => v.iter().map(HostFunction::from).collect(),
@@ -618,13 +766,17 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
                 .clone(),
             layout: MemoryLayout {
-                input_data_size: l.input_data_size(),
-                output_data_size: l.output_data_size(),
                 heap_size: l.heap_size(),
                 code_size: l.code_size(),
                 init_data_size: l.init_data_size(),
                 init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
+                g2h_queue_size: l.get_g2h_queue_size(),
+                h2g_queue_size: l.get_h2g_queue_size(),
+                g2h_buffer_size: l.get_g2h_buffer_size(),
+                h2g_buffer_size: l.get_h2g_buffer_size(),
+                g2h_pool_pages: l.get_g2h_pool_pages(),
+                h2g_pool_pages: l.get_h2g_pool_pages(),
                 snapshot_size: l.snapshot_size(),
                 pt_size: l.pt_size(),
             },
@@ -670,7 +822,7 @@ impl Snapshot {
     ///
     /// # Verification
     ///
-    /// This method does not check the manifest, config, or snapshot
+    /// This method does not check the manifest, config, memory, or transport
     /// blobs against their recorded sha256 digests. Load only from a
     /// layout you trust.
     ///
@@ -706,7 +858,7 @@ impl Snapshot {
     /// Loads a snapshot like [`Snapshot::load`]. See its rustdoc for
     /// `path`, `reference`, portability, and the file-mutation
     /// hazard. This method additionally checks the manifest, config,
-    /// and snapshot blobs against their recorded sha256 digests
+    /// memory, and transport blobs against their recorded sha256 digests
     /// before use, at the expense of some performance.
     ///
     /// # Trust
@@ -747,16 +899,21 @@ impl Snapshot {
         //    digest.
         let manifest = load_manifest(path, &blobs_dir, reference, verify_blobs)?;
         let cfg_desc = manifest.config();
-        // Loader dispatch on config media type. A future v2 lands
-        // as a new arm that converts to the in-memory current shape.
+        // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V1 => {}
+            MT_CONFIG_V2 => {}
+            MT_CONFIG_V1 => {
+                return Err(crate::new_error!(
+                    "snapshot config v1 is incompatible with snapshot ABI {}",
+                    SNAPSHOT_ABI_VERSION
+                ));
+            }
             other => {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V1
+                    MT_CONFIG_V2
                 ));
             }
         }
@@ -783,9 +940,9 @@ impl Snapshot {
             }
         }
         let layers = manifest.layers();
-        if layers.len() != 1 {
+        if layers.len() != 2 {
             return Err(crate::new_error!(
-                "expected exactly one OCI layer (the snapshot), found {}",
+                "expected exactly two OCI layers (memory and transport), found {}",
                 layers.len()
             ));
         }
@@ -801,6 +958,18 @@ impl Snapshot {
                 ));
             }
         }
+        let transport_desc = &layers[1];
+        let transport_media = transport_desc.media_type().to_string();
+        match transport_media.as_str() {
+            MT_TRANSPORT_V1 => {}
+            other => {
+                return Err(crate::new_error!(
+                    "unexpected transport layer media type {:?} (supported: {:?})",
+                    other,
+                    MT_TRANSPORT_V1
+                ));
+            }
+        }
 
         // 4. config blob
         let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
@@ -809,13 +978,19 @@ impl Snapshot {
         //    handle so an attacker cannot swap the file between
         //    verification and mapping.
         let snap_file = open_snapshot_blob(&blobs_dir, snap_desc, cfg.memory_size, verify_blobs)?;
+        let transport_bytes = load_transport_blob(&blobs_dir, transport_desc, verify_blobs)?;
+        let virtq = decode_transport(&transport_bytes)?;
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
-        sbox_cfg.set_input_data_size(cfg.layout.input_data_size);
-        sbox_cfg.set_output_data_size(cfg.layout.output_data_size);
         sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
+        sbox_cfg.set_g2h_queue_size(cfg.layout.g2h_queue_size);
+        sbox_cfg.set_h2g_queue_size(cfg.layout.h2g_queue_size);
+        sbox_cfg.set_g2h_buffer_size(cfg.layout.g2h_buffer_size);
+        sbox_cfg.set_h2g_buffer_size(cfg.layout.h2g_buffer_size);
+        sbox_cfg.set_g2h_pool_pages(cfg.layout.g2h_pool_pages);
+        sbox_cfg.set_h2g_pool_pages(cfg.layout.h2g_pool_pages);
         let init_data_perms = match cfg.layout.init_data_permissions {
             None => None,
             Some(bits) => Some(MemoryRegionFlags::from_bits(bits).ok_or_else(|| {
@@ -881,6 +1056,7 @@ impl Snapshot {
 
         // 8. Build the next action + sregs back from the config.
         let next_action = NextAction::Call(cfg.entrypoint_addr);
+        virtq.preflight(&layout)?;
 
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
@@ -909,6 +1085,78 @@ impl Snapshot {
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,
             host_functions,
+            virtq: Some(virtq),
         })
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn transport_blob_round_trips() {
+        let snapshot = VirtqSnapshot::new(0x20_000, vec![1, 2, 3], vec![4, 5]);
+        let bytes = encode_transport(&snapshot).unwrap();
+        let decoded = decode_transport(&bytes).unwrap();
+
+        assert_eq!(decoded.scratch_size(), snapshot.scratch_size());
+        assert_eq!(decoded.g2h_ring(), snapshot.g2h_ring());
+        assert_eq!(decoded.h2g_ring(), snapshot.h2g_ring());
+    }
+
+    #[test]
+    fn transport_blob_rejects_header_corruption() {
+        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
+        let mut bytes = encode_transport(&snapshot).unwrap();
+
+        bytes[8..12].copy_from_slice(&TRANSPORT_VERSION.wrapping_add(1).to_le_bytes());
+        assert!(
+            decode_transport(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("version mismatch")
+        );
+
+        bytes[8..12].copy_from_slice(&TRANSPORT_VERSION.to_le_bytes());
+        bytes[12] = 1;
+        assert!(
+            decode_transport(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("reserved")
+        );
+    }
+
+    #[test]
+    fn transport_blob_rejects_truncated_header_fields() {
+        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
+        let bytes = encode_transport(&snapshot).unwrap();
+
+        for (len, field) in [
+            (0, "magic"),
+            (8, "version"),
+            (12, "reserved field"),
+            (16, "scratch size"),
+            (24, "G2H ring length"),
+            (32, "H2G ring length"),
+        ] {
+            let error = decode_transport(&bytes[..len]).unwrap_err();
+            assert!(error.to_string().contains(field), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn transport_blob_rejects_length_mismatch() {
+        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
+        let mut bytes = encode_transport(&snapshot).unwrap();
+        bytes.push(3);
+
+        assert!(
+            decode_transport(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match")
+        );
     }
 }

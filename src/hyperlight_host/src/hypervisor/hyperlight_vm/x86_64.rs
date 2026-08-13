@@ -1484,14 +1484,9 @@ mod tests {
     // Test VM Setup
     // ==========================================================================
 
-    /// Creates a test VM with the given code. This is the shared setup logic used by
-    /// both `hyperlight_vm()` and `create_test_vm_context()`.
-    fn create_test_vm_context(code: &[u8]) -> TestVmContext {
-        let config: SandboxConfiguration = Default::default();
-        #[cfg(any(crashdump, gdb))]
-        let rt_cfg: SandboxRuntimeConfig = Default::default();
-
-        let mut layout = SandboxMemoryLayout::new(config, code.len(), 4096, None).unwrap();
+    fn create_test_layout(code_size: usize) -> (SandboxMemoryLayout, Box<[u8]>) {
+        let config = SandboxConfiguration::default();
+        let mut layout = SandboxMemoryLayout::new(config, code_size, 4096, None).unwrap();
 
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
@@ -1517,7 +1512,6 @@ mod tests {
             unsafe { vmem::map(&pt_buf, mapping) };
         }
 
-        // Map the scratch region at the top of the address space
         let scratch_size = config.get_scratch_size();
         let scratch_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size);
         let scratch_gva = hyperlight_common::layout::scratch_base_gva(scratch_size);
@@ -1528,13 +1522,24 @@ mod tests {
             kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
-                executable: true, // Match regular codepath (map_specials)
+                executable: true,
             }),
         };
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 
         let pt_bytes = pt_buf.into_bytes();
         layout.set_pt_size(pt_bytes.len()).unwrap();
+        (layout, pt_bytes)
+    }
+
+    /// Creates a test VM with the given code. This is the shared setup logic used by
+    /// both `hyperlight_vm()` and `create_test_vm_context()`.
+    fn create_test_vm_context(code: &[u8]) -> TestVmContext {
+        let config: SandboxConfiguration = Default::default();
+        #[cfg(any(crashdump, gdb))]
+        let rt_cfg: SandboxRuntimeConfig = Default::default();
+
+        let (layout, pt_bytes) = create_test_layout(code.len());
 
         let mem_size = layout.get_memory_size().unwrap();
         let mut snapshot_contents = vec![0u8; mem_size];
@@ -2176,7 +2181,7 @@ mod tests {
         /// Extended test context for FXSAVE tests that need to read memory at a specific offset.
         struct FxsaveTestContext {
             ctx: TestVmContext,
-            /// Offset in shared memory where FXSAVE data is stored (output_data region)
+            /// Offset in scratch memory where FXSAVE data is stored.
             fxsave_offset: usize,
         }
 
@@ -2211,18 +2216,19 @@ mod tests {
             }
         }
 
-        /// Creates VM with guest code that: dirtys FPU (if flag==0), does FXSAVE to buffer, sets flag=1.
-        /// Uses output_data region for FXSAVE buffer (like regular guest output), scratch for stack.
+        /// Creates VM with guest code that dirties FPU once and writes FXSAVE state.
         fn hyperlight_vm_with_mem_mgr_fxsave() -> FxsaveTestContext {
             use iced_x86::code_asm::*;
 
-            // Compute fixed addresses for FXSAVE buffer and flag.
-            // These are in the output_data region which starts at a known offset.
-            // We use a default SandboxConfiguration to get the same layout as create_test_vm_context.
-            let config: SandboxConfiguration = Default::default();
-            let layout = SandboxMemoryLayout::new(config, 512, 4096, None).unwrap();
-            let fxsave_offset = layout.get_output_data_buffer_scratch_host_offset();
-            let fxsave_gva = layout.get_output_data_buffer_gva();
+            const CODE_SIZE_BOUND: usize = 512;
+
+            let (layout, _) = create_test_layout(CODE_SIZE_BOUND);
+            let scratch_size = layout.get_scratch_size();
+            let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size);
+            let scratch_base_gva = hyperlight_common::layout::scratch_base_gva(scratch_size);
+            let fxsave_gpa = layout.get_first_free_scratch_gpa();
+            let fxsave_offset = usize::try_from(fxsave_gpa - scratch_base_gpa).unwrap();
+            let fxsave_gva = scratch_base_gva + fxsave_offset as u64;
             let flag_gva = fxsave_gva + 512;
 
             let mut a = CodeAssembler::new(64).unwrap();
@@ -2279,9 +2285,11 @@ mod tests {
             a.hlt().unwrap();
 
             let code = a.assemble(0).unwrap();
+            assert!(code.len() <= CODE_SIZE_BOUND);
 
             // Reuse common test setup - initialise() will run the code
             let ctx = create_test_vm_context(&code);
+            assert_eq!(ctx.hshm.layout.get_first_free_scratch_gpa(), fxsave_gpa);
 
             FxsaveTestContext { ctx, fxsave_offset }
         }

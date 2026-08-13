@@ -39,6 +39,8 @@ pub use functions::Function;
 pub use param_type::{ParameterTuple, SupportedParameterType};
 pub use ret_type::{ResultType, SupportedReturnType};
 
+/// Re-export for chunk-preserving byte values
+pub use crate::flatbuffer_wrappers::function_types::Bytes;
 /// Re-export for `ParameterValue` enum
 pub use crate::flatbuffer_wrappers::function_types::ParameterValue;
 /// Re-export for `ReturnType` enum

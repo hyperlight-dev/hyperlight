@@ -19,12 +19,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
 use super::Callable;
@@ -91,6 +89,8 @@ pub struct MultiUseSandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
+    /// Whether queue traffic occurred since the last canonical boundary.
+    transport_dirty: bool,
     /// Optional callback to discover page table roots from guest memory.
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
     /// If not set, only CR3 is used as the single root.
@@ -130,6 +130,7 @@ impl MultiUseSandbox {
             #[cfg(gdb)]
             dbg_mem_access_fn,
             snapshot: None,
+            transport_dirty: false,
             pt_root_finder: None,
         }
     }
@@ -158,10 +159,9 @@ impl MultiUseSandbox {
     ///
     /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
     /// can be supplied to override runtime settings such as timeouts and
-    /// interrupt behavior. Memory layout fields
-    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
-    /// are always taken from the snapshot. Any values supplied in
-    /// `config` for those fields are ignored. On x86_64 the `config` must
+    /// interrupt behavior. Memory layout fields (`heap_size`, `scratch_size`)
+    /// are always taken from the snapshot. Any values supplied in `config`
+    /// for those fields are ignored. On x86_64 the `config` must
     /// declare every guest MSR the snapshot was taken with (see
     /// [`SandboxConfiguration::guest_msrs`](crate::sandbox::SandboxConfiguration::guest_msrs)),
     /// or the load fails with an MSR mismatch.
@@ -234,14 +234,13 @@ impl MultiUseSandbox {
         if caller_supplied_config {
             warn_on_layout_override(&config, snapshot.layout());
         }
-        config.set_input_data_size(snapshot.layout().input_data_size());
-        config.set_output_data_size(snapshot.layout().output_data_size());
         config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         let load_info = snapshot.load_info();
 
         let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
         let (mut hshm, gshm) = mgr.build()?;
+        let restore_virtq = matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_));
 
         let page_size = u32::try_from(page_size::get())? as usize;
 
@@ -322,6 +321,13 @@ impl MultiUseSandbox {
         #[cfg(gdb)]
         let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
+        if restore_virtq {
+            let virtq = snapshot.virtq().ok_or_else(|| {
+                crate::new_error!("running snapshot has no canonical transport state")
+            })?;
+            hshm.restore_virtq(virtq)?;
+        }
+
         let sbox = MultiUseSandbox::from_uninit(
             host_funcs,
             hshm,
@@ -378,6 +384,11 @@ impl MultiUseSandbox {
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
+
+        if self.transport_dirty {
+            self.checkpoint_transport_for_snapshot()?;
+        }
+
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
         // Get CR3 from the vCPU
@@ -426,6 +437,44 @@ impl MultiUseSandbox {
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
+        if let Err(error) = self.mem_mgr.begin_snapshot_checkpoint() {
+            self.poisoned |= error.is_poison_error();
+            return Err(error);
+        }
+
+        if let Err(error) = self.vm.dispatch_call_from_host(
+            &mut self.mem_mgr,
+            &self.host_funcs,
+            #[cfg(gdb)]
+            self.dbg_mem_access_fn.clone(),
+        ) {
+            let (error, should_poison) = error.promote();
+            self.poisoned |= should_poison;
+            return Err(error);
+        }
+
+        let guest_owned = match self.mem_mgr.finish_snapshot_checkpoint() {
+            Ok(guest_owned) => guest_owned,
+            Err(error) => {
+                self.poisoned |= error.is_poison_error();
+                return Err(error);
+            }
+        };
+
+        if guest_owned != 0 {
+            // TODO: Parse retained pool-relative ranges and initialized lengths
+            // from the mailbox, sanitize them, and include them in the snapshot.
+            // The count-only protocol cannot preserve payloads safely.
+            return Err(HyperlightError::Error(format!(
+                "Cannot snapshot while {guest_owned} transport buffers are retained"
+            )));
+        }
+
+        self.transport_dirty = false;
+        Ok(())
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -600,6 +649,7 @@ impl MultiUseSandbox {
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
+        self.transport_dirty = false;
 
         // Clear poison state when successfully restoring from snapshot.
         //
@@ -907,7 +957,7 @@ impl MultiUseSandbox {
         self.vm.clear_cancel();
 
         let res = (|| {
-            let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
+            self.transport_dirty = true;
 
             let fc = FunctionCall::new(
                 function_name.to_string(),
@@ -916,10 +966,7 @@ impl MultiUseSandbox {
                 return_type,
             );
 
-            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-            let buffer = fc.encode(&mut builder);
-
-            self.mem_mgr.write_guest_function_call(buffer)?;
+            let cid = self.mem_mgr.write_guest_function_call(&fc)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
                 &mut self.mem_mgr,
@@ -936,7 +983,7 @@ impl MultiUseSandbox {
                 return Err(error);
             }
 
-            let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+            let guest_result = self.mem_mgr.read_h2g_result_from_g2h(cid)?.into_inner();
 
             match guest_result {
                 Ok(val) => Ok(val),
@@ -958,15 +1005,7 @@ impl MultiUseSandbox {
         // Clear partial abort bytes so they don't leak across calls.
         self.mem_mgr.abort_buffer.clear();
 
-        // In the happy path we do not need to clear io-buffers from the host because:
-        // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
-        // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
-        // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
-        // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
         if let Err(e) = &res {
-            self.mem_mgr.clear_io_buffers();
-
-            // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
         }
 
@@ -1135,16 +1174,6 @@ fn warn_on_layout_override(
 ) {
     let mismatches: &[(&str, u64, u64)] = &[
         (
-            "input_data_size",
-            caller.get_input_data_size() as u64,
-            snapshot.input_data_size() as u64,
-        ),
-        (
-            "output_data_size",
-            caller.get_output_data_size() as u64,
-            snapshot.output_data_size() as u64,
-        ),
-        (
             "heap_size",
             caller.get_heap_size(),
             snapshot.heap_size() as u64,
@@ -1173,6 +1202,7 @@ mod tests {
     use std::thread;
 
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+    use hyperlight_common::func::Bytes;
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_pathbuf;
 
@@ -1180,6 +1210,11 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    fn assert_virtq_attached(sbox: &MultiUseSandbox) {
+        assert!(sbox.mem_mgr.g2h_consumer.is_some());
+        assert!(sbox.mem_mgr.h2g_consumer.is_some());
+    }
 
     #[test]
     fn poison() {
@@ -1269,7 +1304,7 @@ mod tests {
         let _ = sbox.snapshot().unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure transport buffers are reclaimed after host call failures.
     #[test]
     fn host_func_error() {
         let path = simple_guest_as_pathbuf();
@@ -1281,7 +1316,7 @@ mod tests {
             .unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
-        // will exhaust io if leaky
+        // Repeated calls exhaust the transport if buffers leak.
         for _ in 0..1000 {
             let result = sandbox
                 .call::<i64>(
@@ -1306,12 +1341,10 @@ mod tests {
             .unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure transport buffers are reclaimed after guest calls.
     #[test]
-    fn io_buffer_reset() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(4096);
-        cfg.set_output_data_size(4096);
+    fn transport_buffers_are_reclaimed() {
+        let cfg = SandboxConfiguration::default();
         let path = simple_guest_as_pathbuf();
         let mut sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1355,19 +1388,21 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(32K).
-    // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
+    // Checks that 1,000 calls work with a 24 KiB stack and 40 KiB heap.
+    // This catches guest stack reset and heap leaks.
     #[test]
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(32 * 1024);
+        cfg.set_heap_size(40 * 1024);
         // min_scratch_size already includes 1 page (4k on most
         // platforms) of guest stack, so add 20k more to get 24k
         // total, and then add some more for the eagerly-copied page
         // tables on amd64
         let min_scratch = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
+            cfg.get_g2h_queue_size(),
+            cfg.get_h2g_queue_size(),
+            cfg.get_g2h_pool_pages(),
+            cfg.get_h2g_pool_pages(),
         );
         cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 
@@ -1420,6 +1455,87 @@ mod tests {
         sbox.restore(snapshot).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
+    }
+
+    #[test]
+    fn snapshots_checkpoint_only_dirty_transport() {
+        let path = simple_guest_as_pathbuf();
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        assert!(!sandbox.transport_dirty);
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        assert!(sandbox.transport_dirty);
+
+        let first = sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
+        let cached = sandbox.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&first, &cached));
+        assert!(!sandbox.transport_dirty);
+
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        assert!(sandbox.transport_dirty);
+        sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
+    }
+
+    #[test]
+    fn snapshots_reject_retained_transport_buffers_without_poisoning() {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        sandbox
+            .register("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .unwrap();
+
+        let mut sandbox = sandbox.evolve().unwrap();
+        let retained = vec![Bytes::from(vec![0xa5; 6 * 1024])];
+
+        let retained_len: i32 = sandbox
+            .call("RetainGuestByteChunks", retained.clone())
+            .unwrap();
+
+        assert_eq!(retained_len, 6 * 1024);
+
+        let Err(error) = sandbox.snapshot() else {
+            panic!("snapshot with retained H2G buffers succeeded");
+        };
+
+        match error {
+            HyperlightError::Error(message) => {
+                assert!(message.contains("transport buffers are retained"))
+            }
+            err => unreachable!("unexpected snapshot error: {err:#}"),
+        }
+        assert!(!sandbox.poisoned());
+        assert!(sandbox.transport_dirty);
+
+        let released_len: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(released_len, retained_len);
+
+        sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
+
+        let retained_len: i32 = sandbox.call("RetainHostByteChunks", retained).unwrap();
+        assert_eq!(retained_len, 6 * 1024);
+
+        let Err(error) = sandbox.snapshot() else {
+            panic!("snapshot with retained G2H buffers succeeded");
+        };
+
+        match error {
+            HyperlightError::Error(message) => {
+                assert!(message.contains("transport buffers are retained"))
+            }
+            err => unreachable!("unexpected snapshot error: {err:#}"),
+        }
+        assert!(!sandbox.poisoned());
+        assert!(sandbox.transport_dirty);
+
+        let released_len: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(released_len, retained_len);
+
+        sandbox.snapshot().unwrap();
+        assert!(!sandbox.transport_dirty);
     }
 
     #[test]
@@ -1735,6 +1851,7 @@ mod tests {
 
         let snapshot = sandbox.snapshot().unwrap();
         sandbox2.restore(snapshot).unwrap();
+        assert_virtq_attached(&sandbox2);
         assert_eq!(sandbox2.call::<i32>("GetStatic", ()).unwrap(), 42);
     }
 
@@ -4024,8 +4141,10 @@ mod tests {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 11i32).unwrap();
             let snapshot = sbox.snapshot().unwrap();
+            assert!(snapshot.virtq().is_some());
             let mut sbox2 =
                 MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None).unwrap();
+            super::assert_virtq_attached(&sbox2);
             assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 11);
             let echoed: String = sbox2.call("Echo", "hi".to_string()).unwrap();
             assert_eq!(echoed, "hi");
@@ -4037,6 +4156,7 @@ mod tests {
             let snap =
                 Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
+            assert!(snap.virtq().is_none());
             let mut sbox =
                 MultiUseSandbox::from_snapshot(Arc::new(snap), HostFunctions::default(), None)
                     .unwrap();
@@ -4058,6 +4178,8 @@ mod tests {
             let mut b =
                 MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), None)
                     .unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
 
@@ -4067,6 +4189,8 @@ mod tests {
 
             a.restore(snapshot.clone()).unwrap();
             b.restore(snapshot).unwrap();
+            super::assert_virtq_attached(&a);
+            super::assert_virtq_attached(&b);
             assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
             assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
         }

@@ -19,6 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::func::Bytes;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, MultiUseSandbox};
@@ -30,6 +31,7 @@ pub mod common; // pub to disable dead_code warning
 use crate::common::{
     new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
     with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+    with_rust_uninit_sandbox_cfg,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
@@ -579,42 +581,6 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn corrupt_output_size_prefix_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputSizePrefix", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts size prefix, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 4294967295 bytes but the element slot is only 8 bytes"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
-fn corrupt_output_back_pointer_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputBackPointer", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts back-pointer, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains(
-                "Corrupt buffer back-pointer: element offset 57005 is outside valid range [8, 8]"
-            ),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
 fn guest_panic_no_alloc() {
     let heap_size = 0x8000;
 
@@ -744,19 +710,9 @@ fn recursive_stack_allocate_overflow() {
 #[test]
 #[ignore]
 fn log_message() {
-    // The magic numbers below represent the number of fixed log messages that are emitted as
-    // follows:
-    //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
-    //    - 4 from evolve call (generic_init + hyperlight_main)
-    //    - 8 from guest call
-    // and are multiplied because we make 6 calls to `log_test_messages`
-    // NOTE: These numbers need to be updated if log messages or spans are added/removed
-    let num_fixed_trace_log = 12 * 6;
-
-    // Calculate fixed info logs
-    // - 4 logs per iteration from infrastructure at Info level (internal_dispatch_function)
-    //   (dispatch x 1 + call_guest x 1) * 2 logs (Enter/Exit) = 4 logs
-    // - 6 iterations
+    // Each of the six sandboxes emits eight fixed records at trace level.
+    // Dispatch and call spans emit four fixed records at info level.
+    let num_fixed_trace_log = 8 * 6;
     let num_fixed_info_log = 4 * 6;
 
     let tests = vec![
@@ -831,6 +787,31 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
                 .unwrap();
         });
     }
+}
+
+#[test]
+#[ignore]
+fn virtq_repeated_log_delivery_small_ring() {
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_size(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(LevelFilter::INFO);
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let count = (0..LOGGER.num_log_calls())
+            .filter_map(|index| LOGGER.get_log_call(index))
+            .filter(|call| call.target == "hyperlight_guest" && call.args.contains("log entry"))
+            .count();
+        assert_eq!(count, 20);
+        LOGGER.clear_log_calls();
+    });
 }
 
 /// Tests whether host is able to return Bool as return type
@@ -909,6 +890,40 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
             res,
             "Guest Function, string added by Host Function".to_string()
         );
+    });
+}
+
+#[test]
+fn c_guest_accesses_byte_chunks() {
+    with_c_uninit_sandbox(|mut sandbox| {
+        sandbox
+            .register("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .unwrap();
+
+        let mut sandbox = sandbox.evolve().unwrap();
+        let expected = (0..10 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+
+        for _ in 0..2 {
+            let output: Vec<Bytes> = sandbox
+                .call("RoundTripHostByteChunks", input.clone())
+                .unwrap();
+
+            assert_eq!(
+                output
+                    .iter()
+                    .flat_map(|chunk| chunk.iter().copied())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     });
 }
 

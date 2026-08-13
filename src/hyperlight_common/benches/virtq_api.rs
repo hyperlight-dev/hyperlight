@@ -30,10 +30,10 @@ fn bench_readonly_strategies(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("buffer_pool_run", size),
+            BenchmarkId::new("run_pool", size),
             &payload,
             |b, payload| {
-                let mut pair = make_pair(128, run_buffer_pool);
+                let mut pair = make_pair(128, run_pool);
                 b.iter(|| {
                     let used = readonly_roundtrip(&mut pair, black_box(payload));
                     debug_assert!(matches!(used, UsedChain::Ack(_)));
@@ -42,11 +42,11 @@ fn bench_readonly_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("buffer_pool_run_fragmented", size),
+            BenchmarkId::new("run_pool_fragmented", size),
             &payload,
             |b, payload| {
                 let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_run_buffer_pool(base, pool_size, payload.len())
+                    fragmented_run_pool(base, pool_size, payload.len())
                 });
                 b.iter(|| {
                     let used = readonly_roundtrip(&mut pair, black_box(payload));
@@ -56,10 +56,10 @@ fn bench_readonly_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("recycle_pool_segmented", size),
+            BenchmarkId::new("slot_pool_segmented", size),
             &payload,
             |b, payload| {
-                let mut pair = make_pair(128, recycle_pool);
+                let mut pair = make_pair(128, slot_pool);
                 b.iter(|| {
                     let used = readonly_roundtrip(&mut pair, black_box(payload));
                     debug_assert!(matches!(used, UsedChain::Ack(_)));
@@ -68,11 +68,11 @@ fn bench_readonly_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("recycle_pool_segmented_fragmented", size),
+            BenchmarkId::new("slot_pool_segmented_fragmented", size),
             &payload,
             |b, payload| {
                 let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_recycle_pool(base, pool_size, payload.len())
+                    fragmented_slot_pool(base, pool_size, payload.len())
                 });
                 b.iter(|| {
                     let used = readonly_roundtrip(&mut pair, black_box(payload));
@@ -94,10 +94,10 @@ fn bench_readwrite_strategies(c: &mut Criterion) {
         group.throughput(Throughput::Bytes((request.len() + response.len()) as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("buffer_pool_run", size),
+            BenchmarkId::new("run_pool", size),
             &(request.clone(), response.clone()),
             |b, (request, response)| {
-                let mut pair = make_pair(128, run_buffer_pool);
+                let mut pair = make_pair(128, run_pool);
                 b.iter(|| {
                     let used = readwrite_roundtrip(
                         &mut pair,
@@ -110,11 +110,11 @@ fn bench_readwrite_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("buffer_pool_run_fragmented", size),
+            BenchmarkId::new("run_pool_fragmented", size),
             &(request.clone(), response.clone()),
             |b, (request, response)| {
                 let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_run_buffer_pool(base, pool_size, request.len())
+                    fragmented_run_pool(base, pool_size, request.len())
                 });
                 b.iter(|| {
                     let used = readwrite_roundtrip(
@@ -128,10 +128,10 @@ fn bench_readwrite_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("recycle_pool_segmented", size),
+            BenchmarkId::new("slot_pool_segmented", size),
             &(request.clone(), response.clone()),
             |b, (request, response)| {
-                let mut pair = make_pair(128, recycle_pool);
+                let mut pair = make_pair(128, slot_pool);
                 b.iter(|| {
                     let used = readwrite_roundtrip(
                         &mut pair,
@@ -144,11 +144,11 @@ fn bench_readwrite_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("recycle_pool_segmented_fragmented", size),
+            BenchmarkId::new("slot_pool_segmented_fragmented", size),
             &(request, response),
             |b, (request, response)| {
                 let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_recycle_pool(base, pool_size, request.len())
+                    fragmented_slot_pool(base, pool_size, request.len())
                 });
                 b.iter(|| {
                     let used = readwrite_roundtrip(

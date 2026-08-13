@@ -91,6 +91,25 @@ fn find_snapshot_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
     oci_dir.join("blobs").join("sha256").join(snap_digest)
 }
 
+/// Locate the transport (layer 1) blob inside `oci_dir`.
+fn find_transport_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
+    let index: Value =
+        serde_json::from_slice(&std::fs::read(oci_dir.join("index.json")).unwrap()).unwrap();
+    let manifest_digest = index["manifests"][0]["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    let manifest_path = oci_dir.join("blobs").join("sha256").join(manifest_digest);
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let transport_digest = manifest["layers"][1]["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    oci_dir.join("blobs").join("sha256").join(transport_digest)
+}
+
 // In-memory `from_snapshot` round-trips.
 
 #[test]
@@ -1399,8 +1418,7 @@ fn save_same_tag_same_content_is_idempotent() {
     );
 }
 
-/// Two tags written from one in-memory snapshot share all three blobs
-/// (manifest, config, snapshot).
+/// Two tags written from one in-memory snapshot share all four blobs.
 #[test]
 fn save_shares_blobs_across_tags_with_identical_content() {
     let snap = create_snapshot();
@@ -1414,7 +1432,7 @@ fn save_shares_blobs_across_tags_with_identical_content() {
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.file_name()))
         .collect();
-    assert_eq!(blobs.len(), 3, "expected 3 deduped blobs, got {:?}", blobs);
+    assert_eq!(blobs.len(), 4, "expected 4 deduped blobs, got {:?}", blobs);
 }
 
 /// Replacing one tag in a three-tag layout keeps the other two
@@ -1572,6 +1590,28 @@ fn checked_load_rejects_snapshot_blob_byte_mutation() {
         "expected digest-mismatch error, got: {}",
         msg
     );
+}
+
+#[test]
+fn checked_load_rejects_transport_blob_byte_mutation() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+
+    let transport_path = find_transport_blob(&path);
+    let mut bytes = std::fs::read(&transport_path).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xFF;
+    std::fs::write(&transport_path, bytes).unwrap();
+
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "digest");
 }
 
 /// Config-blob byte mutation must be caught by digest verification
@@ -1825,6 +1865,20 @@ fn unknown_config_media_type_rejected() {
 }
 
 #[test]
+fn config_v1_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |m| {
+        m["config"]["mediaType"] =
+            Value::from("application/vnd.hyperlight.snapshot.config.v1+json");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "incompatible with snapshot ABI 2");
+}
+
+#[test]
 fn empty_layers_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_manifest(&path, |m| {
@@ -1862,6 +1916,19 @@ fn unknown_snapshot_layer_media_type_rejected() {
         OciTag::new("latest").unwrap(),
     ));
     assert_err_contains(err, "snapshot layer media type");
+}
+
+#[test]
+fn unknown_transport_layer_media_type_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |m| {
+        m["layers"][1]["mediaType"] = Value::from("application/vnd.example.unknown.v1");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "transport layer media type");
 }
 
 /// Annotations injected by third-party tools (cosign, ORAS, build
@@ -2286,19 +2353,23 @@ fn manifest_uses_correct_config_and_layer_media_types() {
         serde_json::from_slice(&std::fs::read(manifest_path(&path)).unwrap()).unwrap();
     assert_eq!(
         manifest["config"]["mediaType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v1+json"
+        "application/vnd.hyperlight.snapshot.config.v2+json"
     );
-    assert_eq!(manifest["layers"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["layers"].as_array().unwrap().len(), 2);
     assert_eq!(
         manifest["layers"][0]["mediaType"].as_str().unwrap(),
         "application/vnd.hyperlight.snapshot.memory.v1"
+    );
+    assert_eq!(
+        manifest["layers"][1]["mediaType"].as_str().unwrap(),
+        "application/vnd.hyperlight.snapshot.transport.v1"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v1+json"
+        "application/vnd.hyperlight.snapshot.config.v2+json"
     );
 }
 
@@ -2760,7 +2831,7 @@ fn round_trip_preserves_stack_top_gva() {
 fn round_trip_preserves_non_default_scratch_size() {
     use crate::sandbox::SandboxConfiguration;
     let mut cfg = SandboxConfiguration::default();
-    let custom_scratch: usize = 256 * 1024;
+    let custom_scratch = SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024;
     cfg.set_scratch_size(custom_scratch);
     let mut sbox =
         UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
@@ -2776,6 +2847,45 @@ fn round_trip_preserves_non_default_scratch_size() {
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
     assert_eq!(loaded.layout().get_scratch_size(), custom_scratch);
+}
+
+#[test]
+fn round_trip_preserves_transport_layout() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_scratch_size(512 * 1024);
+    cfg.set_heap_size(512 * 1024);
+    cfg.set_g2h_queue_size(128);
+    cfg.set_h2g_queue_size(16);
+    cfg.set_g2h_buffer_size(8192);
+    cfg.set_h2g_buffer_size(2048);
+    cfg.set_g2h_pool_pages(16);
+    cfg.set_h2g_pool_pages(6);
+
+    let bin = GuestBinary::FilePath(simple_guest_as_pathbuf());
+    let mut sbox = UninitializedSandbox::new(bin, Some(cfg))
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+    let snapshot = sbox.snapshot().unwrap();
+    let expected = snapshot.layout().get_transport_arena();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+    let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+
+    assert_eq!(loaded.layout().get_g2h_queue_size(), 128);
+    assert_eq!(loaded.layout().get_h2g_queue_size(), 16);
+    assert_eq!(loaded.layout().get_g2h_buffer_size(), 8192);
+    assert_eq!(loaded.layout().get_h2g_buffer_size(), 2048);
+    assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
+    assert_eq!(loaded.layout().get_h2g_pool_pages(), 6);
+    assert_eq!(loaded.layout().get_transport_arena(), expected);
 }
 
 #[test]
@@ -3151,14 +3261,10 @@ fn from_snapshot_silently_ignores_layout_overrides() {
 
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
-    let original_input = snapshot.layout().input_data_size();
-    let original_output = snapshot.layout().output_data_size();
     let original_heap = snapshot.layout().heap_size();
     let original_scratch = snapshot.layout().get_scratch_size();
 
     let mut config = SandboxConfiguration::default();
-    config.set_input_data_size(original_input * 2);
-    config.set_output_data_size(original_output * 2);
     config.set_heap_size((original_heap as u64) * 2);
     config.set_scratch_size(original_scratch * 2);
 
@@ -3169,8 +3275,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     sbox2.call::<i32>("GetStatic", ()).unwrap();
 
     let new_snap = sbox2.snapshot().unwrap();
-    assert_eq!(new_snap.layout().input_data_size(), original_input);
-    assert_eq!(new_snap.layout().output_data_size(), original_output);
     assert_eq!(new_snap.layout().heap_size(), original_heap);
     assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
 }

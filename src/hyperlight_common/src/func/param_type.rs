@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 
 use super::error::Error;
 use super::utils::for_each_tuple;
-use crate::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
+use crate::flatbuffer_wrappers::function_types::{Bytes, ParameterType, ParameterValue};
 
 /// This is a marker trait that is used to indicate that a type is a
 /// valid Hyperlight parameter type.
@@ -50,6 +50,7 @@ macro_rules! for_each_param_type {
         $macro!(f64, Double);
         $macro!(bool, Bool);
         $macro!(Vec<u8>, VecBytes);
+        $macro!(Vec<Bytes>, ByteChunks);
     };
 }
 
@@ -135,3 +136,22 @@ macro_rules! impl_param_tuple {
 }
 
 for_each_tuple!(impl_param_tuple);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_chunks_parameter_round_trips_without_copying() {
+        let chunks = vec![Bytes::from_static(b"hello"), Bytes::from_static(b" world")];
+        let first_chunk = chunks[0].as_ptr();
+        let value = <Vec<Bytes> as SupportedParameterType>::into_value(chunks);
+        let chunks = <Vec<Bytes> as SupportedParameterType>::from_value(value).unwrap();
+
+        assert_eq!(chunks[0].as_ptr(), first_chunk);
+        assert_eq!(
+            chunks,
+            [Bytes::from_static(b"hello"), Bytes::from_static(b" world")]
+        );
+    }
+}
