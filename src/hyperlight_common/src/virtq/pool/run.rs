@@ -17,9 +17,8 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use fixedbitset::FixedBitSet;
-use smallvec::SmallVec;
 
-use super::{AllocError, Allocation, BufferProvider, SendWrap, align_up};
+use super::{AllocError, Allocation, Allocations, BufferProvider, Regions, SendWrap, align_up};
 
 #[derive(Debug, Clone)]
 pub(super) struct Tier<const N: usize> {
@@ -113,7 +112,7 @@ impl<const N: usize> Tier<N> {
         debug_assert!(slots_num > 0);
 
         if let Some(alloc) = self.last_free_run
-            && alloc.len >= slots_num * N
+            && alloc.len as usize >= slots_num * N
         {
             let pos = self.slot_of(alloc.addr);
             let _ = self.last_free_run.take();
@@ -138,6 +137,11 @@ impl<const N: usize> Tier<N> {
             return Err(AllocError::OutOfMemory);
         }
 
+        let alloc_len = need_slots
+            .checked_mul(N)
+            .and_then(|len| u32::try_from(len).ok())
+            .ok_or(AllocError::OutOfMemory)?;
+
         let idx = self.find_slots(need_slots).ok_or(AllocError::NoSpace)?;
         self.used_slots.insert_range(idx..idx + need_slots);
         self.run_starts.insert(idx);
@@ -145,7 +149,7 @@ impl<const N: usize> Tier<N> {
 
         let alloc = Allocation {
             addr,
-            len: need_slots * N,
+            len: alloc_len,
         };
 
         self.maybe_invalidate_last_run(alloc);
@@ -161,7 +165,7 @@ impl<const N: usize> Tier<N> {
     }
 
     fn dealloc_run(&mut self, start: usize, run_slots: usize, addr: u64) -> Result<(), AllocError> {
-        let len = run_slots * N;
+        let len = u32::try_from(run_slots * N).map_err(|_| AllocError::Overflow)?;
         self.used_slots.remove_range(start..start + run_slots);
         self.run_starts.set(start, false);
         self.last_free_run = Some(Allocation { addr, len });
@@ -311,19 +315,59 @@ impl<const L: usize, const U: usize> Inner<L, U> {
             self.upper.allocation_len(addr)
         }
     }
+
+    /// Allocate independent logical regions in order.
+    fn alloc_regions<I>(&mut self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut regions = Regions::new();
+
+        for len in lengths {
+            match self.alloc(len) {
+                Ok(allocation) => {
+                    let mut allocations = Allocations::new();
+                    allocations.push(allocation);
+                    regions.push(allocations);
+                }
+                Err(error) => {
+                    self.rollback_regions(&regions);
+                    return Err(error);
+                }
+            }
+        }
+
+        if regions.is_empty() {
+            return Err(AllocError::InvalidArg);
+        }
+
+        Ok(regions)
+    }
+
+    fn rollback_regions(&mut self, regions: &Regions) {
+        for allocations in regions {
+            for allocation in allocations {
+                let result = self.dealloc_addr(allocation.addr);
+                debug_assert!(result.is_ok(), "dealloc failed: {result:?}");
+            }
+        }
+    }
 }
 
 impl<const L: usize, const U: usize> BufferProvider for RunPool<L, U> {
-    fn max_alloc_len(&self) -> usize {
-        U
+    fn preferred_segment_len(&self) -> usize {
+        U.min(u32::MAX as usize)
     }
 
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         self.inner.borrow_mut().alloc(len)
     }
 
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        Ok(smallvec::smallvec![self.alloc(total_len)?])
+    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        self.inner.borrow_mut().alloc_regions(lengths)
     }
 
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
@@ -345,16 +389,22 @@ impl<const L: usize, const U: usize> RunPool<L, U> {
 
 #[cfg(all(test, loom))]
 impl<const L: usize, const U: usize> BufferProvider for RunPoolSync<L, U> {
-    fn max_alloc_len(&self) -> usize {
-        U
+    fn preferred_segment_len(&self) -> usize {
+        U.min(u32::MAX as usize)
     }
 
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         self.inner.lock().expect("poisoned mutex").alloc(len)
     }
 
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        Ok(smallvec::smallvec![self.alloc(total_len)?])
+    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        self.inner
+            .lock()
+            .expect("poisoned mutex")
+            .alloc_regions(lengths)
     }
 
     fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
