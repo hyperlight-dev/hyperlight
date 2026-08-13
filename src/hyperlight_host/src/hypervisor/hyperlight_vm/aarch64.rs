@@ -115,9 +115,6 @@ impl HyperlightVm {
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<tracing_core::LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<
-            std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
-        >,
     ) -> Result<(), InitializeError> {
         let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
@@ -136,13 +133,8 @@ impl HyperlightVm {
         };
         self.vm.set_regs(&regs)?;
 
-        self.run(
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-        .map_err(InitializeError::Run)?;
+        self.run(mem_mgr, host_funcs)
+            .map_err(InitializeError::Run)?;
 
         let regs = self.vm.regs()?;
         if !regs.sp.is_multiple_of(16) {
@@ -158,9 +150,6 @@ impl HyperlightVm {
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<
-            std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
-        >,
     ) -> Result<(), DispatchGuestCallError> {
         let NextAction::Call(dispatch_func_addr) = self.next_action else {
             return Err(DispatchGuestCallError::Uninitialized);
@@ -182,12 +171,7 @@ impl HyperlightVm {
             .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
         let result = self
-            .run(
-                mem_mgr,
-                host_funcs,
-                #[cfg(gdb)]
-                dbg_mem_access_fn,
-            )
+            .run(mem_mgr, host_funcs)
             .map_err(DispatchGuestCallError::Run);
         self.pending_tlb_flush = false;
         result

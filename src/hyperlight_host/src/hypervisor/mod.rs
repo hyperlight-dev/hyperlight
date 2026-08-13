@@ -506,9 +506,6 @@ pub(crate) mod tests {
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
         let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
-        #[cfg(gdb)]
-        let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));
-
         // Test the initialise method
         vm.initialise(
             peb_addr,
@@ -516,8 +513,6 @@ pub(crate) mod tests {
             &mut mem_mgr,
             &host_funcs,
             guest_max_log_level,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
         )
         .unwrap();
 

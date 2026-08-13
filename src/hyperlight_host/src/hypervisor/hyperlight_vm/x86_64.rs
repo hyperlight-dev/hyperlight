@@ -221,7 +221,6 @@ impl HyperlightVm {
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), InitializeError> {
         let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
@@ -248,13 +247,8 @@ impl HyperlightVm {
         };
         self.vm.set_regs(&regs)?;
 
-        self.run(
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-        .map_err(InitializeError::Run)?;
+        self.run(mem_mgr, host_funcs)
+            .map_err(InitializeError::Run)?;
 
         let regs = self.vm.regs()?;
         // todo(portability): this is architecture-specific
@@ -317,7 +311,6 @@ impl HyperlightVm {
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), DispatchGuestCallError> {
         let NextAction::Call(dispatch_func_addr) = self.next_action else {
             return Err(DispatchGuestCallError::Uninitialized);
@@ -352,12 +345,7 @@ impl HyperlightVm {
             .map_err(DispatchGuestCallError::SetupRegs)?;
 
         let result = self
-            .run(
-                mem_mgr,
-                host_funcs,
-                #[cfg(gdb)]
-                dbg_mem_access_fn,
-            )
+            .run(mem_mgr, host_funcs)
             .map_err(DispatchGuestCallError::Run);
 
         // Clear the TLB flush flag only after run() returns. The guest
@@ -418,24 +406,19 @@ impl HyperlightVm {
     #[cfg(gdb)]
     pub(super) fn handle_debug(
         &mut self,
-        dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+        mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
         stop_reason: VcpuStopReason,
     ) -> std::result::Result<(), HandleDebugError> {
         use debug::ProcessDebugRequestError;
 
-        use crate::hypervisor::gdb::DebugMemoryAccess;
+        use crate::hypervisor::gdb::DebugMemoryView;
 
         if self.gdb_conn.is_none() {
             return Err(HandleDebugError::DebugNotEnabled);
         }
 
-        let mem_access = DebugMemoryAccess {
-            // TODO: dbg_mem_access_fn could be out of sync with the
-            // actual snapshot/scratch regions, if a snapshot restore
-            // has caused either of those to change.
-            dbg_mem_access_fn,
-            guest_mmap_regions: self.get_mapped_regions().cloned().collect(),
-        };
+        let mem_access =
+            DebugMemoryView::new(mem_mgr, self.get_mapped_regions().cloned().collect());
 
         match stop_reason {
             // If the vCPU stopped because of a crash, we need to handle it differently
@@ -650,7 +633,7 @@ pub(super) mod debug {
     use super::HyperlightVm;
     use crate::hypervisor::gdb::arch::{SW_BP, SW_BP_SIZE};
     use crate::hypervisor::gdb::{
-        DebugError, DebugMemoryAccess, DebugMemoryAccessError, DebugMsg, DebugResponse,
+        DebugError, DebugMemoryAccessError, DebugMemoryView, DebugMsg, DebugResponse,
     };
     use crate::hypervisor::virtual_machine::VmError;
 
@@ -659,8 +642,6 @@ pub(super) mod debug {
     pub enum ProcessDebugRequestError {
         #[error("Debug is not enabled")]
         DebugNotEnabled,
-        #[error("Failed to acquire lock at {0}:{1}")]
-        TryLockError(&'static str, u32),
         #[error("VM operation error: {0}")]
         Vm(#[from] VmError),
         #[error("Debug operation error: {0}")]
@@ -677,7 +658,7 @@ pub(super) mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            mem_access: &DebugMemoryAccess,
+            mem_access: &DebugMemoryView<'_>,
         ) -> std::result::Result<DebugResponse, ProcessDebugRequestError> {
             if self.gdb_conn.is_some() {
                 match req {
@@ -717,16 +698,9 @@ pub(super) mod debug {
 
                         Ok(DebugResponse::DisableDebug)
                     }
-                    DebugMsg::GetCodeSectionOffset => {
-                        let offset = mem_access
-                            .dbg_mem_access_fn
-                            .try_lock()
-                            .map_err(|_| ProcessDebugRequestError::TryLockError(file!(), line!()))?
-                            .layout
-                            .get_guest_code_address();
-
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                    }
+                    DebugMsg::GetCodeSectionOffset => Ok(DebugResponse::GetCodeSectionOffset(
+                        mem_access.code_section_offset(),
+                    )),
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
 
@@ -826,7 +800,7 @@ pub(super) mod debug {
             &mut self,
             mut gva: u64,
             mut data: &mut [u8],
-            mem_access: &DebugMemoryAccess,
+            mem_access: &DebugMemoryView<'_>,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             let data_len = data.len();
             tracing::debug!("Read addr: {:X} len: {:X}", gva, data_len);
@@ -854,7 +828,7 @@ pub(super) mod debug {
             &mut self,
             mut gva: u64,
             mut data: &[u8],
-            mem_access: &DebugMemoryAccess,
+            mem_access: &DebugMemoryView<'_>,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             let data_len = data.len();
             tracing::debug!("Write addr: {:X} len: {:X}", gva, data_len);
@@ -883,7 +857,7 @@ pub(super) mod debug {
         fn add_sw_breakpoint(
             &mut self,
             gva: u64,
-            mem_access: &DebugMemoryAccess,
+            mem_access: &DebugMemoryView<'_>,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             // Check if breakpoint already exists
             if self.sw_breakpoints.contains_key(&gva) {
@@ -904,7 +878,7 @@ pub(super) mod debug {
         fn remove_sw_breakpoint(
             &mut self,
             gva: u64,
-            mem_access: &DebugMemoryAccess,
+            mem_access: &DebugMemoryView<'_>,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             if let Some(saved_data) = self.sw_breakpoints.remove(&gva) {
                 // Restore saved data to the guest's memory
@@ -948,8 +922,6 @@ mod tests {
         vm: HyperlightVm,
         hshm: SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)]
-        dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     }
 
     // ==========================================================================
@@ -1574,28 +1546,15 @@ mod tests {
         let seed = rand::rng().random::<u64>();
         let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
 
-        #[cfg(gdb)]
-        let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
-
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
-        vm.initialise(
-            peb_addr,
-            seed,
-            &mut hshm,
-            &host_funcs,
-            None,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl.clone(),
-        )
-        .unwrap();
+        vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, None)
+            .unwrap();
 
         TestVmContext {
             vm,
             hshm,
             host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
         }
     }
 
@@ -2184,12 +2143,7 @@ mod tests {
             fn run(&mut self) {
                 self.ctx
                     .vm
-                    .run(
-                        &mut self.ctx.hshm,
-                        &self.ctx.host_funcs,
-                        #[cfg(gdb)]
-                        self.ctx.dbg_mem_access_hdl.clone(),
-                    )
+                    .run(&mut self.ctx.hshm, &self.ctx.host_funcs)
                     .unwrap();
             }
 

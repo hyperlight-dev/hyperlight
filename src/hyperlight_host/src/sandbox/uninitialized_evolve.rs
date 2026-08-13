@@ -13,9 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[cfg(gdb)]
-use std::sync::{Arc, Mutex};
-
 use rand::RngExt;
 use tracing::{Span, instrument};
 
@@ -63,9 +60,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         RawPtr::from(peb_u64)
     };
 
-    #[cfg(gdb)]
-    let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
-
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
 
@@ -101,21 +95,10 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         &mut hshm,
         &u_sbox.host_funcs,
         u_sbox.max_guest_log_level,
-        #[cfg(gdb)]
-        dbg_mem_access_hdl,
     )
     .map_err(HyperlightVmError::Initialize)?;
 
-    #[cfg(gdb)]
-    let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
-
-    Ok(MultiUseSandbox::from_uninit(
-        u_sbox.host_funcs,
-        hshm,
-        vm,
-        #[cfg(gdb)]
-        dbg_mem_wrapper,
-    ))
+    Ok(MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm))
 }
 
 pub(crate) fn set_up_hypervisor_partition(

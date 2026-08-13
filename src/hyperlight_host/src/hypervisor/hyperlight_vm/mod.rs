@@ -598,7 +598,6 @@ impl HyperlightVm {
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), RunVmError> {
         // Keeps the trace context and open spans
         #[cfg(feature = "trace_guest")]
@@ -694,7 +693,7 @@ impl HyperlightVm {
                             self.one_shot_entry_bp = None;
                         }
                     }
-                    if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
+                    if let Err(e) = self.handle_debug(mem_mgr, stop_reason) {
                         break Err(e.into());
                     }
                 }
@@ -759,9 +758,7 @@ impl HyperlightVm {
                     #[cfg(gdb)]
                     {
                         self.interrupt_handle.clear_debug_interrupt();
-                        if let Err(e) =
-                            self.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
-                        {
+                        if let Err(e) = self.handle_debug(mem_mgr, VcpuStopReason::Interrupt) {
                             break Err(e.into());
                         }
                     }
@@ -796,7 +793,7 @@ impl HyperlightVm {
                 // Disregard return value as we want to return the error
                 #[cfg(gdb)]
                 if self.gdb_conn.is_some() {
-                    self.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash)?
+                    self.handle_debug(mem_mgr, VcpuStopReason::Crash)?
                 }
                 Err(e)
             }

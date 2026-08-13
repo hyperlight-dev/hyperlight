@@ -86,8 +86,6 @@ pub struct MultiUseSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: HyperlightVm,
-    #[cfg(gdb)]
-    dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
@@ -120,15 +118,12 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
             poisoned: false,
             host_funcs,
             mem_mgr: mgr,
             vm,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
             snapshot: None,
             pt_root_finder: None,
         }
@@ -281,20 +276,9 @@ impl MultiUseSandbox {
         };
         let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
 
-        #[cfg(gdb)]
-        let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
-
         // noop for NextAction::Call
-        vm.initialise(
-            peb_addr,
-            seed,
-            &mut hshm,
-            &host_funcs,
-            None,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
-        .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
+        vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, None)
+            .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
 
         // If the snapshot was taken from an already-initialized guest
         // (NextAction::Call), apply the captured special registers so
@@ -319,16 +303,7 @@ impl MultiUseSandbox {
             })?;
         }
 
-        #[cfg(gdb)]
-        let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
-
-        let sbox = MultiUseSandbox::from_uninit(
-            host_funcs,
-            hshm,
-            vm,
-            #[cfg(gdb)]
-            dbg_mem_wrapper,
-        );
+        let sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
         Ok(sbox)
     }
 
@@ -921,12 +896,9 @@ impl MultiUseSandbox {
 
             self.mem_mgr.write_guest_function_call(buffer)?;
 
-            let dispatch_res = self.vm.dispatch_call_from_host(
-                &mut self.mem_mgr,
-                &self.host_funcs,
-                #[cfg(gdb)]
-                self.dbg_mem_access_fn.clone(),
-            );
+            let dispatch_res = self
+                .vm
+                .dispatch_call_from_host(&mut self.mem_mgr, &self.host_funcs);
 
             // Convert dispatch errors to HyperlightErrors to maintain backwards compatibility
             // but first determine if sandbox should be poisoned

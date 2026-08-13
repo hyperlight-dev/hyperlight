@@ -132,7 +132,6 @@ impl ReadonlySharedMemory {
 pub(crate) use unused_hack::SnapshotSharedMemory;
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
-#[derive(Clone)]
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
     pub(crate) shared_mem: SnapshotSharedMemory<S>,

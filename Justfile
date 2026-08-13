@@ -289,7 +289,7 @@ test-no-surrogate target=default-target:
 # runs tests that exercise gdb debugging
 test-rust-gdb-debugging target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
-    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- test_gdb
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- hypervisor::gdb::
 
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":

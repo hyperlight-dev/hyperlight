@@ -20,7 +20,7 @@ mod x86_64_target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -78,12 +78,10 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     }
 }
 
-/// This abstracts the memory access functions that debugging needs from a sandbox
-pub(crate) struct DebugMemoryAccess {
-    /// Memory manager that provides access to the guest memory
-    pub(crate) dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    /// Guest mapped memory regions
-    pub(crate) guest_mmap_regions: Vec<MemoryRegion>,
+/// A borrowed view of the sandbox memory visible to GDB.
+pub(crate) struct DebugMemoryView<'a> {
+    mem_mgr: &'a SandboxMemoryManager<HostSharedMemory>,
+    guest_mmap_regions: Vec<MemoryRegion>,
 }
 
 /// Errors that can occur during debug memory access operations
@@ -91,15 +89,27 @@ pub(crate) struct DebugMemoryAccess {
 pub enum DebugMemoryAccessError {
     #[error("Failed to copy memory: {0}")]
     CopyFailed(Box<HyperlightError>),
-    #[error("Failed to acquire lock at {0}:{1} - {2}")]
-    LockFailed(&'static str, u32, String),
     #[error("Failed to translate guest address {0:#x}")]
     TranslateGuestAddress(u64),
     #[error("Failed to write to read-only region")]
     WriteToReadOnly,
 }
 
-impl DebugMemoryAccess {
+impl<'a> DebugMemoryView<'a> {
+    pub(crate) fn new(
+        mem_mgr: &'a SandboxMemoryManager<HostSharedMemory>,
+        guest_mmap_regions: Vec<MemoryRegion>,
+    ) -> Self {
+        Self {
+            mem_mgr,
+            guest_mmap_regions,
+        }
+    }
+
+    pub(crate) fn code_section_offset(&self) -> u64 {
+        self.mem_mgr.layout.get_guest_code_address() as u64
+    }
+
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
     ///
     /// # Arguments
@@ -113,15 +123,11 @@ impl DebugMemoryAccess {
         data: &mut [u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let mgr = self
-            .dbg_mem_access_fn
-            .try_lock()
-            .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
-
-        mgr.layout
+        self.mem_mgr
+            .layout
             .resolve_gpa(gpa, &self.guest_mmap_regions)
             .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?
-            .with_memories(&mgr.shared_mem, &mgr.scratch_mem)
+            .with_memories(&self.mem_mgr.shared_mem, &self.mem_mgr.scratch_mem)
             .copy_to_slice(data)
             .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))
     }
@@ -139,12 +145,8 @@ impl DebugMemoryAccess {
         data: &[u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let mgr = self
-            .dbg_mem_access_fn
-            .try_lock()
-            .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
-
-        let resolved = mgr
+        let resolved = self
+            .mem_mgr
             .layout
             .resolve_gpa(gpa, &self.guest_mmap_regions)
             .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
@@ -153,11 +155,13 @@ impl DebugMemoryAccess {
         // process) if the address is in the scratch region
         match resolved.base {
             #[cfg(unshared_snapshot_mem)]
-            BaseGpaRegion::Snapshot(()) => mgr
+            BaseGpaRegion::Snapshot(()) => self
+                .mem_mgr
                 .shared_mem
                 .copy_from_slice(data, resolved.offset)
                 .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e))),
-            BaseGpaRegion::Scratch(()) => mgr
+            BaseGpaRegion::Scratch(()) => self
+                .mem_mgr
                 .scratch_mem
                 .copy_from_slice(data, resolved.offset)
                 .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e))),
@@ -373,7 +377,6 @@ mod tests {
     mod mem_access_tests {
         use std::os::fd::AsRawFd;
         use std::os::linux::fs::MetadataExt;
-        use std::sync::{Arc, Mutex};
 
         use hyperlight_testing::dummy_guest_as_pathbuf;
 
@@ -387,117 +390,119 @@ mod tests {
         #[cfg(target_os = "linux")]
         const BASE_VIRT: usize = 0x10000000 + SandboxMemoryLayout::BASE_ADDRESS;
 
-        /// Dummy memory region to test memory access
-        /// This maps a file into memory and uses it as guest memory
-        fn get_mem_access() -> crate::Result<DebugMemoryAccess> {
-            let filename = dummy_guest_as_pathbuf();
-
-            let file = std::fs::File::options()
-                .read(true)
-                .write(true)
-                .open(&filename)?;
-            let file_size = file.metadata()?.st_size();
-            let page_size = page_size::get();
-            let size = (file_size as usize).div_ceil(page_size) * page_size;
-            let mapped_mem = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    size,
-                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    0,
-                )
-            };
-            if mapped_mem == libc::MAP_FAILED {
-                log_then_return!("mmap error: {:?}", std::io::Error::last_os_error());
-            }
-
-            // Create a sandbox memory manager with the mapped memory region
-            let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)
-                .inspect_err(|_| unsafe {
-                    libc::munmap(mapped_mem, size);
-                })?;
-            let (mem_mgr, _) = sandbox.mgr.build()?;
-
-            // Create the memory access struct
-            let mem_access = DebugMemoryAccess {
-                dbg_mem_access_fn: Arc::new(Mutex::new(mem_mgr)),
-                guest_mmap_regions: vec![MemoryRegion {
-                    host_region: mapped_mem as usize..mapped_mem.wrapping_add(size) as usize,
-                    guest_region: BASE_VIRT..BASE_VIRT + size,
-                    flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
-                    region_type: MemoryRegionType::Heap,
-                }],
-            };
-
-            Ok(mem_access)
+        struct TestMemory {
+            mem_mgr: SandboxMemoryManager<HostSharedMemory>,
+            mmap_region: MemoryRegion,
         }
 
-        /// Gets a slice to the mapped memory region to be able to modify it
-        ///
-        /// NOTE: By returning a mutable slice from a mutable reference, we ensure
-        /// that the memory is not deallocated while the slice is in use.
-        unsafe fn get_mmap_slice(mem_access: &mut DebugMemoryAccess) -> &mut [u8] {
-            unsafe {
-                std::slice::from_raw_parts_mut(
-                    mem_access.guest_mmap_regions[0].host_region.start as *mut u8,
-                    mem_access.guest_mmap_regions[0].host_region.end
-                        - mem_access.guest_mmap_regions[0].host_region.start,
-                )
+        impl TestMemory {
+            fn new() -> crate::Result<Self> {
+                let filename = dummy_guest_as_pathbuf();
+                let file = std::fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .open(&filename)?;
+                let file_size = file.metadata()?.st_size();
+                let page_size = page_size::get();
+                let size = (file_size as usize).div_ceil(page_size) * page_size;
+
+                let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename), None)?;
+                let (mem_mgr, _) = sandbox.mgr.build()?;
+
+                // SAFETY: `file` is open for this call, and `size` is the page-aligned
+                // file size. `MAP_FAILED` is checked below.
+                let mapped_mem = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        size,
+                        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                        libc::MAP_PRIVATE,
+                        file.as_raw_fd(),
+                        0,
+                    )
+                };
+                if mapped_mem == libc::MAP_FAILED {
+                    log_then_return!("mmap error: {:?}", std::io::Error::last_os_error());
+                }
+
+                Ok(Self {
+                    mem_mgr,
+                    mmap_region: MemoryRegion {
+                        host_region: mapped_mem as usize..mapped_mem.wrapping_add(size) as usize,
+                        guest_region: BASE_VIRT..BASE_VIRT + size,
+                        flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+                        region_type: MemoryRegionType::Heap,
+                    },
+                })
+            }
+
+            fn access(&self) -> DebugMemoryView<'_> {
+                DebugMemoryView::new(&self.mem_mgr, vec![self.mmap_region.clone()])
+            }
+
+            fn mmap_slice(&mut self) -> &mut [u8] {
+                // SAFETY: `mmap_region` describes the live mapping owned by `self`.
+                // The mutable borrow prevents overlapping slices from this method.
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        self.mmap_region.host_region.start as *mut u8,
+                        self.mmap_region.host_region.len(),
+                    )
+                }
             }
         }
 
-        /// Drops the mapped memory region
-        fn drop_mem_access(mem_access: DebugMemoryAccess) {
-            let mapped_mem =
-                mem_access.guest_mmap_regions[0].host_region.start as *mut libc::c_void;
-            let size = mem_access.guest_mmap_regions[0].host_region.end
-                - mem_access.guest_mmap_regions[0].host_region.start;
-
-            unsafe {
-                libc::munmap(mapped_mem, size);
+        impl Drop for TestMemory {
+            fn drop(&mut self) {
+                // SAFETY: this is the mapping returned by `mmap` in `new`, with
+                // the same base and length, and `Drop` unmaps it exactly once.
+                unsafe {
+                    libc::munmap(
+                        self.mmap_region.host_region.start as *mut libc::c_void,
+                        self.mmap_region.host_region.len(),
+                    );
+                }
             }
         }
 
         #[test]
         fn test_mem_access_read_single_byte() -> crate::Result<()> {
-            let mut mem_access = get_mem_access()?;
+            let mut memory = TestMemory::new()?;
             let offset = 2000;
 
             // Modify the memory directly to have a known value to read
             {
-                let slice = unsafe { get_mmap_slice(&mut mem_access) };
+                let slice = memory.mmap_slice();
                 slice[offset] = 0xAA;
             }
 
             let mut read_data = [0u8; 1];
-            mem_access
+            memory
+                .access()
                 .read(&mut read_data, (BASE_VIRT + offset) as u64)
                 .unwrap();
 
             assert_eq!(read_data[0], 0xAA);
-
-            drop_mem_access(mem_access);
 
             Ok(())
         }
 
         #[test]
         fn test_mem_access_read_multiple_bytes() -> crate::Result<()> {
-            let mut mem_access = get_mem_access()?;
+            let mut memory = TestMemory::new()?;
             let offset = 20;
 
             // Modify the memory directly to have a known value to read
             {
-                let slice = unsafe { get_mmap_slice(&mut mem_access) };
+                let slice = memory.mmap_slice();
                 for i in 0..16 {
                     slice[offset + i] = i as u8;
                 }
             }
 
             let mut read_data = [0u8; 16];
-            mem_access
+            memory
+                .access()
                 .read(&mut read_data, (BASE_VIRT + offset) as u64)
                 .unwrap();
 
@@ -505,51 +510,49 @@ mod tests {
                 read_data,
                 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
             );
-            drop_mem_access(mem_access);
             Ok(())
         }
 
         #[test]
         fn test_mem_access_write_single_byte() -> crate::Result<()> {
-            let mut mem_access = get_mem_access()?;
-            let offset = 3000;
-            {
-                let slice = unsafe { get_mmap_slice(&mut mem_access) };
-                slice[offset] = 0xBB;
-            }
+            let memory = TestMemory::new()?;
+            let scratch_gpa = memory.mem_mgr.layout.get_first_free_scratch_gpa();
 
             let write_data = [0xCCu8; 1];
-            mem_access
-                .write(&write_data, (BASE_VIRT + offset) as u64)
-                .unwrap();
+            memory.access().write(&write_data, scratch_gpa).unwrap();
 
-            let slice = unsafe { get_mmap_slice(&mut mem_access) };
-            assert_eq!(slice[offset], write_data[0]);
-            drop_mem_access(mem_access);
+            let mut actual = [0u8; 1];
+            memory.access().read(&mut actual, scratch_gpa).unwrap();
+            assert_eq!(actual, write_data);
 
             Ok(())
         }
 
         #[test]
         fn test_mem_access_write_multiple_bytes() -> crate::Result<()> {
-            let mut mem_access = get_mem_access()?;
-            let offset = 56;
-            {
-                let slice = unsafe { get_mmap_slice(&mut mem_access) };
-                for i in 0..16 {
-                    slice[offset + i] = i as u8;
-                }
-            }
+            let memory = TestMemory::new()?;
+            let scratch_gpa = memory.mem_mgr.layout.get_first_free_scratch_gpa();
 
             let write_data = [0xAAu8; 16];
-            mem_access
-                .write(&write_data, (BASE_VIRT + offset) as u64)
-                .unwrap();
+            memory.access().write(&write_data, scratch_gpa).unwrap();
 
-            let slice = unsafe { get_mmap_slice(&mut mem_access) };
-            assert_eq!(slice[offset..offset + 16], write_data);
-            drop_mem_access(mem_access);
+            let mut actual = [0u8; 16];
+            memory.access().read(&mut actual, scratch_gpa).unwrap();
+            assert_eq!(actual, write_data);
 
+            Ok(())
+        }
+
+        #[test]
+        fn test_mem_access_write_rejects_mmap_region() -> crate::Result<()> {
+            let memory = TestMemory::new()?;
+
+            let error = memory
+                .access()
+                .write(&[0xAA], BASE_VIRT as u64)
+                .unwrap_err();
+
+            assert!(matches!(error, DebugMemoryAccessError::WriteToReadOnly));
             Ok(())
         }
     }
