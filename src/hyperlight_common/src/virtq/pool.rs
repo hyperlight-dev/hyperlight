@@ -51,16 +51,20 @@ pub enum AllocError {
 pub struct Allocation {
     /// Starting address of the allocation.
     pub addr: u64,
-    /// Capacity in bytes, rounded up according to the provider's policy.
-    pub len: usize,
+    /// Nonzero descriptor-safe capacity in bytes.
+    pub len: u32,
 }
+
+/// Ordered nonoverlapping allocations that back one logical region.
+pub type Allocations = SmallVec<[Allocation; 4]>;
+
+/// Ordered allocation groups, one for each requested logical region.
+pub type Regions = SmallVec<[Allocations; 4]>;
 
 /// Allocates and reclaims virtqueue payload buffers.
 pub trait BufferProvider {
-    /// Preferred maximum size of one allocation segment.
-    fn max_alloc_len(&self) -> usize {
-        usize::MAX
-    }
+    /// Preferred nonzero descriptor-safe size of one bulk allocation segment.
+    fn preferred_segment_len(&self) -> usize;
 
     /// Allocate one buffer that can hold at least `len` bytes.
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError>;
@@ -68,44 +72,15 @@ pub trait BufferProvider {
     /// Free a previously allocated segment by start address.
     fn dealloc(&self, addr: u64) -> Result<(), AllocError>;
 
-    /// Allocate scatter/gather segments for a logical payload of `total_len` bytes.
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        if total_len == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let seg_cap = self.max_alloc_len();
-        if seg_cap == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let mut rem = total_len;
-        let mut sgs = SmallVec::<[Allocation; 4]>::new();
-
-        while rem > 0 {
-            let len = rem.min(seg_cap);
-            match self.alloc(len) {
-                Ok(alloc) => {
-                    sgs.push(alloc);
-                    rem -= len;
-                }
-                Err(err) => {
-                    for sg in sgs {
-                        let result = self.dealloc(sg.addr);
-                        debug_assert!(result.is_ok(), "dealloc failed: {result:?}");
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(sgs)
-    }
+    /// Allocate independent logical regions in input order.
+    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>;
 }
 
 impl<T: BufferProvider> BufferProvider for Rc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
+    fn preferred_segment_len(&self) -> usize {
+        (**self).preferred_segment_len()
     }
 
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
@@ -116,14 +91,17 @@ impl<T: BufferProvider> BufferProvider for Rc<T> {
         (**self).dealloc(addr)
     }
 
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
+    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        (**self).alloc_regions(lengths)
     }
 }
 
 impl<T: BufferProvider> BufferProvider for Arc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
+    fn preferred_segment_len(&self) -> usize {
+        (**self).preferred_segment_len()
     }
 
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
@@ -134,8 +112,11 @@ impl<T: BufferProvider> BufferProvider for Arc<T> {
         (**self).dealloc(addr)
     }
 
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
+    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        (**self).alloc_regions(lengths)
     }
 }
 

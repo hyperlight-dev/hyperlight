@@ -19,7 +19,7 @@ const UPPER_SLOT_SIZE: usize = 4096;
 #[derive(Clone, Debug)]
 enum Op {
     Alloc(usize),
-    AllocSg(usize),
+    AllocRegions(usize),
     Dealloc(usize),
 }
 
@@ -27,7 +27,7 @@ impl Arbitrary for Op {
     fn arbitrary(g: &mut Gen) -> Self {
         match u8::arbitrary(g) % 3 {
             0 => Op::Alloc(usize::arbitrary(g) % MAX_ALLOC_SIZE + 1),
-            1 => Op::AllocSg(usize::arbitrary(g) % MAX_ALLOC_SIZE + 1),
+            1 => Op::AllocRegions(usize::arbitrary(g) % MAX_ALLOC_SIZE + 1),
             2 => Op::Dealloc(usize::arbitrary(g)),
             _ => unreachable!(),
         }
@@ -61,7 +61,7 @@ where
         match op {
             Op::Alloc(size) => match pool.alloc(*size) {
                 Ok(alloc) => {
-                    if alloc.len < *size
+                    if (alloc.len as usize) < *size
                         || allocations
                             .iter()
                             .any(|existing| existing.addr == alloc.addr)
@@ -73,18 +73,21 @@ where
                 Err(AllocError::NoSpace | AllocError::OutOfMemory) => {}
                 Err(_) => return false,
             },
-            Op::AllocSg(size) => match pool.alloc_sg(*size) {
-                Ok(sgs) => {
+            Op::AllocRegions(size) => match pool.alloc_regions([*size]) {
+                Ok(regions) => {
                     let mut total = 0usize;
-                    for sg in sgs {
-                        let Some(next_total) = total.checked_add(sg.len) else {
+                    for allocation in regions.into_iter().flatten() {
+                        let Some(next_total) = total.checked_add(allocation.len as usize) else {
                             return false;
                         };
-                        if allocations.iter().any(|existing| existing.addr == sg.addr) {
+                        if allocations
+                            .iter()
+                            .any(|existing| existing.addr == allocation.addr)
+                        {
                             return false;
                         }
                         total = next_total;
-                        allocations.push(sg);
+                        allocations.push(allocation);
                     }
                     if total < *size {
                         return false;
@@ -138,12 +141,13 @@ fn check_run_tier_invariants<const N: usize>(
     for alloc in allocations.iter().filter(|alloc| tier.contains(alloc.addr)) {
         let offset = usize::try_from(alloc.addr - tier.base_addr)
             .map_err(|_| "allocation offset overflows usize")?;
-        if alloc.len == 0 || !offset.is_multiple_of(N) || !alloc.len.is_multiple_of(N) {
+        let len = alloc.len as usize;
+        if len == 0 || !offset.is_multiple_of(N) || !len.is_multiple_of(N) {
             return Err("allocation is not tier-aligned");
         }
 
         let start = offset / N;
-        let slots = alloc.len / N;
+        let slots = len / N;
         let end = start
             .checked_add(slots)
             .ok_or("allocation slot range overflow")?;
@@ -176,13 +180,14 @@ fn check_run_tier_invariants<const N: usize>(
         }
         let offset = usize::try_from(free_run.addr - tier.base_addr)
             .map_err(|_| "cached free-run offset overflows usize")?;
-        if free_run.len == 0 || !offset.is_multiple_of(N) || !free_run.len.is_multiple_of(N) {
+        let len = free_run.len as usize;
+        if len == 0 || !offset.is_multiple_of(N) || !len.is_multiple_of(N) {
             return Err("cached free run is not tier-aligned");
         }
 
         let start = offset / N;
         let end = start
-            .checked_add(free_run.len / N)
+            .checked_add(len / N)
             .ok_or("cached free-run range overflow")?;
         if end > tier.used_slots.len() || (start..end).any(|slot| tier.used_slots.contains(slot)) {
             return Err("cached free run overlaps live allocations");
@@ -328,7 +333,7 @@ fn check_slot_pool_invariants(
 
         match expected_live.get(&addr) {
             Some(expected_capacity) => {
-                if *expected_capacity != capacity
+                if *expected_capacity as usize != capacity
                     || pool.allocation_len(addr).ok() != Some(capacity)
                 {
                     return Err("live slot capacity is inconsistent");
