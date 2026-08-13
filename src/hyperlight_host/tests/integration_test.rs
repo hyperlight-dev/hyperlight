@@ -537,7 +537,7 @@ fn guest_malloc_abort() {
     });
 
     // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 0x8000;
+    let heap_size = 40 * 1024;
     let size_to_allocate = 0x10000;
     assert!(
         size_to_allocate > heap_size,
@@ -582,7 +582,7 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 
 #[test]
 fn guest_panic_no_alloc() {
-    let heap_size = 0x8000;
+    let heap_size = 40 * 1024;
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
