@@ -138,9 +138,9 @@ fn bench_segmented_payload(c: &mut Criterion) {
             |b, &payload_size| {
                 let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
                 b.iter(|| {
-                    let sgs = pool.alloc_sg(black_box(payload_size)).unwrap();
-                    for sg in sgs {
-                        pool.dealloc(sg.addr).unwrap();
+                    let regions = pool.alloc_regions([black_box(payload_size)]).unwrap();
+                    for alloc in regions.into_iter().flatten() {
+                        pool.dealloc(alloc.addr).unwrap();
                     }
                 });
             },
@@ -180,13 +180,13 @@ fn bench_slot_pool(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("alloc_sg_64k", |b| {
+    group.bench_function("alloc_regions_64k", |b| {
         let layout = SlotLayout::new(0x80000, 4096, 1024);
         let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
-            let sgs = pool.alloc_sg(black_box(64 * 1024)).unwrap();
-            for sg in sgs {
-                pool.dealloc(sg.addr).unwrap();
+            let regions = pool.alloc_regions([black_box(64 * 1024)]).unwrap();
+            for alloc in regions.into_iter().flatten() {
+                pool.dealloc(alloc.addr).unwrap();
             }
         });
     });
