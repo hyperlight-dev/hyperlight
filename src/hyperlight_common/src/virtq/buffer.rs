@@ -207,7 +207,7 @@ pub struct BufferOwner<P: BufferProvider, M: MemOps> {
 impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
     fn as_ref(&self) -> &[u8] {
         let alloc = self.alloc.allocation();
-        let len = self.written.min(alloc.len);
+        let len = self.written.min(alloc.len as usize);
         // Safety: BufferOwner keeps both the pool allocation and the M alive,
         // so the memory region is valid.
         match unsafe { self.mem.as_slice(alloc.addr, len) } {
