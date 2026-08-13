@@ -148,10 +148,10 @@ A logical message may span several descriptors or several H2G receive buffers.
 
 ### External byte values
 
-Large `VecBytes` and `ByteChunks` values stay outside the FlatBuffer. The
-FlatBuffer contains the total logical value length and whether the value is
-chunked. The encoder can then reference the caller's byte slices directly
-without first copying them into one contiguous FlatBuffer.
+`ByteChunks` values stay outside the FlatBuffer. The FlatBuffer contains the
+total logical value length and whether the value is chunked. The encoder can
+then reference the caller's byte slices directly without first copying them into
+one contiguous FlatBuffer.
 
 On the guest, completed shared memory allocations can become
 `Bytes::from_owner` values. `ByteChunks` can therefore map transport storage
@@ -177,8 +177,8 @@ logical byte sequence split where it intersects transport buffers:
 ```text
  sender chunks:       [------][----------][----]
  logical byte stream: [------------------------]
- transport buffers:   [--------][--------][--------][--]
- receiver chunks:     [--------][--------][--------][--]
+ transport buffers:   [--][--------][--------][--------]
+ receiver chunks:     [--][--------][--------][--------]
 ```
 
 H2G chunking follows the preposted H2G slot size. G2H responses returned to
@@ -370,25 +370,33 @@ The count only answers whether retained slots exist. It does not contain pool
 identity, addresses, or initialized lengths. Retained pool payloads cannot be
 restored because pool bytes are absent from the snapshot.
 
-### Planned retained payload snapshots
+## Future guest allocated pools and retained snapshots
 
-The mailbox is intended to carry a bounded, size-prefixed FlatBuffer manifest.
-The planned manifest has separate G2H and H2G vectors. Each retained range
-contains:
+Transport pools can leave the fixed arena and use guest allocated scratch.
+The rings and mailbox remain at fixed host assigned addresses. At startup, the
+guest allocates each complete pool with `alloc_phys_pages`. It allocates fresh
+pools when the snapshot generation changes.
 
-```text
-offset: u64    pool-relative slot start
-len:    u32    initialized payload length
-```
+The host accepts descriptor payloads anywhere in guest allocator scratch. It
+validates complete ranges, writable H2G buffers, uniqueness, and overlap. Ring
+access remains restricted to the fixed arena.
 
-The host can validate exact slot starts and bounds, zero the retained backing,
-copy only initialized ranges, and include that sanitized backing in the
-snapshot. Free slots, posted H2G buffers, unused slot tails, and unrelated
-bytes sharing a retained page remain zero.
+Pool GVAs are transient and cannot back retained `Bytes` directly. Before
+constructing owner backed `Bytes`, the guest maps the buffer's physical pages
+at a stable GVA in a reserved alias region. The `Bytes` pointer uses that
+alias. The final owner unmaps the alias before returning the slot to its pool.
 
-The size prefix is published last. The host bounds it by trusted mailbox
-capacity before FlatBuffer verification, then validates every range against
-the configured pool geometry.
+Stable aliases make retained payloads ordinary snapshot mappings. Snapshot
+capture copies each mapped physical page into snapshot memory while preserving
+its alias GVA. Multiple aliases to one physical page share one copied page.
+Owner construction clears the unused slot tail. Checkpointing clears free
+slots in pools with retained owners, so captured pages contain retained bytes
+and zeros.
+
+Pool backing belongs to one snapshot generation. Retained owners keep the old
+pool metadata and stable aliases. After restore, the host enters the guest
+without an H2G request. The guest resets both producers, allocates fresh pools,
+prefills H2G, and returns before the host uses the restored queues.
 
 ## Placement and relocation limitations
 
@@ -421,21 +429,6 @@ Snapshots containing retained transport values must restore each pool at the
 same GVA. The GPA or host backing may move only if page tables and host memory
 access preserve that GVA. Restore must fail if it cannot reserve or recreate
 the original virtual range.
-
-A guest allocated transport needs a stronger publication and relocation
-contract:
-
-* The guest allocates rings and pools from scratch and publishes all regions.
-* The host validates alignment, bounds, ordering, overlap, and capacity before
-  attaching consumers.
-* Snapshot metadata records the published region placement.
-* Restore preserves pool GVAs when retained values exist.
-* GVA relocation is limited to snapshots without retained values, where known
-  ring, pool, producer, and guest context state can be rebuilt, or to a future
-  offset based guest API.
-
-This contract is part of the
-[snapshot ABI](./snapshot-versioning.md) and needs an explicit format change.
 
 Transport capacity is also fixed when the sandbox is created. Runtime queue
 resize and VIRTIO feature negotiation are not supported.
