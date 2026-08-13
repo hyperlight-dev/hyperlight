@@ -19,6 +19,7 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
+        cfg.set_heap_size(512 * 1024);
         cfg.set_g2h_pool_pages(16);
         cfg.set_h2g_pool_pages(16);
         cfg.set_scratch_size(512 * 1024);
