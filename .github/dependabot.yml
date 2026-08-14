@@ -15,6 +15,12 @@ updates:
     labels:
       - "kind/dependencies"
     open-pull-requests-limit: 20
+    groups:
+      wasm-tools:
+        patterns:
+          - "wasmparser"
+          - "wit-parser"
+          - "wit-component"
   - package-ecosystem: "cargo"
     directory: "/src/tests/rust_guests"
     schedule:
