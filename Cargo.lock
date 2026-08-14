@@ -1594,7 +1594,7 @@ dependencies = [
  "quote",
  "syn 3.0.3",
  "tracing",
- "wasmparser 0.255.0",
+ "wasmparser 0.256.0",
  "wat",
  "wit-component",
  "wit-parser",
@@ -4379,7 +4379,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -4389,8 +4388,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60bd825ffedc6cba8a642924ba7ae424afbc47811cffbcb7b92031ec24e59b4c"
 dependencies = [
  "bitflags 2.13.1",
+ "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
