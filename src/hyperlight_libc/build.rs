@@ -285,6 +285,33 @@ fn cargo_main() -> Result<()> {
         unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
     }
 
+    // On macOS hosts, Xcode's `ar`/`ranlib` silently drop the ELF objects
+    // produced for the guest target ("archive member ... not a mach-o
+    // file"), yielding an empty libhyperlight_libc.a. Use LLVM's tools
+    // instead (they understand both formats).
+    if cfg!(target_os = "macos") {
+        let llvm_tool = |tool: &str| {
+            [
+                format!("/opt/homebrew/opt/llvm/bin/{tool}"),
+                format!("/usr/local/opt/llvm/bin/{tool}"),
+                tool.to_string(),
+            ]
+            .into_iter()
+            .find(|candidate| {
+                Command::new(candidate)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|o| o.status.success())
+            })
+        };
+        if let Some(ar) = llvm_tool("llvm-ar") {
+            build.archiver(ar);
+        }
+        if let Some(ranlib) = llvm_tool("llvm-ranlib") {
+            build.ranlib(ranlib);
+        }
+    }
+
     build.compile("hyperlight_libc");
     copy_includes(&include_dir, picolibc_dir.join("libc/include"))?;
     copy_includes(&include_dir, picolibc_dir.join("libc/stdio"))?;

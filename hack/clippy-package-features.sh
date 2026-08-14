@@ -36,7 +36,7 @@ fi
 
 EXCLUDED_FEATURES=("${REQUIRED_FEATURES[@]}")
 
-if [[ -n "${TARGET_TRIPLE}" && "$TARGET_TRIPLE" =~ aarch64 ]] || [[ -z "${TARGET_TRIPLE}" && "$(uname -m)" = "aarch64" ]]; then
+if [[ -n "${TARGET_TRIPLE}" && "$TARGET_TRIPLE" =~ aarch64 ]] || [[ -z "${TARGET_TRIPLE}" && "$(uname -m)" =~ ^(aarch64|arm64)$ ]]; then
     EXCLUDED_FEATURES+=("crashdump" "trace_guest" "mem_profile" "hw-interrupts" "gdb" "i686-guest" "nanvix-unstable")
 fi
 

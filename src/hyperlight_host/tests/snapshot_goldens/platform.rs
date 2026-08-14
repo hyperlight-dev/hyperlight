@@ -26,12 +26,17 @@ use crate::goldens_version::GOLDENS_VERSION;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Hypervisor {
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Kvm,
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Mshv,
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     Whp,
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64", feature = "hvf")),
+        allow(dead_code)
+    )]
+    Hvf,
 }
 
 impl Hypervisor {
@@ -40,12 +45,14 @@ impl Hypervisor {
             Self::Kvm => "kvm",
             Self::Mshv => "mshv",
             Self::Whp => "whp",
+            Self::Hvf => "hvf",
         }
     }
 
     /// Detect the locally available hypervisor. Order matches the
     /// host crate's preference: `/dev/mshv` over `/dev/kvm` on
-    /// Linux, WHP on Windows.
+    /// Linux, WHP on Windows, HVF on aarch64 macOS (when the `hvf`
+    /// feature is compiled in).
     fn detect() -> Option<Self> {
         #[cfg(target_os = "linux")]
         {
@@ -61,7 +68,15 @@ impl Hypervisor {
         {
             Some(Self::Whp)
         }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "hvf"))]
+        {
+            Some(Self::Hvf)
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "windows",
+            all(target_os = "macos", target_arch = "aarch64", feature = "hvf")
+        )))]
         {
             None
         }

@@ -34,6 +34,9 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
+/// HVF (Hypervisor.framework) functionality (macOS, aarch64)
+#[cfg(hvf)]
+pub(crate) mod hvf;
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
 pub(crate) mod kvm;
@@ -83,6 +86,12 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 } else {
                     None
                 }
+            } else if #[cfg(hvf)] {
+                if hvf::is_hypervisor_present() {
+                    Some(HypervisorType::Hvf)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -108,6 +117,9 @@ pub(crate) enum HypervisorType {
 
     #[cfg(target_os = "windows")]
     Whp,
+
+    #[cfg(hvf)]
+    Hvf,
 }
 
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
@@ -132,6 +144,7 @@ compile_error!(
 );
 
 /// The various reasons a VM's vCPU can exit
+#[cfg_attr(not(any(kvm, mshv3, target_os = "windows", hvf)), allow(dead_code))]
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
@@ -155,10 +168,10 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        any(target_os = "windows", feature = "hw-interrupts"),
+        any(target_os = "windows", feature = "hw-interrupts", hvf),
         expect(
             dead_code,
-            reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
+            reason = "Retry() is never constructed on Windows, with hw-interrupts (EAGAIN causes continue instead), or on HVF"
         )
     )]
     Retry(),
@@ -222,7 +235,7 @@ pub enum CreateVmError {
     UnexpectedProcessorFeatureBankCount { advertised: u32, expected: u32 },
     #[error("Set Partition Property failed: {0}")]
     SetPartitionProperty(HypervisorError),
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", hvf))]
     #[error("Surrogate process creation failed: {0}")]
     SurrogateProcess(String),
 }
@@ -383,6 +396,12 @@ pub enum HypervisorError {
     #[cfg(target_os = "windows")]
     #[error("Windows error: {0}")]
     WindowsError(#[from] windows_result::Error),
+    #[cfg(hvf)]
+    #[error("{0}")]
+    HvfError(#[from] hyperlight_hvf::core::HvfError),
+    #[cfg(hvf)]
+    #[error("HVF surrogate error: {0}")]
+    HvfSurrogateError(String),
 }
 
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
@@ -467,10 +486,12 @@ pub(crate) trait VirtualMachine: Debug + Send {
 
     /// Single-operation vCPU reset
     #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(not(any(kvm, mshv3, hvf)), allow(dead_code))]
     fn can_reset_vcpu(&self) -> bool {
         false
     }
     #[cfg(target_arch = "aarch64")]
+    #[cfg_attr(not(any(kvm, mshv3, hvf)), allow(dead_code))]
     fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
         Err(ResetVcpuError::NotSupported)
     }

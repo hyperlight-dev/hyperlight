@@ -171,7 +171,10 @@ impl MemoryRegionType {
 /// This trait is used to parameterize [`MemoryRegion_`]
 pub trait MemoryRegionKind {
     /// The type used to represent host memory addresses.
-    type HostBaseType: Copy;
+    ///
+    /// This is only required to be [`Clone`] (not [`Copy`]) because the
+    /// macOS variant carries the name of the backing POSIX shm object.
+    type HostBaseType: Clone;
 
     /// Computes an address by adding a size to a base address.
     ///
@@ -196,7 +199,7 @@ pub trait MemoryRegionKind {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct HostGuestMemoryRegion {}
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 impl MemoryRegionKind for HostGuestMemoryRegion {
     type HostBaseType = usize;
 
@@ -276,6 +279,50 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
     }
 }
 
+/// A [`HostRegionBase`] keeps track of not just a host virtual address,
+/// but also the POSIX shm object backing it. This is used on macOS,
+/// where HVF allows only one VM per process: each sandbox's VM may live
+/// in a surrogate helper process that maps the same memory by
+/// `shm_open`-ing `name` and mapping it at `offset`.
+///
+/// The shm object spans the guard pages surrounding the usable region;
+/// `offset` is relative to the start of the object (i.e. it includes
+/// the leading guard page).
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct HostRegionBase {
+    /// Name of the backing POSIX shm object, as passed to `shm_open`.
+    /// Empty for file-backed regions (see `path`).
+    pub name: String,
+    /// Offset of the region start within the shm object or file
+    pub offset: usize,
+    /// Host virtual address of the region start
+    pub base: usize,
+    /// For file-backed regions ([`MemoryRegionType::MappedFile`]): the
+    /// filesystem path the surrogate process maps read-only instead of a
+    /// shm object.
+    pub path: Option<std::path::PathBuf>,
+}
+#[cfg(target_os = "macos")]
+impl From<HostRegionBase> for usize {
+    fn from(x: HostRegionBase) -> usize {
+        x.base
+    }
+}
+#[cfg(target_os = "macos")]
+impl MemoryRegionKind for HostGuestMemoryRegion {
+    type HostBaseType = HostRegionBase;
+
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        HostRegionBase {
+            name: base.name,
+            offset: base.offset + size,
+            base: base.base + size,
+            path: base.path,
+        }
+    }
+}
+
 /// Type for memory regions that only track guest addresses.
 ///
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -305,6 +352,35 @@ pub struct MemoryRegion_<K: MemoryRegionKind> {
 
 /// A memory region that tracks both host and guest addresses.
 pub type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
+
+#[cfg(hvf)]
+impl MemoryRegion {
+    /// Extract the surrogate-IPC view of this region: the memory object
+    /// backing it (a POSIX shm object name, or a filesystem path for
+    /// file-backed regions), the region size, and its guest physical
+    /// address.
+    ///
+    /// Used when delegating the mapping to the HVF surrogate process;
+    /// see [`hyperlight_hvf::proto::Request::MapMemory`].
+    pub(crate) fn surrogate_backing(&self) -> (hyperlight_hvf::proto::Backing, u64, u64) {
+        let start = &self.host_region.start;
+        let backing = match &start.path {
+            Some(path) => hyperlight_hvf::proto::Backing::File {
+                path: path.clone(),
+                offset: start.offset as u64,
+            },
+            None => hyperlight_hvf::proto::Backing::Shm {
+                name: start.name.clone(),
+                offset: start.offset as u64,
+            },
+        };
+        (
+            backing,
+            (self.guest_region.end - self.guest_region.start) as u64,
+            self.guest_region.start as u64,
+        )
+    }
+}
 
 /// A [`MemoryRegionKind`] for crash dump regions that always uses raw
 /// `usize` host addresses.  The crash dump path only reads host memory
@@ -353,10 +429,10 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
     ) -> usize {
         if self.regions.is_empty() {
             let guest_end = self.guest_base_phys_addr + size;
-            let host_end = <K as MemoryRegionKind>::add(self.host_base_virt_addr, size);
+            let host_end = <K as MemoryRegionKind>::add(self.host_base_virt_addr.clone(), size);
             self.regions.push(MemoryRegion_ {
                 guest_region: self.guest_base_phys_addr..guest_end,
-                host_region: self.host_base_virt_addr..host_end,
+                host_region: self.host_base_virt_addr.clone()..host_end,
                 flags,
                 region_type,
             });
@@ -366,10 +442,10 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
         #[allow(clippy::unwrap_used)]
         // we know this is safe because we check if the regions are empty above
         let last_region = self.regions.last().unwrap();
-        let host_end = <K as MemoryRegionKind>::add(last_region.host_region.end, size);
+        let host_end = <K as MemoryRegionKind>::add(last_region.host_region.end.clone(), size);
         let new_region = MemoryRegion_ {
             guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
-            host_region: last_region.host_region.end..host_end,
+            host_region: last_region.host_region.end.clone()..host_end,
             flags,
             region_type,
         };

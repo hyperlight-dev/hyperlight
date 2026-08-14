@@ -1,0 +1,31 @@
+[package]
+name = "hvf_surrogate"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+# This crate is copied into OUT_DIR and built by hyperlight-host's build.rs,
+# so a relative path would not resolve; the build script rewrites the
+# @HYPERLIGHT_HVF_PATH@ placeholder to the absolute path of the
+# hyperlight_hvf crate.
+hyperlight-hvf = { path = "@HYPERLIGHT_HVF_PATH@" }
+libc = "0.2.186"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+panic = "abort"
+
+# Note - This crate gets built during the build.rs script for the
+# hyperlight-host crate (aarch64 macOS + `hvf` feature only). Cargo package
+# does not allow for files named 'Cargo.toml' to be included in a crate so
+# we'll rename during the build.rs script so this file can be included with
+# the source for the hvf_surrogate binary in the hyperlight-host crate.

@@ -83,7 +83,7 @@ jobs:
         run: just clippy-exhaustive release
 
       - name: Verify MSRV
-        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
+        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common hyperlight-hvf
 
       - name: Check cargo features compile
         run: just check

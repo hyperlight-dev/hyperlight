@@ -101,6 +101,92 @@ fn main() -> Result<()> {
         );
     }
 
+    // aarch64 macOS with the `hvf` feature: build the HVF surrogate server
+    // binary and export its location (plus the hypervisor entitlement plist)
+    // so the host library can embed both and extract/codesign them at
+    // runtime. Mirrors the Windows surrogate pipeline above.
+    if std::env::var("CARGO_CFG_TARGET_OS")? == "macos"
+        && std::env::var("CARGO_CFG_TARGET_ARCH")? == "aarch64"
+        && std::env::var("CARGO_FEATURE_HVF").is_ok()
+    {
+        println!("cargo:rerun-if-changed=src/hvf_surrogate/src/main.rs");
+        println!("cargo:rerun-if-changed=src/hvf_surrogate/build.rs");
+        println!("cargo:rerun-if-changed=src/hvf_surrogate/Cargo.toml_temp_name");
+        println!("cargo:rerun-if-changed=../../dev/hvf-entitlements.plist");
+
+        // Copy the hvf_surrogate sources into a temp directory because we
+        // cannot include a file named `Cargo.toml` inside this package (see
+        // the Windows branch above). The copied tree lives outside the
+        // workspace, so the path dependency on `hyperlight-hvf` is rewritten
+        // to an absolute path.
+        let out_dir = std::env::var("OUT_DIR")?;
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+        std::fs::create_dir_all(format!("{out_dir}/hvf_surrogate/src"))?;
+        std::fs::copy(
+            format!("{manifest_dir}/src/hvf_surrogate/src/main.rs"),
+            format!("{out_dir}/hvf_surrogate/src/main.rs"),
+        )?;
+        std::fs::copy(
+            format!("{manifest_dir}/src/hvf_surrogate/build.rs"),
+            format!("{out_dir}/hvf_surrogate/build.rs"),
+        )?;
+        let hvf_path = std::fs::canonicalize(format!("{manifest_dir}/../hyperlight_hvf"))?;
+        let manifest = std::fs::read_to_string(format!(
+            "{manifest_dir}/src/hvf_surrogate/Cargo.toml_temp_name"
+        ))?
+        .replace("@HYPERLIGHT_HVF_PATH@", &hvf_path.to_string_lossy());
+        let target_manifest_path = format!("{out_dir}/hvf_surrogate/Cargo.toml");
+        std::fs::write(&target_manifest_path, manifest)?;
+
+        // The entitlements plist is embedded in the host library and
+        // re-applied with `codesign` when the surrogate binary is extracted.
+        let entitlements_path = format!("{out_dir}/hvf-entitlements.plist");
+        std::fs::copy(
+            format!("{manifest_dir}/../../dev/hvf-entitlements.plist"),
+            &entitlements_path,
+        )?;
+
+        // Note: CARGO_TARGET_DIR cannot be the same as the CARGO_TARGET_DIR
+        // for hyperlight-host, otherwise the build script will hang. Using a
+        // sub directory works tho! (see the Windows branch above)
+        let target_dir = std::path::PathBuf::from(&out_dir).join("../../hvf-surr");
+
+        let profile = std::env::var("PROFILE")?;
+        let build_profile = if profile.to_lowercase() == "debug" {
+            "dev".to_string()
+        } else {
+            profile.clone()
+        };
+
+        let target_triple = std::env::var("TARGET")?;
+
+        let status = std::process::Command::new("cargo")
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .arg("build")
+            .arg("--manifest-path")
+            .arg(&target_manifest_path)
+            .arg("--target")
+            .arg(&target_triple)
+            .arg("--profile")
+            .arg(build_profile)
+            .status()
+            .expect("Failed to execute cargo build for hvf_surrogate");
+
+        if !status.success() {
+            panic!("Failed to build hvf_surrogate");
+        }
+
+        let surrogate_binary_dir = std::path::PathBuf::from(&target_dir)
+            .join(&target_triple)
+            .join(&profile);
+
+        println!(
+            "cargo:rustc-env=HYPERLIGHT_HVF_SURROGATE_DIR={}",
+            &surrogate_binary_dir.display()
+        );
+        println!("cargo:rustc-env=HYPERLIGHT_HVF_ENTITLEMENTS_PATH={entitlements_path}");
+    }
+
     // Makes #[cfg(kvm)] == #[cfg(all(feature = "kvm", target_os = "linux"))]
     // Essentially the kvm and mshv3 features are ignored on windows as long as you use #[cfg(kvm)] and not #[cfg(feature = "kvm")].
     // You should never use #[cfg(feature = "kvm")] or #[cfg(feature = "mshv3")] in the codebase.
@@ -108,6 +194,7 @@ fn main() -> Result<()> {
         gdb: { all(feature = "gdb", debug_assertions, target_arch = "x86_64") },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv3: { all(feature = "mshv3", target_os = "linux") },
+        hvf: { all(feature = "hvf", target_os = "macos", target_arch = "aarch64") },
         crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },

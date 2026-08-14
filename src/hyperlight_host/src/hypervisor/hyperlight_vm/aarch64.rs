@@ -17,24 +17,36 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
+#[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicU64;
+#[cfg(any(kvm, mshv3, hvf))]
+use std::sync::atomic::{AtomicBool, AtomicU8};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
 };
+#[cfg(any(kvm, mshv3, hvf))]
+use crate::hypervisor::InterruptHandleImpl;
+#[cfg(any(kvm, mshv3))]
+use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
+#[cfg(hvf)]
+use crate::hypervisor::hvf_surrogate_manager;
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(hvf)]
+use crate::hypervisor::virtual_machine::hvf::{HvfSurrogateVm, HvfVm};
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
-#[cfg(kvm)]
+#[cfg(any(kvm, mshv3, hvf))]
 use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
-use crate::hypervisor::virtual_machine::{
-    RegisterError, ResetVcpuError, VirtualMachine, get_available_hypervisor,
-};
-use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
+use crate::hypervisor::virtual_machine::{RegisterError, ResetVcpuError};
+#[cfg(any(kvm, mshv3, hvf))]
+use crate::hypervisor::virtual_machine::{VirtualMachine, get_available_hypervisor};
+#[cfg(hvf)]
+use crate::hypervisor::{HvfInterruptTarget, MacOSInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -59,52 +71,110 @@ impl HyperlightVm {
         #[cfg(crashdump)] _rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
+        // No hypervisor backend is compiled for this platform (e.g. aarch64
+        // without the kvm, mshv3 or hvf features).
+        #[cfg(not(any(kvm, mshv3, hvf)))]
+        {
+            let _ = (
+                snapshot_mem,
+                scratch_mem,
+                root_pt_addr,
+                next_action,
+                rsp_gva,
+                page_size,
+                config,
+            );
+            Err(CreateHyperlightVmError::NoHypervisorFound)
+        }
         // TODO: support gdb on aarch64
-        type VmType = Box<dyn VirtualMachine>;
-        let vm: VmType = match get_available_hypervisor() {
-            #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
-            // TODO: mshv support
-            #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
-            None => return Err(CreateHyperlightVmError::NoHypervisorFound),
-        };
-        vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
-            .map_err(VmError::Register)?;
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
+        #[cfg(any(kvm, mshv3, hvf))]
+        {
+            type VmType = Box<dyn VirtualMachine>;
+            #[cfg(any(kvm, mshv3))]
+            let (vm, interrupt_handle): (VmType, Arc<dyn InterruptHandleImpl>) = {
+                let vm: VmType = match get_available_hypervisor() {
+                    #[cfg(kvm)]
+                    Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+                    // TODO: mshv support
+                    #[cfg(mshv3)]
+                    Some(HypervisorType::Mshv) => {
+                        return Err(CreateHyperlightVmError::NoHypervisorFound);
+                    }
+                    None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+                };
+                let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+                    Arc::new(LinuxInterruptHandle {
+                        state: AtomicU8::new(0),
+                        tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+                        retry_delay: config.get_interrupt_retry_delay(),
+                        sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+                        dropped: AtomicBool::new(false),
+                    });
+                (vm, interrupt_handle)
+            };
+            #[cfg(hvf)]
+            let (vm, interrupt_handle): (VmType, Arc<dyn InterruptHandleImpl>) = {
+                // `config` only carries Linux signal settings today.
+                let _ = config;
+                match get_available_hypervisor() {
+                    Some(HypervisorType::Hvf) => {
+                        if hvf_surrogate_manager::surrogates_disabled() {
+                            // Direct in-process backend: single VM per process.
+                            let vm = HvfVm::new().map_err(VmError::CreateVm)?;
+                            let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+                                Arc::new(MacOSInterruptHandle {
+                                    state: AtomicU8::new(0),
+                                    target: HvfInterruptTarget::Local(vm.vcpu_id()),
+                                    dropped: AtomicBool::new(false),
+                                });
+                            (Box::new(vm) as VmType, interrupt_handle)
+                        } else {
+                            // Surrogate backend: the VM lives in a pooled
+                            // surrogate process; cancellation goes over the
+                            // shared socket writer.
+                            let vm = HvfSurrogateVm::new().map_err(VmError::CreateVm)?;
+                            let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+                                Arc::new(MacOSInterruptHandle {
+                                    state: AtomicU8::new(0),
+                                    target: HvfInterruptTarget::Remote(vm.cancel_writer()),
+                                    dropped: AtomicBool::new(false),
+                                });
+                            (Box::new(vm) as VmType, interrupt_handle)
+                        }
+                    }
+                    None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+                }
+            };
+            vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
+                .map_err(VmError::Register)?;
 
-        let snapshot_slot = 0u32;
-        let scratch_slot = 1u32;
-        let vm_can_reset_vcpu = vm.can_reset_vcpu();
-        let mut ret = Self {
-            vm,
-            next_action,
-            rsp_gva,
-            interrupt_handle,
-            page_size,
+            let snapshot_slot = 0u32;
+            let scratch_slot = 1u32;
+            let vm_can_reset_vcpu = vm.can_reset_vcpu();
+            let mut ret = Self {
+                vm,
+                next_action,
+                rsp_gva,
+                interrupt_handle,
+                page_size,
 
-            next_slot: scratch_slot + 1,
-            freed_slots: Vec::new(),
+                next_slot: scratch_slot + 1,
+                freed_slots: Vec::new(),
 
-            snapshot_slot,
-            snapshot_memory: None,
-            scratch_slot,
-            scratch_memory: None,
+                snapshot_slot,
+                snapshot_memory: None,
+                scratch_slot,
+                scratch_memory: None,
 
-            mmap_regions: Vec::new(),
+                mmap_regions: Vec::new(),
 
-            vm_can_reset_vcpu,
-            pending_tlb_flush: false,
-        };
-        ret.update_snapshot_mapping(snapshot_mem)?;
-        ret.update_scratch_mapping(scratch_mem)?;
-        Ok(ret)
+                vm_can_reset_vcpu,
+                pending_tlb_flush: false,
+            };
+            ret.update_snapshot_mapping(snapshot_mem)?;
+            ret.update_scratch_mapping(scratch_mem)?;
+            Ok(ret)
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
