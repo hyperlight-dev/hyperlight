@@ -32,7 +32,7 @@ use crate::func::host_functions::TypeErasedHostFunction;
 #[derive(Default)]
 /// A Wrapper around details of functions exposed by the Host
 pub struct FunctionRegistry {
-    pub(super) functions_map: HashMap<String, FunctionEntry>,
+    functions_map: HashMap<String, FunctionEntry>,
 }
 
 /// A collection of host functions that can be supplied to a sandbox
@@ -72,6 +72,10 @@ impl HostFunctions {
     /// `write(2)`.
     pub fn empty() -> Self {
         Self(FunctionRegistry::default())
+    }
+
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = (String, FunctionEntry)> {
+        self.0.functions_map.into_iter()
     }
 
     /// Consume this `HostFunctions` and return the inner registry.

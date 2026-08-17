@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
@@ -41,6 +41,44 @@ use crate::{
 /// the `build_from_*` methods to create the sandbox from a guest binary on
 /// disk, a guest binary in memory, or a [`Snapshot`]. Every setting has a
 /// default, so a builder with no adjustments is valid.
+///
+/// # Examples
+///
+/// From a guest binary on disk:
+///
+/// ```no_run
+/// # use hyperlight_host::{Result, SandboxBuilder};
+/// # fn example() -> Result<()> {
+/// let mut sandbox = SandboxBuilder::new()
+///     .with_heap_size(1024 * 1024)
+///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .build_from_file("guest.bin")?;
+///
+/// let result: String = sandbox.call("Echo", "hello".to_string())?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// From a snapshot. The snapshot carries the guest binary and the state it was
+/// taken in, so no guest binary is given here. The builder must still register
+/// every host function the snapshot was taken with:
+///
+/// ```no_run
+/// # use hyperlight_host::{Result, SandboxBuilder};
+/// # fn example() -> Result<()> {
+/// let mut sandbox = SandboxBuilder::new()
+///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .build_from_file("guest.bin")?;
+/// let snapshot = sandbox.snapshot()?;
+///
+/// let mut restored = SandboxBuilder::new()
+///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .build_from_snapshot(snapshot)?;
+///
+/// let result: String = restored.call("Echo", "hello".to_string())?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Default)]
 pub struct SandboxBuilder {
     cfg: SandboxConfiguration,
@@ -52,7 +90,12 @@ pub struct SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Create a builder with the default configuration and no host functions.
+    /// Create a builder with the default configuration and the default host
+    /// functions.
+    ///
+    /// By default only the `HostPrint` host function is registered, which
+    /// writes guest output to the host's stdout. Replace it with
+    /// [`Self::host_print`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -82,17 +125,7 @@ impl SandboxBuilder {
 
         let mut uninitialized_sandbox = UninitializedSandbox::new(env, Some(self.cfg))?;
 
-        let mut func_registry = uninitialized_sandbox
-            .host_funcs
-            .try_lock()
-            .map_err(|_| new_error!("Error locking"))?;
-
-        let host_funcs = self.host_funcs.into_inner().functions_map;
-        for (func_name, func_entry) in host_funcs {
-            func_registry.register_host_function(func_name, func_entry);
-        }
-
-        drop(func_registry);
+        uninitialized_sandbox.host_funcs = Arc::new(Mutex::new(self.host_funcs.into_inner()));
 
         for (path, guest_base) in self.mapped_file_cow {
             uninitialized_sandbox.map_file_cow(&path, guest_base)?;
@@ -105,7 +138,7 @@ impl SandboxBuilder {
         let mut sandbox = uninitialized_sandbox.evolve()?;
 
         for region in self.mapped_memory_regions {
-            // SAFETY: the caller of `map_memory_region` guaranteed each region
+            // SAFETY: the caller of `mapped_memory_region` guaranteed each region
             // stays valid and unmodified for the lifetime of this sandbox.
             unsafe { sandbox.map_region(&region)? };
         }
@@ -139,7 +172,7 @@ impl SandboxBuilder {
         }
 
         for region in self.mapped_memory_regions {
-            // SAFETY: the caller of `map_memory_region` guaranteed each region
+            // SAFETY: the caller of `mapped_memory_region` guaranteed each region
             // stays valid and unmodified for the lifetime of this sandbox.
             unsafe { sandbox.map_region(&region)? };
         }
@@ -171,15 +204,15 @@ impl SandboxBuilder {
     /// `guest_base` must be page-aligned and lie outside the sandbox's primary
     /// shared memory region. Violations surface as an error from the
     /// `build_from_*` call, not here. Call this once per file to map several.
-    pub fn map_file_cow(&mut self, path: impl AsRef<Path>, guest_base: u64) -> &mut Self {
+    pub fn mapped_file_cow(&mut self, path: impl AsRef<Path>, guest_base: u64) -> &mut Self {
         self.mapped_file_cow
             .push((path.as_ref().to_path_buf(), guest_base));
         self
     }
 
-    /// Like [`Self::map_file_cow`], but consumes and returns `self` for chaining.
+    /// Like [`Self::mapped_file_cow`], but consumes and returns `self` for chaining.
     pub fn with_mapped_file_cow(mut self, path: impl AsRef<Path>, guest_base: u64) -> Self {
-        self.map_file_cow(path, guest_base);
+        self.mapped_file_cow(path, guest_base);
         self
     }
 
@@ -193,18 +226,18 @@ impl SandboxBuilder {
     ///
     /// The caller must ensure the host memory region remains valid and
     /// unmodified for the lifetime of the sandbox this builder produces.
-    pub unsafe fn map_memory_region(&mut self, region: MemoryRegion) -> &mut Self {
+    pub unsafe fn mapped_memory_region(&mut self, region: MemoryRegion) -> &mut Self {
         self.mapped_memory_regions.push(region);
         self
     }
 
-    /// Like [`Self::map_memory_region`], but consumes and returns `self` for chaining.
+    /// Like [`Self::mapped_memory_region`], but consumes and returns `self` for chaining.
     ///
     /// # Safety
     ///
-    /// Same as [`Self::map_memory_region`].
+    /// Same as [`Self::mapped_memory_region`].
     pub unsafe fn with_mapped_memory_region(mut self, region: MemoryRegion) -> Self {
-        unsafe { self.map_memory_region(region) };
+        unsafe { self.mapped_memory_region(region) };
         self
     }
 
@@ -234,6 +267,9 @@ impl SandboxBuilder {
 
 impl SandboxBuilder {
     /// Registers a host function that the guest can call.
+    ///
+    /// Note: registering under the name `HostPrint` overrides guest printing.
+    /// Prefer [`Self::host_print`], which checks the signature at compile time.
     pub fn host_function<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
         name: impl AsRef<str>,
@@ -248,9 +284,7 @@ impl SandboxBuilder {
             return_type: Output::TYPE,
         };
 
-        self.host_funcs
-            .inner_mut()
-            .register_host_function(name, entry);
+        self.host_funcs.inner_mut().register_host_function(name, entry);
         self
     }
 
@@ -283,12 +317,12 @@ impl SandboxBuilder {
     /// Registers every host function in `host_funcs`.
     ///
     /// Entries whose names are already registered are overwritten.
+    ///
+    /// Note: an entry named `HostPrint` overrides guest printing. Prefer
+    /// [`Self::host_print`], which checks the signature at compile time.
     pub fn host_functions(&mut self, host_funcs: HostFunctions) -> &mut Self {
-        let host_funcs = host_funcs.into_inner().functions_map;
-        for (func_name, func_entry) in host_funcs {
-            self.host_funcs
-                .inner_mut()
-                .register_host_function(func_name, func_entry);
+        for (func_name, func_entry) in host_funcs.into_iter() {
+            self.host_funcs.inner_mut().register_host_function(func_name, func_entry);
         }
         self
     }
