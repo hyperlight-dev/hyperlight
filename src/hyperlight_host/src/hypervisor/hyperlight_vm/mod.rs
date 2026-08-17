@@ -19,6 +19,10 @@ mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
+
+#[cfg(all(test, not(gdb)))]
+pub(crate) mod test_support;
+
 #[cfg(gdb)]
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -532,11 +536,14 @@ impl HyperlightVm {
         let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         let rgn = snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
 
-        if let Some(old_snapshot) = self.snapshot_memory.replace(snapshot) {
+        // Keep the backing memory alive until its VM mapping is removed.
+        if let Some(old_snapshot) = self.snapshot_memory.as_ref() {
             let old_rgn = old_snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
             self.vm.unmap_memory((self.snapshot_slot, &old_rgn))?;
         }
+        self.snapshot_memory = None;
         unsafe { self.vm.map_memory((self.snapshot_slot, &rgn))? };
+        self.snapshot_memory = Some(snapshot);
 
         Ok(())
     }
@@ -549,12 +556,15 @@ impl HyperlightVm {
         let guest_base = hyperlight_common::layout::scratch_base_gpa(scratch.mem_size());
         let rgn = scratch.mapping_at(guest_base, MemoryRegionType::Scratch);
 
-        if let Some(old_scratch) = self.scratch_memory.replace(scratch) {
+        // Keep the backing memory alive until its VM mapping is removed.
+        if let Some(old_scratch) = self.scratch_memory.as_ref() {
             let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
             let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
             self.vm.unmap_memory((self.scratch_slot, &old_rgn))?;
         }
+        self.scratch_memory = None;
         unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
+        self.scratch_memory = Some(scratch);
 
         Ok(())
     }

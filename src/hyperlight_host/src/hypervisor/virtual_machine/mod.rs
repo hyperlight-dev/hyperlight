@@ -390,6 +390,9 @@ pub enum UnmapMemoryError {
 /// Implementation-specific Hypervisor error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum HypervisorError {
+    #[cfg(test)]
+    #[error("Injected hypervisor error")]
+    Injected,
     #[cfg(kvm)]
     #[error("KVM error: {0}")]
     KvmError(#[from] kvm_ioctls::Error),

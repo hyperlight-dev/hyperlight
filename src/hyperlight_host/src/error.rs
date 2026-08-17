@@ -201,6 +201,10 @@ pub enum HyperlightError {
     #[error("The sandbox was poisoned")]
     PoisonedSandbox,
 
+    /// The sandbox cannot safely perform further operations and must be discarded.
+    #[error("The sandbox is unrecoverable and must be discarded")]
+    UnrecoverableSandbox,
+
     /// Raw pointer is less than base address
     #[error("Raw pointer ({0:?}) was less than the base address ({1})")]
     RawPointerLessThanBaseAddress(RawPtr, u64),
@@ -383,6 +387,7 @@ impl HyperlightError {
             | HyperlightError::UnexpectedNoOfArguments(_, _)
             | HyperlightError::UnexpectedParameterValueType(_, _)
             | HyperlightError::UnexpectedReturnValueType(_, _)
+            | HyperlightError::UnrecoverableSandbox
             | HyperlightError::UTF8StringConversionFailure(_)
             | HyperlightError::VectorCapacityIncorrect(_, _, _)
             | HyperlightError::SharedMemory(_) => false,

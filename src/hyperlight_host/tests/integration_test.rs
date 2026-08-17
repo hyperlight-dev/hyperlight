@@ -65,11 +65,11 @@ fn interrupt_host_call() {
             matches!(&result, HyperlightError::ExecutionCanceledByHost()),
             "unexpected error: {result:?}"
         );
-        assert!(sandbox.poisoned());
+        assert!(sandbox.status().is_poisoned());
 
         // Restore from snapshot to clear poison
         sandbox.restore(snapshot.clone()).unwrap();
-        assert!(!sandbox.poisoned());
+        assert!(sandbox.status().is_ready());
 
         thread.join().unwrap();
     });
@@ -99,11 +99,11 @@ fn interrupt_in_progress_guest_call() {
             matches!(&res, HyperlightError::ExecutionCanceledByHost()),
             "unexpected error: {res:?}"
         );
-        assert!(sbox1.poisoned());
+        assert!(sbox1.status().is_poisoned());
 
         // Restore from snapshot to clear poison
         sbox1.restore(snapshot.clone()).unwrap();
-        assert!(!sbox1.poisoned());
+        assert!(sbox1.status().is_ready());
 
         barrier.wait();
         // Make sure we can still call guest functions after the VM was interrupted
@@ -196,7 +196,7 @@ fn interrupt_same_thread() {
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
             _ => panic!("Unexpected return"),
         };
-        if sbox2.poisoned() {
+        if sbox2.status().is_poisoned() {
             sbox2.restore(snapshot2.clone()).unwrap();
         }
         sbox3
@@ -243,7 +243,7 @@ fn interrupt_same_thread_no_barrier() {
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
             other => panic!("Unexpected return: {:?}", other),
         };
-        if sbox2.poisoned() {
+        if sbox2.status().is_poisoned() {
             sbox2.restore(snapshot2.clone()).unwrap();
         }
         sbox3
@@ -275,9 +275,9 @@ fn interrupt_moved_sandbox() {
             matches!(&res, HyperlightError::ExecutionCanceledByHost()),
             "unexpected error: {res:?}"
         );
-        assert!(sbox1.poisoned());
+        assert!(sbox1.status().is_poisoned());
         sbox1.restore(snapshot1.clone()).unwrap();
-        assert!(!sbox1.poisoned());
+        assert!(sbox1.status().is_ready());
     });
 
     let thread2 = thread::spawn(move || {
@@ -333,11 +333,11 @@ fn interrupt_custom_signal_no_and_retry_delay() {
                 matches!(&res, HyperlightError::ExecutionCanceledByHost()),
                 "unexpected error: {res:?}"
             );
-            assert!(sbox1.poisoned());
+            assert!(sbox1.status().is_poisoned());
             // immediately reenter another guest function call after having being cancelled,
             // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
             sbox1.restore(snapshot1.clone()).unwrap();
-            assert!(!sbox1.poisoned());
+            assert!(sbox1.status().is_ready());
         }
         thread.join().expect("Thread should finish");
     });
@@ -572,7 +572,7 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 
         // The sandbox should be poisoned because the guest didn't complete normally
         assert!(
-            sbox.poisoned(),
+            sbox.status().is_poisoned(),
             "Sandbox should be poisoned after invalid OUT"
         );
     });
@@ -1141,7 +1141,7 @@ fn interrupt_random_kill_stress_test() {
                         let sandbox_wrapper = guard.sandbox_with_snapshot.as_mut().unwrap();
 
                         // Make sure the sandbox is poisoned
-                        assert!(sandbox_wrapper.sandbox.poisoned());
+                        assert!(sandbox_wrapper.sandbox.status().is_poisoned());
 
                         // Try to restore the snapshot
                         if let Err(e) = sandbox_wrapper

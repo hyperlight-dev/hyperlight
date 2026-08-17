@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configuration, host functions, init data and memory mappings, then builds a
   `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
   snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
+* Add `MultiUseSandbox::status()`, which returns `SandboxStatus` for inspecting sandbox lifecycle state (poisoned, unrecoverable).
 
 ### Changed
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.
@@ -17,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resets to a clean default. On KVM the guest may only read or write declared
   MSRs, on MSHV and WHP this is not enforced. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
 * **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
+* Deprecate `MultiUseSandbox::poisoned` in favor of `MultiUseSandbox::status().is_poisoned()`.
 
 Certain fixed guest addresses were changed on AArch64 to more easily
 accommodate 16k pages without wasting memory. Snapshots taken from
@@ -26,6 +28,7 @@ hyperlight versions.
 ### Removed
 
 ### Fixed
+* Mark a sandbox unrecoverable in rare cases when snapshot restore fails while updating its VM mappings.
 * Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
 * Reject malformed OCI snapshot metadata and non-regular artifact files during load.
 * Reset XCR0 during x86 snapshot restore.
