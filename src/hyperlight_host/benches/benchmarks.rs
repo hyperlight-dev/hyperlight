@@ -10,9 +10,9 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_host::GuestBinary;
+use hyperlight_host::SandboxBuilder;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
-use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
+use hyperlight_host::sandbox::MultiUseSandbox;
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
@@ -31,28 +31,14 @@ enum SandboxSize {
 }
 
 impl SandboxSize {
-    /// Returns the configuration for this sandbox size.
-    /// Returns None for Default to use hyperlight's default configuration.
-    fn config(&self) -> Option<SandboxConfiguration> {
+    /// Returns a builder configured for this sandbox size.
+    fn builder(&self) -> SandboxBuilder {
+        let builder = SandboxBuilder::new();
         match self {
-            Self::Default => None,
-            Self::Small => {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(SMALL_HEAP_SIZE);
-                Some(cfg)
-            }
-            Self::Medium => {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(MEDIUM_HEAP_SIZE);
-                cfg.set_scratch_size(0x50000);
-                Some(cfg)
-            }
-            Self::Large => {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(LARGE_HEAP_SIZE);
-                cfg.set_scratch_size(0x100000);
-                Some(cfg)
-            }
+            Self::Default => builder,
+            Self::Small => builder.heap_size(SMALL_HEAP_SIZE),
+            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x50000),
+            Self::Large => builder.heap_size(LARGE_HEAP_SIZE).scratch_size(0x100000),
         }
     }
 
@@ -72,31 +58,15 @@ impl SandboxSize {
     }
 }
 
-fn create_uninit_sandbox_with_size(size: SandboxSize) -> UninitializedSandbox {
-    let path = simple_guest_as_pathbuf();
-    UninitializedSandbox::new(GuestBinary::FilePath(path), size.config()).unwrap()
-}
-
 fn create_multiuse_sandbox_with_size(size: SandboxSize) -> MultiUseSandbox {
-    create_uninit_sandbox_with_size(size).evolve().unwrap()
+    size.builder()
+        .build_from_file(simple_guest_as_pathbuf())
+        .unwrap()
 }
 
 // ============================================================================
 // Benchmark Category: Sandbox Lifecycle
 // ============================================================================
-
-fn bench_create_uninitialized(b: &mut criterion::Bencher, size: SandboxSize) {
-    // Ideally wanted to use b.iter_with_large_drop, but runs out of memory on windows runners: "The paging file is too small for this operation to complete."
-    b.iter_batched(
-        || (),
-        |_| create_uninit_sandbox_with_size(size),
-        criterion::BatchSize::PerIteration,
-    );
-}
-
-fn bench_create_uninitialized_and_drop(b: &mut criterion::Bencher, size: SandboxSize) {
-    b.iter(|| create_uninit_sandbox_with_size(size));
-}
 
 fn bench_create_initialized(b: &mut criterion::Bencher, size: SandboxSize) {
     // Ideally wanted to use b.iter_with_large_drop, but runs out of memory on windows runners: "The paging file is too small for this operation to complete."
@@ -113,19 +83,6 @@ fn bench_create_initialized_and_drop(b: &mut criterion::Bencher, size: SandboxSi
 
 fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sandboxes");
-
-    for size in SandboxSize::all() {
-        group.bench_function(format!("create_uninitialized/{}", size.name()), |b| {
-            bench_create_uninitialized(b, size)
-        });
-    }
-
-    for size in SandboxSize::all() {
-        group.bench_function(
-            format!("create_uninitialized_and_drop/{}", size.name()),
-            |b| bench_create_uninitialized_and_drop(b, size),
-        );
-    }
 
     for size in SandboxSize::all() {
         group.bench_function(format!("create_initialized/{}", size.name()), |b| {
@@ -172,13 +129,11 @@ fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) 
 }
 
 fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: SandboxSize) {
-    let mut uninitialized_sandbox = create_uninit_sandbox_with_size(size);
-
-    uninitialized_sandbox
-        .register("HostAdd", |a: i32, b: i32| Ok(a + b))
+    let mut multiuse_sandbox = size
+        .builder()
+        .host_function("HostAdd", |a: i32, b: i32| Ok(a + b))
+        .build_from_file(simple_guest_as_pathbuf())
         .unwrap();
-
-    let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
     b.iter(|| {
         multiuse_sandbox
@@ -397,17 +352,14 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let large_vec = vec![0u8; SIZE];
         let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
-        let mut config = SandboxConfiguration::default();
-        config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
-        config.set_heap_size(SIZE as u64 * 15);
-        config.set_scratch_size(6 * SIZE + 4 * (1024 * 1024)); // Big enough for the IO data regions and enough of the heap to be used
-
-        let sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_pathbuf()),
-            Some(config),
-        )
-        .unwrap();
-        let mut sandbox = sandbox.evolve().unwrap();
+        let mut sandbox = SandboxBuilder::new()
+            // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
+            .input_data_size(2 * SIZE + (1024 * 1024))
+            .heap_size(SIZE as u64 * 15)
+            // Big enough for the IO data regions and enough of the heap to be used
+            .scratch_size(6 * SIZE + 4 * (1024 * 1024))
+            .build_from_file(simple_guest_as_pathbuf())
+            .unwrap();
 
         b.iter_with_setup(
             || (large_vec.clone(), large_string.clone()),
@@ -482,12 +434,9 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(25 * 1024);
-
-        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
-            .unwrap()
-            .evolve()
+        let mut sandbox = SandboxBuilder::new()
+            .input_data_size(25 * 1024)
+            .build_from_file(guest_path)
             .unwrap();
 
         b.iter_with_setup(

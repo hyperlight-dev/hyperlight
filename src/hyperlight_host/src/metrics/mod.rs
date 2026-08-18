@@ -86,18 +86,16 @@ mod tests {
     use metrics_util::CompositeKey;
 
     use super::*;
-    use crate::{GuestBinary, UninitializedSandbox};
+    use crate::SandboxBuilder;
 
     #[test]
     fn test_metrics_are_emitted() {
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let snapshot = with_local_recorder(&recorder, || {
-            let uninit =
-                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
-                    .unwrap();
-
-            let mut multi = uninit.evolve().unwrap();
+            let mut multi = SandboxBuilder::new()
+                .build_from_file(simple_guest_as_pathbuf())
+                .unwrap();
             let interrupt_handle = multi.interrupt_handle();
 
             // interrupt the guest function call to "Spin" after 1 second

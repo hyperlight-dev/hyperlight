@@ -324,13 +324,10 @@ impl Snapshot {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::SandboxBuilder;
     /// # use hyperlight_host::sandbox::snapshot::OciTag;
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
-    ///     GuestBinary::FilePath("guest.bin".into()),
-    ///     None,
-    /// )?.evolve()?;
+    /// let mut sandbox = SandboxBuilder::new().build_from_file("guest.bin")?;
     ///
     /// // Capture the initialized state and write it to an OCI layout on disk.
     /// let snapshot = sandbox.snapshot()?;

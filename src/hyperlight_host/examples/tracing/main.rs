@@ -5,8 +5,7 @@ extern crate hyperlight_host;
 use std::sync::{Arc, Barrier};
 use std::thread::{JoinHandle, spawn};
 
-use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::{GuestBinary, Result};
+use hyperlight_host::{Result, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 use tracing_forest::ForestLayer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -54,11 +53,9 @@ fn run_example() -> Result<()> {
             let _entered = span.enter();
 
             // Create a new sandbox.
-            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)?;
-            usandbox.register_print(fn_writer)?;
-
-            // Initialize the sandbox.
-            let mut multiuse_sandbox = usandbox.evolve()?;
+            let mut multiuse_sandbox = SandboxBuilder::new()
+                .host_print(fn_writer)
+                .build_from_file(path)?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -83,11 +80,8 @@ fn run_example() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let usandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)?;
-
-    // Initialize the sandbox.
-    let mut multiuse_sandbox = usandbox.evolve()?;
+    let mut multiuse_sandbox =
+        SandboxBuilder::new().build_from_file(hyperlight_guest_path.clone())?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.

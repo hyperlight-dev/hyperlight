@@ -3,9 +3,7 @@
 
 use std::path::PathBuf;
 
-use hyperlight_host::func::HostFunction;
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
 /// Returns the path to the Rust simple guest binary.
@@ -18,127 +16,84 @@ fn c_guest_path() -> PathBuf {
     c_simple_guest_as_pathbuf()
 }
 
-/// Creates a new Rust guest MultiUseSandbox.
-pub fn new_rust_sandbox() -> MultiUseSandbox {
-    UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None)
-        .unwrap()
-        .evolve()
-        .unwrap()
-}
-
-/// Creates a new Rust guest UninitializedSandbox.
-pub fn new_rust_uninit_sandbox() -> UninitializedSandbox {
-    UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None).unwrap()
-}
-
 // =============================================================================
 // Rust guest helpers
 // =============================================================================
+
+/// Builds a Rust guest MultiUseSandbox from `builder`.
+pub fn build_rust_sandbox(builder: SandboxBuilder) -> MultiUseSandbox {
+    builder.build_from_file(rust_guest_path()).unwrap()
+}
+
+/// Creates a new Rust guest MultiUseSandbox.
+pub fn new_rust_sandbox() -> MultiUseSandbox {
+    build_rust_sandbox(SandboxBuilder::new())
+}
 
 /// Runs a test with a Rust guest MultiUseSandbox.
 pub fn with_rust_sandbox<F>(f: F)
 where
     F: FnOnce(MultiUseSandbox),
 {
-    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None)
-        .unwrap()
-        .evolve()
-        .unwrap();
-    f(sandbox);
+    f(new_rust_sandbox());
 }
 
-/// Runs a test with a Rust guest MultiUseSandbox using custom configuration.
-pub fn with_rust_sandbox_cfg<F>(cfg: SandboxConfiguration, f: F)
+/// Runs a test with a Rust guest MultiUseSandbox built from `builder`.
+pub fn with_rust_sandbox_from<F>(builder: SandboxBuilder, f: F)
 where
     F: FnOnce(MultiUseSandbox),
 {
-    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), Some(cfg))
-        .unwrap()
-        .evolve()
-        .unwrap();
-    f(sandbox);
-}
-
-/// Runs a test with a Rust guest UninitializedSandbox.
-pub fn with_rust_uninit_sandbox<F>(f: F)
-where
-    F: FnOnce(UninitializedSandbox),
-{
-    let sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None).unwrap();
-    f(sandbox);
+    f(build_rust_sandbox(builder));
 }
 
 // =============================================================================
 // C guest helpers
 // =============================================================================
 
+/// Builds a C guest MultiUseSandbox from `builder`.
+pub fn build_c_sandbox(builder: SandboxBuilder) -> MultiUseSandbox {
+    builder.build_from_file(c_guest_path()).unwrap()
+}
+
 /// Runs a test with a C guest MultiUseSandbox.
 pub fn with_c_sandbox<F>(f: F)
 where
     F: FnOnce(MultiUseSandbox),
 {
-    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(c_guest_path()), None)
-        .unwrap()
-        .evolve()
-        .unwrap();
-    f(sandbox);
+    f(build_c_sandbox(SandboxBuilder::new()));
 }
 
-/// Runs a test with a C guest UninitializedSandbox.
-pub fn with_c_uninit_sandbox<F>(f: F)
+/// Runs a test with a C guest MultiUseSandbox built from `builder`.
+pub fn with_c_sandbox_from<F>(builder: SandboxBuilder, f: F)
 where
-    F: FnOnce(UninitializedSandbox),
+    F: FnOnce(MultiUseSandbox),
 {
-    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(c_guest_path()), None).unwrap();
-    f(sandbox);
+    f(build_c_sandbox(builder));
 }
 
 // =============================================================================
 // Both guests helpers (run test with Rust AND C guests)
 // =============================================================================
 
-/// Runs a test with both Rust and C guest MultiUseSandboxes.
-pub fn with_all_sandboxes_cfg<F>(cfg: Option<SandboxConfiguration>, f: F)
+/// Runs a test once per guest binary, passing the path to it.
+///
+/// Use this when the test needs to configure the sandbox itself, for instance
+/// to register a host function that owns per-guest state.
+pub fn with_all_guests<F>(f: F)
 where
-    F: Fn(MultiUseSandbox),
+    F: Fn(PathBuf),
 {
     for path in [rust_guest_path(), c_guest_path()] {
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), cfg)
-            .unwrap()
-            .evolve()
-            .unwrap();
-        f(sandbox);
+        f(path);
     }
 }
+
 /// Runs a test with both Rust and C guest MultiUseSandboxes.
 pub fn with_all_sandboxes<F>(f: F)
 where
     F: Fn(MultiUseSandbox),
 {
-    with_all_sandboxes_cfg(None, f);
-}
-
-/// Runs a test with both Rust and C guest UninitializedSandboxes.
-pub fn with_all_uninit_sandboxes<F>(f: F)
-where
-    F: Fn(UninitializedSandbox),
-{
-    for path in [rust_guest_path(), c_guest_path()] {
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-        f(sandbox);
-    }
-}
-
-/// Runs a test with both Rust and C guest MultiUseSandboxes, with a print writer.
-pub fn with_all_sandboxes_with_writer<F>(writer: HostFunction<i32, (String,)>, f: F)
-where
-    F: Fn(MultiUseSandbox),
-{
-    for path in [rust_guest_path(), c_guest_path()] {
-        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-        sandbox.register_print(writer.clone()).unwrap();
-        let sandbox = sandbox.evolve().unwrap();
-        f(sandbox);
-    }
+    with_all_guests(|path| {
+        f(SandboxBuilder::new().build_from_file(path).unwrap());
+    });
 }

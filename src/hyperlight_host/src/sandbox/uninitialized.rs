@@ -428,7 +428,7 @@ mod tests {
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
 
         let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
+        let mut sandbox = uninitialized_sandbox.evolve().unwrap();
 
         let res = sandbox
             .call::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
@@ -473,7 +473,7 @@ mod tests {
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
-        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
+        let _sandbox = uninitialized_sandbox.evolve().unwrap();
 
         // Test with a valid guest binary buffer
 
@@ -1153,8 +1153,8 @@ mod tests {
             .expect("Failed to create second sandbox from snapshot");
 
             // Both should be able to evolve independently
-            let _evolved1: MultiUseSandbox = sandbox1.evolve().expect("Failed to evolve sandbox1");
-            let _evolved2: MultiUseSandbox = sandbox2.evolve().expect("Failed to evolve sandbox2");
+            let _evolved1 = sandbox1.evolve().expect("Failed to evolve sandbox1");
+            let _evolved2 = sandbox2.evolve().expect("Failed to evolve sandbox2");
         }
 
         // Test 2: Create snapshot with custom heap size
@@ -1177,7 +1177,7 @@ mod tests {
             )
             .expect("Failed to create sandbox from snapshot with custom heap");
 
-            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 3: Create snapshot with custom scratch size
@@ -1200,7 +1200,7 @@ mod tests {
             )
             .expect("Failed to create sandbox from snapshot with custom stack");
 
-            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 4: Create snapshot with custom input/output buffer sizes
@@ -1224,7 +1224,7 @@ mod tests {
             )
             .expect("Failed to create sandbox from snapshot with custom buffers");
 
-            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 5: Create snapshot with all custom settings
@@ -1265,9 +1265,9 @@ mod tests {
             )
             .expect("Failed to create sandbox3 from fully customized snapshot");
 
-            let _evolved1: MultiUseSandbox = sandbox1.evolve().expect("Failed to evolve sandbox1");
-            let _evolved2: MultiUseSandbox = sandbox2.evolve().expect("Failed to evolve sandbox2");
-            let _evolved3: MultiUseSandbox = sandbox3.evolve().expect("Failed to evolve sandbox3");
+            let _evolved1 = sandbox1.evolve().expect("Failed to evolve sandbox1");
+            let _evolved2 = sandbox2.evolve().expect("Failed to evolve sandbox2");
+            let _evolved3 = sandbox3.evolve().expect("Failed to evolve sandbox3");
         }
 
         // Test 6: Create snapshot from binary buffer instead of file path
@@ -1287,7 +1287,7 @@ mod tests {
             )
             .expect("Failed to create sandbox from buffer-based snapshot");
 
-            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 7: Register host functions on sandboxes created from snapshot
@@ -1311,7 +1311,7 @@ mod tests {
                 .register("CustomAdd", |a: i32, b: i32| Ok(a + b))
                 .expect("Failed to register custom function");
 
-            let evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let evolved = sandbox.evolve().expect("Failed to evolve sandbox");
 
             // Verify the host function was registered
             let host_funcs = evolved
@@ -1348,7 +1348,7 @@ mod tests {
             )
             .expect("Failed to create sandbox from snapshot with init data");
 
-            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 9: Create snapshot from existing sandbox

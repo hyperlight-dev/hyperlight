@@ -11,8 +11,7 @@ use std::io::stdin;
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread::{JoinHandle, spawn};
 
-use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::{GuestBinary, Result as HyperlightResult};
+use hyperlight_host::{Result as HyperlightResult, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{KeyValue, global};
@@ -110,12 +109,9 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 let _entered = span.enter();
 
                 // Create a new sandbox.
-                let mut usandbox =
-                    UninitializedSandbox::new(GuestBinary::FilePath(path.clone()), None)?;
-                usandbox.register_print(fn_writer)?;
-
-                // Initialize the sandbox.
-                let mut multiuse_sandbox = usandbox.evolve()?;
+                let mut multiuse_sandbox = SandboxBuilder::new()
+                    .host_print(fn_writer)
+                    .build_from_file(path.clone())?;
 
                 // Call a guest function 5 times to generate some log entries.
                 for _ in 0..5 {

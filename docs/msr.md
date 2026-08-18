@@ -12,7 +12,7 @@ the supplied snapshot, regardless of prior execution in the sandbox.
 
 A snapshot saves the value of two groups of MSRs:
 
-* The MSRs you list with `SandboxConfiguration::guest_msrs`. List the ones your
+* The MSRs you list with `SandboxBuilder::guest_msrs`. List the ones your
   guest reads or writes.
 * A small fixed core the guest can change without a `WRMSR`, so Hyperlight
   always saves it: `KERNEL_GS_BASE` (via `SWAPGS`), `TSC`, and active SSP on
@@ -58,7 +58,7 @@ set. Restore applies each captured value and scrubs the rest of the reset set to
 the destination baseline, so the destination configuration alone governs guest
 MSR access.
 
-`SandboxConfiguration::guest_msrs` accepts at most 16 distinct indices. KVM
+`SandboxBuilder::guest_msrs` accepts at most 16 distinct indices. KVM
 also supports at most 16 contiguous filter ranges. Each declared index must be
 resettable, host-readable, and host-writable. Write-only command MSRs such as
 `PRED_CMD` and `FLUSH_CMD` hold no resettable state and cannot be declared.

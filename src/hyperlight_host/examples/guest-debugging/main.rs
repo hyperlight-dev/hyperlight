@@ -2,56 +2,36 @@
 // Copyright 2025 The Hyperlight Authors.
 use std::thread;
 
-use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::SandboxBuilder;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 
-/// Build a sandbox configuration that enables GDB debugging when the `gdb` feature is enabled.
-fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
+/// Build a sandbox builder that enables GDB debugging when the `gdb` feature is enabled.
+fn debuggable_builder() -> SandboxBuilder {
+    let builder = SandboxBuilder::new();
+
     #[cfg(gdb)]
-    {
-        let mut cfg = SandboxConfiguration::default();
-        let debug_info = DebugInfo { port: 8080 };
-        cfg.set_guest_debug_info(debug_info);
+    let builder = builder.guest_debug_info(DebugInfo { port: 8080 });
 
-        Some(cfg)
-    }
-
-    #[cfg(not(gdb))]
-    None
+    builder
 }
 
 fn main() -> hyperlight_host::Result<()> {
-    let cfg = get_sandbox_cfg();
-
-    // Create an uninitialized sandbox with a guest binary and debug enabled
-    let mut uninitialized_sandbox_dbg = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
-        cfg, // sandbox configuration
-    )?;
-
-    // Create an uninitialized sandbox with a guest binary
-    let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
-        None, // sandbox configuration
-    )?;
-
-    // Register a host functions
-    uninitialized_sandbox_dbg.register("Sleep5Secs", || {
+    let sleep_5_secs = || {
         thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
-    })?;
-    // Register a host functions
-    uninitialized_sandbox.register("Sleep5Secs", || {
-        thread::sleep(std::time::Duration::from_secs(5));
-        Ok(())
-    })?;
-    // Note: This function is unused, it's just here for demonstration purposes
+    };
+    // Note: the host function is unused, it's just here for demonstration purposes
 
-    // Initialize sandboxes to be able to call host functions
-    let mut multi_use_sandbox_dbg: MultiUseSandbox = uninitialized_sandbox_dbg.evolve()?;
-    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
+    // Build a sandbox with a guest binary and debug enabled
+    let mut multi_use_sandbox_dbg = debuggable_builder()
+        .host_function("Sleep5Secs", sleep_5_secs)
+        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
+
+    // Build a sandbox with a guest binary
+    let mut multi_use_sandbox = SandboxBuilder::new()
+        .host_function("Sleep5Secs", sleep_5_secs)
+        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
 
     // Call guest function
     multi_use_sandbox_dbg
@@ -353,20 +333,14 @@ mod tests {
     #[test]
     #[serial]
     fn test_gdb_from_snapshot() {
-        use hyperlight_host::HostFunctions;
-
         const PORT: u16 = 8081;
 
         let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-from-snapshot");
 
         // Build a sandbox the normal way and snapshot it in-memory.
-        let mut producer: MultiUseSandbox = UninitializedSandbox::new(
-            hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
-            None,
-        )
-        .unwrap()
-        .evolve()
-        .unwrap();
+        let mut producer = SandboxBuilder::new()
+            .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())
+            .unwrap();
         let snap = producer.snapshot().unwrap();
 
         // Order matters. The gdb stub event loop must enter (i.e.
@@ -379,11 +353,9 @@ mod tests {
         // here before the client is launched below.
         let snap_thread = snap.clone();
         let sandbox_thread = thread::spawn(move || -> Result<()> {
-            let mut cfg = SandboxConfiguration::default();
-            cfg.set_guest_debug_info(DebugInfo { port: PORT });
-
-            let mut sbox =
-                MultiUseSandbox::from_snapshot(snap_thread, HostFunctions::default(), Some(cfg))?;
+            let mut sbox = SandboxBuilder::new()
+                .guest_debug_info(DebugInfo { port: PORT })
+                .build_from_snapshot(snap_thread)?;
             sbox.call::<i32>(
                 "PrintOutput",
                 "Hello from a from_snapshot sandbox\n".to_string(),

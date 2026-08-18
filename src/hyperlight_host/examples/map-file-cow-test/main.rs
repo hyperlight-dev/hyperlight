@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
-// Test that map_file_cow works end-to-end: UninitializedSandbox::new →
-// map_file_cow → evolve → guest function call. Exercises the cross-process
+// Test that mapping a file copy-on-write works end-to-end: build a sandbox with
+// a mapped file, then call a guest function. Exercises the cross-process
 // section mapping via MapViewOfFileNuma2 on Windows (the surrogate process
 // must be able to map the file-backed section).
 //
@@ -17,30 +17,20 @@
 
 use std::path::Path;
 
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::SandboxBuilder;
 
 fn run_once(test_file: &Path, label: &str) -> hyperlight_host::Result<()> {
-    let mut config = SandboxConfiguration::default();
-    config.set_heap_size(4 * 1024 * 1024);
-    config.set_scratch_size(64 * 1024 * 1024);
-
-    let mut usbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
-        Some(config),
-    )?;
-    eprintln!("[{label}] UninitializedSandbox::new OK");
-
-    usbox.map_file_cow(test_file, 0xC000_0000)?;
+    let mut sandbox = SandboxBuilder::new()
+        .heap_size(4 * 1024 * 1024)
+        .scratch_size(64 * 1024 * 1024)
+        .mapped_file_cow(test_file, 0xC000_0000)
+        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
     eprintln!(
-        "[{label}] map_file_cow OK ({} bytes)",
+        "[{label}] sandbox built with a {} byte file mapped",
         std::fs::metadata(test_file)?.len()
     );
 
-    let mut mu: MultiUseSandbox = usbox.evolve()?;
-    eprintln!("[{label}] evolve OK");
-
-    let result: String = mu.call("Echo", format!("{label}: map_file_cow works!"))?;
+    let result: String = sandbox.call("Echo", format!("{label}: mapped_file_cow works!"))?;
     eprintln!("[{label}] guest returned: {result}");
     Ok(())
 }

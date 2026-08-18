@@ -4,8 +4,7 @@ extern crate hyperlight_host;
 use std::sync::{Arc, Barrier};
 use std::thread::{JoinHandle, spawn};
 
-use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::{GuestBinary, Result};
+use hyperlight_host::{Result, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
 // Run this rust example with the flag --features "function_call_metrics" to enable more metrics to be emitted
@@ -37,11 +36,9 @@ fn do_hyperlight_stuff() {
         let path = hyperlight_guest_path.clone();
         let handle = spawn(move || -> Result<()> {
             // Create a new sandbox.
-            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)?;
-            usandbox.register_print(fn_writer)?;
-
-            // Initialize the sandbox.
-            let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
+            let mut multiuse_sandbox = SandboxBuilder::new()
+                .host_print(fn_writer)
+                .build_from_file(path)?;
 
             // Call a guest function 5 times to generate some metrics.
             for _ in 0..5 {
@@ -67,12 +64,9 @@ fn do_hyperlight_stuff() {
     }
 
     // Create a new sandbox.
-    let usandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)
-            .expect("Failed to create UninitializedSandbox");
-
-    // Initialize the sandbox.
-    let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
+    let mut multiuse_sandbox = SandboxBuilder::new()
+        .build_from_file(hyperlight_guest_path.clone())
+        .expect("Failed to build sandbox");
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     const NUM_CALLS: i32 = 5;

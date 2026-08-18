@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
-use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::{GuestBinary, Result};
+use hyperlight_host::{Result, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
@@ -15,9 +14,7 @@ fn main() -> Result<()> {
     let simple_guest_path = simple_guest_as_pathbuf();
 
     // Create a new sandbox.
-    let usandbox = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)?;
-
-    let mut sbox = usandbox.evolve().unwrap();
+    let mut sbox = SandboxBuilder::new().build_from_file(simple_guest_path)?;
 
     // do the function call
     let current_time = std::time::Instant::now();

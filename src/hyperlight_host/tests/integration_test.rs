@@ -7,59 +7,58 @@ use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{HyperlightError, MultiUseSandbox};
+use hyperlight_host::{HyperlightError, MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
 use tracing_core::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
-    new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
-    with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+    build_rust_sandbox, new_rust_sandbox, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
+    with_rust_sandbox, with_rust_sandbox_from,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
 // we don't re-enter the guest again once the host call is done
 #[test]
 fn interrupt_host_call() {
-    with_rust_uninit_sandbox(|mut usbox| {
-        let barrier = Arc::new(Barrier::new(2));
-        let barrier2 = barrier.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
 
-        let spin = move || {
-            barrier2.wait();
-            thread::sleep(std::time::Duration::from_secs(1));
-            Ok(())
-        };
+    let spin = move || {
+        barrier2.wait();
+        thread::sleep(std::time::Duration::from_secs(1));
+        Ok(())
+    };
 
-        usbox.register("Spin", spin).unwrap();
+    with_rust_sandbox_from(
+        SandboxBuilder::new().host_function("Spin", spin),
+        |mut sandbox| {
+            let snapshot = sandbox.snapshot().unwrap();
+            let interrupt_handle = sandbox.interrupt_handle();
+            assert!(!interrupt_handle.dropped()); // not yet dropped
 
-        let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
-        let snapshot = sandbox.snapshot().unwrap();
-        let interrupt_handle = sandbox.interrupt_handle();
-        assert!(!interrupt_handle.dropped()); // not yet dropped
+            let thread = thread::spawn({
+                move || {
+                    barrier.wait(); // wait for the host function to be entered
+                    interrupt_handle.kill(); // send kill once host call is in progress
+                }
+            });
 
-        let thread = thread::spawn({
-            move || {
-                barrier.wait(); // wait for the host function to be entered
-                interrupt_handle.kill(); // send kill once host call is in progress
-            }
-        });
+            let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
+            assert!(
+                matches!(&result, HyperlightError::ExecutionCanceledByHost()),
+                "unexpected error: {result:?}"
+            );
+            assert!(sandbox.status().is_poisoned());
 
-        let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
-        assert!(
-            matches!(&result, HyperlightError::ExecutionCanceledByHost()),
-            "unexpected error: {result:?}"
-        );
-        assert!(sandbox.status().is_poisoned());
+            // Restore from snapshot to clear poison
+            sandbox.restore(snapshot.clone()).unwrap();
+            assert!(sandbox.status().is_ready());
 
-        // Restore from snapshot to clear poison
-        sandbox.restore(snapshot.clone()).unwrap();
-        assert!(sandbox.status().is_ready());
-
-        thread.join().unwrap();
-    });
+            thread.join().unwrap();
+        },
+    );
 }
 
 /// Makes sure a running guest call can be interrupted by the host
@@ -151,10 +150,10 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
-    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
-    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox1 = new_rust_sandbox();
+    let mut sbox2 = new_rust_sandbox();
     let snapshot2 = sbox2.snapshot().unwrap();
-    let mut sbox3: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox3 = new_rust_sandbox();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -196,10 +195,10 @@ fn interrupt_same_thread() {
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
 #[test]
 fn interrupt_same_thread_no_barrier() {
-    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
-    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox1 = new_rust_sandbox();
+    let mut sbox2 = new_rust_sandbox();
     let snapshot2 = sbox2.snapshot().unwrap();
-    let mut sbox3: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox3 = new_rust_sandbox();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -245,9 +244,9 @@ fn interrupt_same_thread_no_barrier() {
 // and that anther sandbox on the original thread does not get incorrectly killed
 #[test]
 fn interrupt_moved_sandbox() {
-    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox1 = new_rust_sandbox();
     let snapshot1 = sbox1.snapshot().unwrap();
-    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox2 = new_rust_sandbox();
 
     let interrupt_handle = sbox1.interrupt_handle();
     let interrupt_handle2 = sbox2.interrupt_handle();
@@ -295,11 +294,12 @@ fn interrupt_moved_sandbox() {
 #[cfg(target_os = "linux")]
 #[serial(thread_heavy)]
 fn interrupt_custom_signal_no_and_retry_delay() {
-    let mut config = SandboxConfiguration::default();
-    config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
-    config.set_interrupt_retry_delay(Duration::from_secs(1));
+    let builder = SandboxBuilder::new()
+        .interrupt_vcpu_sigrtmin_offset(0)
+        .unwrap()
+        .interrupt_retry_delay(Duration::from_secs(1));
 
-    with_rust_sandbox_cfg(config, |mut sbox1| {
+    with_rust_sandbox_from(builder, |mut sbox1| {
         let snapshot1 = sbox1.snapshot().unwrap();
         let interrupt_handle = sbox1.interrupt_handle();
         assert!(!interrupt_handle.dropped()); // not yet dropped
@@ -332,14 +332,11 @@ fn interrupt_custom_signal_no_and_retry_delay() {
 
 #[test]
 fn interrupt_spamming_host_call() {
-    with_rust_uninit_sandbox(|mut uninit| {
-        uninit
-            .register("HostFunc1", || {
-                // do nothing
-            })
-            .unwrap();
-        let mut sbox1: MultiUseSandbox = uninit.evolve().unwrap();
+    let builder = SandboxBuilder::new().host_function("HostFunc1", || {
+        // do nothing
+    });
 
+    with_rust_sandbox_from(builder, |mut sbox1| {
         let interrupt_handle = sbox1.interrupt_handle();
 
         let barrier = Arc::new(Barrier::new(2));
@@ -529,9 +526,8 @@ fn guest_malloc_abort() {
         "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
     );
 
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_heap_size(heap_size);
-    with_rust_sandbox_cfg(cfg, |mut sbox2| {
+    let builder = SandboxBuilder::new().heap_size(heap_size);
+    with_rust_sandbox_from(builder, |mut sbox2| {
         let err = sbox2
             .call::<i32>(
                 "CallMalloc", // uses the rust allocator to allocate a vector on heap
@@ -603,9 +599,8 @@ fn corrupt_output_back_pointer_rejected() {
 fn guest_panic_no_alloc() {
     let heap_size = 0x8000;
 
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_heap_size(heap_size);
-    with_rust_sandbox_cfg(cfg, |mut sbox| {
+    let builder = SandboxBuilder::new().heap_size(heap_size);
+    with_rust_sandbox_from(builder, |mut sbox| {
         let res = sbox
             .call::<i32>(
                 "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
@@ -802,13 +797,12 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
     for level in filters.iter() {
         // Only use Rust guest because the C guest has a different signature for LogMessage
         // (Long vs Int for the level parameter)
-        with_rust_uninit_sandbox(|mut sbox| {
-            if let Some(levelfilter) = levelfilter {
-                sbox.set_max_guest_log_level(levelfilter);
-            }
+        let mut builder = SandboxBuilder::new();
+        if let Some(levelfilter) = levelfilter {
+            builder = builder.guest_log_level(levelfilter);
+        }
 
-            let mut sbox1 = sbox.evolve().unwrap();
-
+        with_rust_sandbox_from(builder, |mut sbox1| {
             let level: u64 = GuestLogFilter::from(*level).into();
             let message = format!("Hello from log_message level {}", level as i32);
             sbox1
@@ -822,12 +816,8 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
-    with_c_uninit_sandbox(|mut sbox1| {
-        sbox1
-            .register("HostBool", |a: i32, b: i32| a + b > 10)
-            .unwrap();
-        let mut sbox3 = sbox1.evolve().unwrap();
-
+    let builder = SandboxBuilder::new().host_function("HostBool", |a: i32, b: i32| a + b > 10);
+    with_c_sandbox_from(builder, |mut sbox3| {
         for i in 1..10 {
             if i < 6 {
                 let res = sbox3
@@ -848,11 +838,8 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
-    with_c_uninit_sandbox(|mut sbox1| {
-        sbox1
-            .register("HostAddFloat", |a: f32, b: f32| a + b)
-            .unwrap();
-        let mut sbox3 = sbox1.evolve().unwrap();
+    let builder = SandboxBuilder::new().host_function("HostAddFloat", |a: f32, b: f32| a + b);
+    with_c_sandbox_from(builder, |mut sbox3| {
         let res = sbox3
             .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
             .unwrap();
@@ -864,11 +851,8 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
-    with_c_uninit_sandbox(|mut sbox1| {
-        sbox1
-            .register("HostAddDouble", |a: f64, b: f64| a + b)
-            .unwrap();
-        let mut sbox3 = sbox1.evolve().unwrap();
+    let builder = SandboxBuilder::new().host_function("HostAddDouble", |a: f64, b: f64| a + b);
+    with_c_sandbox_from(builder, |mut sbox3| {
         let res = sbox3
             .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
             .unwrap();
@@ -880,13 +864,10 @@ fn test_if_guest_is_able_to_get_double_return_values_from_host() {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_string_return_values_from_host() {
-    with_c_uninit_sandbox(|mut sbox1| {
-        sbox1
-            .register("HostAddStrings", |a: String| {
-                a + ", string added by Host Function"
-            })
-            .unwrap();
-        let mut sbox3 = sbox1.evolve().unwrap();
+    let builder = SandboxBuilder::new().host_function("HostAddStrings", |a: String| {
+        a + ", string added by Host Function"
+    });
+    with_c_sandbox_from(builder, |mut sbox3| {
         let res = sbox3
             .call::<String>("GuestRetrievesStringValue", ())
             .unwrap();
@@ -1381,17 +1362,15 @@ fn interrupt_infinite_loop_stress_test() {
             let barrier = Arc::new(Barrier::new(2));
             let barrier_for_host = barrier.clone();
 
-            let mut uninit = new_rust_uninit_sandbox();
-
             // Register a host function that waits on the barrier
-            uninit
-                .register("WaitForKill", move || {
+            let mut sandbox = build_rust_sandbox(SandboxBuilder::new().host_function(
+                "WaitForKill",
+                move || {
                     barrier_for_host.wait();
                     Ok(())
-                })
-                .unwrap();
+                },
+            ));
 
-            let mut sandbox = uninit.evolve().unwrap();
             // Take a snapshot to restore after each kill
             let snapshot = sandbox.snapshot().unwrap();
 
@@ -1466,19 +1445,15 @@ fn interrupt_infinite_moving_loop_stress_test() {
             let entered_guest = Arc::new(AtomicBool::new(false));
             let entered_guest_clone = entered_guest.clone();
 
-            let mut uninit = new_rust_uninit_sandbox();
             // Register a host function that waits on the barrier
-            uninit
-                .register("WaitForKill", move || {
+            let sandbox =
+                build_rust_sandbox(SandboxBuilder::new().host_function("WaitForKill", move || {
                     entered_guest.store(true, Ordering::Relaxed);
                     Ok(())
-                })
-                .unwrap();
-            let uninit2 = new_rust_uninit_sandbox();
+                }));
 
             // These 2 sandboxes will have the same TID
-            let sandbox = uninit.evolve().unwrap();
-            let bait = uninit2.evolve().unwrap();
+            let bait = new_rust_sandbox();
 
             let interrupt = sandbox.interrupt_handle();
 

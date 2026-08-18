@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
-use hyperlight_host::{HostFunctions, MultiUseSandbox};
+use hyperlight_host::{HostFunctions, MultiUseSandbox, SandboxBuilder};
 
 use crate::fixtures::{CALL_COUNTER_BUMP, HEAP_PATTERN_LEN, register_host_echo_fns};
 
@@ -48,8 +48,10 @@ impl<'a> GoldenTest<'a> {
             .map_err(|e| format!("Snapshot::checked_load({}): {e}", self.tag()))?;
         let mut funcs = HostFunctions::default();
         register_host_echo_fns(&mut funcs);
-        MultiUseSandbox::from_snapshot(Arc::new(snap), funcs, None)
-            .map_err(|e| format!("MultiUseSandbox::from_snapshot({}): {e}", self.tag()))
+        SandboxBuilder::new()
+            .host_functions(funcs)
+            .build_from_snapshot(Arc::new(snap))
+            .map_err(|e| format!("build_from_snapshot({}): {e}", self.tag()))
     }
 }
 
@@ -295,8 +297,10 @@ fn chained_snapshot(golden: &GoldenTest) -> Result<(), String> {
     let loaded = Snapshot::checked_load(&layout, tag).map_err(|e| format!("checked_load: {e}"))?;
     let mut funcs = HostFunctions::default();
     register_host_echo_fns(&mut funcs);
-    let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(loaded), funcs, None)
-        .map_err(|e| format!("from_snapshot: {e}"))?;
+    let mut sbox2 = SandboxBuilder::new()
+        .host_functions(funcs)
+        .build_from_snapshot(Arc::new(loaded))
+        .map_err(|e| format!("build_from_snapshot: {e}"))?;
     let val: i32 = sbox2
         .call("GetStatic", ())
         .map_err(|e| format!("GetStatic on chained: {e}"))?;

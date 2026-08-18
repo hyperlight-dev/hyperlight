@@ -9,9 +9,7 @@ compile_error!("feature `trace` must be enabled to correctly fuzz guest trace fu
 use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::arbitrary::Arbitrary;
 use libfuzzer_sys::{Corpus, fuzz_target};
@@ -55,14 +53,11 @@ impl<'a> Arbitrary<'a> for FuzzInput {
 // Any unexpected errors from the guest should be reported.
 fuzz_target!(
     init: {
-        let mut cfg = SandboxConfiguration::default();
         // In local tests, 256 KiB seemed sufficient for deep recursion
-        cfg.set_scratch_size(256 * 1024);
-        let path = simple_guest_for_fuzzing_as_pathbuf();
-        let u_sbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-
-        let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+        let mu_sbox = SandboxBuilder::new()
+            .scratch_size(256 * 1024)
+            .build_from_file(simple_guest_for_fuzzing_as_pathbuf())
+            .unwrap();
 
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },

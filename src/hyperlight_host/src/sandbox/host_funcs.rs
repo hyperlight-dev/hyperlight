@@ -27,13 +27,12 @@ pub struct FunctionRegistry {
 /// expose host-side functionality to the guest.
 ///
 /// Use [`HostFunctions::default`] to start with the standard
-/// `HostPrint` function pre-registered (matches the registry that the
-/// regular `UninitializedSandbox` → `evolve()` path constructs), or
+/// `HostPrint` function pre-registered (matching the registry a
+/// [`crate::SandboxBuilder`] starts with), or
 /// [`HostFunctions::empty`] to start with an empty registry.
 ///
 /// Add additional host functions via the
-/// [`crate::func::Registerable`] trait, just as you would on an
-/// `UninitializedSandbox`.
+/// [`crate::func::Registerable`] trait.
 ///
 /// ```no_run
 /// # use hyperlight_host::{HostFunctions, Result};
@@ -87,9 +86,9 @@ impl Default for HostFunctions {
     /// stdout in green).
     ///
     /// This matches the default registry installed by
-    /// `UninitializedSandbox::new()`, so a snapshot taken from a
+    /// `SandboxBuilder::new()`, so a snapshot taken from a
     /// regular sandbox can be loaded with
-    /// `MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)`
+    /// `SandboxBuilder::new().build_from_snapshot(snap)`
     /// without registering anything else.
     ///
     /// Use [`HostFunctions::empty`] for an empty registry.

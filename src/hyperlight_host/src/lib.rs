@@ -8,7 +8,7 @@
 //! The runtime manages sandbox creation, guest function calls, memory isolation,
 //! and host-guest communication.
 //!
-//! The primary entry points are [`UninitializedSandbox`] for initial setup and
+//! The primary entry point is [`SandboxBuilder`], which produces a
 //! [`MultiUseSandbox`] for executing guest functions.
 //!
 //! ## Guest Requirements

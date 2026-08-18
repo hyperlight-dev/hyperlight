@@ -21,17 +21,12 @@ Hyperlight lets you safely run untrusted code inside hypervisor-isolated micro V
 **Host** - create a sandbox, register a host function, and call into the guest:
 
 ```rust
-// Create an uninitialized sandbox by giving it the path to a guest binary.
-// Allocates memory but does not yet run a VM.
-let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None)?;
-
-// Register a host function that the guest can call. In a real app this
-// might query a database, read a config, or call an external API.
-// By default, guests can only print to the host.
-sandbox.register("GetWeekday", || Ok("Monday".to_string()))?;
-
-// Initialize the sandbox. Starts the VM and runs guest setup code.
-let mut sandbox: MultiUseSandbox = sandbox.evolve()?;
+// Build a sandbox from a guest binary, registering a host function the guest
+// can call. In a real app that function might query a database, read a config,
+// or call an external API. By default, guests can only print to the host.
+let mut sandbox = SandboxBuilder::new()
+    .host_function("GetWeekday", || Ok("Monday".to_string()))
+    .build_from_file(guest_path)?;
 
 // Call a function inside the VM
 let greeting: String = sandbox.call("SayHello", "World".to_string())?;

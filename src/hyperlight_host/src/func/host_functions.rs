@@ -47,20 +47,20 @@ impl Registerable for UninitializedSandbox {
 /// Allow registering host functions on an already-evolved
 /// [`crate::MultiUseSandbox`].
 ///
-/// The primary entry point for host-function registration is the
-/// `UninitializedSandbox` impl above — that's the lifecycle phase
-/// where the guest hasn't yet been allowed to issue host calls.
+/// The primary entry point for host-function registration is
+/// [`crate::SandboxBuilder::host_function`] — that's the lifecycle
+/// phase where the guest hasn't yet been allowed to issue host calls.
 /// There are, however, cases where a `MultiUseSandbox` is obtained
-/// without traversing the `Uninitialized → evolve()` path:
+/// without going through the builder:
 ///
 /// - Sandboxes loaded from a persisted snapshot.
 /// - Any future API that yields a `MultiUseSandbox` directly.
 ///
-/// In those cases the caller never had a chance to call
-/// `register_host_function` on an `UninitializedSandbox`, so we
-/// expose the same trait implementation here for late registration.
+/// In those cases the caller never had a chance to register up front,
+/// so we expose the same trait implementation here for late
+/// registration.
 /// The guest's host-function dispatcher resolves by name at call
-/// time, so inserting into the registry after `evolve()` is
+/// time, so inserting into the registry after the sandbox is built is
 /// semantically safe as long as the first host-function invocation
 /// happens after registration completes.
 impl Registerable for crate::MultiUseSandbox {

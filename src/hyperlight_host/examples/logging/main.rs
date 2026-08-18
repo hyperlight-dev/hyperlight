@@ -4,8 +4,7 @@ extern crate hyperlight_host;
 
 use std::sync::{Arc, Barrier};
 
-use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::{GuestBinary, Result};
+use hyperlight_host::{Result, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
 fn fn_writer(_msg: String) -> Result<i32> {
@@ -26,11 +25,9 @@ fn main() -> Result<()> {
         let path = hyperlight_guest_path.clone();
         let res: Result<()> = {
             // Create a new sandbox.
-            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)?;
-            usandbox.register_print(fn_writer)?;
-
-            // Initialize the sandbox.
-            let mut multiuse_sandbox = usandbox.evolve()?;
+            let mut multiuse_sandbox = SandboxBuilder::new()
+                .host_print(fn_writer)
+                .build_from_file(path)?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -56,11 +53,8 @@ fn main() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let usandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)?;
-
-    // Initialize the sandbox.
-    let mut multiuse_sandbox = usandbox.evolve()?;
+    let mut multiuse_sandbox =
+        SandboxBuilder::new().build_from_file(hyperlight_guest_path.clone())?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();

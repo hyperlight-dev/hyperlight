@@ -15,22 +15,16 @@ use crate::func::Registerable;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::SharedMemory as _;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
-use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
+use crate::{GuestBinary, HostFunctions, MultiUseSandbox, SandboxBuilder};
 
 fn create_test_sandbox() -> MultiUseSandbox {
     let path = simple_guest_as_pathbuf();
-    UninitializedSandbox::new(GuestBinary::FilePath(path), None)
-        .unwrap()
-        .evolve()
-        .unwrap()
+    SandboxBuilder::new().build_from_file(path).unwrap()
 }
 
 fn create_c_test_sandbox() -> MultiUseSandbox {
     let path = c_simple_guest_as_pathbuf();
-    UninitializedSandbox::new(GuestBinary::FilePath(path), None)
-        .unwrap()
-        .evolve()
-        .unwrap()
+    SandboxBuilder::new().build_from_file(path).unwrap()
 }
 
 fn random_sequence(sandbox: &mut MultiUseSandbox) -> [i32; 4] {
@@ -273,13 +267,11 @@ fn disk_snapshot_restores_declared_msr_value() {
     const SYSENTER_CS: u32 = 0x174;
     let sentinel: u64 = 0xDEAD_BEEF;
 
-    let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
-    let mut source =
-        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
-            .unwrap()
-            .evolve()
-            .unwrap();
+    let mut source = SandboxBuilder::new()
+        .guest_msrs(&[SYSENTER_CS])
+        .unwrap()
+        .build_from_file(simple_guest_as_pathbuf())
+        .unwrap();
     source
         .call::<()>("WriteMSR", (SYSENTER_CS, sentinel))
         .unwrap();
@@ -290,11 +282,11 @@ fn disk_snapshot_restores_declared_msr_value() {
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
 
-    let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
-    let mut sbox =
-        MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), Some(cfg))
-            .unwrap();
+    let mut sbox = SandboxBuilder::new()
+        .guest_msrs(&[SYSENTER_CS])
+        .unwrap()
+        .build_from_snapshot(loaded.clone())
+        .unwrap();
     assert_eq!(sbox.call::<u64>("ReadMSR", SYSENTER_CS).unwrap(), sentinel);
 
     sbox.call::<()>("WriteMSR", (SYSENTER_CS, sentinel ^ 0x55))
@@ -312,13 +304,11 @@ fn disk_snapshot_restores_into_superset_guest_msrs() {
     const SYSENTER_ESP: u32 = 0x175;
     let sentinel: u64 = 0xDEAD_BEEF;
 
-    let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
-    let mut source =
-        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
-            .unwrap()
-            .evolve()
-            .unwrap();
+    let mut source = SandboxBuilder::new()
+        .guest_msrs(&[SYSENTER_CS])
+        .unwrap()
+        .build_from_file(simple_guest_as_pathbuf())
+        .unwrap();
     source
         .call::<()>("WriteMSR", (SYSENTER_CS, sentinel))
         .unwrap();
@@ -329,10 +319,11 @@ fn disk_snapshot_restores_into_superset_guest_msrs() {
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
 
-    let mut dest_cfg = crate::sandbox::SandboxConfiguration::default();
-    dest_cfg.guest_msrs(&[SYSENTER_CS, SYSENTER_ESP]).unwrap();
-    let mut sbox =
-        MultiUseSandbox::from_snapshot(loaded, HostFunctions::default(), Some(dest_cfg)).unwrap();
+    let mut sbox = SandboxBuilder::new()
+        .guest_msrs(&[SYSENTER_CS, SYSENTER_ESP])
+        .unwrap()
+        .build_from_snapshot(loaded)
+        .unwrap();
     assert_eq!(sbox.call::<u64>("ReadMSR", SYSENTER_CS).unwrap(), sentinel);
 }
 
@@ -346,13 +337,11 @@ fn disk_snapshot_non_superset_guest_msrs_rejected() {
     const SYSENTER_CS: u32 = 0x174;
     let sentinel: u64 = 0x1234;
 
-    let mut cfg = crate::sandbox::SandboxConfiguration::default();
-    cfg.guest_msrs(&[SYSENTER_CS]).unwrap();
-    let mut source =
-        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
-            .unwrap()
-            .evolve()
-            .unwrap();
+    let mut source = SandboxBuilder::new()
+        .guest_msrs(&[SYSENTER_CS])
+        .unwrap()
+        .build_from_file(simple_guest_as_pathbuf())
+        .unwrap();
     source
         .call::<()>("WriteMSR", (SYSENTER_CS, sentinel))
         .unwrap();
@@ -739,10 +728,10 @@ fn call_snapshot_without_sregs_rejected() {
 /// custom `Add(i32, i32) -> i32`.
 fn create_sandbox_with_custom_host_funcs() -> MultiUseSandbox {
     let path = simple_guest_as_pathbuf();
-    let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-    u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
-        .unwrap();
-    u.evolve().unwrap()
+    SandboxBuilder::new()
+        .host_function("Add", |a: i32, b: i32| Ok(a + b))
+        .build_from_file(path)
+        .unwrap()
 }
 
 /// `HostFunctions::default()` plus a matching `Add(i32, i32) -> i32`.
@@ -836,9 +825,10 @@ fn from_snapshot_accepts_extra_host_functions() {
 #[test]
 fn from_snapshot_accepts_zero_arg_host_function() {
     let path = simple_guest_as_pathbuf();
-    let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-    u.register_host_function("Zero", || Ok(7i64)).unwrap();
-    let mut sbox = u.evolve().unwrap();
+    let mut sbox = SandboxBuilder::new()
+        .host_function("Zero", || Ok(7i64))
+        .build_from_file(path)
+        .unwrap();
 
     let snap = sbox.snapshot().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -2580,15 +2570,14 @@ fn index_json_too_large_on_write_rejected() {
 #[test]
 fn config_blob_too_large_on_write_rejected() {
     let guest = simple_guest_as_pathbuf();
-    let mut u = UninitializedSandbox::new(GuestBinary::FilePath(guest), None).unwrap();
+    let mut builder = SandboxBuilder::new();
     // Each host function adds its name and signature to the config
     // JSON. Long names reach the 1 MiB cap with a modest count.
     let long = "h".repeat(300);
     for i in 0..3000 {
-        u.register_host_function(&format!("{long}{i}"), |a: i32, b: i32| Ok(a + b))
-            .unwrap();
+        builder = builder.host_function(format!("{long}{i}"), |a: i32, b: i32| Ok(a + b));
     }
-    let mut sbox = u.evolve().unwrap();
+    let mut sbox = builder.build_from_file(guest).unwrap();
     let snap = sbox.snapshot().unwrap();
 
     let dir = tempfile::tempdir().unwrap();
@@ -2778,15 +2767,11 @@ fn round_trip_preserves_stack_top_gva() {
 
 #[test]
 fn round_trip_preserves_non_default_scratch_size() {
-    use crate::sandbox::SandboxConfiguration;
-    let mut cfg = SandboxConfiguration::default();
     let custom_scratch: usize = 256 * 1024;
-    cfg.set_scratch_size(custom_scratch);
-    let mut sbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
-            .unwrap()
-            .evolve()
-            .unwrap();
+    let mut sbox = SandboxBuilder::new()
+        .scratch_size(custom_scratch)
+        .build_from_file(simple_guest_as_pathbuf())
+        .unwrap();
     let snap = sbox.snapshot().unwrap();
     let original = snap.layout().get_scratch_size();
     assert_eq!(original, custom_scratch);
@@ -3158,17 +3143,15 @@ fn read_blob_dir(
 // `from_snapshot` config plumbing.
 // =============================================================================
 //
-// `from_snapshot` accepts a caller-supplied `SandboxConfiguration`.
+// A builder building from a snapshot accepts caller-supplied settings.
 // Layout fields must be silently overridden by the snapshot (the
 // on-disk memory blob already encodes those sizes). Runtime fields
 // must take effect.
 
-/// Layout fields supplied via `SandboxConfiguration` must be silently
-/// overridden. The snapshot's own layout is authoritative.
+/// Layout fields supplied to the builder must be silently overridden.
+/// The snapshot's own layout is authoritative.
 #[test]
 fn from_snapshot_silently_ignores_layout_overrides() {
-    use crate::sandbox::SandboxConfiguration;
-
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
     let original_input = snapshot.layout().input_data_size();
@@ -3176,15 +3159,13 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     let original_heap = snapshot.layout().heap_size();
     let original_scratch = snapshot.layout().get_scratch_size();
 
-    let mut config = SandboxConfiguration::default();
-    config.set_input_data_size(original_input * 2);
-    config.set_output_data_size(original_output * 2);
-    config.set_heap_size((original_heap as u64) * 2);
-    config.set_scratch_size(original_scratch * 2);
-
-    let mut sbox2 =
-        MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), Some(config))
-            .unwrap();
+    let mut sbox2 = SandboxBuilder::new()
+        .input_data_size(original_input * 2)
+        .output_data_size(original_output * 2)
+        .heap_size((original_heap as u64) * 2)
+        .scratch_size(original_scratch * 2)
+        .build_from_snapshot(snapshot.clone())
+        .unwrap();
 
     sbox2.call::<i32>("GetStatic", ()).unwrap();
 
@@ -3288,21 +3269,18 @@ fn persisted_guest_libc_rng_snapshot_reseeds_each_instance() {
     assert_ne!(random_sequence(&mut first), random_sequence(&mut second));
 }
 
-/// `from_snapshot` honors `guest_core_dump=true` so that
+/// Building from a snapshot honors `guest_core_dump=true` so that
 /// `generate_crashdump_to_dir` writes a file.
 #[test]
 #[cfg(crashdump)]
 fn from_snapshot_honors_guest_core_dump_enabled() {
-    use crate::sandbox::SandboxConfiguration;
-
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
 
-    let mut config = SandboxConfiguration::default();
-    config.set_guest_core_dump(true);
-
-    let mut sbox2 =
-        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
+    let mut sbox2 = SandboxBuilder::new()
+        .guest_core_dump(true)
+        .build_from_snapshot(snapshot)
+        .unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     sbox2.generate_crashdump_to_dir(dir.path()).unwrap();
@@ -3317,21 +3295,18 @@ fn from_snapshot_honors_guest_core_dump_enabled() {
     );
 }
 
-/// `from_snapshot` honors `guest_core_dump=false` so that
+/// Building from a snapshot honors `guest_core_dump=false` so that
 /// `generate_crashdump_to_dir` produces no file.
 #[test]
 #[cfg(crashdump)]
 fn from_snapshot_honors_guest_core_dump_disabled() {
-    use crate::sandbox::SandboxConfiguration;
-
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
 
-    let mut config = SandboxConfiguration::default();
-    config.set_guest_core_dump(false);
-
-    let mut sbox2 =
-        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(config)).unwrap();
+    let mut sbox2 = SandboxBuilder::new()
+        .guest_core_dump(false)
+        .build_from_snapshot(snapshot)
+        .unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     sbox2.generate_crashdump_to_dir(dir.path()).unwrap();
@@ -3355,20 +3330,12 @@ fn from_snapshot_honors_guest_core_dump_disabled() {
 #[test]
 fn round_trip_preserves_non_default_init_data_permissions() {
     use crate::mem::memory_region::MemoryRegionFlags;
-    use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
 
     let path = simple_guest_as_pathbuf();
     let data: &[u8] = b"perm-pinned-init-data";
-    let env = GuestEnvironment {
-        guest_binary: GuestBinary::FilePath(path),
-        init_data: Some(GuestBlob {
-            data,
-            permissions: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-        }),
-    };
-    let mut sbox = UninitializedSandbox::new(env, None)
-        .unwrap()
-        .evolve()
+    let mut sbox = SandboxBuilder::new()
+        .init_data(data, MemoryRegionFlags::READ | MemoryRegionFlags::WRITE)
+        .build_from_file(path)
         .unwrap();
     let snap = sbox.snapshot().unwrap();
     let expected = snap.layout().init_data_permissions();

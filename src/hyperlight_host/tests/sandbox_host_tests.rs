@@ -4,17 +4,11 @@ use core::f64;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{
-    GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
-};
+use hyperlight_host::{HyperlightError, Result, SandboxBuilder, new_error};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::{
-    with_all_sandboxes, with_all_sandboxes_cfg, with_all_sandboxes_with_writer,
-    with_all_uninit_sandboxes,
-};
+use crate::common::{with_all_guests, with_all_sandboxes};
 
 #[test]
 fn pass_byte_array() {
@@ -109,9 +103,11 @@ fn invalid_guest_function_name() {
 
 #[test]
 fn set_static() {
-    let mut cfg: SandboxConfiguration = Default::default();
-    cfg.set_scratch_size(0x100C000);
-    with_all_sandboxes_cfg(Some(cfg), |mut sandbox| {
+    with_all_guests(|path| {
+        let mut sandbox = SandboxBuilder::new()
+            .scratch_size(0x100C000)
+            .build_from_file(path)
+            .unwrap();
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
         assert!(res.is_ok());
@@ -151,7 +147,11 @@ fn multiple_parameters() {
         }};
     }
 
-    with_all_sandboxes_with_writer(writer.into(), |mut sb| {
+    with_all_guests(|path| {
+        let mut sb = SandboxBuilder::new()
+            .host_print(writer.clone())
+            .build_from_file(path)
+            .unwrap();
         test_case!(sb, rx, "PrintTwoArgs", (a, b));
         test_case!(sb, rx, "PrintThreeArgs", (a, b, c));
         test_case!(sb, rx, "PrintFourArgs", (a, b, c, d));
@@ -198,11 +198,11 @@ fn incorrect_parameter_num() {
 
 #[test]
 fn small_scratch_sandbox() {
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(0x48000);
-    cfg.set_input_data_size(0x24000);
-    cfg.set_output_data_size(0x24000);
-    let a = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg));
+    let a = SandboxBuilder::new()
+        .scratch_size(0x48000)
+        .input_data_size(0x24000)
+        .output_data_size(0x24000)
+        .build_from_file(simple_guest_as_pathbuf());
 
     assert!(matches!(
         a.unwrap_err(),
@@ -236,7 +236,11 @@ fn simple_test_helper() {
     let message = "hello";
     let message2 = "world";
 
-    with_all_sandboxes_with_writer(writer.into(), |mut sandbox| {
+    with_all_guests(|path| {
+        let mut sandbox = SandboxBuilder::new()
+            .host_print(writer.clone())
+            .build_from_file(path)
+            .unwrap();
         let res: i32 = sandbox.call("PrintOutput", message.to_string()).unwrap();
         assert_eq!(res, 5);
 
@@ -284,19 +288,19 @@ fn simple_test_parallel() {
 }
 
 fn callback_test_helper() {
-    with_all_uninit_sandboxes(|mut sandbox| {
+    with_all_guests(|path| {
         // create host function
         let (tx, rx) = channel();
-        sandbox
-            .register("HostMethod1", move |msg: String| {
+        let mut init_sandbox = SandboxBuilder::new()
+            .host_function("HostMethod1", move |msg: String| {
                 let len = msg.len();
                 tx.send(msg).unwrap();
                 Ok(len as i32)
             })
+            .build_from_file(path)
             .unwrap();
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
         let msg = "Hello world";
         init_sandbox
             .call::<i32>("GuestMethod1", msg.to_string())
@@ -330,16 +334,16 @@ fn callback_test_parallel() {
 
 #[test]
 fn host_function_error() {
-    with_all_uninit_sandboxes(|mut sandbox| {
+    with_all_guests(|path| {
         // create host function
-        sandbox
-            .register("HostMethod1", |_: String| -> Result<String> {
+        let mut init_sandbox = SandboxBuilder::new()
+            .host_function("HostMethod1", |_: String| -> Result<String> {
                 Err(new_error!("Host function error!"))
             })
+            .build_from_file(path)
             .unwrap();
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
         let msg = "Hello world";
         let snapshot = init_sandbox.snapshot().unwrap();
 

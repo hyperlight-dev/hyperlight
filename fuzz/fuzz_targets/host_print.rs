@@ -2,8 +2,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::{Corpus, fuzz_target};
 
@@ -15,13 +14,9 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 // For fuzzing efficiency, we create one Sandbox and reuse it for all fuzzing iterations.
 fuzz_target!(
     init: {
-        let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_for_fuzzing_as_pathbuf()),
-            None,
-        )
-        .unwrap();
-
-        let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+        let mu_sbox = SandboxBuilder::new()
+            .build_from_file(simple_guest_for_fuzzing_as_pathbuf())
+            .unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 

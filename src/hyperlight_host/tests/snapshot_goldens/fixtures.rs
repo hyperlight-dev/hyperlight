@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hyperlight_host::func::Registerable;
-use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::snapshot::Snapshot;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{HostFunctions, MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
 /// Heap pattern length used by the golden. Small enough to
@@ -22,17 +21,16 @@ pub(crate) const HEAP_PATTERN_LEN: u64 = 1024;
 /// Set by `AddToStatic(CALL_COUNTER_BUMP)` at generate time.
 pub(crate) const CALL_COUNTER_BUMP: i32 = 42;
 
-/// Canonical `SandboxConfiguration` used to produce the goldens.
+/// Canonical builder configuration used to produce the goldens.
 /// Layout knobs are deliberately bumped away from defaults so any
 /// silent arithmetic change in `SandboxMemoryLayout::new` shifts at
 /// least one region between generate-time and load-time.
-fn golden_config() -> SandboxConfiguration {
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_input_data_size(64 * 1024);
-    cfg.set_output_data_size(64 * 1024);
-    cfg.set_heap_size(256 * 1024);
-    cfg.set_scratch_size(512 * 1024);
-    cfg
+fn golden_builder() -> SandboxBuilder {
+    SandboxBuilder::new()
+        .input_data_size(64 * 1024)
+        .output_data_size(64 * 1024)
+        .heap_size(256 * 1024)
+        .scratch_size(512 * 1024)
 }
 
 fn simpleguest_path() -> PathBuf {
@@ -40,13 +38,12 @@ fn simpleguest_path() -> PathBuf {
 }
 
 pub(crate) fn generate() -> Arc<Snapshot> {
-    let mut u = UninitializedSandbox::new(
-        GuestBinary::FilePath(simpleguest_path()),
-        Some(golden_config()),
-    )
-    .expect("UninitializedSandbox::new");
-    register_host_echo_fns(&mut u);
-    let mut sbox = u.evolve().expect("evolve");
+    let mut funcs = HostFunctions::default();
+    register_host_echo_fns(&mut funcs);
+    let mut sbox = golden_builder()
+        .host_functions(funcs)
+        .build_from_file(simpleguest_path())
+        .expect("build golden sandbox");
     run_canonical_calls(&mut sbox);
     sbox.snapshot().expect("snapshot")
 }

@@ -30,7 +30,7 @@
 //!
 //! 3. **Disabling crash dumps per sandbox** — You can opt out of crash dump
 //!    generation for individual sandboxes via
-//!    [`SandboxConfiguration::set_guest_core_dump`].
+//!    [`SandboxBuilder::guest_core_dump`].
 //!
 //! 4. **On-demand crash dump from a debugger** — The `generate_crashdump()`
 //!    method is available for use from gdb while the guest is mid-execution.
@@ -64,8 +64,7 @@ use std::path::Path;
 
 #[cfg(all(crashdump, target_os = "linux"))]
 use hyperlight_host::HyperlightError;
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::SandboxBuilder;
 
 fn main() -> hyperlight_host::Result<()> {
     // Only enable logging if the user explicitly sets RUST_LOG; keep
@@ -127,12 +126,7 @@ fn main() -> hyperlight_host::Result<()> {
 /// 4. The crash dump is written automatically (no explicit call needed)
 #[cfg(all(crashdump, target_os = "linux"))]
 fn guest_crash_auto_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
-    let cfg = SandboxConfiguration::default();
-
-    let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
-
-    let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
+    let mut sandbox = SandboxBuilder::new().build_from_file(guest_path)?;
 
     // Map a file as read-only into the guest at a known address.
     let mapping_file = create_mapping_file();
@@ -192,12 +186,7 @@ fn create_mapping_file() -> std::path::PathBuf {
 /// fault), the automatic crash dump code in the VM run loop is not reached.
 /// To get a crash dump in this case, call `generate_crashdump()` explicitly.
 fn guest_crash_with_on_demand_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
-    let cfg = SandboxConfiguration::default();
-
-    let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
-
-    let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
+    let mut sandbox = SandboxBuilder::new().build_from_file(guest_path)?;
 
     // This call triggers a ud2 instruction in the guest. The guest's IDT
     // catches the #UD exception and reports it back to the host as a
@@ -233,14 +222,11 @@ fn guest_crash_with_on_demand_dump(guest_path: &Path) -> hyperlight_host::Result
 /// writing core dump files.
 #[cfg(all(crashdump, target_os = "linux"))]
 fn guest_crash_with_dump_disabled(guest_path: &Path) -> hyperlight_host::Result<()> {
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_guest_core_dump(false);
     println!("Core dump disabled for this sandbox.");
 
-    let uninitialized_sandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_path_buf()), Some(cfg))?;
-
-    let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
+    let mut sandbox = SandboxBuilder::new()
+        .guest_core_dump(false)
+        .build_from_file(guest_path)?;
 
     let mapping_file = create_mapping_file();
     let guest_base: u64 = 0x200000000;
@@ -328,8 +314,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use hyperlight_host::sandbox::SandboxConfiguration;
-    use hyperlight_host::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
+    use hyperlight_host::SandboxBuilder;
     use serial_test::serial;
 
     #[cfg(not(windows))]
@@ -375,10 +360,7 @@ mod tests {
 
         // Create sandbox with default config (crashdump enabled)
         let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
-        let cfg = SandboxConfiguration::default();
-        let u_sbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg)).unwrap();
-        let mut sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+        let mut sbox = SandboxBuilder::new().build_from_file(guest_path).unwrap();
 
         // Map an additional test file into the guest at a known address.
         // The core dump already includes snapshot and scratch regions
@@ -447,18 +429,17 @@ mod tests {
     /// sandboxes resolve symbols the same way as directly-evolved ones.
     fn generate_crashdump_from_snapshot(dump_dir: &Path) -> PathBuf {
         let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_guest_core_dump(true);
-        let u_sbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg)).unwrap();
-        let mut sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+        let mut sbox = SandboxBuilder::new()
+            .guest_core_dump(true)
+            .build_from_file(guest_path)
+            .unwrap();
 
         let snapshot = sbox.snapshot().expect("snapshot");
 
-        let mut cfg2 = SandboxConfiguration::default();
-        cfg2.set_guest_core_dump(true);
-        let mut sbox2 =
-            MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), Some(cfg2)).unwrap();
+        let mut sbox2 = SandboxBuilder::new()
+            .guest_core_dump(true)
+            .build_from_snapshot(snapshot)
+            .unwrap();
 
         let result = sbox2.call::<()>("TriggerException", ());
         assert!(result.is_err(), "TriggerException should return an error");

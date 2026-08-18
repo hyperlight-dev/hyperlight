@@ -21,8 +21,8 @@ The Hyperlight `gdb` feature enables guest debugging to:
 Below is a list describing some cases of expected behavior from a gdb debug 
 session of a guest binary running inside a Hyperlight sandbox.
 
-- when the `gdb` feature is enabled and a SandboxConfiguration is provided a
-  debug port, the created sandbox will wait for a gdb client to connect on the
+- when the `gdb` feature is enabled and the sandbox builder is given a debug
+  port, the created sandbox will wait for a gdb client to connect on the
   configured port
 - when the gdb client attaches, the guest vCPU is expected to be stopped at the
   entry point
@@ -220,10 +220,11 @@ The name and location of the dump file will be printed to the console and logged
 
 **NOTE**: If the directory provided by `HYPERLIGHT_CORE_DUMP_DIR` does not exist, Hyperlight places the file in the temporary directory.
 **NOTE**: By enabling the `crashdump` feature, you instruct Hyperlight to create core dump files for all sandboxes when an unhandled crash occurs.
-To selectively disable this feature for a specific sandbox, you can set the `guest_core_dump` field to `false` in the `SandboxConfiguration`.
+To selectively disable this feature for a specific sandbox, call `guest_core_dump(false)` on the `SandboxBuilder`.
 ```rust
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_guest_core_dump(false); // Disable core dump for this sandbox
+    let sandbox = SandboxBuilder::new()
+        .guest_core_dump(false) // Disable core dump for this sandbox
+        .build_from_file(guest_path)?;
 ```
 
 ## Creating a dump on demand
