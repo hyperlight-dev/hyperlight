@@ -27,6 +27,8 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
+#[cfg(target_arch = "x86_64")]
+use crate::sandbox::config::GuestMsrError;
 use crate::sandbox::host_funcs::FunctionEntry;
 use crate::sandbox::snapshot::Snapshot;
 use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
@@ -284,7 +286,9 @@ impl SandboxBuilder {
             return_type: Output::TYPE,
         };
 
-        self.host_funcs.inner_mut().register_host_function(name, entry);
+        self.host_funcs
+            .inner_mut()
+            .register_host_function(name, entry);
         self
     }
 
@@ -322,7 +326,9 @@ impl SandboxBuilder {
     /// [`Self::host_print`], which checks the signature at compile time.
     pub fn host_functions(&mut self, host_funcs: HostFunctions) -> &mut Self {
         for (func_name, func_entry) in host_funcs.into_iter() {
-            self.host_funcs.inner_mut().register_host_function(func_name, func_entry);
+            self.host_funcs
+                .inner_mut()
+                .register_host_function(func_name, func_entry);
         }
         self
     }
@@ -405,6 +411,30 @@ impl SandboxBuilder {
     /// How much writable memory is offered to the guest.
     pub fn get_scratch_size(&self) -> usize {
         self.cfg.get_scratch_size()
+    }
+
+    /// Declare MSRs the guest owns, saved and restored with the rest of the
+    /// sandbox state. Adds to the declared set, so repeated calls accumulate.
+    ///
+    /// See [`SandboxConfiguration::guest_msrs`] for the platform-specific
+    /// behavior and the capacity limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestMsrError::CapacityExceeded`] if the distinct entries
+    /// would exceed [`SandboxConfiguration::MAX_GUEST_MSRS`]. The declared set
+    /// is unchanged on error.
+    #[cfg(target_arch = "x86_64")]
+    pub fn guest_msrs(&mut self, indices: &[u32]) -> std::result::Result<&mut Self, GuestMsrError> {
+        self.cfg.guest_msrs(indices)?;
+        Ok(self)
+    }
+
+    /// Like [`Self::guest_msrs`], but consumes and returns `self` for chaining.
+    #[cfg(target_arch = "x86_64")]
+    pub fn with_guest_msrs(mut self, indices: &[u32]) -> std::result::Result<Self, GuestMsrError> {
+        self.guest_msrs(indices)?;
+        Ok(self)
     }
 
     /// Set how long to wait between attempts to signal the VCPU thread.
