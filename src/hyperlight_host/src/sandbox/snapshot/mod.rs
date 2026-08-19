@@ -88,13 +88,8 @@ pub struct Snapshot {
     /// The next action that should be performed on this snapshot
     next_action: NextAction,
 
-    /// Virtual base address of the code region.
-    /// For PIE binaries this equals the physical load address (identity-mapped).
-    /// For non-PIE binaries this is the ELF-declared base VA.
-    pub(crate) code_virt_base: u64,
-
     /// Guest virtual address of the guest binary's ELF entry point
-    /// (`code_virt_base + e_entry - base_va`). Unlike `next_action`, which
+    /// (`code GVA + e_entry - base_va`). Unlike `next_action`, which
     /// transitions to `Call(dispatch_addr)` once the guest has run,
     /// this preserves the original entry across that transition. Used
     /// to fill `AT_ENTRY` in guest core dumps so a debugger can
@@ -326,17 +321,14 @@ impl Snapshot {
             guest_blob_mem_flags,
         )?;
 
-        let load_addr = layout.get_guest_code_address() as u64;
+        let load_addr = layout.get_guest_code_gpa() as u64;
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
-        let loaded_size = exe_info.loaded_size() as u64;
         let is_pie = exe_info.is_pie();
 
-        // Get the memory regions with the Code region's guest_virt_addr
-        // already set to the correct virtual base (identity-mapped for PIE,
-        // ELF-declared VA for non-PIE), and validate no overlap conflicts.
-        let (code_virt_base, regions) =
-            layout.get_guest_regions_with_code_va(is_pie, base_va, loaded_size)?;
+        let code_gva = if is_pie { load_addr } else { base_va };
+        layout.set_code_gva(code_gva)?;
+        let regions = layout.get_memory_regions()?;
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
@@ -399,7 +391,7 @@ impl Snapshot {
             )
         })?;
 
-        let entrypoint_gva = code_virt_base + entrypoint_offset;
+        let entrypoint_gva = layout.get_guest_code_gva() as u64 + entrypoint_offset;
 
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
@@ -410,7 +402,6 @@ impl Snapshot {
             #[cfg(target_arch = "x86_64")]
             msrs: None,
             next_action: NextAction::Initialise(entrypoint_gva),
-            code_virt_base,
             original_entrypoint: entrypoint_gva,
             snapshot_generation: 0,
             host_functions: HostFunctionDetails {
@@ -439,7 +430,6 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         #[cfg(target_arch = "x86_64")] msrs: Vec<MsrEntry>,
         next_action: NextAction,
-        code_virt_base: u64,
         original_entrypoint: u64,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
@@ -601,7 +591,6 @@ impl Snapshot {
             #[cfg(target_arch = "x86_64")]
             msrs: Some(msrs),
             next_action,
-            code_virt_base,
             original_entrypoint,
             snapshot_generation,
             host_functions,
@@ -821,7 +810,6 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             Vec::new(),
             super::NextAction::None,
-            0, // code_virt_base
             0,
             1,
             HostFunctionDetails::default(),
@@ -842,7 +830,6 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             Vec::new(),
             super::NextAction::None,
-            0, // code_virt_base
             0,
             2,
             HostFunctionDetails::default(),

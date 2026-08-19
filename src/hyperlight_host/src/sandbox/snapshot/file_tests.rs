@@ -2958,22 +2958,20 @@ fn save_returns_manifest_digest_that_loads() {
     assert_eq!(loaded.snapshot_generation(), expected_gen);
 }
 
-/// `code_virt_base` must survive a save/load round-trip so GDB and
+/// The code GVA must survive a save/load round-trip so GDB and
 /// tracing can resolve symbols for non-PIE (or ASLR) guests after
 /// restoring from a file snapshot.
 #[test]
-fn round_trip_preserves_code_virt_base() {
+fn round_trip_preserves_code_gva() {
     let snap = create_snapshot();
-    // Default PIE guest is identity-mapped, so code_virt_base should
-    // equal get_guest_code_address (i.e. the GPA of the code region).
-    let original = snap.code_virt_base;
-    assert_ne!(original, 0, "fixture must have a non-zero code_virt_base");
+    let original = snap.layout().get_guest_code_gva();
+    assert_ne!(original, 0, "fixture must have a non-zero code GVA");
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("layout");
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
-    assert_eq!(loaded.code_virt_base, original);
+    assert_eq!(loaded.layout().get_guest_code_gva(), original);
 }
 
 /// The returned digest is the sha256 of the manifest blob, matching the

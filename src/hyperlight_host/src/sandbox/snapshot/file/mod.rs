@@ -594,7 +594,7 @@ impl Snapshot {
             stack_top_gva: self.stack_top_gva,
             entrypoint_addr,
             original_entrypoint_addr: self.original_entrypoint,
-            code_virt_base: self.code_virt_base,
+            code_virt_base: self.layout.get_guest_code_gva() as u64,
             sregs: *sregs,
             #[cfg(target_arch = "x86_64")]
             msrs: self
@@ -816,6 +816,12 @@ impl Snapshot {
             cfg.layout.init_data_size,
             init_data_perms,
         )?;
+        let code_gva = if cfg.code_virt_base == 0 {
+            layout.get_guest_code_gpa() as u64
+        } else {
+            cfg.code_virt_base
+        };
+        layout.set_code_gva(code_gva)?;
         // `snapshot_size` and `pt_size` are independent fields.
         if let Some(pt) = cfg.layout.pt_size {
             layout.set_pt_size(pt)?;
@@ -892,7 +898,6 @@ impl Snapshot {
             msrs: Some(cfg.msrs),
             next_action,
             original_entrypoint: cfg.original_entrypoint_addr,
-            code_virt_base: cfg.code_virt_base,
             snapshot_generation,
             host_functions,
         })
