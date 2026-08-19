@@ -45,4 +45,4 @@ jobs:
           HYPERLIGHT_TARGET: aarch64
 
       - name: Run hyperlight-host tests
-        run: cargo test -p hyperlight-host
+        run: cargo test -p hyperlight-host -- --test-threads=1
