@@ -87,7 +87,7 @@ pub struct SandboxBuilder {
     init_data: Option<(Vec<u8>, MemoryRegionFlags)>,
     mapped_file_cow: Vec<(std::path::PathBuf, u64)>,
     mapped_memory_regions: Vec<MemoryRegion>,
-    max_guest_log_level: Option<LevelFilter>,
+    guest_log_level: Option<LevelFilter>,
 }
 
 impl SandboxBuilder {
@@ -132,8 +132,8 @@ impl SandboxBuilder {
             uninitialized_sandbox.map_file_cow(&path, guest_base)?;
         }
 
-        if let Some(max_log_level) = self.max_guest_log_level {
-            uninitialized_sandbox.set_max_guest_log_level(max_log_level);
+        if let Some(log_level) = self.guest_log_level {
+            uninitialized_sandbox.set_max_guest_log_level(log_level);
         }
 
         let mut sandbox = uninitialized_sandbox.evolve()?;
@@ -151,7 +151,7 @@ impl SandboxBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if [`Self::init_data`] or [`Self::max_guest_log_level`]
+    /// Returns an error if [`Self::init_data`] or [`Self::guest_log_level`]
     /// are set. The snapshot already carries both, so they have no effect here.
     pub fn build_from_snapshot(self, snapshot: Arc<Snapshot>) -> Result<Sandbox> {
         if self.init_data.is_some() {
@@ -160,9 +160,9 @@ impl SandboxBuilder {
             ));
         }
 
-        if self.max_guest_log_level.is_some() {
+        if self.guest_log_level.is_some() {
             return Err(new_error!(
-                "max_guest_log_level has no effect when building from a snapshot, as the snapshot already contains it"
+                "guest_log_level has no effect when building from a snapshot, as the snapshot already contains it"
             ));
         }
 
@@ -227,14 +227,14 @@ impl SandboxBuilder {
     ///
     /// Note: [`Self::build_from_snapshot`] errors if this setting is set, as the log level is
     /// already captured in the snapshot.
-    pub fn max_guest_log_level(mut self, level: LevelFilter) -> Self {
-        self.max_guest_log_level = Some(level);
+    pub fn guest_log_level(mut self, level: LevelFilter) -> Self {
+        self.guest_log_level = Some(level);
         self
     }
 
     /// The maximum log level for guest code execution, or `None` if not set.
-    pub fn get_max_guest_log_level(&self) -> Option<LevelFilter> {
-        self.max_guest_log_level
+    pub fn get_guest_log_level(&self) -> Option<LevelFilter> {
+        self.guest_log_level
     }
 }
 
@@ -470,7 +470,7 @@ mod tests {
 
         assert!(
             SandboxBuilder::new()
-                .max_guest_log_level(LevelFilter::INFO)
+                .guest_log_level(LevelFilter::INFO)
                 .build_from_snapshot(snapshot)
                 .is_err()
         );

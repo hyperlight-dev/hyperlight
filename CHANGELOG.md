@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* `SandboxBuilder`, the entry point for creating a sandbox. It gathers machine
+  configuration, host functions, init data and memory mappings, then builds a
+  `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
+  snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
 
 ### Changed
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.
