@@ -41,6 +41,8 @@ jobs:
 
       - name: Build guests
         run: just guests
+        env:
+          HYPERLIGHT_TARGET: aarch64
 
       - name: Run hyperlight-host tests
         run: cargo test -p hyperlight-host
