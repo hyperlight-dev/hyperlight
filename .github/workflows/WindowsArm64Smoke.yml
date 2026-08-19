@@ -39,8 +39,8 @@ jobs:
       - name: Build hyperlight-host
         run: cargo build -p hyperlight-host
 
-      - name: Build guests
-        run: just guests
+      - name: Build Rust guests
+        run: just build-and-move-rust-guests
         env:
           HYPERLIGHT_TARGET: aarch64
 
