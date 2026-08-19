@@ -36,11 +36,23 @@ jobs:
           cargo --version
           systeminfo | Select-String "OS Name","OS Version","System Type"
 
+      - name: Configure ARM64 libclang
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -property installationPath
+          $libclang = Join-Path $installPath "VC\Tools\Llvm\ARM64\bin\libclang.dll"
+          if (-not (Test-Path $libclang)) {
+            throw "ARM64 libclang not found at '$libclang'"
+          }
+          $llvmPath = Split-Path $libclang
+          "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+          $llvmPath >> $env:GITHUB_PATH
+
       - name: Build hyperlight-host
         run: cargo build -p hyperlight-host
 
-      - name: Build Rust guests
-        run: just build-and-move-rust-guests
+      - name: Build guests
+        run: just guests
         env:
           HYPERLIGHT_TARGET: aarch64
 
