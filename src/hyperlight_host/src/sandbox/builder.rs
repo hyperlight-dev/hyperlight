@@ -38,10 +38,9 @@ use crate::{
 
 /// Builds a [`Sandbox`].
 ///
-/// Start from [`SandboxBuilder::new`], adjust settings through the `with_*`
-/// (consuming, chainable) or bare-named (in place) accessors, then call one of
-/// the `build_from_*` methods to create the sandbox from a guest binary on
-/// disk, a guest binary in memory, or a [`Snapshot`]. Every setting has a
+/// Start from [`SandboxBuilder::new`], chain the settings you need, then call
+/// one of the `build_from_*` methods to create the sandbox from a guest binary
+/// on disk, a guest binary in memory, or a [`Snapshot`]. Every setting has a
 /// default, so a builder with no adjustments is valid.
 ///
 /// # Examples
@@ -52,8 +51,8 @@ use crate::{
 /// # use hyperlight_host::{Result, SandboxBuilder};
 /// # fn example() -> Result<()> {
 /// let mut sandbox = SandboxBuilder::new()
-///     .with_heap_size(1024 * 1024)
-///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .heap_size(1024 * 1024)
+///     .host_function("Add", |a: i32, b: i32| a + b)
 ///     .build_from_file("guest.bin")?;
 ///
 /// let result: String = sandbox.call("Echo", "hello".to_string())?;
@@ -69,12 +68,12 @@ use crate::{
 /// # use hyperlight_host::{Result, SandboxBuilder};
 /// # fn example() -> Result<()> {
 /// let mut sandbox = SandboxBuilder::new()
-///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .host_function("Add", |a: i32, b: i32| a + b)
 ///     .build_from_file("guest.bin")?;
 /// let snapshot = sandbox.snapshot()?;
 ///
 /// let mut restored = SandboxBuilder::new()
-///     .with_host_function("Add", |a: i32, b: i32| a + b)
+///     .host_function("Add", |a: i32, b: i32| a + b)
 ///     .build_from_snapshot(snapshot)?;
 ///
 /// let result: String = restored.call("Echo", "hello".to_string())?;
@@ -189,14 +188,8 @@ impl SandboxBuilder {
     ///
     /// Note: [`Self::build_from_snapshot`] errors if this setting is set, as the snapshot already
     /// contains the init data.
-    pub fn init_data(&mut self, data: impl Into<Vec<u8>>, flags: MemoryRegionFlags) -> &mut Self {
+    pub fn init_data(mut self, data: impl Into<Vec<u8>>, flags: MemoryRegionFlags) -> Self {
         self.init_data = Some((data.into(), flags));
-        self
-    }
-
-    /// Like [`Self::init_data`], but consumes and returns `self` for chaining.
-    pub fn with_init_data(mut self, data: impl Into<Vec<u8>>, flags: MemoryRegionFlags) -> Self {
-        self.init_data(data, flags);
         self
     }
 
@@ -206,15 +199,9 @@ impl SandboxBuilder {
     /// `guest_base` must be page-aligned and lie outside the sandbox's primary
     /// shared memory region. Violations surface as an error from the
     /// `build_from_*` call, not here. Call this once per file to map several.
-    pub fn mapped_file_cow(&mut self, path: impl AsRef<Path>, guest_base: u64) -> &mut Self {
+    pub fn mapped_file_cow(mut self, path: impl AsRef<Path>, guest_base: u64) -> Self {
         self.mapped_file_cow
             .push((path.as_ref().to_path_buf(), guest_base));
-        self
-    }
-
-    /// Like [`Self::mapped_file_cow`], but consumes and returns `self` for chaining.
-    pub fn with_mapped_file_cow(mut self, path: impl AsRef<Path>, guest_base: u64) -> Self {
-        self.mapped_file_cow(path, guest_base);
         self
     }
 
@@ -228,18 +215,8 @@ impl SandboxBuilder {
     ///
     /// The caller must ensure the host memory region remains valid and
     /// unmodified for the lifetime of the sandbox this builder produces.
-    pub unsafe fn mapped_memory_region(&mut self, region: MemoryRegion) -> &mut Self {
+    pub unsafe fn mapped_memory_region(mut self, region: MemoryRegion) -> Self {
         self.mapped_memory_regions.push(region);
-        self
-    }
-
-    /// Like [`Self::mapped_memory_region`], but consumes and returns `self` for chaining.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`Self::mapped_memory_region`].
-    pub unsafe fn with_mapped_memory_region(mut self, region: MemoryRegion) -> Self {
-        unsafe { self.mapped_memory_region(region) };
         self
     }
 
@@ -250,14 +227,8 @@ impl SandboxBuilder {
     ///
     /// Note: [`Self::build_from_snapshot`] errors if this setting is set, as the log level is
     /// already captured in the snapshot.
-    pub fn max_guest_log_level(&mut self, level: LevelFilter) -> &mut Self {
+    pub fn max_guest_log_level(mut self, level: LevelFilter) -> Self {
         self.max_guest_log_level = Some(level);
-        self
-    }
-
-    /// Like [`Self::max_guest_log_level`], but consumes and returns `self` for chaining.
-    pub fn with_max_guest_log_level(mut self, level: LevelFilter) -> Self {
-        self.max_guest_log_level(level);
         self
     }
 
@@ -273,10 +244,10 @@ impl SandboxBuilder {
     /// Note: registering under the name `HostPrint` overrides guest printing.
     /// Prefer [`Self::host_print`], which checks the signature at compile time.
     pub fn host_function<Args: ParameterTuple, Output: SupportedReturnType>(
-        &mut self,
+        mut self,
         name: impl AsRef<str>,
         host_func: impl Into<HostFunction<Output, Args>>,
-    ) -> &mut Self {
+    ) -> Self {
         let func = host_func.into().into();
         let name = name.as_ref().to_string();
 
@@ -292,30 +263,13 @@ impl SandboxBuilder {
         self
     }
 
-    /// Like [`Self::host_function`], but consumes and returns `self` for chaining.
-    pub fn with_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
-        mut self,
-        name: impl AsRef<str>,
-        host_func: impl Into<HostFunction<Output, Args>>,
-    ) -> Self {
-        self.host_function(name, host_func);
-        self
-    }
-
     /// Registers the special "HostPrint" function for guest printing.
     ///
     /// This overrides the default behavior of writing to stdout.
     /// The function expects the signature `FnMut(String) -> i32`
     /// and will be called when the guest wants to print output.
-    pub fn host_print(&mut self, print_func: impl Into<HostFunction<i32, (String,)>>) -> &mut Self {
-        self.host_function("HostPrint", print_func);
-        self
-    }
-
-    /// Like [`Self::host_print`], but consumes and returns `self` for chaining.
-    pub fn with_host_print(mut self, print_func: impl Into<HostFunction<i32, (String,)>>) -> Self {
-        self.host_print(print_func);
-        self
+    pub fn host_print(self, print_func: impl Into<HostFunction<i32, (String,)>>) -> Self {
+        self.host_function("HostPrint", print_func)
     }
 
     /// Registers every host function in `host_funcs`.
@@ -324,7 +278,7 @@ impl SandboxBuilder {
     ///
     /// Note: an entry named `HostPrint` overrides guest printing. Prefer
     /// [`Self::host_print`], which checks the signature at compile time.
-    pub fn host_functions(&mut self, host_funcs: HostFunctions) -> &mut Self {
+    pub fn host_functions(mut self, host_funcs: HostFunctions) -> Self {
         for (func_name, func_entry) in host_funcs.into_iter() {
             self.host_funcs
                 .inner_mut()
@@ -332,25 +286,13 @@ impl SandboxBuilder {
         }
         self
     }
-
-    /// Like [`Self::host_functions`], but consumes and returns `self` for chaining.
-    pub fn with_host_functions(mut self, host_funcs: HostFunctions) -> Self {
-        self.host_functions(host_funcs);
-        self
-    }
 }
 
 impl SandboxBuilder {
     /// Set the size of the memory buffer made available for input to the guest.
     /// Values below [`SandboxConfiguration::MIN_INPUT_SIZE`] are clamped up.
-    pub fn input_data_size(&mut self, size: usize) -> &mut Self {
+    pub fn input_data_size(mut self, size: usize) -> Self {
         self.cfg.set_input_data_size(size);
-        self
-    }
-
-    /// Like [`Self::input_data_size`], but consumes and returns `self` for chaining.
-    pub fn with_input_data_size(mut self, size: usize) -> Self {
-        self.input_data_size(size);
         self
     }
 
@@ -361,14 +303,8 @@ impl SandboxBuilder {
 
     /// Set the size of the memory buffer made available for output from the guest.
     /// Values below [`SandboxConfiguration::MIN_OUTPUT_SIZE`] are clamped up.
-    pub fn output_data_size(&mut self, size: usize) -> &mut Self {
+    pub fn output_data_size(mut self, size: usize) -> Self {
         self.cfg.set_output_data_size(size);
-        self
-    }
-
-    /// Like [`Self::output_data_size`], but consumes and returns `self` for chaining.
-    pub fn with_output_data_size(mut self, size: usize) -> Self {
-        self.output_data_size(size);
         self
     }
 
@@ -379,14 +315,8 @@ impl SandboxBuilder {
 
     /// Set the guest heap size. A size of 0 selects
     /// [`SandboxConfiguration::DEFAULT_HEAP_SIZE`].
-    pub fn heap_size(&mut self, size: u64) -> &mut Self {
+    pub fn heap_size(mut self, size: u64) -> Self {
         self.cfg.set_heap_size(size);
-        self
-    }
-
-    /// Like [`Self::heap_size`], but consumes and returns `self` for chaining.
-    pub fn with_heap_size(mut self, size: u64) -> Self {
-        self.heap_size(size);
         self
     }
 
@@ -397,14 +327,8 @@ impl SandboxBuilder {
     }
 
     /// Set how much writable memory to offer the guest.
-    pub fn scratch_size(&mut self, size: usize) -> &mut Self {
+    pub fn scratch_size(mut self, size: usize) -> Self {
         self.cfg.set_scratch_size(size);
-        self
-    }
-
-    /// Like [`Self::scratch_size`], but consumes and returns `self` for chaining.
-    pub fn with_scratch_size(mut self, size: usize) -> Self {
-        self.scratch_size(size);
         self
     }
 
@@ -425,29 +349,15 @@ impl SandboxBuilder {
     /// would exceed [`SandboxConfiguration::MAX_GUEST_MSRS`]. The declared set
     /// is unchanged on error.
     #[cfg(target_arch = "x86_64")]
-    pub fn guest_msrs(&mut self, indices: &[u32]) -> std::result::Result<&mut Self, GuestMsrError> {
+    pub fn guest_msrs(mut self, indices: &[u32]) -> std::result::Result<Self, GuestMsrError> {
         self.cfg.guest_msrs(indices)?;
-        Ok(self)
-    }
-
-    /// Like [`Self::guest_msrs`], but consumes and returns `self` for chaining.
-    #[cfg(target_arch = "x86_64")]
-    pub fn with_guest_msrs(mut self, indices: &[u32]) -> std::result::Result<Self, GuestMsrError> {
-        self.guest_msrs(indices)?;
         Ok(self)
     }
 
     /// Set how long to wait between attempts to signal the VCPU thread.
     #[cfg(target_os = "linux")]
-    pub fn interrupt_retry_delay(&mut self, delay: Duration) -> &mut Self {
+    pub fn interrupt_retry_delay(mut self, delay: Duration) -> Self {
         self.cfg.set_interrupt_retry_delay(delay);
-        self
-    }
-
-    /// Like [`Self::interrupt_retry_delay`], but consumes and returns `self` for chaining.
-    #[cfg(target_os = "linux")]
-    pub fn with_interrupt_retry_delay(mut self, delay: Duration) -> Self {
-        self.interrupt_retry_delay(delay);
         self
     }
 
@@ -464,15 +374,8 @@ impl SandboxBuilder {
     ///
     /// Returns an error if `SIGRTMIN + offset` exceeds `SIGRTMAX`.
     #[cfg(target_os = "linux")]
-    pub fn interrupt_vcpu_sigrtmin_offset(&mut self, offset: u8) -> Result<&mut Self> {
+    pub fn interrupt_vcpu_sigrtmin_offset(mut self, offset: u8) -> Result<Self> {
         self.cfg.set_interrupt_vcpu_sigrtmin_offset(offset)?;
-        Ok(self)
-    }
-
-    /// Like [`Self::interrupt_vcpu_sigrtmin_offset`], but consumes and returns `self` for chaining.
-    #[cfg(target_os = "linux")]
-    pub fn with_interrupt_vcpu_sigrtmin_offset(mut self, offset: u8) -> Result<Self> {
-        self.interrupt_vcpu_sigrtmin_offset(offset)?;
         Ok(self)
     }
 
@@ -484,15 +387,8 @@ impl SandboxBuilder {
 
     /// Toggle guest core dump generation.
     #[cfg(crashdump)]
-    pub fn guest_core_dump(&mut self, enabled: bool) -> &mut Self {
+    pub fn guest_core_dump(mut self, enabled: bool) -> Self {
         self.cfg.set_guest_core_dump(enabled);
-        self
-    }
-
-    /// Like [`Self::guest_core_dump`], but consumes and returns `self` for chaining.
-    #[cfg(crashdump)]
-    pub fn with_guest_core_dump(mut self, enabled: bool) -> Self {
-        self.guest_core_dump(enabled);
         self
     }
 
@@ -504,15 +400,8 @@ impl SandboxBuilder {
 
     /// Set the guest debug configuration.
     #[cfg(gdb)]
-    pub fn guest_debug_info(&mut self, debug_info: DebugInfo) -> &mut Self {
+    pub fn guest_debug_info(mut self, debug_info: DebugInfo) -> Self {
         self.cfg.set_guest_debug_info(debug_info);
-        self
-    }
-
-    /// Like [`Self::guest_debug_info`], but consumes and returns `self` for chaining.
-    #[cfg(gdb)]
-    pub fn with_guest_debug_info(mut self, debug_info: DebugInfo) -> Self {
-        self.guest_debug_info(debug_info);
         self
     }
 
@@ -535,7 +424,7 @@ mod tests {
     fn build_from_file() {
         let path = simple_guest_as_string().unwrap();
         let mut sandbox = SandboxBuilder::new()
-            .with_input_data_size(0x8000)
+            .input_data_size(0x8000)
             .build_from_file(path)
             .unwrap();
 
@@ -574,14 +463,14 @@ mod tests {
 
         assert!(
             SandboxBuilder::new()
-                .with_init_data([0u8; 8], MemoryRegionFlags::READ)
+                .init_data([0u8; 8], MemoryRegionFlags::READ)
                 .build_from_snapshot(snapshot.clone())
                 .is_err()
         );
 
         assert!(
             SandboxBuilder::new()
-                .with_max_guest_log_level(LevelFilter::INFO)
+                .max_guest_log_level(LevelFilter::INFO)
                 .build_from_snapshot(snapshot)
                 .is_err()
         );
