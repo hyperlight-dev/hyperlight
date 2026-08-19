@@ -901,6 +901,9 @@ fn interrupt_random_kill_stress_test() {
     use hyperlight_host::sandbox::snapshot::Snapshot;
     use tracing::{error, trace};
 
+    #[cfg(target_arch = "aarch64")]
+    const POOL_SIZE: usize = 64;
+    #[cfg(not(target_arch = "aarch64"))]
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
     const ITERATIONS_PER_THREAD: usize = 500;
@@ -1435,12 +1438,16 @@ fn interrupt_infinite_moving_loop_stress_test() {
     use std::sync::Arc;
     use std::thread;
 
-    // We have a high thread count to stress test and to have interesting interleavings
-    let num_threads: usize = 200;
+    // ARM64 WHP partitions include GICv3 state, limiting practical partition
+    // concurrency. Each thread creates two partitions.
+    #[cfg(target_arch = "aarch64")]
+    const NUM_THREADS: usize = 32;
+    #[cfg(not(target_arch = "aarch64"))]
+    const NUM_THREADS: usize = 200;
 
     let mut handles = vec![];
 
-    for _ in 0..num_threads {
+    for _ in 0..NUM_THREADS {
         handles.push(thread::spawn(move || {
             let entered_guest = Arc::new(AtomicBool::new(false));
             let entered_guest_clone = entered_guest.clone();
@@ -1697,6 +1704,7 @@ fn fill_heap_and_cause_exception() {
 /// Based on local observations, "likely" means that if the bug exist, running this test 5 times will catch it at least once.
 #[test]
 #[cfg(target_os = "windows")]
+#[serial(thread_heavy)]
 fn interrupt_cancel_delete_race() {
     const NUM_THREADS: usize = 8;
     const NUM_KILL_THREADS: usize = 4;
