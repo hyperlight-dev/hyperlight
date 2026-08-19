@@ -24,10 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install 1.94 --profile minimal
-          rustup default 1.94
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check environment
         run: |
@@ -37,6 +38,9 @@ jobs:
 
       - name: Build hyperlight-host
         run: cargo build -p hyperlight-host
+
+      - name: Build guests
+        run: just guests
 
       - name: Run hyperlight-host tests
         run: cargo test -p hyperlight-host
