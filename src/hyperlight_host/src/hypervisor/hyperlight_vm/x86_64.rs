@@ -1487,7 +1487,7 @@ mod tests {
             layout,
             ro_mem.to_mgr_snapshot_mem().unwrap(),
             scratch_mem,
-            NextAction::Initialise(layout.get_guest_code_address() as u64),
+            NextAction::Initialise(layout.get_guest_code_gva() as u64),
         );
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
@@ -2195,7 +2195,7 @@ mod tests {
             a.fxsave(ptr(rax)).unwrap();
 
             // Return dispatch ptr
-            a.mov(rax, layout.get_guest_code_address() as u64).unwrap();
+            a.mov(rax, layout.get_guest_code_gva() as u64).unwrap();
 
             a.hlt().unwrap();
 
