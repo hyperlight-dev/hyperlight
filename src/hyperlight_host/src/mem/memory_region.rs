@@ -261,8 +261,9 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
     }
 }
 
-/// Type for memory regions that only track guest addresses.
+/// Marker for GPA-to-GVA mappings used to construct guest page tables.
 ///
+/// `host_region` contains GPAs and `guest_region` contains GVAs.
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct GuestMemoryRegion {}
 
@@ -278,15 +279,15 @@ impl MemoryRegionKind for GuestMemoryRegion {
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryRegion_<K: MemoryRegionKind> {
-    /// The range of guest addresses. For `GuestMemoryRegion` this is
-    /// the guest virtual address range (GVA). For `HostGuestMemoryRegion`
-    /// and `CrashDumpMemoryRegion` this is the guest physical address
-    /// range (GPA) or GVA depending on the variant.
+    /// The destination range of the mapping.
+    ///
+    /// This is a GVA for `GuestMemoryRegion`, a GPA for
+    /// `HostGuestMemoryRegion`, and a GVA for `CrashDumpMemoryRegion`.
     pub guest_region: Range<usize>,
-    /// The range of host-side addresses. For `HostGuestMemoryRegion` this
-    /// is the host virtual address range (HVA). For `GuestMemoryRegion`
-    /// this is the guest physical address range (GPA). For
-    /// `CrashDumpMemoryRegion` this is the HVA.
+    /// The source range of the mapping.
+    ///
+    /// This is a GPA for `GuestMemoryRegion` and an HVA for
+    /// `HostGuestMemoryRegion` and `CrashDumpMemoryRegion`.
     pub host_region: Range<K::HostBaseType>,
     /// memory access flags for the given region
     pub flags: MemoryRegionFlags,
@@ -358,9 +359,8 @@ impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
         // we know this is safe because we check if the regions are empty above
         let last_region = self.regions.last().unwrap();
         let host_end = <K as MemoryRegionKind>::add(last_region.host_region.end, size);
-        let guest_start = last_region.guest_region.end;
         let new_region = MemoryRegion_ {
-            guest_region: guest_start..guest_start + size,
+            guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
             host_region: last_region.host_region.end..host_end,
             flags,
             region_type,

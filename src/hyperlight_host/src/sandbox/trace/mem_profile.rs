@@ -105,7 +105,7 @@ impl MemTraceInfo {
             &mut *cache,
             &mut read_stack,
         );
-        iter.map(|f| Ok(f.address() - mem_mgr.layout.get_guest_code_address() as u64))
+        iter.map(|f| Ok(f.address() - mem_mgr.layout.get_guest_code_gva() as u64))
             .collect()
             .map_err(|e| new_error!("couldn't unwind: {}", e))
     }
