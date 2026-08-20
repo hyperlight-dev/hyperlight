@@ -5,27 +5,15 @@
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
-# Define the license header pattern to look for
-LICENSE_PATTERN="Copyright .* The Hyperlight Authors..*Licensed under the Apache License, Version 2.0"
+# Define the license patterns to look for
+SPDX_PATTERN="^// SPDX-License-Identifier: Apache-2\.0$"
+COPYRIGHT_PATTERN="^// Copyright .* The Hyperlight Authors\.$"
 
 # Define the full license header for files that need it
-LICENSE_HEADER='/*
-Copyright 2025 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-'
+YEAR="$(date +"%Y")"
+LICENSE_HEADER="// SPDX-License-Identifier: Apache-2.0
+// Copyright $YEAR The Hyperlight Authors.
+"
 
 # Initialize a variable to track missing headers
 MISSING_HEADERS=0
@@ -43,8 +31,8 @@ while IFS= read -r -d $'\0' file; do
         continue
     fi
 
-    # Check if the file has the license header (allowing for multi-line matching)
-    if ! grep -q -z "$LICENSE_PATTERN" "$file"; then
+    header="$(head -2 "$file")"
+    if ! grep -q "$SPDX_PATTERN" <<< "$header" || ! grep -q "$COPYRIGHT_PATTERN" <<< "$header"; then
         echo "Missing or invalid license header in $file"
         MISSING_FILES="$MISSING_FILES\n  $file"
         MISSING_HEADERS=$((MISSING_HEADERS + 1))
