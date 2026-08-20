@@ -264,6 +264,48 @@ The crashdump should be available `/tmp` or in the crash dump directory (see `HY
 After the core dump has been created, to inspect the state of the guest, load the core dump file using `gdb` or `lldb`.
 **NOTE: This feature has been tested with version `15.0` of `gdb` and version `17` of `lldb`, earlier versions may not work, it is recommended to use these versions or later.**
 
+#### Using gdb
+
+Load the core dump alongside the guest binary that was running when the crash occurred:
+
+```bash
+gdb <guest-binary> -c <core-dump-file>
+```
+
+For example:
+
+```bash
+gdb src/tests/rust_guests/bin/debug/simpleguest -c /tmp/hl_dumps/hl_core_20260225_T165358.517.elf
+```
+
+Common commands for inspecting the dump:
+
+```gdb
+# View all general-purpose registers (rip, rsp, rflags, etc.)
+(gdb) info registers
+
+# Disassemble around the crash site
+(gdb) x/10i $rip
+
+# View the stack
+(gdb) x/16xg $rsp
+
+# Backtrace (requires debug info in guest binary)
+(gdb) bt
+
+# List all memory regions in the dump (snapshot, scratch, mapped regions)
+(gdb) info files
+
+# Read memory at a specific address
+(gdb) x/s <address>        # null-terminated string
+(gdb) x/32xb <address>     # 32 bytes in hex
+```
+
+See the `crashdump` example (`cargo run --example crashdump --features crashdump`)
+for a runnable demonstration of both automatic and on-demand crash dumps.
+
+#### Using VSCode
+
 To do this in vscode, the following configuration can be used to add debug configurations:
 
 ```vscode

@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::guest_trace_data::{
-    EventsBatchEncoder, EventsEncoder, GuestEvent,
+    EventsBatchEncoder, EventsEncoder, GuestEvent, MAX_TRACE_DATA_SIZE,
 };
 use hyperlight_common::outb::OutBAction;
 use tracing_core::Event;
@@ -43,12 +43,6 @@ pub(crate) struct GuestState {
     stack: Vec<u64>,
 }
 
-/// TODO: Change these constant to be configurable at runtime by the guest
-/// Maybe use a weak symbol that the guest can override at link time?
-///
-/// Pre-calculated capacity for the encoder buffer
-/// This is to avoid reallocations in the guest
-const ENCODER_CAPACITY: usize = 4096;
 /// Start with a stack capacity for active spans
 const ACTIVE_SPANS_CAPACITY: usize = 64;
 
@@ -69,7 +63,7 @@ fn send_to_host(data: &[u8]) {
 
 impl GuestState {
     pub(crate) fn new(guest_start_tsc: u64) -> Self {
-        let mut encoder = EventsBatchEncoder::new(ENCODER_CAPACITY, send_to_host);
+        let mut encoder = EventsBatchEncoder::new(MAX_TRACE_DATA_SIZE, send_to_host);
         encoder.encode(&GuestEvent::GuestStart {
             tsc: guest_start_tsc,
         });

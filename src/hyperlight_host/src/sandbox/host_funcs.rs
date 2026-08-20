@@ -26,10 +26,8 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tracing::{Span, instrument};
 
 use crate::HyperlightError::HostFunctionNotFound;
+use crate::Result;
 use crate::func::host_functions::TypeErasedHostFunction;
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::ExclusiveSharedMemory;
-use crate::{Result, new_error};
 
 #[derive(Default)]
 /// A Wrapper around details of functions exposed by the Host
@@ -37,8 +35,84 @@ pub struct FunctionRegistry {
     functions_map: HashMap<String, FunctionEntry>,
 }
 
-impl From<&mut FunctionRegistry> for HostFunctionDetails {
-    fn from(registry: &mut FunctionRegistry) -> Self {
+/// A collection of host functions that can be supplied to a sandbox
+/// constructor (e.g. [`crate::MultiUseSandbox::from_snapshot`]) to
+/// expose host-side functionality to the guest.
+///
+/// Use [`HostFunctions::default`] to start with the standard
+/// `HostPrint` function pre-registered (matches the registry that the
+/// regular `UninitializedSandbox` → `evolve()` path constructs), or
+/// [`HostFunctions::empty`] to start with an empty registry.
+///
+/// Add additional host functions via the
+/// [`crate::func::Registerable`] trait, just as you would on an
+/// `UninitializedSandbox`.
+///
+/// ```no_run
+/// # use hyperlight_host::{HostFunctions, Result};
+/// # use hyperlight_host::func::Registerable;
+/// # fn example() -> Result<()> {
+/// // Default: HostPrint already registered.
+/// let mut funcs = HostFunctions::default();
+/// funcs.register_host_function("Add", |a: i32, b: i32| Ok(a + b))?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct HostFunctions(FunctionRegistry);
+
+impl HostFunctions {
+    /// Create an empty `HostFunctions` with no host functions
+    /// registered.
+    ///
+    /// Most callers want [`HostFunctions::default`] instead, which
+    /// pre-registers the standard `HostPrint` function. An empty
+    /// registry will fail snapshot validation against any snapshot
+    /// that captured `HostPrint`, and any guest code that tries to
+    /// `printf` into an empty registry will get an EIO from
+    /// `write(2)`.
+    pub fn empty() -> Self {
+        Self(FunctionRegistry::default())
+    }
+
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = (String, FunctionEntry)> {
+        self.0.functions_map.into_iter()
+    }
+
+    /// Consume this `HostFunctions` and return the inner registry.
+    pub(crate) fn into_inner(self) -> FunctionRegistry {
+        self.0
+    }
+
+    /// Borrow the inner registry mutably.
+    pub(crate) fn inner_mut(&mut self) -> &mut FunctionRegistry {
+        &mut self.0
+    }
+
+    /// Borrow the inner registry immutably.
+    pub(crate) fn inner(&self) -> &FunctionRegistry {
+        &self.0
+    }
+}
+
+impl Default for HostFunctions {
+    /// Create a `HostFunctions` pre-populated with the standard
+    /// `HostPrint` function (writes UTF-8 strings to the host's
+    /// stdout in green).
+    ///
+    /// This matches the default registry installed by
+    /// `UninitializedSandbox::new()`, so a snapshot taken from a
+    /// regular sandbox can be loaded with
+    /// `MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)`
+    /// without registering anything else.
+    ///
+    /// Use [`HostFunctions::empty`] for an empty registry.
+    fn default() -> Self {
+        Self(FunctionRegistry::with_default_host_print())
+    }
+}
+
+impl From<&FunctionRegistry> for HostFunctionDetails {
+    fn from(registry: &FunctionRegistry) -> Self {
         let host_functions = registry
             .functions_map
             .iter()
@@ -63,26 +137,36 @@ pub struct FunctionEntry {
 
 impl FunctionRegistry {
     /// Register a host function with the sandbox.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn register_host_function(
-        &mut self,
-        name: String,
-        func: FunctionEntry,
-        mgr: &mut SandboxMemoryManager<ExclusiveSharedMemory>,
-    ) -> Result<()> {
+    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+    pub(crate) fn register_host_function(&mut self, name: String, func: FunctionEntry) {
         self.functions_map.insert(name, func);
+    }
 
-        let hfd = HostFunctionDetails::from(self);
+    /// Return the registered signature for `name`.
+    pub(crate) fn function_signature(
+        &self,
+        name: &str,
+    ) -> Option<(&'static [ParameterType], ReturnType)> {
+        self.functions_map
+            .get(name)
+            .map(|entry| (entry.parameter_types, entry.return_type))
+    }
 
-        let buffer: Vec<u8> = (&hfd).try_into().map_err(|e| {
-            new_error!(
-                "Error serializing host function details to flatbuffer: {}",
-                e
-            )
-        })?;
+    /// Create a `FunctionRegistry` pre-populated with the default
+    /// `HostPrint` function (writes to stdout with green text).
+    pub(crate) fn with_default_host_print() -> Self {
+        use crate::func::host_functions::HostFunction;
+        use crate::func::{ParameterTuple, SupportedReturnType};
 
-        mgr.write_buffer_host_function_details(&buffer)?;
-        Ok(())
+        let mut registry = Self::default();
+        let hf: HostFunction<i32, (String,)> = default_writer_func.into();
+        let entry = FunctionEntry {
+            function: hf.into(),
+            parameter_types: <(String,)>::TYPE,
+            return_type: <i32 as SupportedReturnType>::TYPE,
+        };
+        registry.register_host_function("HostPrint".to_string(), entry);
+        registry
     }
 
     /// Assuming a host function called `"HostPrint"` exists, and takes a
@@ -131,7 +215,7 @@ impl FunctionRegistry {
 
 /// The default writer function is to write to stdout with green text.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn default_writer_func(s: String) -> Result<i32> {
+fn default_writer_func(s: String) -> Result<i32> {
     match std::io::stdout().is_terminal() {
         false => {
             print!("{}", s);

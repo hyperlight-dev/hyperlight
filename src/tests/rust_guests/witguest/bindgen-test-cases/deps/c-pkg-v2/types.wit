@@ -1,0 +1,10 @@
+package c:pkg@2.0.0;
+
+interface types {
+    resource thing;
+
+    record info {
+        value: u32,
+    }
+    get-info: func() -> info;
+}

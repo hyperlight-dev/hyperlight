@@ -52,7 +52,72 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
+        (*hfs).register_host_function(name.to_string(), entry);
+        Ok(())
+    }
+}
+
+/// Allow registering host functions on an already-evolved
+/// [`crate::MultiUseSandbox`].
+///
+/// The primary entry point for host-function registration is the
+/// `UninitializedSandbox` impl above — that's the lifecycle phase
+/// where the guest hasn't yet been allowed to issue host calls.
+/// There are, however, cases where a `MultiUseSandbox` is obtained
+/// without traversing the `Uninitialized → evolve()` path:
+///
+/// - Sandboxes loaded from a persisted snapshot.
+/// - Any future API that yields a `MultiUseSandbox` directly.
+///
+/// In those cases the caller never had a chance to call
+/// `register_host_function` on an `UninitializedSandbox`, so we
+/// expose the same trait implementation here for late registration.
+/// The guest's host-function dispatcher resolves by name at call
+/// time, so inserting into the registry after `evolve()` is
+/// semantically safe as long as the first host-function invocation
+/// happens after registration completes.
+impl Registerable for crate::MultiUseSandbox {
+    fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: impl Into<HostFunction<Output, Args>>,
+    ) -> Result<()> {
+        let mut hfs = self
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        let entry = FunctionEntry {
+            function: hf.into().into(),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        (*hfs).register_host_function(name.to_string(), entry);
+
+        // Registration mutates the host-function set captured in
+        // snapshots. Invalidate the cached snapshot so the next
+        // `snapshot()` call reflects the updated registry.
+        self.snapshot = None;
+        Ok(())
+    }
+}
+
+impl Registerable for crate::HostFunctions {
+    fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: impl Into<HostFunction<Output, Args>>,
+    ) -> Result<()> {
+        let entry = FunctionEntry {
+            function: hf.into().into(),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        self.inner_mut()
+            .register_host_function(name.to_string(), entry);
+        Ok(())
     }
 }
 
@@ -196,7 +261,7 @@ pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedRetu
         .host_funcs
         .try_lock()
         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .register_host_function(name.to_string(), entry, &mut sandbox.mgr)?;
+        .register_host_function(name.to_string(), entry);
 
     Ok(())
 }

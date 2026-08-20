@@ -5,7 +5,6 @@ name: Validate Pull Request
 on:
   pull_request:
     branches: [main, "release/**"]
-  merge_group:
 
 # Cancels old running job if a new one is triggered (e.g. by a push onto the same branch).
 # This will cancel dependent jobs as well, such as dep_rust and dep_fuzzing
@@ -15,6 +14,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   docs-pr:
@@ -22,124 +22,223 @@ jobs:
     outputs:
       docs-only: ${{ steps.docs-only.outputs.result }}
     steps:
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            docs:
-              - '**/*.md'
-              - '**/*.txt'
-            all:
-              - '**/*'
-      - uses: actions/github-script@v8
+      # Determine whether a PR only touches docs (*.md / *.txt) so downstream
+      # jobs can skip expensive work.
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         id: docs-only
         with:
           script: |
-            let docs_file_count = ${{steps.changes.outputs.docs_count}};
-            let all_file_count = ${{steps.changes.outputs.all_count}};
-            return all_file_count === docs_file_count;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const isDoc = f => /\.(md|txt)$/.test(f.filename);
+            return files.length > 0 && files.every(isDoc);
           result-encoding: string
+
+  # Update guest Cargo.lock for Dependabot PRs.
+  # Dependabot only updates the root Cargo.lock, leaving the guest workspace
+  # Cargo.lock stale. This job updates it before code-checks runs
+  # `cargo fetch --locked` so that the first CI run succeeds.
+  update-guest-locks:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    uses: ./.github/workflows/dep_update_guest_locks.yml
+    secrets: inherit
 
   # Build guests once, upload as artifacts for other jobs to download
   build-guests:
-    needs: docs-pr
+    needs: [docs-pr, update-guest-locks]
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
+        arch: [X64, arm64]
         config: [debug, release]
     uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
 
   # Code checks (fmt, clippy, MSRV) - runs in parallel with build-guests
   code-checks:
-    needs: docs-pr
+    needs: [docs-pr, update-guest-locks]
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     uses: ./.github/workflows/dep_code_checks.yml
     secrets: inherit
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+
+  # Pick the goldens mode. The `regen-goldens` label means regenerate. No label means pull.
+  # Also validate the label against the goldens state so a stale or missing label fails fast.
+  check-golden-label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      packages: read
+    outputs:
+      should_regen_goldens: ${{ steps.check.outputs.should_regen_goldens || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install oras
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2.0.1
+        with:
+          version: 1.3.1
+
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # login technically not needed for reading public packages, but might avoid potential rate limiting
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+      - id: check
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          labels="$(gh pr view ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} --json labels -q '.labels[].name')"
+          if grep -qx regen-goldens <<<"$labels"; then
+            echo "should_regen_goldens=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_regen_goldens=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate regen-goldens label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          just snapshot-goldens-check-label "${{ steps.check.outputs.should_regen_goldens }}" FETCH_HEAD
 
   # Build and test - needs guest artifacts
   build-test:
     needs:
       - docs-pr
       - build-guests
+      - check-golden-label
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
+    permissions:
+      # checkout in the called workflow
+      contents: read
+      # pull goldens from GHCR in the called workflow
+      packages: read
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
+        hypervisor: ['hyperv-ws2025', mshv3, kvm, hvf]
+        cpu_vendor: [amd, intel, apple]
+        arch: [X64, arm64]
         config: [debug, release]
+        exclude:
+        - cpu_vendor: apple
+          hypervisor: hyperv-ws2025
+        - cpu_vendor: apple
+          hypervisor: mshv3
+        - arch: X64
+          hypervisor: hvf
+        - cpu_vendor: amd
+          arch: arm64
+        - cpu_vendor: intel
+          arch: arm64
+        - cpu_vendor: apple
+          arch: X64
     uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
-    with: 
+    with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
       hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
+      should_regen_goldens: ${{ needs.check-golden-label.outputs.should_regen_goldens }}
 
   # Run examples - needs guest artifacts, runs in parallel with build-test
   run-examples:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
+        # aarch64 examples are exercised by the daily schedule (DailyArm64.yml)
+        # only, to keep the limited arm64 runners free on PRs.
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
+        cpu_vendor: [amd, intel]
+        arch: [X64]
         config: [debug, release]
     uses: ./.github/workflows/dep_run_examples.yml
     secrets: inherit
     with: 
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
       hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
-
-  # Run benchmarks - release only, needs guest artifacts, runs in parallel with build-test
-  benchmarks:
-    needs:
-      - docs-pr
-      - build-guests
-    strategy:
-      fail-fast: true
-      matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
-    uses: ./.github/workflows/dep_benchmarks.yml
-    secrets: inherit
-    with: 
-      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
-      hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
 
   fuzzing:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
+    strategy:
+      matrix:
+        target: ['fuzz_host_print', 'fuzz_guest_call', 'fuzz_host_call', 'fuzz_guest_estimate_trace_event', 'fuzz_guest_trace', 'fuzz_virtq_packed_ring']
+        arch:
+          - X64
+        # arm64 fuzzing runs on the daily schedule (DailyArm64.yml) instead of on
+        # PRs, to conserve the limited arm64 runners.
     uses: ./.github/workflows/dep_fuzzing.yml
-    with:
-      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
-      max_total_time: 300 # 5 minutes in seconds
-      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
     secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      max_total_time: 300 # 5 minutes in seconds
+      arch: ${{ matrix.arch }}
+      target: ${{ matrix.target }}
 
   spelling:
     name: spell check with typos
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
     - name: Spell Check Repo
-      uses: crate-ci/typos@v1.40.0
+      uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f  # v1.49.0
 
   license-headers:
     name: check license headers
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
     - name: Check License Headers
       run: ./dev/check-license-headers.sh
 
@@ -148,11 +247,12 @@ jobs:
   report-ci-status:
     needs:
       - docs-pr
+      - update-guest-locks
       - build-guests
       - code-checks
+      - check-golden-label
       - build-test
       - run-examples
-      - benchmarks
       - fuzzing
       - spelling
       - license-headers

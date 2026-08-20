@@ -1,0 +1,4 @@
+[submodule "src/hyperlight_libc/third_party/picolibc"]
+	path = src/hyperlight_libc/third_party/picolibc
+	url = https://github.com/hyperlight-dev/picolibc-bsd.git
+	shallow = true

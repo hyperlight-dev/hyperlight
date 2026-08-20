@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![allow(clippy::disallowed_macros)]
 use std::thread;
 
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
@@ -21,9 +20,7 @@ use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 fn main() -> hyperlight_host::Result<()> {
     // Create an uninitialized sandbox with a guest binary
     let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         None, // default configuration
     )?;
 

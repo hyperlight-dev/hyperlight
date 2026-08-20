@@ -4,6 +4,123 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* `SandboxBuilder`, the entry point for creating a sandbox. It gathers machine
+  configuration, host functions, init data and memory mappings, then builds a
+  `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
+  snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
+* Add `MultiUseSandbox::status()`, which returns `SandboxStatus` for inspecting sandbox lifecycle state (poisoned, unrecoverable).
+
+### Changed
+* **Breaking:** Guest MSR state is now saved and restored across snapshots.
+  `SandboxConfiguration::guest_msrs` declares the MSRs a guest depends on:
+  declared MSRs are captured in a snapshot and restored, while every other MSR
+  resets to a clean default. On KVM the guest may only read or write declared
+  MSRs, on MSHV and WHP this is not enforced. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
+* **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
+* Deprecate `MultiUseSandbox::poisoned` in favor of `MultiUseSandbox::status().is_poisoned()`.
+
+Certain fixed guest addresses were changed on AArch64 to more easily
+accommodate 16k pages without wasting memory. Snapshots taken from
+sandboxes using the old addresses will not be loadable by new
+hyperlight versions.
+
+### Removed
+
+### Fixed
+* Mark a sandbox unrecoverable in rare cases when snapshot restore fails while updating its VM mappings.
+* Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
+* Reject malformed OCI snapshot metadata and non-regular artifact files during load.
+* Reset XCR0 during x86 snapshot restore.
+* Reseed guest libc `rand()` and `random()` after restoring a snapshot to avoid multiple sandboxes sharing PRNG state.
+
+## [v0.16.0] - 2026-06-26
+
+### Added
+* Initial aarch64/KVM guest and host support, including memory layout, virtual memory operations, exception handlers, MMIO exits, register handling, and CI workflows by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1474
+* `Snapshot::save`, `Snapshot::load`, and `Snapshot::checked_load` for persisting and loading sandbox snapshots as OCI Image Layout directories by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1465. Note that Hyperlight is at version 0.x, so a snapshot taken on one version may not load on another version.
+* Create sandboxes directly from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1459
+* Cross-sandbox snapshot restore (snapshots are no longer tied to the sandbox that created them) by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1499
+* Support for WHP no-surrogate mode via `HYPERLIGHT_MAX_SURROGATES=0` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1578
+* Wasmtime `flags!` macro support for WIT flags types by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1327
+
+### Changed
+* **Breaking:** `MultiUseSandbox::map_file_cow` and `UninitializedSandbox::map_file_cow` no longer take a label argument. The APIs now accept only `(file_path, guest_base)` by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1525.
+* Updated Rust toolchain to 1.94 by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1527
+* Updated surrogate process to `no_std`, reducing overhead of loading unnecessary libraries by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1533
+* Replaced `tracing-log` with native `tracing` macros for guest log forwarding by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1500
+* MSHV: use VP register page for RIP/RAX writes in `run_vcpu` for improved performance by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1366
+* MSHV: skip RIP advance on `VmAction::Halt` fast path by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1476
+* Faster `memcpy`/`memset` implementations by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1473
+
+### Removed
+* Removed the experimental `i686-guest`, `nanvix-unstable`, and `guest-counter` feature flags, along with 32-bit (i686) guest support and its page-table/snapshot code paths. Hyperlight guests are now 64-bit only (x86_64 and aarch64) by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1525.
+
+### Fixed
+* Fix colliding WIT import names by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1562
+* Fix empty namespace paths in component codegen by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1331
+* Fix `nomem` constraint on `out32` OUT-trap asm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1534
+* Validate guest address ranges for overlapping regions in `map_region` by @Richard-Durkee in https://github.com/hyperlight-dev/hyperlight/pull/1464
+
+## [v0.15.0] - 2026-05-06
+
+### Added
+* `#[main]` and `#[dispatch]` macros for type-safe guest entry points by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1384
+* Implement `Registerable` for `MultiUseSandbox` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1392
+* Guest compilation support for aarch64 by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1297
+* i686 page tables, snapshot compaction, and copy-on-write support by @danbugs and @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1385
+
+### Changed
+* **Breaking:** Replace musl with picolibc as C standard library for guests by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/831
+* Replace `nanvix-unstable` feature flag with `i686-guest` and `guest-counter` features by @danbugs and @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1385
+
+### Fixed
+* Fix flaky gdb tests by detaching from inside the breakpoint commands by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1435
+* Fix scratch memory overlapping APIC on i686 by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1393
+* Several WHP fixes by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1388, https://github.com/hyperlight-dev/hyperlight/pull/1387, and https://github.com/hyperlight-dev/hyperlight/pull/1386
+
+## [v0.14.0] - 2026-04-01
+
+### Changed
+* Snapshot restore now uses copy-on-write, reducing restore latency by up to 99% (see [paging notes](https://github.com/hyperlight-dev/hyperlight/blob/v0.14.0/docs/paging-development-notes.md)) by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1315
+* `map_region` on `MultiUseSandbox` now works on Windows by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1330
+* Maximum sandbox memory size increased from ~1 GiB to ~16 GiB by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1340
+
+### Fixed
+* Windows surrogate process manager now uses SHA-stamped filenames to avoid conflicts when multiple Hyperlight versions coexist, and surrogate pool size is configurable via `HYPERLIGHT_INITIAL_SURROGATES` and `HYPERLIGHT_MAX_SURROGATES` environment variables by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1339
+* Fix a race where guest cancellation could cause a pending TLB flush to be lost by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1333
+* Fix spurious `GuestAborted` errors after repeated cancel+restore cycles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1335
+
+## [v0.13.1] - 2026-03-19
+
+### Fixed
+* Explicitly error out on host-guest version mismatch by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1252
+
+### Added
+* Hardware interrupt support by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1272
+* Copy-on-write file mapping support with labels by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1320, https://github.com/hyperlight-dev/hyperlight/pull/1322
+* Re-export host functions from the `hyperlight_host` package by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1314
+* Make `map_region` public by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1293
+* Nanvix: `GuestCounter` API and i686 guest layout behind `nanvix-unstable` feature flag by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1270, https://github.com/hyperlight-dev/hyperlight/pull/1271
+
+## [v0.13.0] - 2026-03-06
+
+### Fixed
+* fix(windows): prevent WHvDeletePartition race by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1101
+* Fix guest tracing filter by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/977
+* Add crashdump example and include snapshot/scratch in core dumps by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1264
+
+### Changed
+* Make mem::exe::LoadInfo a struct, instead of an alias by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1099
+* Update snapshots by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1098
+* **Breaking:** `GuestFunctionDefinition::new` now takes a typed function pointer instead of `usize` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1241
+
+### Added
+* Enable CoW by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1229
+
+### Removed
+* Remove host function definition regions by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1178
+
 ## [v0.12.0] - 2025-12-09
 
 ### Fixed
@@ -94,7 +211,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Support mapping host memory into the guest by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/696
   - Make MultiUseSandbox::map_file_cow public by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/725
   - Add memory mapping support with KVM by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/709
-  - Make sure mmapped memory is not mapped writeable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
+  - Make sure mmapped memory is not mapped writable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
   - Make snapshots region aware by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/742
   - Restrict restoring sandboxes to snapshot taken on self by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/746
 - Enable guest tracing  by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/695
@@ -236,8 +353,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0..HEAD>
-[v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.12.0>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...HEAD>
+[v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
+[v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>
+[v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
+[v0.13.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0...v0.13.1>
+[v0.13.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0...v0.13.0>
+[v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0...v0.12.0>
 [v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>
 [v0.10.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0...v0.10.0>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>

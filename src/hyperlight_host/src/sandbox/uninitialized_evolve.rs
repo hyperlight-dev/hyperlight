@@ -13,22 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-#[cfg(gdb)]
-use std::sync::{Arc, Mutex};
-
-use rand::Rng;
+use rand::RngExt;
 use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
-use crate::hypervisor::hyperlight_vm::HyperlightVm;
+use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::ptr_offset::Offset;
+use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -36,16 +30,24 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
+use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    let (mut hshm, mut gshm) = u_sbox.mgr.build();
+    let (mut hshm, gshm) = u_sbox.mgr.build()?;
+
+    // Get the host page size. Narrowed to u32 because the guest ABI
+    // passes it via a 32-bit register (rdx), but widened back to usize
+    // for host-side alignment calculations in set_up_hypervisor_partition.
+    let page_size = u32::try_from(page_size::get())?;
+
     let mut vm = set_up_hypervisor_partition(
-        &mut gshm,
+        gshm,
         &u_sbox.config,
+        u_sbox.stack_top_gva,
+        page_size as usize,
         #[cfg(any(crashdump, gdb))]
-        &u_sbox.rt_cfg,
+        u_sbox.rt_cfg,
         u_sbox.load_info,
     )?;
 
@@ -54,90 +56,59 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         rng.random::<u64>()
     };
     let peb_addr = {
-        let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
+        let peb_u64 = u64::try_from(hshm.layout.peb_address())?;
         RawPtr::from(peb_u64)
     };
-
-    let page_size = u32::try_from(page_size::get())?;
-
-    #[cfg(gdb)]
-    let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
 
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
 
+    // Apply any file mappings that were prepared before evolve.
+    // This must happen before vm.initialise() so the mapped data is
+    // visible to the guest's init code.
+    //
+    // Each PreparedFileMapping is marked consumed immediately after
+    // its map_region succeeds — on Windows, WhpVm::map_memory copies
+    // the handle into its own cleanup list, so we must not let
+    // PreparedFileMapping::drop also release it (double-close).
+    // Unconsumed mappings (those after a failed map_region) are
+    // cleaned up by Drop when `pending` goes out of scope.
+    let pending = u_sbox.pending_file_mappings;
+    for mut prepared in pending {
+        let region = prepared.to_memory_region()?;
+        unsafe { vm.map_region(&region) }.map_err(|e| {
+            crate::HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(e))
+        })?;
+
+        // Mark consumed immediately after map_region succeeds.
+        // On Windows, WhpVm::map_memory copies the file mapping handle
+        // into its own `file_mappings` vec for cleanup on drop. If we
+        // deferred mark_consumed(), both PreparedFileMapping::drop and
+        // WhpVm::drop would release the same handle — a double-close.
+        // For linux see https://github.com/hyperlight-dev/hyperlight/issues/1290.
+        prepared.mark_consumed();
+    }
+
     vm.initialise(
         peb_addr,
         seed,
-        page_size,
         &mut hshm,
         &u_sbox.host_funcs,
         u_sbox.max_guest_log_level,
-        #[cfg(gdb)]
-        dbg_mem_access_hdl,
-    )?;
+    )
+    .map_err(HyperlightVmError::Initialize)?;
 
-    let dispatch_function_addr = hshm.get_pointer_to_dispatch_function()?;
-    if dispatch_function_addr == 0 {
-        return Err(new_error!("Dispatch function address is null"));
-    }
-
-    let dispatch_ptr = RawPtr::from(dispatch_function_addr);
-
-    #[cfg(gdb)]
-    let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
-
-    Ok(MultiUseSandbox::from_uninit(
-        u_sbox.host_funcs,
-        hshm,
-        vm,
-        dispatch_ptr,
-        #[cfg(gdb)]
-        dbg_mem_wrapper,
-    ))
+    Ok(MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm))
 }
 
 pub(crate) fn set_up_hypervisor_partition(
-    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
+    mgr: SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
-    #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
+    stack_top_gva: u64,
+    page_size: usize,
+    #[cfg(any(crashdump, gdb))] rt_cfg: SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
-    #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let rsp_u64 = mgr.set_up_shared_memory(&mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
-    let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
-        GuestPtr::try_from(entrypoint_total_offset)
-    }?;
-
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
-
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
     let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
@@ -150,7 +121,7 @@ pub(crate) fn set_up_hypervisor_partition(
         match gdb_conn {
             Ok(gdb_conn) => Some(gdb_conn),
             Err(e) => {
-                log::error!("Could not create gdb connection: {:#}", e);
+                tracing::error!("Could not create gdb connection: {:#}", e);
 
                 None
             }
@@ -162,38 +133,42 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
-    HyperlightVm::new(
-        regions,
-        pml4_ptr.absolute()?,
-        entrypoint_ptr.absolute()?,
-        rsp_ptr.absolute()?,
+    // Store the original entry point address in the runtime config for core dumps.
+    // This is needed because `next_action` transitions from `Initialise(addr)` to
+    // `Call(dispatch_addr)` after guest initialisation, losing the original value
+    // that GDB needs to compute the PIE binary's load offset. The manager carries
+    // it across that transition (and across snapshot save/restore), so it is
+    // correct for both the evolve path and `MultiUseSandbox::from_snapshot`.
+    #[cfg(crashdump)]
+    let rt_cfg = {
+        let mut rt_cfg = rt_cfg;
+        if mgr.original_entrypoint != 0 {
+            rt_cfg.entry_point = Some(mgr.original_entrypoint);
+        }
+        rt_cfg
+    };
+
+    Ok(HyperlightVm::new(
+        mgr.shared_mem,
+        mgr.scratch_mem,
+        mgr.layout.get_pt_base_gpa(),
+        mgr.next_action,
+        stack_top_gva,
+        page_size,
         config,
-        #[cfg(target_os = "windows")]
-        {
-            use crate::hypervisor::wrappers::HandleWrapper;
-            use crate::mem::shared_mem::SharedMemory;
-            HandleWrapper::from(
-                mgr.shared_mem
-                    .with_exclusivity(|s| s.get_mmap_file_handle())?,
-            )
-        },
-        #[cfg(target_os = "windows")]
-        {
-            use crate::mem::shared_mem::SharedMemory;
-            mgr.shared_mem.raw_mem_size()
-        },
         #[cfg(gdb)]
         gdb_conn,
         #[cfg(crashdump)]
-        rt_cfg.clone(),
+        rt_cfg,
         #[cfg(feature = "mem_profile")]
         trace_info,
     )
+    .map_err(HyperlightVmError::Create)?)
 }
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use super::evolve_impl_multi_use;
     use crate::UninitializedSandbox;
@@ -201,11 +176,10 @@ mod tests {
 
     #[test]
     fn test_evolve() {
-        let guest_bin_paths = vec![simple_guest_as_string().unwrap()];
+        let guest_bin_paths = vec![simple_guest_as_pathbuf()];
         for guest_bin_path in guest_bin_paths {
             let u_sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path.clone()), None)
-                    .unwrap();
+                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path), None).unwrap();
             evolve_impl_multi_use(u_sbox).unwrap();
         }
     }

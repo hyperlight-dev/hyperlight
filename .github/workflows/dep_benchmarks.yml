@@ -1,5 +1,28 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 
+# Reusable workflow to run benchmarks on a single hypervisor/cpu_vendor combination.
+#
+# Baseline comparison:
+#   The workflow supports two mutually exclusive ways to load a baseline for
+#   Criterion to compare against:
+#
+#   1. baseline_run_id — Downloads benchmark artifacts from a previous workflow
+#      run (by run ID). Used by DailyBenchmarks.yml for day-over-day comparison.
+#
+#   2. baseline_tag — Downloads benchmark tarballs from a GitHub Release (by tag).
+#      If empty (the default), `gh release download` fetches from the latest
+#      stable release. Used by CreateRelease.yml.
+#
+#   If baseline_run_id is set, baseline_tag is ignored.
+#   If neither is set, the latest stable release is used.
+#   Both downloads use continue-on-error so the first-ever run (no baseline
+#   available) succeeds without comparison.
+#
+# Artifact upload:
+#   Benchmark results are always uploaded as workflow artifacts named
+#   benchmarks_<OS>_<hypervisor>_<cpu_vendor>. The retention_days input controls
+#   how long they are kept (default: 5 days).
+
 name: Run Benchmarks
 
 on:
@@ -14,10 +37,29 @@ on:
         description: Hypervisor for this run (passed from caller matrix)
         required: true
         type: string
-      cpu:
-        description: CPU architecture for the build (passed from caller matrix)
+      cpu_vendor:
+        description: CPU vendor for the build, amd or intel (passed from caller matrix)
         required: true
         type: string
+      arch:
+        description: CPU architecture for the build, X64 or arm64 (passed from caller matrix)
+        required: true
+        type: string
+      baseline_tag:
+        description: Release tag to download baseline benchmarks from (e.g. dev-latest). Ignored if baseline_run_id is set. If empty, downloads from the latest stable release.
+        required: false
+        type: string
+        default: ""
+      baseline_run_id:
+        description: Workflow run ID to download baseline benchmark artifacts from. Takes precedence over baseline_tag.
+        required: false
+        type: string
+        default: ""
+      retention_days:
+        description: Number of days to retain benchmark artifacts
+        required: false
+        type: number
+        default: 5
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,18 +75,22 @@ defaults:
 jobs:
   run-benchmarks:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 30
-    runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
-          inputs.cpu)) }} 
+    timeout-minutes: ${{ fromJSON(vars.BENCHMARKS_JOB_TIMEOUT || '60') }}
+    runs-on: ${{ fromJson(inputs.arch == 'X64'
+        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-benchmarks-{3}-{4}-{5}"]',
+            inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+            inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor,
+            inputs.cpu_vendor,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || '["self-hosted", "Linux", "arm64", "kvm", "ubuntu-24.04"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -54,31 +100,52 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          shared-key: "${{ runner.os }}-release"
+          shared-key: "${{ inputs.arch }}-${{ runner.os }}-${{ inputs.hypervisor }}-release"
           save-if: "false"
 
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
       - name: Download Rust guests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: rust-guests-release
+          name: rust-guests-${{ inputs.arch }}-release
           path: src/tests/rust_guests/bin/release/
 
       - name: Download C guests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: c-guests-release
+          name: c-guests-${{ inputs.arch }}-release
           path: src/tests/c_guests/bin/release/
 
       - name: Build
         run: just build release
 
-      - name: Download benchmarks from "latest"
-        run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu }} dev-latest # compare to prerelease
+      - name: Download baseline from previous run
+        if: ${{ inputs.baseline_run_id != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
+          path: ./target/criterion/
+          run-id: ${{ inputs.baseline_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Download baseline from release
+        if: ${{ inputs.baseline_run_id == '' }}
+        run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu_vendor }} ${{ inputs.baseline_tag }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
       - name: Run benchmarks
         run: just bench-ci main
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
+          path: ./target/criterion/
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

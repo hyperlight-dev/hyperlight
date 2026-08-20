@@ -14,136 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::alloc::Layout;
-use core::arch::asm;
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/paging.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/paging.rs")]
+mod arch;
 
-use tracing::{Span, instrument};
+pub use arch::{map_region, phys_to_virt, virt_to_phys};
+/// Barriers that other code may need to use when updating page tables
+pub mod barrier {
+    /// Call this function when a virtual address has just been made
+    /// valid for the first time after the last tlb invalidate that
+    /// affected it, and it will be used for the first time in the
+    /// same execution context as has made the modification.
+    ///
+    /// On most architectures, TLBs will not cache invalid entries, so
+    /// this does not need to issue a TLB. However, it does need to
+    /// ensure coherency between the previous writes and any future
+    /// uses by a page table walker.
+    pub use arch::first_valid_same_ctx;
 
-use crate::OS_PAGE_SIZE;
-
-/// Convert a physical address in main memory to a virtual address
-/// through the pysmap
-///
-/// This is _not guaranteed_ to work with device memory
-pub fn ptov(x: u64) -> *mut u8 {
-    // Currently, all of main memory is identity mapped
-    x as *mut u8
-}
-
-// TODO: This is not at all thread-safe atm
-// TODO: A lot of code in this file uses inline assembly to load and
-//       store page table entries. It would be nice to use pointer
-//       volatile read/writes instead, but unfortunately we have a PTE
-//       at physical address 0, which is currently identity-mapped at
-//       virtual address 0, and Rust raw pointer operations can't be
-//       used to read/write from address 0.
-
-struct GuestMappingOperations {}
-impl hyperlight_common::vmem::TableOps for GuestMappingOperations {
-    type TableAddr = u64;
-    unsafe fn alloc_table(&self) -> u64 {
-        let page_addr = unsafe { alloc_phys_pages(1) };
-        unsafe { ptov(page_addr).write_bytes(0u8, hyperlight_common::vmem::PAGE_TABLE_SIZE) };
-        page_addr
-    }
-    fn entry_addr(addr: u64, offset: u64) -> u64 {
-        addr + offset
-    }
-    unsafe fn read_entry(&self, addr: u64) -> u64 {
-        let ret: u64;
-        unsafe {
-            asm!("mov {}, qword ptr [{}]", out(reg) ret, in(reg) addr);
-        }
-        ret
-    }
-    unsafe fn write_entry(&self, addr: u64, entry: u64) {
-        unsafe {
-            asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) entry);
-        }
-    }
-    fn to_phys(addr: u64) -> u64 {
-        addr
-    }
-    fn from_phys(addr: u64) -> u64 {
-        addr
-    }
-    fn root_table(&self) -> u64 {
-        let pml4_base: u64;
-        unsafe {
-            asm!("mov {}, cr3", out(reg) pml4_base);
-        }
-        pml4_base & !0xfff
-    }
-}
-
-/// Assumption: all are page-aligned
-/// # Safety
-/// This function modifies pages backing a virtual memory range which is inherently unsafe w.r.t.
-/// the Rust memory model.
-/// When using this function note:
-/// - No locking is performed before touching page table data structures,
-///   as such do not use concurrently with any other page table operations
-/// - TLB invalidation is not performed,
-///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
-    use hyperlight_common::vmem;
-    unsafe {
-        vmem::map(
-            &GuestMappingOperations {},
-            vmem::Mapping {
-                phys_base,
-                virt_base: virt_base as u64,
-                len,
-                kind: vmem::MappingKind::BasicMapping(vmem::BasicMapping {
-                    readable: true,
-                    writable: true,
-                    executable: true,
-                }),
-            },
-        );
-    }
-}
-
-/// Allocate n contiguous physical pages and return the physical
-/// addresses of the pages in question.
-/// # Safety
-/// This function is not inherently unsafe but will likely become so in the future
-/// when a real physical page allocator is implemented.
-/// # Panics
-/// This function will panic if:
-/// - The Layout creation fails
-/// - Memory allocation fails
-pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
-    // Currently, since all of main memory is idmap'd, we can just
-    // allocate any appropriately aligned section of memory.
-    unsafe {
-        let v = alloc::alloc::alloc_zeroed(
-            Layout::from_size_align(n as usize * OS_PAGE_SIZE as usize, OS_PAGE_SIZE as usize)
-                .expect("could not create physical page allocation layout"),
-        );
-        if v.is_null() {
-            panic!("could not allocate a physical page");
-        }
-        v as u64
-    }
-}
-
-pub fn flush_tlb() {
-    // Currently this just always flips CR4.PGE back and forth to
-    // trigger a tlb flush. We should use a faster approach where
-    // available
-    let mut orig_cr4: u64;
-    unsafe {
-        asm!("mov {}, cr4", out(reg) orig_cr4);
-    }
-    let tmp_cr4: u64 = orig_cr4 ^ (1 << 7); // CR4.PGE
-    unsafe {
-        asm!(
-            "mov cr4, {}",
-            "mov cr4, {}",
-            in(reg) tmp_cr4,
-            in(reg) orig_cr4
-        );
-    }
+    use super::arch::barrier as arch;
 }

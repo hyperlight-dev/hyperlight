@@ -20,45 +20,55 @@ extern crate alloc;
 
 use core::fmt::Write;
 
+use arch::dispatch::dispatch_function;
 use buddy_system_allocator::LockedHeap;
-#[cfg(target_arch = "x86_64")]
-use exceptions::{gdt::load_gdt, idtr::load_idt};
-use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
-use hyperlight_guest::exit::{halt, write_abort};
+use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::guest_handle::handle::GuestHandle;
-use log::LevelFilter;
-use spin::Once;
 
 // === Modules ===
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
+mod arch;
+// temporarily expose the architecture-specific exception interface;
+// this should be replaced with something a bit more abstract in the
+// near future.
 #[cfg(target_arch = "x86_64")]
-pub mod exceptions {
-    pub(super) mod gdt;
-    pub mod handler;
-    mod idt;
-    pub(super) mod idtr;
-    mod interrupt_entry;
-}
+pub mod exception;
 pub mod guest_function {
     pub(super) mod call;
     pub mod definition;
     pub mod register;
 }
 
+pub mod error;
 pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
 pub mod paging;
 
+/// Bridge between picolibc's POSIX expectations and the Hyperlight host.
+/// cbindgen:ignore
+#[cfg(feature = "libc")]
+mod libc_stubs;
+
+/// Shared initialisation code used by multiple architectures
+mod init;
+
+/// Re-export the libc bindings from hyperlight-libc when the libc feature is enabled.
+#[cfg(feature = "libc")]
+pub use hyperlight_libc as libc;
+
 // Globals
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap<ORDER> {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let addr = unsafe { self.0.alloc(layout) };
@@ -111,20 +121,41 @@ unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap
 }
 
 // === Globals ===
-#[cfg(not(feature = "mem_profile"))]
+#[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
-pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
+pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
-pub static mut MIN_STACK_ADDRESS: u64 = 0;
+const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
 
+// Embed the hyperlight-guest-bin crate version as a proper ELF note so the
+// host can verify ABI compatibility at load time.
+#[used]
+#[unsafe(link_section = ".note.hyperlight-version")]
+static HYPERLIGHT_VERSION_NOTE: hyperlight_common::version_note::ElfNote<
+    {
+        hyperlight_common::version_note::padded_name_size(
+            hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME.len() + 1,
+        )
+    },
+    { hyperlight_common::version_note::padded_desc_size(VERSION_STR.len() + 1) },
+> = hyperlight_common::version_note::ElfNote::new(
+    hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME,
+    VERSION_STR,
+    hyperlight_common::version_note::HYPERLIGHT_NOTE_TYPE,
+);
+
+/// The size of one page in the host OS, which may have some impacts
+/// on how buffers for host consumption should be aligned. Code only
+/// working with the guest page tables should use
+/// [`hyperlight_common::vm::PAGE_SIZE`] instead.
 pub static mut OS_PAGE_SIZE: u32 = 0;
 
 // === Panic Handler ===
@@ -174,86 +205,133 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
 
 unsafe extern "C" {
     fn hyperlight_main();
+
+    #[cfg(feature = "libc")]
     fn srand(seed: u32);
 }
 
-static INIT: Once = Once::new();
+#[cfg(feature = "libc")]
+pub(crate) fn refresh_libc_rng() {
+    let seed_ptr = hyperlight_guest::layout::libc_rng_seed_gva();
+    // SAFETY: The host maps this aligned u64 scratch slot for the guest's
+    // lifetime and writes it only while the guest is stopped.
+    let request = unsafe { seed_ptr.read_volatile() };
+    if request >> 32 != 0 {
+        // SAFETY: The scratch slot has the validity and exclusivity described
+        // above. The libc feature provides srand with a u32 seed.
+        unsafe {
+            srand(request as u32);
+            // clear request u32 and zero u32 seed
+            seed_ptr.write_volatile(0u64);
+        }
+    }
+}
 
-#[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+#[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
+extern "C" fn hyperlight_main_default() {
+    // no-op
+}
+
+core::arch::global_asm!(
+    ".weak hyperlight_main",
+    ".set hyperlight_main, {}",
+    sym hyperlight_main_default,
+);
+
+/// Architecture-nonspecific initialisation: set up the heap,
+/// coordinate some addresses and configuration with the host, and run
+/// user initialisation
+pub(crate) extern "C" fn generic_init(
+    peb_address: u64,
+    _seed: u64,
+    ops: u64,
+    max_log_level: u64,
+) -> u64 {
+    unsafe {
+        GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
+        #[allow(static_mut_refs)]
+        let peb_ptr = GUEST_HANDLE.peb().unwrap();
+
+        let heap_start = (*peb_ptr).guest_heap.ptr as usize;
+        let heap_size = (*peb_ptr).guest_heap.size as usize;
+        #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
+        let heap_allocator = &HEAP_ALLOCATOR;
+        #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
+        let heap_allocator = &HEAP_ALLOCATOR.0;
+        heap_allocator
+            .try_lock()
+            .expect("Failed to access HEAP_ALLOCATOR")
+            .init(heap_start, heap_size);
+        peb_ptr
+    };
+
     // Save the guest start TSC for tracing
     #[cfg(feature = "trace_guest")]
     let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
 
-    if peb_address == 0 {
-        panic!("PEB address is null");
+    #[cfg(feature = "libc")]
+    unsafe {
+        let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
+        srand(srand_seed);
     }
 
-    INIT.call_once(|| {
-        unsafe {
-            GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
-            #[allow(static_mut_refs)]
-            let peb_ptr = GUEST_HANDLE.peb().unwrap();
+    unsafe {
+        OS_PAGE_SIZE = ops as u32;
+    }
 
-            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+    // set up the logger
+    let guest_log_level_filter =
+        GuestLogFilter::try_from(max_log_level).expect("Invalid log level");
+    init_logger(guest_log_level_filter.into());
 
-            // Set the seed for the random number generator for C code using rand;
-            srand(srand_seed);
+    // It is important that all the tracing events are produced after the tracing is initialized.
+    #[cfg(feature = "trace_guest")]
+    if guest_log_level_filter != GuestLogFilter::Off {
+        hyperlight_guest_tracing::init_guest_tracing(
+            guest_start_tsc,
+            guest_log_level_filter.into(),
+        );
+    }
 
-            // This static is to make it easier to implement the __chkstk function in assembly.
-            // It also means that should we change the layout of the struct in the future, we
-            // don't have to change the assembly code.
-            MIN_STACK_ADDRESS = (*peb_ptr).guest_stack.min_user_stack_address;
+    // Open a span to partly capture the initialization of the guest.
+    // This is done here because the tracing subscriber is initialized and the guest is in a
+    // well-known state
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
+    let _entered = tracing::span!(tracing::Level::INFO, "generic_init").entered();
 
-            #[cfg(target_arch = "x86_64")]
-            {
-                // Setup GDT and IDT
-                load_gdt();
-                load_idt();
-            }
+    #[cfg(feature = "macros")]
+    for registration in __private::GUEST_FUNCTION_INIT {
+        registration();
+    }
 
-            let heap_start = (*peb_ptr).guest_heap.ptr as usize;
-            let heap_size = (*peb_ptr).guest_heap.size as usize;
-            #[cfg(not(feature = "mem_profile"))]
-            let heap_allocator = &HEAP_ALLOCATOR;
-            #[cfg(feature = "mem_profile")]
-            let heap_allocator = &HEAP_ALLOCATOR.0;
-            heap_allocator
-                .try_lock()
-                .expect("Failed to access HEAP_ALLOCATOR")
-                .init(heap_start, heap_size);
+    unsafe {
+        hyperlight_main();
+    }
 
-            OS_PAGE_SIZE = ops as u32;
+    // All this tracing logic shall be done right before the call to `hlt` which is done after this
+    // function returns
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
+    {
+        // NOTE: This is necessary to avoid closing the span twice. Flush closes all the open
+        // spans, when preparing to close a guest function call context.
+        // It is not mandatory, though, but avoids a warning on the host that alerts a spans
+        // that has not been opened but is being closed.
+        _entered.exit();
 
-            (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+        // Ensure that any tracing output from the initialisation phase is
+        // flushed to the host, if necessary.
+        hyperlight_guest_tracing::flush();
+    }
 
-            // set up the logger
-            let max_log_level = LevelFilter::iter()
-                .nth(max_log_level as usize)
-                .expect("Invalid log level");
-            init_logger(max_log_level);
-
-            // It is important that all the tracing events are produced after the tracing is initialized.
-            #[cfg(feature = "trace_guest")]
-            if max_log_level != LevelFilter::Off {
-                hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
-            }
-
-            #[cfg(feature = "macros")]
-            for registration in __private::GUEST_FUNCTION_INIT {
-                registration();
-            }
-
-            hyperlight_main();
-        }
-    });
-
-    halt();
+    dispatch_function as *const () as usize as u64
 }
 
 #[cfg(feature = "macros")]
 #[doc(hidden)]
 pub mod __private {
+    pub use alloc::vec::Vec;
+
+    pub use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
     pub use hyperlight_common::func::ResultType;
     pub use hyperlight_guest::error::HyperlightGuestError;
     pub use linkme;
@@ -267,7 +345,6 @@ pub mod __private {
     }
 
     use alloc::string::String;
-    use alloc::vec::Vec;
 
     use hyperlight_common::for_each_return_type;
 
@@ -295,4 +372,6 @@ pub mod __private {
 }
 
 #[cfg(feature = "macros")]
-pub use hyperlight_guest_macro::{guest_function, host_function};
+pub use hyperlight_guest_macro::{dispatch, guest_function, host_function, main};
+
+pub use crate::guest_function::definition::GuestFunc;

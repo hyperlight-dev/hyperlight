@@ -20,16 +20,15 @@ use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::mem::size_of;
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
-use crate::{Result, log_then_return, new_error};
+use super::shared_mem::SharedMemoryError;
+use crate::{HyperlightError, log_then_return, new_error};
 
 /// A function that knows how to read data of type `T` from a
 /// `SharedMemory` at a specified offset
-type ReaderFn<S, T> = dyn Fn(&S, usize) -> Result<T>;
+type ReaderFn<S, T> = dyn Fn(&S, usize) -> Result<T, SharedMemoryError>;
 /// A function that knows how to write data of type `T` from a
 /// `SharedMemory` at a specified offset.
-type WriterFn<S, T> = dyn Fn(&mut S, usize, T) -> Result<()>;
+type WriterFn<S, T> = dyn Fn(&mut S, usize, T) -> Result<(), SharedMemoryError>;
 
 /// Run the standard suite of tests for a specified type `U` to write to
 /// a `SharedMemory` and a specified type `T` to read back out of
@@ -43,17 +42,17 @@ type WriterFn<S, T> = dyn Fn(&mut S, usize, T) -> Result<()>;
 /// Regardless of which types you choose, they must be `Clone`able,
 /// `Debug`able, and you must be able to check if `T`, the one returned
 /// by the `reader`, is equal to `U`, the one accepted by the writer.
-pub(super) fn read_write_test_suite<S, T, U, ShmNew: Fn(usize) -> Result<S>>(
+pub(super) fn read_write_test_suite<S, T, U, ShmNew: Fn(usize) -> Result<S, SharedMemoryError>>(
     initial_val: U,
     shared_memory_new: ShmNew,
     reader: Box<ReaderFn<S, T>>,
     writer: Box<WriterFn<S, U>>,
-) -> Result<()>
+) -> Result<(), HyperlightError>
 where
     T: PartialEq + Debug + Clone + TryFrom<U>,
     U: Debug + Clone,
 {
-    let mem_size = PAGE_SIZE_USIZE;
+    let mem_size = page_size::get();
     let test_read = |mem_size, offset| {
         let sm = shared_memory_new(mem_size)?;
         (reader)(&sm, offset)
@@ -104,7 +103,7 @@ where
 /// Swaps a result's status. If it was passed as an `Ok`, it will be returned
 /// as an `Err` with a hard-coded error message. If it was passed as an `Err`,
 /// it will be returned as an `Ok(_)`.
-fn swap_res<T>(r: Result<T>) -> Result<()> {
+fn swap_res<T, E>(r: Result<T, E>) -> Result<(), HyperlightError> {
     match r {
         Ok(_) => {
             log_then_return!("result was expected to be an error, but wasn't");

@@ -16,11 +16,10 @@ name = "hyperlight_component_macro"
 proc-macro = true
 
 [dependencies]
-wasmparser = { version = "0.243.0" }
-quote = { version = "1.0.42" }
-proc-macro2 = { version = "1.0.103" }
-syn = { version = "2.0.111" }
-itertools = { version = "0.14.0" }
-prettyplease = { version = "0.2.37" }
+quote = { version = "1.0.45" }
+proc-macro2 = { version = "1.0.106" }
+syn = { version = "3.0.1" }
+itertools = { version = "0.15.0" }
+prettyplease = { version = "0.3.0" }
 hyperlight-component-util = { workspace = true }
-env_logger = { version = "0.11.8" }
+env_logger = { version = "0.11.10" }

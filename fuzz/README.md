@@ -10,7 +10,7 @@ which evaluates to the following command `cargo +nightly fuzz run fuzz_host_prin
 
 As per Microsoft's Offensive Research & Security Engineering (MORSE) team, all host exposed functions that receive or interact with guest data must be continuously fuzzed for, at least, 500 million fuzz test cases without any crashes. Because `cargo-fuzz` doesn't support setting a maximum number of iterations; instead, we use the `--max_total_time` flag to set a maximum time to run the fuzzer. We have a GitHub action (acting like a CRON job) that runs the fuzzers for 24 hours every week.
 
-Currently, we fuzz the parameters and return type to a hardcoded `PrintOutput` guest function, and the `HostPrint` host function. We plan to add more fuzzers in the future.
+Currently, we fuzz the parameters and return type to a hardcoded `PrintOutput` guest function, the `HostPrint` host function, and the packed virtqueue ring parser. We plan to add more fuzzers in the future.
 
 ## On Failure 
 

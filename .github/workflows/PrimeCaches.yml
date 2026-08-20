@@ -1,0 +1,121 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# Builds on main to populate the GitHub Actions cache for all Swatinem/rust-cache
+# shared-keys used by PR workflows. Caches saved on `refs/heads/main` are
+# restorable from every PR via the base-branch fallback. PR workflows are
+# configured with `save-if: github.ref == 'refs/heads/main'`, so they only ever
+# read from this cache.
+#
+# No tests are run here. The goal is just to populate dependency build artifacts
+# so that PR jobs start warm.
+
+name: Prime Caches
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Populate guest caches (key guests-{arch}-{config}) for both architectures.
+  guests:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [X64, arm64]
+        config: [debug, release]
+    uses: ./.github/workflows/dep_build_guests.yml
+    secrets: inherit
+    with:
+      arch: ${{ matrix.arch }}
+      config: ${{ matrix.config }}
+
+  # Populate v0-rust-code-checks-{linux,windows} caches.
+  code-checks:
+    uses: ./.github/workflows/dep_code_checks.yml
+    secrets: inherit
+
+  # Populate the host caches (key {arch}-{os}-{hypervisor}-{config}) used by
+  # dep_build_test.yml. Linux is primed once per hypervisor because the kvm
+  # pools run Ubuntu and the mshv3 pools run Azure Linux 3, and we want each
+  # distro to restore a cache produced under its own libc. Only the host
+  # dependency graph is built here, no tests are run.
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: X64
+            hypervisor: kvm
+            config: debug
+          - arch: X64
+            hypervisor: kvm
+            config: release
+          - arch: X64
+            hypervisor: mshv3
+            config: debug
+          - arch: X64
+            hypervisor: mshv3
+            config: release
+          - arch: X64
+            hypervisor: hyperv-ws2025
+            config: debug
+          - arch: X64
+            hypervisor: hyperv-ws2025
+            config: release
+          - arch: arm64
+            hypervisor: kvm
+            config: debug
+          - arch: arm64
+            hypervisor: kvm
+            config: release
+    timeout-minutes: ${{ fromJSON(vars.PRIME_CACHES_JOB_TIMEOUT || '30') }}
+    runs-on: ${{ fromJson(matrix.arch == 'X64'
+        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd", "JobId=prime-cache-{2}-{3}-{4}-{5}-{6}"]',
+            matrix.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+            matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor,
+            matrix.hypervisor,
+            matrix.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || '["self-hosted", "Linux", "arm64", "kvm", "ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          shared-key: "${{ matrix.arch }}-${{ runner.os }}-${{ matrix.hypervisor }}-${{ matrix.config }}"
+          cache-on-failure: "true"
+          # Only save on main as caches are not shared across branches.
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
+
+      - name: Build host
+        run: just build ${{ matrix.config }}

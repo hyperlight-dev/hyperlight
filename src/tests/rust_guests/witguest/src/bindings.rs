@@ -16,4 +16,4 @@ limitations under the License.
 
 extern crate alloc;
 
-hyperlight_component_macro::guest_bindgen!("interface.wasm");
+hyperlight_component_macro::guest_bindgen!(wit: "guest.wit");

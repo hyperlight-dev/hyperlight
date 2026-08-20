@@ -25,7 +25,7 @@ pub const ENUM_MAX_ERROR_CODE: u64 = 17;
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 17] = [
+pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 16] = [
     ErrorCode::NoError,
     ErrorCode::UnsupportedParameterType,
     ErrorCode::GuestFunctionNameNotProvided,
@@ -34,7 +34,6 @@ pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 17] = [
     ErrorCode::GispatchFunctionPointerNotSet,
     ErrorCode::OutbError,
     ErrorCode::UnknownError,
-    ErrorCode::StackOverflow,
     ErrorCode::GsCheckFailed,
     ErrorCode::TooManyGuestFunctions,
     ErrorCode::FailureInDlmalloc,
@@ -58,7 +57,6 @@ impl ErrorCode {
     pub const GispatchFunctionPointerNotSet: Self = Self(6);
     pub const OutbError: Self = Self(7);
     pub const UnknownError: Self = Self(8);
-    pub const StackOverflow: Self = Self(9);
     pub const GsCheckFailed: Self = Self(10);
     pub const TooManyGuestFunctions: Self = Self(11);
     pub const FailureInDlmalloc: Self = Self(12);
@@ -79,7 +77,6 @@ impl ErrorCode {
         Self::GispatchFunctionPointerNotSet,
         Self::OutbError,
         Self::UnknownError,
-        Self::StackOverflow,
         Self::GsCheckFailed,
         Self::TooManyGuestFunctions,
         Self::FailureInDlmalloc,
@@ -102,7 +99,6 @@ impl ErrorCode {
             Self::GispatchFunctionPointerNotSet => Some("GispatchFunctionPointerNotSet"),
             Self::OutbError => Some("OutbError"),
             Self::UnknownError => Some("UnknownError"),
-            Self::StackOverflow => Some("StackOverflow"),
             Self::GsCheckFailed => Some("GsCheckFailed"),
             Self::TooManyGuestFunctions => Some("TooManyGuestFunctions"),
             Self::FailureInDlmalloc => Some("FailureInDlmalloc"),

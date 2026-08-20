@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::cmp::min;
 use std::io::Write;
+use std::path::PathBuf;
 
 use chrono;
 use elfcore::{
@@ -24,7 +25,9 @@ use elfcore::{
 };
 
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags};
+use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::shared_mem::HostSharedMemory;
 use crate::{Result, new_error};
 
 /// This constant is used to identify the XSAVE state in the core dump
@@ -44,22 +47,20 @@ const CORE_DUMP_PAGE_SIZE: usize = 0x1000;
 /// This structure contains the information needed to create a core dump
 #[derive(Debug)]
 pub(crate) struct CrashDumpContext {
-    regions: Vec<MemoryRegion>,
+    regions: Vec<CrashDumpRegion>,
     regs: [u64; 27],
     xsave: Vec<u8>,
     entry: u64,
-    binary: Option<String>,
-    filename: Option<String>,
+    binary: Option<PathBuf>,
 }
 
 impl CrashDumpContext {
     pub(crate) fn new(
-        regions: Vec<MemoryRegion>,
+        regions: Vec<CrashDumpRegion>,
         regs: [u64; 27],
         xsave: Vec<u8>,
         entry: u64,
-        binary: Option<String>,
-        filename: Option<String>,
+        binary: Option<PathBuf>,
     ) -> Self {
         Self {
             regions,
@@ -67,7 +68,6 @@ impl CrashDumpContext {
             xsave,
             entry,
             binary,
-            filename,
         }
     }
 }
@@ -86,7 +86,7 @@ impl GuestView {
         let regions = ctx
             .regions
             .iter()
-            .filter(|r| !r.host_region.is_empty())
+            .filter(|r| !r.guest_region.is_empty())
             .map(|r| VaRegion {
                 begin: r.guest_region.start as u64,
                 end: r.guest_region.end as u64,
@@ -102,14 +102,19 @@ impl GuestView {
             .collect();
 
         let filename = ctx
-            .filename
-            .as_ref()
-            .map_or("<unknown>".to_string(), |s| s.to_string());
+            .binary
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .map_or("<unknown>".to_string(), |name| {
+                name.to_string_lossy().into_owned()
+            });
 
         let cmd = ctx
             .binary
-            .as_ref()
-            .map_or("<unknown>".to_string(), |s| s.to_string());
+            .as_deref()
+            .map_or("<unknown>".to_string(), |path| {
+                path.to_string_lossy().into_owned()
+            });
 
         // The xsave state is checked as it can be empty
         let mut components = vec![];
@@ -202,7 +207,7 @@ impl ProcessInfoSource for GuestView {
 /// This structure serves as a custom memory reader for `elfcore`'s
 /// [`CoreDumpBuilder`]
 struct GuestMemReader {
-    regions: Vec<MemoryRegion>,
+    regions: Vec<CrashDumpRegion>,
 }
 
 impl GuestMemReader {
@@ -226,7 +231,7 @@ impl ReadProcessMemory for GuestMemReader {
                 let region_slice = unsafe {
                     std::slice::from_raw_parts(
                         r.host_region.start as *const u8,
-                        r.host_region.len(),
+                        r.guest_region.len(),
                     )
                 };
 
@@ -254,22 +259,31 @@ impl ReadProcessMemory for GuestMemReader {
 ///
 /// This function generates an ELF core dump file capturing the hypervisor's state,
 /// which can be used for debugging when crashes occur.
-/// The location of the core dump file is determined by the `HYPERLIGHT_CORE_DUMP_DIR`
-/// environment variable. If not set, it defaults to the system's temporary directory.
+///
+/// If `override_dir` is `Some`, the core dump is placed there. Otherwise, the
+/// location is determined by the `HYPERLIGHT_CORE_DUMP_DIR` environment variable.
+/// If neither is set, it defaults to the system's temporary directory.
 ///
 /// # Arguments
 /// * `hv`: Reference to the hypervisor implementation
+/// * `mem_mgr`: Mutable reference to the sandbox memory manager
+/// * `override_dir`: Optional directory path that takes priority over the environment variable
 ///
 /// # Returns
 /// * `Result<()>`: Success or error
-pub(crate) fn generate_crashdump(hv: &HyperlightVm) -> Result<()> {
+pub(crate) fn generate_crashdump(
+    hv: &HyperlightVm,
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    override_dir: Option<PathBuf>,
+) -> Result<()> {
     // Get crash context from hypervisor
     let ctx = hv
-        .crashdump_context()
+        .crashdump_context(mem_mgr)
         .map_err(|e| new_error!("Failed to get crashdump context: {:?}", e))?;
 
-    // Get env variable for core dump directory
-    let core_dump_dir = std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok();
+    // Prefer the explicit override, then the env var, then the system temp dir
+    let core_dump_dir =
+        override_dir.or_else(|| std::env::var_os("HYPERLIGHT_CORE_DUMP_DIR").map(PathBuf::from));
 
     // Compute file path on the filesystem
     let file_path = core_dump_file_path(core_dump_dir);
@@ -284,11 +298,11 @@ pub(crate) fn generate_crashdump(hv: &HyperlightVm) -> Result<()> {
 
     if let Ok(nbytes) = checked_core_dump(ctx, create_dump_file) {
         if nbytes > 0 {
-            println!("Core dump created successfully: {}", file_path);
-            log::error!("Core dump file: {}", file_path);
+            println!("Core dump created successfully: {}", file_path.display());
+            tracing::error!("Core dump file: {}", file_path.display());
         }
     } else {
-        log::error!("Failed to create core dump file");
+        tracing::error!("Failed to create core dump file");
     }
 
     Ok(())
@@ -306,8 +320,8 @@ pub(crate) fn generate_crashdump(hv: &HyperlightVm) -> Result<()> {
 /// * `dump_dir`: The environment variable value to check for the output directory.
 ///
 /// Returns:
-/// * `String`: The file path for the core dump file.
-fn core_dump_file_path(dump_dir: Option<String>) -> String {
+/// * `PathBuf`: The file path for the core dump file.
+fn core_dump_file_path(dump_dir: Option<PathBuf>) -> PathBuf {
     // Generate timestamp string for the filename using chrono
     let timestamp = chrono::Local::now()
         .format("%Y%m%d_T%H%M%S%.3f")
@@ -318,12 +332,12 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
         // Check if the directory exists
         // If it doesn't exist, fall back to the system temp directory
         // This is to ensure that the core dump can be created even if the directory is not set
-        if std::path::Path::new(&dump_dir).exists() {
-            std::path::PathBuf::from(dump_dir)
+        if dump_dir.exists() {
+            dump_dir
         } else {
-            log::warn!(
+            tracing::warn!(
                 "Directory \"{}\" does not exist, falling back to temp directory",
-                dump_dir
+                dump_dir.display()
             );
             std::env::temp_dir()
         }
@@ -334,9 +348,7 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
 
     // Create the filename with timestamp
     let filename = format!("hl_core_{}.elf", timestamp);
-    let file_path = output_dir.join(filename);
-
-    file_path.to_string_lossy().to_string()
+    output_dir.join(filename)
 }
 
 /// Create core dump from Hypervisor context if the sandbox is configured to allow core dumps.
@@ -356,7 +368,7 @@ fn checked_core_dump(
     // If the HV returned a context it means we can create a core dump
     // This is the case when the sandbox has been configured at runtime to allow core dumps
     if let Some(ctx) = ctx {
-        log::info!("Creating core dump file...");
+        tracing::info!("Creating core dump file...");
 
         // Set up data sources for the core dump
         let guest_view = GuestView::new(&ctx);
@@ -385,16 +397,13 @@ mod test {
     #[test]
     fn test_crashdump_file_path_valid() {
         // Get CWD
-        let valid_dir = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let valid_dir = std::env::current_dir().unwrap();
 
         // Call the function
         let path = core_dump_file_path(Some(valid_dir.clone()));
 
         // Check if the path is correct
-        assert!(path.contains(&valid_dir));
+        assert!(path.starts_with(&valid_dir));
     }
 
     /// Test the core_dump_file_path function when the environment variable is set to an invalid
@@ -402,13 +411,13 @@ mod test {
     #[test]
     fn test_crashdump_file_path_invalid() {
         // Call the function
-        let path = core_dump_file_path(Some("/tmp/not_existing_dir".to_string()));
+        let path = core_dump_file_path(Some(PathBuf::from("/tmp/not_existing_dir")));
 
         // Get the temp directory
-        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        let temp_dir = std::env::temp_dir();
 
         // Check if the path is correct
-        assert!(path.contains(&temp_dir));
+        assert!(path.starts_with(&temp_dir));
     }
 
     /// Test the core_dump_file_path function when the environment is not set
@@ -418,7 +427,7 @@ mod test {
         // Call the function
         let path = core_dump_file_path(None);
 
-        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        let temp_dir = std::env::temp_dir();
 
         // Check if the path is correct
         assert!(path.starts_with(&temp_dir));
@@ -444,8 +453,7 @@ mod test {
             [0; 27],
             vec![],
             0,
-            Some("dummy_binary".to_string()),
-            Some("dummy_filename".to_string()),
+            Some(PathBuf::from("dummy_binary")),
         );
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
@@ -463,9 +471,10 @@ mod test {
     #[test]
     fn test_crashdump_dummy_core_dump() {
         let dummy_vec = vec![0; 0x1000];
-        let regions = vec![MemoryRegion {
+        let ptr = dummy_vec.as_ptr() as usize;
+        let regions = vec![CrashDumpRegion {
             guest_region: 0x1000..0x2000,
-            host_region: dummy_vec.as_ptr() as usize..dummy_vec.as_ptr() as usize + dummy_vec.len(),
+            host_region: ptr..ptr + dummy_vec.len(),
             flags: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             region_type: crate::mem::memory_region::MemoryRegionType::Code,
         }];
@@ -475,8 +484,7 @@ mod test {
             [0; 27],
             vec![],
             0x1000,
-            Some("dummy_binary".to_string()),
-            Some("dummy_filename".to_string()),
+            Some(PathBuf::from("dummy_binary")),
         );
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);

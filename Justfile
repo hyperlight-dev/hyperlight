@@ -5,6 +5,10 @@ set dotenv-load := true
 
 set-env-command := if os() == "windows" { "$env:" } else { "export " }
 bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
+nightly-toolchain := "nightly-2026-02-27"
+# Pinned cargo-hyperlight version used to build the guest sysroot. Keep this in
+# lockstep with the version pinned in flake.nix.
+cargo-hyperlight-version := "0.1.12"
 
 ################
 ### cross-rs ###
@@ -23,9 +27,15 @@ export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } e
 root := justfile_directory()
 
 default-target := "debug"
-simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-hyperlight-none"
-dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-hyperlight-none"
-witguest_source := "src/tests/rust_guests/witguest/target/x86_64-hyperlight-none"
+hyperlight-target-arch := env("HYPERLIGHT_TARGET", arch())
+hyperlight-target := if hyperlight-target-arch == "x86_64" { "x86_64-hyperlight-none" } else if hyperlight-target-arch == "aarch64" { "aarch64-hyperlight-none" } else { error("Unsupported architecture: " + arch()) }
+# All three guest crates share one workspace under src/tests/rust_guests,
+# so they share one target dir and hyperlight-libc / hyperlight-guest-bin
+# get compiled once per profile instead of once per crate.
+rust_guests_target := "src/tests/rust_guests/target/" + hyperlight-target
+simpleguest_source := rust_guests_target
+dummyguest_source := rust_guests_target
+witguest_source := rust_guests_target
 rust_guests_bin_dir := "src/tests/rust_guests/bin"
 
 ################
@@ -42,16 +52,20 @@ build target=default-target:
 # build testing guest binaries
 guests: build-and-move-rust-guests build-and-move-c-guests
 
-witguest-wit:
-    command -v wasm-tools >/dev/null 2>&1 || cargo install --locked wasm-tools
-    cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
-    cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
+# Ensure the pinned cargo-hyperlight is installed. We compare the *actual*
+# installed binary's reported version instead of relying on `cargo install`
+# alone: on persistent/self-hosted CI runners a stale binary can survive while
+# cargo's metadata still claims the pinned version is present, silently skipping
+# the upgrade (this is how the broken 0.1.5 `--build-plan` binary kept running).
+# When the version doesn't match we force a reinstall to the pinned version.
+ensure-cargo-hyperlight:
+    {{ if os() == "windows" { "if (-not ((cargo hyperlight --version 2>$null) -like '*" + cargo-hyperlight-version + "*')) { cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight }" } else { "cargo hyperlight --version 2>/dev/null | grep -qF '" + cargo-hyperlight-version + "' || cargo install --locked --force --version " + cargo-hyperlight-version + " cargo-hyperlight" } }}
 
-build-rust-guests target=default-target features="": (witguest-wit)
-    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
-    cd src/tests/rust_guests/simpleguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/dummyguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/witguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
+build-rust-guests target=default-target features="": (ensure-cargo-hyperlight)
+    @# --workspace unifies feature resolution so shared deps build once. Needed because witguest
+    @# pulls bindgen via hyperlight-component-macro, which would otherwise turn on extra features
+    @# on libc's build.rs host deps and force a libc rebuild. simple/dummyguest don't hit this.
+    cd src/tests/rust_guests && cargo hyperlight build --workspace {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -65,10 +79,8 @@ clean: clean-rust
 
 clean-rust: 
     cargo clean
-    cd src/tests/rust_guests/simpleguest && cargo clean
-    cd src/tests/rust_guests/dummyguest && cargo clean
-    {{ if os() == "windows" { "cd src/tests/rust_guests/witguest -ErrorAction SilentlyContinue; cargo clean" } else { "[ -d src/tests/rust_guests/witguest ] && cd src/tests/rust_guests/witguest && cargo clean || true" } }}
-    {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
+    cd src/tests/rust_guests && cargo clean
+    {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/*.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/*.wasm" } }}
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
 
 ################
@@ -79,11 +91,21 @@ clean-rust:
 
 # convenience recipe to run all tests with the given target and features (similar to CI)
 test-like-ci config=default-target hypervisor="kvm":
+    @# verify the local platforms golden. Fill target/snapshot-goldens first with
+    @# `just snapshot-goldens-pull` or `just snapshot-goldens-generate`.
+    just snapshot-goldens-verify {{config}}
+
     @# with default features
     just test {{config}}
 
-    @# with only one driver enabled + build-metadata + init-paging
-    just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    @# with only one driver enabled + build-metadata
+    just test {{config}} build-metadata,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+
+    @# with hw-interrupts enabled (+ explicit driver on Linux)
+    {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
+
+    @# no-surrogate mode smoke tests (Windows/WHP only)
+    {{ if os() == "windows" { "just test-no-surrogate " + config } else { "" } }}
 
     @# make sure certain cargo features compile
     just check
@@ -97,9 +119,10 @@ test-like-ci config=default-target hypervisor="kvm":
     @# test the tracing related features
     {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
-like-ci config=default-target hypervisor="kvm":
+code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
+    cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
     @# fmt
     just fmt-check
@@ -114,6 +137,14 @@ like-ci config=default-target hypervisor="kvm":
     @# Verify MSRV
     ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
 
+    @# Check cargo features compile
+    just check
+
+    @# Check compilation with no default features
+    just test-compilation-no-default-features debug
+    just test-compilation-no-default-features release
+
+build-guests-like-ci config=default-target hypervisor="kvm":
     @# Build and move Rust guests
     just build-rust-guests {{config}}
     just move-rust-guests {{config}}
@@ -122,57 +153,117 @@ like-ci config=default-target hypervisor="kvm":
     just build-c-guests {{config}}
     just move-c-guests {{config}}
 
+build-test-like-ci config=default-target hypervisor="kvm":
     @# Build
     just build {{config}}
 
-    @# Run Rust tests
-    just test-like-ci {{config}} {{hypervisor}}
+    @# Run Miri tests
+    {{ if os() == "linux" { "just miri-tests" } else { "" } }}
 
+    @# Run Rust tests
+    just test {{config}}
+
+    @# Run Rust tests with single driver
+    {{ if os() == "linux" { "just test " + config+ " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+
+    @# Run Rust tests with hw-interrupts
+    {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
+
+    @# Run Rust Gdb tests
+    just test-rust-gdb-debugging {{config}}
+
+    @# Run Rust Crashdump tests
+    just test-rust-crashdump {{config}}
+
+    @# Run Rust Tracing tests
+    {{ if os() == "linux" { "just test-rust-tracing " + config } else { "" } }}
+
+run-examples-like-ci config=default-target hypervisor="kvm":
     @# Run Rust examples - Windows
     {{ if os() == "windows" { "just run-rust-examples " + config } else { "" } }}
 
     @# Run Rust examples - linux
-    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " } else { "" } }}
 
-    @# Run Rust Gdb tests
-    just test-rust-gdb-debugging {{ config }} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} 
-
-    @# Run Rust Crashdump tests
-    just test-rust-crashdump {{config}} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
-
-    @# Run Rust Tracing tests - linux
-    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
-
+benchmarks-like-ci config=default-target hypervisor="kvm":
     @# Run benchmarks
-    {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if config == "release" { "just bench-ci main" } else { "" } }}
+
+fuzz-like-ci target config=default-target hypervisor="kvm":
+    @# Run Fuzzing
+    # Use a much shorter time limit (1 vs 300 seconds), because the
+    # local version of this step is mostly intended just for making
+    # sure that the fuzz harnesses compile
+    {{ if config == "release" { "just fuzz-timed " + target + " 1" } else { "" } }}
+
+like-ci config=default-target hypervisor="kvm":
+    @# .github/workflows/dep_code_checks.yml
+    just code-checks-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_build_guests.yml
+    just build-guests-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_build_test.yml
+    just build-test-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_run_examples.yml
+    just run-examples-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_benchmarks.yml
+    just benchmarks-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_fuzzing.yml
+    just fuzz-like-ci fuzz_host_print {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_call {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_host_call {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_virtq_packed_ring {{config}} {{hypervisor}}
+
+    @# spelling
+    typos
+
+    @# license-headers
+    just check-license-headers
 
 # runs all tests
-test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-doc target features)
+test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration target features) (test-doc target features)
 
 # runs unit tests
 test-unit target=default-target features="":
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
+
+# runs loom concurrency tests
+test-loom:
+    {{ set-env-command }}RUSTFLAGS='--cfg loom'; {{ cargo-cmd }} test --quiet -p hyperlight-common --lib {{ target-triple-flag }} virtq::concurrency::
 
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="" :
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_trace_trace --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::create_1000_sandboxes --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    @# CPU vendor check, gated to known CI runner hardware
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::snapshot::file::config::tests::cpu_vendor_current_is_recognized --exact --ignored
+    @# Slow host-dependent MSR audit. Run once per x86_64 CI profile.
+    {{ if features == "" { if hyperlight-target-arch == "x86_64" { cargo-cmd + " test --profile=" + (if target == "debug" { "dev" } else { target }) + " " + target-triple-flag + " -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::msr_tests::test_no_msr_leaks_across_restore_full_window_sweep --exact --ignored --nocapture" } else { "" } } else { "" } }}
+    @# LAPIC-enabled MSHV can expose additional MSRs. Audit it once in debug.
+    {{ if features == "mshv3,hw-interrupts" { if target == "debug" { if hyperlight-target-arch == "x86_64" { cargo-cmd + " test --no-default-features -F mshv3,hw-interrupts --profile=dev " + target-triple-flag + " -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::msr_tests::test_no_msr_leaks_across_restore_full_window_sweep --exact --ignored --nocapture" } else { "" } } else { "" } } else { "" } }}
     @# metrics tests
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics,init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
-# runs integration tests. Guest can either be "rust" or "c"
-test-integration guest target=default-target features="":
-    @# run execute_on_heap test with feature "executable_heap" on and off
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap {{ if features =="" {" --features executable_heap"} else {"--features executable_heap," + features} }} -- --ignored
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap {{ if features =="" {""} else {"--features " + features} }} -- --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
 
-    @# run the rest of the integration tests
-    @# skip interrupt_random_kill_stress_test and then run it explicitly so we can see the output more 
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*' --  --skip interrupt_random_kill_stress_test
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test interrupt_random_kill_stress_test --  --nocapture --exact
+# runs integration tests
+test-integration target=default-target features="":
+    @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
+    {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
+
+    @# run component-util integration tests that exercise WIT input codegen
+    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
+
+    @# run the rest of the integration tests. `snapshot_goldens` is in
+    @# the glob but no-ops without a mode token, so it needs no golden
+    @# cache here. It verifies in its own step (see the snapshot-goldens
+    @# recipes).
+    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
@@ -180,18 +271,30 @@ test-compilation-no-default-features target=default-target:
     {{ if os() == "linux" { "! " + cargo-cmd + " check -p hyperlight-host --no-default-features "+target-triple-flag+" 2> /dev/null" } else { "" } }}
     @# Windows should succeed even without default features
     {{ if os() == "windows" { cargo-cmd + " check -p hyperlight-host --no-default-features" } else { "" } }}
-    @# Linux should succeed with a hypervisor driver but without init-paging
+    @# Linux should succeed with a hypervisor driver but without default features
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}  {{ target-triple-flag }}
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
+
+# runs a subset of existing tests with HYPERLIGHT_MAX_SURROGATES=0 (Windows only).
+# Covers: guest calls, host callbacks, in-memory snapshot/restore, and
+# save/load snapshot from disk.
+# NOTE: if any of the test names below are renamed, update both this
+# recipe AND the matching CI step in .github/workflows/dep_build_test.yml.
+test-no-surrogate target=default-target:
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --lib -- no_surrogate_tests --test-threads=1
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test -- guest_malloc guest_panic corrupt_output_size_prefix_rejected --test-threads=1
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test sandbox_host_tests -- --exact callback_test float_roundtrip --test-threads=1
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --lib -- snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot --test-threads=1
 
 # runs tests that exercise gdb debugging
 test-rust-gdb-debugging target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
-    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- test_gdb
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- hypervisor::gdb::
 
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example crashdump {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }}
 
 # rust test for tracing
 test-rust-tracing target=default-target features="":
@@ -200,21 +303,14 @@ test-rust-tracing target=default-target features="":
     {{ cargo-cmd }} test -p hyperlight-common -F trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
     {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features trace_guest'} else { "--features trace_guest," + features } }} {{ target-triple-flag }}
 
-# verify hyperlight-common and hyperlight-guest build for 32-bit (for Nanvix compatibility - uses i686 as proxy for Nanvix's custom 32-bit x86 target)
-check-i686 target=default-target:
-    cargo check -p hyperlight-common --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
-    cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
-    # Verify that trace_guest correctly fails on i686 (compile_error should trigger)
-    ! cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --features trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} 2>/dev/null
-
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
 miri-tests:
     rustup +nightly component list | grep -q "miri.*installed" || rustup component add miri --toolchain nightly
-    # For now only run miri tests on hyperlight-common with trace_guest feature
     # We can add more as needed
     cargo +nightly miri test -p hyperlight-common -F trace_guest
+    cargo +nightly miri test -p hyperlight-host --lib -- mem::shared_mem::tests
 
 ################
 ### LINTING ####
@@ -226,38 +322,35 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features executable_heap  {{ target-triple-flag }}
 
-fmt-check:
-    rustup +nightly component list | grep -q "rustfmt.*installed" || rustup component add rustfmt --toolchain nightly
-    cargo +nightly fmt --all -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
+fmt-check: (ensure-nightly-fmt)
+    cargo +{{nightly-toolchain}} fmt --all -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/Cargo.toml --all -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
+
+[private]
+ensure-nightly-fmt:
+    {{ if os() == "windows" { "if (-not (rustup +"+nightly-toolchain+" component list | Select-String 'rustfmt.*installed')) { rustup component add rustfmt --toolchain "+nightly-toolchain+" }" } else { "rustup +"+nightly-toolchain+" component list | grep -q 'rustfmt.*installed' || rustup component add rustfmt --toolchain "+nightly-toolchain } }}
 
 check-license-headers:
     ./dev/check-license-headers.sh
 
-fmt-apply:
-    rustup +nightly component list | grep -q "rustfmt.*installed" || rustup component add rustfmt --toolchain nightly
-    cargo +nightly fmt --all
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
+fmt-apply: (ensure-nightly-fmt)
+    cargo +{{nightly-toolchain}} fmt --all
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/Cargo.toml --all
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
-clippy target=default-target: (witguest-wit)
-    {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
+clippy target=default-target:
+    {{ cargo-cmd }} clippy --all-targets {{ if hyperlight-target-arch == "x86_64" { "--all-features" } else { "" } }} --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
 # for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
-# Note: `--all-targets` does not work because build issues from tracy-crate
-clippyw target=default-target: (witguest-wit)
-    {{ cargo-cmd }} clippy --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
+clippyw target=default-target:
+    {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
-clippy-guests target=default-target: (witguest-wit)
-    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
-    cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
-    cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+clippy-guests target=default-target: (ensure-cargo-hyperlight)
+    cd src/tests/rust_guests && cargo hyperlight clippy --workspace --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:
     cargo clippy --fix --all 
@@ -266,7 +359,7 @@ clippy-apply-fix-windows:
     cargo clippy --target x86_64-pc-windows-msvc --fix --all 
 
 # Run clippy with feature combinations for all packages
-clippy-exhaustive target=default-target: (witguest-wit)
+clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-host {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-guest {{ target }} 
     ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
@@ -275,11 +368,11 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
-    ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
+    {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
 # Test a specific package with all feature combinations
-clippy-package package target=default-target: (witguest-wit)
+clippy-package package target=default-target:
     ./hack/clippy-package-features.sh {{ package }} {{ target }}
 
 # Verify Minimum Supported Rust Version
@@ -299,6 +392,7 @@ run-rust-examples target=default-target features="":
 run-rust-examples-linux target=default-target features="": (run-rust-examples target features)
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }} --example tracing {{ if features =="" {''} else { "--features " + features } }}
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }}  --example tracing {{ if features =="" {"--features function_call_metrics" } else {"--features function_call_metrics," + features} }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }} --example crashdump {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }}
 
 
 #########################
@@ -306,10 +400,10 @@ run-rust-examples-linux target=default-target features="": (run-rust-examples ta
 #########################
 
 tar-headers: (build-rust-capi) # build-rust-capi is a dependency because we need the hyperlight_guest.h to be built
-    tar -zcvf include.tar.gz -C {{root}}/src/hyperlight_guest_bin/third_party/ musl/include musl/arch/x86_64 printf/printf.h -C {{root}}/src/hyperlight_guest_capi include
+    tar -zcvf include.tar.gz -C {{root}}/target/sysroot/ include -C {{root}}/src/hyperlight_guest_capi include
 
 tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
-    tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-unknown-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-unknown-none/ debug/libhyperlight_guest_capi.a
+    tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-hyperlight-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-hyperlight-none/ debug/libhyperlight_guest_capi.a
 
 # Create release notes for the given tag. The expected format is a v-prefixed version number, e.g. v0.2.0
 # For prereleases, the version should be "dev-latest"
@@ -328,11 +422,11 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 # Options for os: "Windows", or "Linux"
 # Options for Linux hypervisor: "kvm", "mshv3"
 # Options for Windows hypervisor: "hyperv", "hyperv-ws2025"
-# Options for cpu: "amd", "intel"
-bench-download os hypervisor cpu tag="":
-    gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz
+# Options for cpu_vendor: "amd", "intel"
+bench-download os hypervisor cpu_vendor tag="":
+    gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz
     mkdir -p target/criterion {{ if os() == "windows" { "-Force" } else { "" } }}
-    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz -C target/criterion/ --strip-components=1
+    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz -C target/criterion/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
 bench-ci baseline features="":
@@ -390,6 +484,105 @@ fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
 build-trace-fuzzers:
     cargo +nightly fuzz build fuzz_guest_trace --features trace
 
+####################
+### COVERAGE #######
+####################
+
+# install cargo-llvm-cov if not already installed and ensure nightly toolchain + llvm-tools are available
+ensure-cargo-llvm-cov:
+    command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov --locked
+    rustup toolchain install nightly 2>/dev/null
+    rustup component add llvm-tools --toolchain nightly 2>/dev/null
+
+# host-side packages to collect coverage for (guest/no_std crates are excluded because they
+# define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+
+# run all tests and examples with coverage instrumentation, collecting profdata without
+# generating a report. Mirrors test-like-ci + run-examples-like-ci to exercise all code paths
+# across all feature combinations. Uses nightly for branch coverage.
+#
+# Uses the show-env approach so that cargo produces separate binaries per feature combination.
+# This avoids "mismatched data" warnings that occur when `cargo llvm-cov --no-report` recompiles
+# a crate with different features, overwriting the previous binary and orphaning its profraw data.
+#
+# (run `just guests` first to build guest binaries)
+coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Set up coverage instrumentation environment variables (RUSTFLAGS, LLVM_PROFILE_FILE, etc.)
+    # and clean previous artifacts. All subsequent cargo commands inherit instrumentation.
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov clean --workspace
+
+    # tests with default features (all drivers; skip stress tests — too slow under instrumentation)
+    cargo +nightly test {{ coverage-packages }} --tests -- --skip stress_test
+
+    # tests with single driver + build-metadata
+    cargo +nightly test {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+
+    # isolated tests (require running separately due to global state)
+    cargo +nightly test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    cargo +nightly test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    cargo +nightly test -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    cargo +nightly test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact
+
+    # integration test with executable_heap feature
+    cargo +nightly test {{ coverage-packages }} --no-default-features -F executable_heap,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --test integration_test -- execute_on_heap
+
+    # crashdump tests + example
+    cargo +nightly test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump
+    cargo +nightly run --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example crashdump
+
+    # tracing feature tests (host-side only; hyperlight-guest-tracing is no_std)
+    cargo +nightly test -p hyperlight-common --no-default-features --features trace_guest --tests -- --skip stress_test
+    cargo +nightly test -p hyperlight-host --no-default-features --features trace_guest,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+
+    # examples: metrics, logging, tracing
+    cargo +nightly run --example metrics
+    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example metrics
+    cargo +nightly run --example logging
+    cargo +nightly run --example tracing
+    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example tracing
+    cargo +nightly test --no-default-features -F gdb,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example guest-debugging
+
+# generate a text coverage summary to stdout
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov report
+
+# generate an HTML coverage report to target/coverage/html/
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage-html hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
+
+# generate LCOV coverage output to target/coverage/lcov.info
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage-lcov hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    mkdir -p target/coverage
+    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+
+# generate all coverage reports for CI: HTML + LCOV + text summary.
+# (run `just guests` first to build guest binaries)
+coverage-ci hypervisor="kvm": (coverage-run hypervisor)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    mkdir -p target/coverage
+    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
+    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+    cargo +nightly llvm-cov report | tee target/coverage/summary.txt
+
 ###################
 ### FLATBUFFERS ###
 ###################
@@ -404,3 +597,126 @@ install-vcpkg:
 
 install-flatbuffers-with-vcpkg: install-vcpkg
     cd ../vcpkg && ./vcpkg install flatbuffers || cd -
+
+###################################
+### SNAPSHOT GOLDEN HELPERS     ###
+###################################
+
+default-snapshot-goldens-image := "ghcr.io/hyperlight-dev/hyperlight-snapshot-goldens"
+
+# Check the local snapshots against the goldens for the current
+# GOLDENS_VERSION. Run `snapshot-goldens-pull` first to fill the
+# local directory. A missing entry fails the test. Each host checks
+# only its own (arch, hypervisor, cpu vendor, profile) golden.
+snapshot-goldens-verify target=default-target:
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens -- verify
+
+# Pull this host's goldens into the directory `snapshot-goldens-verify`
+# reads. `all` (default) fetches the current version plus every
+# `COMPAT_VERSIONS` major. `compat` fetches only the old majors, for
+# regenerate runs where the registry has no current tag.
+snapshot-goldens-pull target=default-target which="all" image=default-snapshot-goldens-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -e /dev/mshv ]]; then hv=mshv
+    elif [[ -e /dev/kvm ]]; then hv=kvm
+    elif [[ "${OS:-}" == "Windows_NT" ]]; then hv=whp
+    elif [[ "$(sysctl -n kern.hv_support)" == "1" ]]; then hv=hvf
+    else echo "snapshot-goldens-pull: no hypervisor found" >&2; exit 1
+    fi
+    # Mirror of `CpuVendor::golden_tag` in file/config.rs. x86_64 reads
+    # the cpuid vendor string. aarch64 has a single Apple vendor.
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch=x86_64
+            vendor=$(awk -F': ' '/^vendor_id/{print $2; exit}' /proc/cpuinfo)
+            case "${vendor}" in
+                GenuineIntel) cpu=intel ;;
+                AuthenticAMD) cpu=amd ;;
+                *) echo "snapshot-goldens-pull: unrecognized cpu vendor '${vendor}'" >&2; exit 1 ;;
+            esac
+            ;;
+        aarch64|arm64) arch=aarch64; cpu=apple ;;
+        *) echo "snapshot-goldens-pull: unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+    version_file=src/hyperlight_host/tests/snapshot_goldens/goldens_version.rs
+    current=$(awk -F'"' '/GOLDENS_VERSION: &str =/{print $2; exit}' "${version_file}")
+    # Old majors for backwards-compat verification. Mirror of
+    # `COMPAT_VERSIONS` in goldens_version.rs.
+    compat=$(grep -E 'COMPAT_VERSIONS.*=.*&\[' "${version_file}" | grep -oE 'v[0-9]+\.[0-9]+' || true)
+    case "{{ which }}" in
+        all) versions="${current} ${compat}" ;;
+        compat) versions="${compat}" ;;
+        *) echo "snapshot-goldens-pull: unknown which '{{ which }}' (expected all or compat)" >&2; exit 1 ;;
+    esac
+    # Mirror of `Platform::tag_for` in platform.rs. Keep both in sync.
+    for version in ${versions}; do
+        tag="${version}-${arch}-${hv}-${cpu}-{{ target }}"
+        dir="target/snapshot-goldens/${tag}"
+        mkdir -p "${dir}"
+        oras cp --to-oci-layout "{{ image }}:${tag}" "${dir}:${tag}"
+    done
+
+# Build the local snapshots into the directory `snapshot-goldens-verify`
+# reads. Run this then `snapshot-goldens-verify` to test the round trip
+# on one host. Pass `out` to write the snapshots elsewhere.
+snapshot-goldens-generate target=default-target out="":
+    cargo test {{ if target == "release" { "--release" } else { "" } }} \
+        -p hyperlight-host --test snapshot_goldens -- generate {{ out }}
+
+# Generate this host's golden from the branch and place it where
+# `snapshot-goldens-verify` reads. For when the registry has no
+# published tag for the current version. Pull `COMPAT_VERSIONS`
+# goldens separately to also verify backwards compat.
+snapshot-goldens-regenerate target=default-target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(mktemp -d)
+    trap 'rm -rf "${out}"' EXIT
+    just snapshot-goldens-generate {{ target }} "${out}"
+    # generate writes exactly one {tag}/ layout into the clean dir.
+    shopt -s nullglob
+    layouts=("${out}"/*/)
+    if [[ "${#layouts[@]}" -ne 1 ]]; then
+        echo "snapshot-goldens-regenerate: expected one layout in ${out}, found ${#layouts[@]}" >&2
+        exit 1
+    fi
+    layout="${layouts[0]%/}"
+    tag="$(basename "${layout}")"
+    dest="target/snapshot-goldens/${tag}"
+    rm -rf "${dest}"
+    mkdir -p target/snapshot-goldens
+    cp -r "${layout}" "${dest}"
+
+# Validate the regen-goldens label against the goldens state.
+# has_label is true when a PR carries the label. The label is set
+# when the current GOLDENS_VERSION was bumped and is not published.
+# base_ref is the git ref to diff the version against.
+snapshot-goldens-check-label has_label base_ref image=default-snapshot-goldens-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version_file=src/hyperlight_host/tests/snapshot_goldens/goldens_version.rs
+    parse_version() { awk -F'"' '/GOLDENS_VERSION: &str =/{print $2; exit}'; }
+    version=$(parse_version < "${version_file}")
+    published() { oras repo tags "{{ image }}" 2>/dev/null | grep -qxF "${1}-complete"; }
+    if [[ "{{ has_label }}" == "true" ]]; then
+        # Empty when absent on base_ref (file added or renamed here), read as a bump below.
+        base_version=""
+        git cat-file -e "{{ base_ref }}:${version_file}" 2>/dev/null && base_version=$(git show "{{ base_ref }}:${version_file}" | parse_version)
+        if [[ "${version}" == "${base_version}" ]]; then
+            echo "::error::regen-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
+            exit 1
+        fi
+        if published "${version}"; then
+            echo "::error::regen-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
+            exit 1
+        fi
+        echo "snapshot-goldens-check-label: OK. ${version} bumped from ${base_version} and not yet published."
+    else
+        if ! published "${version}"; then
+            echo "::error::goldens for ${version} are not published. Add the regen-goldens label, or run RegenSnapshotGoldens first." >&2
+            exit 1
+        fi
+        echo "snapshot-goldens-check-label: OK. ${version} is published."
+    fi

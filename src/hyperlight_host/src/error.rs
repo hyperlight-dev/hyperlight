@@ -30,9 +30,10 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use thiserror::Error;
 
+use crate::hypervisor::hyperlight_vm::HyperlightVmError;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::ptr::RawPtr;
 
 /// The error type for Hyperlight operations
@@ -41,9 +42,6 @@ pub enum HyperlightError {
     /// Anyhow error
     #[error("Anyhow Error was returned: {0}")]
     AnyhowError(#[from] anyhow::Error),
-    /// Memory access out of bounds
-    #[error("Offset: {0} out of bounds, Max is: {1}")]
-    BoundsCheckFailed(u64, usize),
 
     /// Checked Add Overflow
     #[error("Couldn't add offset to base address. Offset: {0}, Base Address: {1}")]
@@ -103,13 +101,31 @@ pub enum HyperlightError {
     #[error("Unsupported type: {0}")]
     GuestInterfaceUnsupportedType(String),
 
-    /// The guest offset is invalid.
-    #[error("The guest offset {0} is invalid.")]
-    GuestOffsetIsInvalid(usize),
+    /// The guest binary was built with a different hyperlight-guest-bin version than the host expects.
+    /// Hyperlight currently provides no backwards compatibility guarantees for guest binaries,
+    /// so the guest and host versions must match exactly. This might change in the future.
+    #[error(
+        "Guest binary was built with hyperlight-guest-bin {guest_bin_version}, \
+         but the host is running hyperlight {host_version}"
+    )]
+    GuestBinVersionMismatch {
+        /// Version of hyperlight-guest-bin the guest was compiled against.
+        guest_bin_version: String,
+        /// Version of hyperlight-host.
+        host_version: String,
+    },
 
     /// A Host function was called by the guest but it was not registered.
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
+
+    /// Hyperlight VM error.
+    ///
+    /// **Note:** This error variant is considered internal and its structure is not stable.
+    /// It may change between versions without notice. Users should not rely on this.
+    #[doc(hidden)]
+    #[error("Internal Hyperlight VM error: {0}")]
+    HyperlightVmError(#[from] HyperlightVmError),
 
     /// Reading Writing or Seeking data failed.
     #[error("Reading Writing or Seeking data failed {0:?}")]
@@ -127,11 +143,6 @@ pub enum HyperlightError {
     #[error("Conversion of str data to json failed")]
     JsonConversionFailure(#[from] serde_json::Error),
 
-    /// KVM Error Occurred
-    #[error("KVM Error {0:?}")]
-    #[cfg(kvm)]
-    KVMError(#[from] kvm_ioctls::Error),
-
     /// An attempt to get a lock from a Mutex failed.
     #[error("Unable to lock resource")]
     LockAttemptFailed(String),
@@ -140,38 +151,18 @@ pub enum HyperlightError {
     #[error("Memory Access Violation at address {0:#x} of type {1}, but memory is marked as {2}")]
     MemoryAccessViolation(u64, MemoryRegionFlags, MemoryRegionFlags),
 
-    /// Memory Allocation Failed.
-    #[error("Memory Allocation Failed with OS Error {0:?}.")]
-    MemoryAllocationFailed(Option<i32>),
-
-    /// Memory Protection Failed
-    #[error("Memory Protection Failed with OS Error {0:?}.")]
-    MemoryProtectionFailed(Option<i32>),
-
-    /// Memory region size mismatch
-    #[error("Memory region size mismatch: host size {0:?}, guest size {1:?} region {2:?}")]
-    MemoryRegionSizeMismatch(usize, usize, MemoryRegion),
-
     /// The memory request exceeds the maximum size allowed
     #[error("Memory requested {0} exceeds maximum size allowed {1}")]
     MemoryRequestTooBig(usize, usize),
 
+    /// The memory request is too small to contain everything that is
+    /// required
+    #[error("Memory requested {0} is less than the minimum size allowed {1}")]
+    MemoryRequestTooSmall(usize, usize),
+
     /// Metric Not Found.
     #[error("Metric Not Found {0:?}.")]
     MetricNotFound(&'static str),
-
-    /// mmap Failed.
-    #[error("mmap failed with os error {0:?}")]
-    MmapFailed(Option<i32>),
-
-    /// mprotect Failed.
-    #[error("mprotect failed with os error {0:?}")]
-    MprotectFailed(Option<i32>),
-
-    /// mshv Error Occurred
-    #[error("mshv Error {0:?}")]
-    #[cfg(mshv3)]
-    MSHVError(#[from] mshv_ioctls::MshvError),
 
     /// No Hypervisor was found for Sandbox.
     #[error("No Hypervisor was found for Sandbox")]
@@ -210,6 +201,10 @@ pub enum HyperlightError {
     #[error("The sandbox was poisoned")]
     PoisonedSandbox,
 
+    /// The sandbox cannot safely perform further operations and must be discarded.
+    #[error("The sandbox is unrecoverable and must be discarded")]
+    UnrecoverableSandbox,
+
     /// Raw pointer is less than base address
     #[error("Raw pointer ({0:?}) was less than the base address ({1})")]
     RawPointerLessThanBaseAddress(RawPtr, u64),
@@ -226,26 +221,33 @@ pub enum HyperlightError {
     #[error("Failed To Convert Return Value {0:?} to {1:?}")]
     ReturnValueConversionFailure(ReturnValue, &'static str),
 
-    /// Attempted to process a snapshot but the snapshot size does not match the current memory size
-    #[error("Snapshot Size Mismatch: Memory Size {0:?} Snapshot Size {1:?}")]
-    SnapshotSizeMismatch(usize, usize),
+    /// Error creating or operating on memory shared with the guest
+    #[error("Failed to execute shared memory operation: {0}")]
+    SharedMemory(#[from] crate::mem::shared_mem::SharedMemoryError),
 
-    /// Stack overflow detected in guest
-    #[error("Stack overflow detected")]
-    StackOverflow(),
+    /// Tried to restore a snapshot into a sandbox whose memory
+    /// layout is not compatible with the snapshot's.
+    #[error("Snapshot memory layout is not compatible with this sandbox")]
+    SnapshotLayoutMismatch,
 
-    /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
-    #[error("Snapshot was taken from a different sandbox")]
-    SnapshotSandboxMismatch,
+    /// Tried to restore a snapshot into a sandbox whose registered
+    /// host functions do not satisfy the snapshot's required set.
+    #[error(
+        "Snapshot host function mismatch: missing=[{}], signature mismatches=[{}]",
+        missing.join(", "),
+        signature_mismatches.join("; ")
+    )]
+    SnapshotHostFunctionMismatch {
+        /// Functions that are required by the snapshot but not present in the target sandbox.
+        missing: Vec<String>,
+        /// Human-readable descriptions of functions whose signatures
+        /// disagree between the snapshot and the target sandbox.
+        signature_mismatches: Vec<String>,
+    },
 
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
     SystemTimeError(#[from] SystemTimeError),
-
-    /// Error occurred when translating guest address
-    #[error("An error occurred when translating guest address: {0:?}")]
-    #[cfg(gdb)]
-    TranslateGuestAddress(u64),
 
     /// Error occurred converting a slice to an array
     #[error("TryFromSliceError {0:?}")]
@@ -329,36 +331,47 @@ impl HyperlightError {
             | HyperlightError::ExecutionCanceledByHost()
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
-            | HyperlightError::StackOverflow()
             | HyperlightError::MemoryAccessViolation(_, _, _)
-            | HyperlightError::SnapshotSizeMismatch(_, _)
-            | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
+            // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
+            // as poisoning here too for defense in depth.
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
+
+            // These errors poison the sandbox because they can leave
+            // it in an inconsistent state due to snapshot restore
+            // failing partway through
+            HyperlightError::HyperlightVmError(HyperlightVmError::UpdateRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::AccessPageTable(_)) => true,
+
+            // HyperlightVmError::DispatchGuestCall may poison the sandbox
+            HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(e)) => {
+                e.is_poison_error()
+            }
 
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
-            | HyperlightError::BoundsCheckFailed(_, _)
             | HyperlightError::CheckedAddOverflow(_, _)
             | HyperlightError::CStringConversionError(_)
             | HyperlightError::Error(_)
             | HyperlightError::FailedToGetValueFromParameter()
             | HyperlightError::FieldIsMissingInGuestLogData(_)
+            | HyperlightError::GuestBinVersionMismatch { .. }
             | HyperlightError::GuestError(_, _)
             | HyperlightError::GuestExecutionHungOnHostFunctionCall()
             | HyperlightError::GuestFunctionCallAlreadyInProgress()
             | HyperlightError::GuestInterfaceUnsupportedType(_)
-            | HyperlightError::GuestOffsetIsInvalid(_)
             | HyperlightError::HostFunctionNotFound(_)
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Create(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
             | HyperlightError::InvalidFlatBuffer(_)
             | HyperlightError::JsonConversionFailure(_)
             | HyperlightError::LockAttemptFailed(_)
-            | HyperlightError::MemoryAllocationFailed(_)
-            | HyperlightError::MemoryProtectionFailed(_)
             | HyperlightError::MemoryRequestTooBig(_, _)
+            | HyperlightError::MemoryRequestTooSmall(_, _)
             | HyperlightError::MetricNotFound(_)
-            | HyperlightError::MmapFailed(_)
-            | HyperlightError::MprotectFailed(_)
             | HyperlightError::NoHypervisorFound()
             | HyperlightError::NoMemorySnapshot
             | HyperlightError::ParameterValueConversionFailure(_, _)
@@ -367,14 +380,17 @@ impl HyperlightError {
             | HyperlightError::RefCellBorrowFailed(_)
             | HyperlightError::RefCellMutBorrowFailed(_)
             | HyperlightError::ReturnValueConversionFailure(_, _)
-            | HyperlightError::SnapshotSandboxMismatch
+            | HyperlightError::SnapshotLayoutMismatch
+            | HyperlightError::SnapshotHostFunctionMismatch { .. }
             | HyperlightError::SystemTimeError(_)
             | HyperlightError::TryFromSliceError(_)
             | HyperlightError::UnexpectedNoOfArguments(_, _)
             | HyperlightError::UnexpectedParameterValueType(_, _)
             | HyperlightError::UnexpectedReturnValueType(_, _)
+            | HyperlightError::UnrecoverableSandbox
             | HyperlightError::UTF8StringConversionFailure(_)
-            | HyperlightError::VectorCapacityIncorrect(_, _, _) => false,
+            | HyperlightError::VectorCapacityIncorrect(_, _, _)
+            | HyperlightError::SharedMemory(_) => false,
 
             #[cfg(target_os = "windows")]
             HyperlightError::CrossBeamReceiveError(_) => false,
@@ -384,12 +400,6 @@ impl HyperlightError {
             HyperlightError::WindowsAPIError(_) => false,
             #[cfg(target_os = "linux")]
             HyperlightError::VmmSysError(_) => false,
-            #[cfg(kvm)]
-            HyperlightError::KVMError(_) => false,
-            #[cfg(mshv3)]
-            HyperlightError::MSHVError(_) => false,
-            #[cfg(gdb)]
-            HyperlightError::TranslateGuestAddress(_) => false,
         }
     }
 }
@@ -409,4 +419,95 @@ macro_rules! new_error {
            let __err_msg = std::format!($fmtstr, $($arg)*);
            $crate::error::HyperlightError::Error(__err_msg)
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hypervisor::hyperlight_vm::{
+        DispatchGuestCallError, HandleIoError, HyperlightVmError, RunVmError,
+    };
+    use crate::sandbox::outb::HandleOutbError;
+
+    /// Test that ExecutionCancelledByHost promotes to HyperlightError::ExecutionCanceledByHost
+    #[test]
+    fn test_promote_execution_cancelled_by_host() {
+        let err = DispatchGuestCallError::Run(RunVmError::ExecutionCancelledByHost);
+        let (promoted, should_poison) = err.promote();
+
+        assert!(
+            should_poison,
+            "ExecutionCancelledByHost should poison the sandbox"
+        );
+        assert!(
+            matches!(promoted, HyperlightError::ExecutionCanceledByHost()),
+            "Expected HyperlightError::ExecutionCanceledByHost, got {:?}",
+            promoted
+        );
+    }
+
+    /// Test that GuestAborted promotes to HyperlightError::GuestAborted with correct values
+    #[test]
+    fn test_promote_guest_aborted() {
+        let err = DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
+            HandleOutbError::GuestAborted {
+                code: 42,
+                message: "test abort".to_string(),
+            },
+        )));
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "GuestAborted should poison the sandbox");
+        match promoted {
+            HyperlightError::GuestAborted(code, msg) => {
+                assert_eq!(code, 42);
+                assert_eq!(msg, "test abort");
+            }
+            _ => panic!("Expected HyperlightError::GuestAborted, got {:?}", promoted),
+        }
+    }
+
+    /// Test that MemoryAccessViolation promotes to HyperlightError::MemoryAccessViolation
+    #[test]
+    fn test_promote_memory_access_violation() {
+        let err = DispatchGuestCallError::Run(RunVmError::MemoryAccessViolation {
+            addr: 0xDEADBEEF,
+            access_type: MemoryRegionFlags::WRITE,
+            region_flags: MemoryRegionFlags::READ,
+        });
+        let (promoted, should_poison) = err.promote();
+
+        assert!(
+            should_poison,
+            "MemoryAccessViolation should poison the sandbox"
+        );
+        match promoted {
+            HyperlightError::MemoryAccessViolation(addr, access_type, region_flags) => {
+                assert_eq!(addr, 0xDEADBEEF);
+                assert_eq!(access_type, MemoryRegionFlags::WRITE);
+                assert_eq!(region_flags, MemoryRegionFlags::READ);
+            }
+            _ => panic!(
+                "Expected HyperlightError::MemoryAccessViolation, got {:?}",
+                promoted
+            ),
+        }
+    }
+
+    /// Test that non-promoted Run errors are wrapped in HyperlightVmError
+    #[test]
+    fn test_promote_other_run_errors_wrapped() {
+        let err = DispatchGuestCallError::Run(RunVmError::MmioReadUnmapped(0x1000));
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "Run errors should poison the sandbox");
+        assert!(
+            matches!(
+                promoted,
+                HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(_))
+            ),
+            "Expected HyperlightError::HyperlightVmError, got {:?}",
+            promoted
+        );
+    }
 }

@@ -24,15 +24,15 @@ jobs:
   build-rust-ubuntu:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=build-rust-ubuntu-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     needs: [release-blocker-check]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -45,15 +45,15 @@ jobs:
   build-rust-windows:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: windows-2022
+    runs-on: windows-2025
     needs: [release-blocker-check]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -68,12 +68,23 @@ jobs:
     secrets: inherit
     needs: [release-blocker-check]
     with:
+      arch: X64
       config: release
 
   benchmarks:
     needs: [build-guests]
-    uses: ./.github/workflows/Benchmarks.yml
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [X64]
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
+        cpu_vendor: [amd, intel]
+    uses: ./.github/workflows/dep_benchmarks.yml
     secrets: inherit
+    with:
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: ${{ matrix.arch }}
     permissions:
       contents: read
 
@@ -90,7 +101,7 @@ jobs:
   publish:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=create-release-publish-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     needs:
       [
         build-rust-ubuntu,
@@ -107,14 +118,15 @@ jobs:
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: echo "CONFIG=release" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          submodules: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -128,21 +140,22 @@ jobs:
           echo "HYPERLIGHT_VERSION=$version" >> $GITHUB_ENV
           echo "HYPERLIGHT_VERSION=$version"
 
+      - name: Install cargo-hyperlight
+        run: just ensure-cargo-hyperlight
+
       - name: Build and archive guest library + header files
         run: |
           just tar-headers
           just tar-static-lib
 
       - name: Download all benchmarks
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: benchmarks_*
 
       - name: Archive benchmarks
         run: |
-          # windows (hyperv = Server 2022, hyperv-ws2025 = Server 2025)
-          tar -zcvf benchmarks_Windows_hyperv_amd.tar.gz benchmarks_Windows_hyperv_amd
-          tar -zcvf benchmarks_Windows_hyperv_intel.tar.gz benchmarks_Windows_hyperv_intel
+          # windows (server 2025)
           tar -zcvf benchmarks_Windows_hyperv-ws2025_amd.tar.gz benchmarks_Windows_hyperv-ws2025_amd
           tar -zcvf benchmarks_Windows_hyperv-ws2025_intel.tar.gz benchmarks_Windows_hyperv-ws2025_intel
           # kvm
@@ -168,8 +181,6 @@ jobs:
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: |
             gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md \
-            benchmarks_Windows_hyperv_amd.tar.gz \
-            benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
             benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
@@ -186,8 +197,6 @@ jobs:
         run: |
             gh release delete dev-latest -y --cleanup-tag || true
             gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p \
-            benchmarks_Windows_hyperv_amd.tar.gz \
-            benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
             benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \

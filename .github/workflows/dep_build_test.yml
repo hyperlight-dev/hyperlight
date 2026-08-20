@@ -18,10 +18,29 @@ on:
         description: Build configuration for this run (passed from caller matrix)
         required: true
         type: string
-      cpu:
+      cpu_vendor:
+        description: CPU vendor for the build (passed from caller matrix)
+        required: true
+        type: string
+      arch:
         description: CPU architecture for the build (passed from caller matrix)
         required: true
         type: string
+      full_aarch64:
+        description: >-
+          When "true", also run the Miri and single-driver tests on aarch64.
+          PRs leave this "false" so the aarch64 runner only builds and runs the
+          default Rust tests; the daily schedule (DailyArm64.yml) sets it "true".
+          This input only affects aarch64: it does not change X64, where those
+          tests already run on Linux and are skipped on Windows regardless.
+        required: false
+        type: string
+        default: "false"
+      should_regen_goldens:
+        description: Regenerate snapshot goldens from the branch and skip pulling published ones
+        required: false
+        type: string
+        default: "false"
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,6 +48,7 @@ env:
 
 permissions:
   contents: read
+  packages: read
 
 defaults:
   run:
@@ -37,18 +57,25 @@ defaults:
 jobs:
   build-and-test:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 45
-    runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
-          inputs.cpu)) }} 
+    timeout-minutes: ${{ fromJSON(vars.BUILD_TEST_JOB_TIMEOUT || '45') }}
+    runs-on: ${{ fromJson(inputs.arch == 'X64'
+        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=build-and-test-{3}-{4}-{5}-{6}"]',
+            inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
+            inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor,
+            inputs.cpu_vendor,
+            inputs.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || format('["self-hosted", "{0}", "arm64", "{1}"]',
+            inputs.hypervisor == 'hvf' && 'macos' || 'Linux',
+            inputs.hypervisor)) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -58,41 +85,38 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          shared-key: "${{ runner.os }}-${{ inputs.config }}"
+          shared-key: "${{ inputs.arch }}-${{ runner.os }}-${{ inputs.hypervisor }}-${{ inputs.config }}"
           cache-on-failure: "true"
+          # Only save on main as caches are not shared across branches.
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up sccache
+        uses: ./.github/actions/setup-sccache
 
       - name: Download Rust guests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: rust-guests-${{ inputs.config }}
+          name: rust-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/rust_guests/bin/${{ inputs.config }}/
 
       - name: Download C guests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: c-guests-${{ inputs.config }}
+          name: c-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
-
-      - name: Download interface.wasm
-        uses: actions/download-artifact@v7
-        with:
-          name: interface-wasm
-          path: src/tests/rust_guests/witguest/
-
-      - name: Download twoworlds.wasm
-        uses: actions/download-artifact@v7
-        with:
-          name: twoworlds-wasm
-          path: src/tests/rust_guests/witguest/
 
       - name: Build
         run: just build ${{ inputs.config }}
 
       - name: Run Miri tests
-        if: runner.os == 'Linux'
-        run: just miri-tests
+        # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
+        # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux
+        # it always runs.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
+        run: env -u RUSTC_WRAPPER just miri-tests
 
       - name: Run Rust tests
         run: |
@@ -100,23 +124,97 @@ jobs:
           just test ${{ inputs.config }}
 
       - name: Run Rust tests with single driver
-        if: runner.os == 'Linux'
+        # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
+        # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux
+        # it always runs.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
+      - name: Run no-surrogate VM tests (WHP only)
+        if: runner.os == 'Windows'
+        env:
+          HYPERLIGHT_MAX_SURROGATES: "0"
+          HYPERLIGHT_INITIAL_SURROGATES: "0"
+        run: |
+          PROFILE=${{ inputs.config == 'debug' && 'dev' || inputs.config }}
+          # Verify each expected test actually ran (guards against silent
+          # renames where cargo test exits 0 with 0 matches).
+          # NOTE: keep in sync with `just test-no-surrogate`.
+          assert_ran() {
+            local output="$1"; shift
+            for name in "$@"; do
+              if ! echo "$output" | grep -q "$name \.\.\. ok"; then
+                echo "::error::Expected test '$name' did not run — may have been renamed"
+                return 1
+              fi
+            done
+          }
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- no_surrogate_tests --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" single_vm_lifecycle
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test integration_test -- guest_malloc guest_panic corrupt_output_size_prefix_rejected --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" guest_malloc guest_panic corrupt_output_size_prefix_rejected
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test sandbox_host_tests -- --exact callback_test float_roundtrip --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" callback_test float_roundtrip
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          assert_ran "$OUT" snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot
+
+      - name: Run Rust tests with hw-interrupts
+        if: runner.arch == 'X64'
+        run: |
+          # with hw-interrupts feature enabled (+ explicit driver on Linux)
+          just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
+
       - name: Run Rust Gdb tests
+        if: runner.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
 
       - name: Run Rust Crashdump tests
+        if: runner.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-crashdump ${{ inputs.config }}
 
       - name: Run Rust Tracing tests
-        if: runner.os == 'Linux'
+        if: runner.arch == 'X64' && runner.os == 'Linux'
         env:
           RUST_LOG: debug
         run: just test-rust-tracing ${{ inputs.config }}
+
+      - name: Install oras
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2.0.1
+        with:
+          version: 1.3.1
+
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # login technically not needed for reading public packages, but might avoid potential rate limiting
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+      - name: Snapshot goldens (pull and verify)
+        if: ${{ inputs.should_regen_goldens != 'true' }}
+        run: |
+          just snapshot-goldens-pull ${{ inputs.config }}
+          just snapshot-goldens-verify ${{ inputs.config }}
+
+      - name: Snapshot goldens (regenerate and verify)
+        if: ${{ inputs.should_regen_goldens == 'true' }}
+        run: |
+          # regenerate goldens from current branch
+          just snapshot-goldens-regenerate ${{ inputs.config }}
+
+          # pull the goldens that are "compatible" with current branch (if any) without overwriting the regenerated ones
+          just snapshot-goldens-pull ${{ inputs.config }} compat
+
+          # verify current code against the regenerated and compat goldens
+          just snapshot-goldens-verify ${{ inputs.config }}

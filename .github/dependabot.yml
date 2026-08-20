@@ -14,33 +14,15 @@ updates:
       time: "03:00"
     labels:
       - "kind/dependencies"
-    ignore:
-    # The way we are using 2 different versions of the mshv crates seems to break dependabot
-      - dependency-name: "mshv-ioctls"
-        versions: [ ">=0.2.1" ]
-      - dependency-name: "mshv-bindings"
-        versions: [ ">=0.2.1" ]
     open-pull-requests-limit: 20
+    groups:
+      wasm-tools:
+        patterns:
+          - "wasmparser"
+          - "wit-parser"
+          - "wit-component"
   - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/dummyguest"
-    schedule:
-      interval: "daily"
-      time: "03:00"
-    labels:
-      - "kind/dependencies"
-      - "area/guest"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/simpleguest"
-    schedule:
-      interval: "daily"
-      time: "03:00"
-    labels:
-      - "kind/dependencies"
-      - "area/guest"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/witguest"
+    directory: "/src/tests/rust_guests"
     schedule:
       interval: "daily"
       time: "03:00"

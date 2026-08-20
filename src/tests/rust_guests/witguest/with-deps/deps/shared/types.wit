@@ -1,0 +1,7 @@
+package deps:shared;
+
+interface types {
+  record dep-record {
+    value: string,
+  }
+}

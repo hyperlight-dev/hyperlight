@@ -29,6 +29,18 @@ pub struct DebugInfo {
     pub port: u16,
 }
 
+/// Errors returned when declaring guest MSRs.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum GuestMsrError {
+    /// The declared MSR set exceeds its fixed capacity.
+    #[error("declared guest MSRs exceed the maximum of {maximum} distinct entries")]
+    CapacityExceeded {
+        /// Maximum number of distinct declared MSRs.
+        maximum: usize,
+    },
+}
+
 /// The complete set of configuration needed to create a Sandbox
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -44,22 +56,12 @@ pub struct SandboxConfiguration {
     /// Guest gdb debug port
     #[cfg(gdb)]
     guest_debug_info: Option<DebugInfo>,
-    /// The size of the memory buffer that is made available for Guest Function
-    /// Definitions
-    host_function_definition_size: usize,
     /// The size of the memory buffer that is made available for input to the
     /// Guest Binary
     input_data_size: usize,
     /// The size of the memory buffer that is made available for input to the
     /// Guest Binary
     output_data_size: usize,
-    /// The stack size to use in the guest sandbox. If set to 0, the stack
-    /// size will be determined from the PE file header.
-    ///
-    /// Note: this is a C-compatible struct, so even though this optional
-    /// field should be represented as an `Option`, that type is not
-    /// FFI-safe, so it cannot be.
-    stack_size_override: u64,
     /// The heap size to use in the guest sandbox. If set to 0, the heap
     /// size will be determined from the PE file header
     ///
@@ -82,6 +84,14 @@ pub struct SandboxConfiguration {
     /// Note: Since real-time signals can vary across platforms, ensure that the offset
     /// results in a signal number that is not already in use by other components of the system.
     interrupt_vcpu_sigrtmin_offset: u8,
+    /// How much writable memory to offer the guest
+    scratch_size: usize,
+    /// Declared guest MSRs, stored inline to keep this type `Copy`.
+    #[cfg(target_arch = "x86_64")]
+    guest_msrs: [u32; Self::MAX_GUEST_MSRS],
+    /// Number of valid entries in `guest_msrs`.
+    #[cfg(target_arch = "x86_64")]
+    guest_msrs_count: usize,
 }
 
 impl SandboxConfiguration {
@@ -93,20 +103,19 @@ impl SandboxConfiguration {
     pub const DEFAULT_OUTPUT_SIZE: usize = 0x4000;
     /// The minimum size of output data
     pub const MIN_OUTPUT_SIZE: usize = 0x2000;
-    /// The default size of host function definitionsSET
-    /// Host function definitions has its own page in memory, in order to be READ-ONLY
-    /// from a guest's perspective.
-    pub const DEFAULT_HOST_FUNCTION_DEFINITION_SIZE: usize = 0x1000;
-    /// The minimum size of host function definitions
-    pub const MIN_HOST_FUNCTION_DEFINITION_SIZE: usize = 0x1000;
     /// The default interrupt retry delay
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// The default stack size of a hyperlight sandbox
-    pub const DEFAULT_STACK_SIZE: u64 = 65536;
+    /// The default size of the scratch region
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
+    /// Maximum number of distinct guest MSRs that can be declared.
+    /// KVM supports at most 16 MSR filter ranges. Each index may require its
+    /// own range, so 16 is the portable limit across backends.
+    #[cfg(target_arch = "x86_64")]
+    pub const MAX_GUEST_MSRS: usize = 16;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -114,9 +123,8 @@ impl SandboxConfiguration {
     fn new(
         input_data_size: usize,
         output_data_size: usize,
-        function_definition_size: usize,
-        stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
+        scratch_size: usize,
         interrupt_retry_delay: Duration,
         interrupt_vcpu_sigrtmin_offset: u8,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
@@ -125,29 +133,19 @@ impl SandboxConfiguration {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
-            host_function_definition_size: max(
-                function_definition_size,
-                Self::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            ),
-            stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
+            scratch_size,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
+            #[cfg(target_arch = "x86_64")]
+            guest_msrs: [0; Self::MAX_GUEST_MSRS],
+            #[cfg(target_arch = "x86_64")]
+            guest_msrs_count: 0,
         }
-    }
-
-    /// Set the size of the memory buffer that is made available for serialising host function definitions
-    /// the minimum value is MIN_HOST_FUNCTION_DEFINITION_SIZE
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_host_function_definition_size(&mut self, host_function_definition_size: usize) {
-        self.host_function_definition_size = max(
-            host_function_definition_size,
-            Self::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-        );
     }
 
     /// Set the size of the memory buffer that is made available for input to the guest
@@ -164,12 +162,6 @@ impl SandboxConfiguration {
         self.output_data_size = max(output_data_size, Self::MIN_OUTPUT_SIZE);
     }
 
-    /// Set the stack size to use in the guest sandbox. If set to 0, the stack size will be determined from the PE file header
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_stack_size(&mut self, stack_size: u64) {
-        self.stack_size_override = stack_size;
-    }
-
     /// Set the heap size to use in the guest sandbox. If set to 0, the heap size will be determined from the PE file header
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_heap_size(&mut self, heap_size: u64) {
@@ -177,13 +169,13 @@ impl SandboxConfiguration {
     }
 
     /// Sets the interrupt retry delay
-    #[cfg(target_os = "linux")]
+    #[cfg(any(kvm, mshv3, hvf))]
     pub fn set_interrupt_retry_delay(&mut self, delay: Duration) {
         self.interrupt_retry_delay = delay;
     }
 
     /// Get the delay between retries for interrupts
-    #[cfg(target_os = "linux")]
+    #[cfg(any(kvm, mshv3, hvf))]
     pub fn get_interrupt_retry_delay(&self) -> Duration {
         self.interrupt_retry_delay
     }
@@ -192,6 +184,63 @@ impl SandboxConfiguration {
     #[cfg(target_os = "linux")]
     pub fn get_interrupt_vcpu_sigrtmin_offset(&self) -> u8 {
         self.interrupt_vcpu_sigrtmin_offset
+    }
+
+    /// Declares the MSRs the guest depends on.
+    ///
+    /// A declared MSR's value is part of the sandbox's saved state: captured by
+    /// [`MultiUseSandbox::snapshot`](crate::MultiUseSandbox::snapshot) and written
+    /// back on [`MultiUseSandbox::restore`](crate::MultiUseSandbox::restore). Every
+    /// MSR you do not declare is reset to a clean default on each restore.
+    ///
+    /// If this method is not called, only a small core of essential CPU state
+    /// (kernel GS base, TSC) is saved and restored.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// * On KVM, declaring an MSR is also what lets the guest access it. The
+    ///   guest faults on any `RDMSR`/`WRMSR` of an undeclared MSR.
+    /// * On MSHV and WHP there is no such enforcement, so declaration only
+    ///   controls what is saved and restored, not what the guest may touch.
+    ///
+    /// Duplicate indices, within the slice or against the existing set, are
+    /// ignored and do not count toward capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestMsrError::CapacityExceeded`] if the distinct entries
+    /// would exceed [`Self::MAX_GUEST_MSRS`]. The declared set is unchanged on
+    /// error.
+    #[cfg(target_arch = "x86_64")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn guest_msrs(&mut self, indices: &[u32]) -> Result<&mut Self, GuestMsrError> {
+        let additional = indices
+            .iter()
+            .enumerate()
+            .filter(|(position, index)| {
+                !self.guest_msrs[..self.guest_msrs_count].contains(index)
+                    && !indices[..*position].contains(index)
+            })
+            .count();
+        if additional > Self::MAX_GUEST_MSRS - self.guest_msrs_count {
+            return Err(GuestMsrError::CapacityExceeded {
+                maximum: Self::MAX_GUEST_MSRS,
+            });
+        }
+        for &index in indices {
+            if !self.guest_msrs[..self.guest_msrs_count].contains(&index) {
+                self.guest_msrs[self.guest_msrs_count] = index;
+                self.guest_msrs_count += 1;
+            }
+        }
+        Ok(self)
+    }
+
+    /// Returns the declared guest MSRs.
+    #[cfg(target_arch = "x86_64")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_msrs(&self) -> &[u32] {
+        &self.guest_msrs[..self.guest_msrs_count]
     }
 
     /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for
@@ -230,11 +279,6 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_definition_size(&self) -> usize {
-        self.host_function_definition_size
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_input_data_size(&self) -> usize {
         self.input_data_size
     }
@@ -242,6 +286,17 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_output_data_size(&self) -> usize {
         self.output_data_size
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_scratch_size(&self) -> usize {
+        self.scratch_size
+    }
+
+    /// Set the size of the scratch regiong
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_scratch_size(&mut self, scratch_size: usize) {
+        self.scratch_size = scratch_size;
     }
 
     #[cfg(crashdump)]
@@ -257,21 +312,8 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn stack_size_override_opt(&self) -> Option<u64> {
-        (self.stack_size_override > 0).then_some(self.stack_size_override)
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn heap_size_override_opt(&self) -> Option<u64> {
         (self.heap_size_override > 0).then_some(self.heap_size_override)
-    }
-
-    /// If self.stack_size is non-zero, return it. Otherwise,
-    /// return exe_info.stack_reserve()
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_stack_size(&self) -> u64 {
-        self.stack_size_override_opt()
-            .unwrap_or(Self::DEFAULT_STACK_SIZE)
     }
 
     /// If self.heap_size_override is non-zero, return it. Otherwise,
@@ -289,9 +331,8 @@ impl Default for SandboxConfiguration {
         Self::new(
             Self::DEFAULT_INPUT_SIZE,
             Self::DEFAULT_OUTPUT_SIZE,
-            Self::DEFAULT_HOST_FUNCTION_DEFINITION_SIZE,
             None,
-            None,
+            Self::DEFAULT_SCRATCH_SIZE,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
             Self::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
@@ -304,21 +345,77 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "x86_64")]
+    use super::GuestMsrError;
     use super::SandboxConfiguration;
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn guest_msrs_reports_overflow() {
+        let mut cfg = SandboxConfiguration::default();
+        for index in 0..SandboxConfiguration::MAX_GUEST_MSRS as u32 {
+            cfg.guest_msrs(&[index]).unwrap();
+        }
+
+        cfg.guest_msrs(&[0]).unwrap();
+        assert_eq!(
+            cfg.guest_msrs(&[SandboxConfiguration::MAX_GUEST_MSRS as u32]),
+            Err(GuestMsrError::CapacityExceeded {
+                maximum: SandboxConfiguration::MAX_GUEST_MSRS,
+            })
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn bulk_guest_msrs_overflow_is_atomic() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.guest_msrs(&[1, 2]).unwrap();
+        let oversized: Vec<u32> = (3..=SandboxConfiguration::MAX_GUEST_MSRS as u32 + 1).collect();
+
+        assert!(matches!(
+            cfg.guest_msrs(&oversized),
+            Err(GuestMsrError::CapacityExceeded { .. })
+        ));
+        assert_eq!(cfg.get_guest_msrs(), &[1, 2]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn guest_msrs_dedups_and_preserves_order() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.guest_msrs(&[0x10]).unwrap();
+        cfg.guest_msrs(&[0x20, 0x20, 0x10, 0x30, 0x20]).unwrap();
+        // 0x10 already present, 0x20 and 0x30 added once each in first-seen order.
+        assert_eq!(cfg.get_guest_msrs(), &[0x10, 0x20, 0x30]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn guest_msrs_duplicates_do_not_count_toward_capacity() {
+        let mut cfg = SandboxConfiguration::default();
+        let fill: Vec<u32> = (0..SandboxConfiguration::MAX_GUEST_MSRS as u32 - 1).collect();
+        cfg.guest_msrs(&fill).unwrap();
+        // One slot remains. Three copies of one new index count as a single
+        // distinct entry and fit.
+        cfg.guest_msrs(&[u32::MAX, u32::MAX, u32::MAX]).unwrap();
+        assert_eq!(
+            cfg.get_guest_msrs().len(),
+            SandboxConfiguration::MAX_GUEST_MSRS
+        );
+    }
+
+    #[test]
     fn overrides() {
-        const STACK_SIZE_OVERRIDE: u64 = 0x10000;
         const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
         const INPUT_DATA_SIZE_OVERRIDE: usize = 0x4000;
         const OUTPUT_DATA_SIZE_OVERRIDE: usize = 0x4001;
-        const HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE: usize = 0x4002;
+        const SCRATCH_SIZE_OVERRIDE: usize = 0x60000;
         let mut cfg = SandboxConfiguration::new(
             INPUT_DATA_SIZE_OVERRIDE,
             OUTPUT_DATA_SIZE_OVERRIDE,
-            HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE,
-            Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
+            SCRATCH_SIZE_OVERRIDE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
@@ -327,21 +424,17 @@ mod tests {
             true,
         );
 
-        let stack_size = cfg.get_stack_size();
         let heap_size = cfg.get_heap_size();
-        assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
+        let scratch_size = cfg.get_scratch_size();
         assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
+        assert_eq!(SCRATCH_SIZE_OVERRIDE, scratch_size);
 
-        cfg.stack_size_override = 1024;
         cfg.heap_size_override = 2048;
-        assert_eq!(1024, cfg.stack_size_override);
+        cfg.scratch_size = 0x40000;
         assert_eq!(2048, cfg.heap_size_override);
+        assert_eq!(0x40000, cfg.scratch_size);
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
         assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
-        assert_eq!(
-            HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE,
-            cfg.host_function_definition_size
-        );
     }
 
     #[test]
@@ -349,9 +442,8 @@ mod tests {
         let mut cfg = SandboxConfiguration::new(
             SandboxConfiguration::MIN_INPUT_SIZE - 1,
             SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE - 1,
             None,
-            None,
+            SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
@@ -361,25 +453,13 @@ mod tests {
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            cfg.host_function_definition_size
-        );
-        assert_eq!(0, cfg.stack_size_override);
         assert_eq!(0, cfg.heap_size_override);
 
         cfg.set_input_data_size(SandboxConfiguration::MIN_INPUT_SIZE - 1);
         cfg.set_output_data_size(SandboxConfiguration::MIN_OUTPUT_SIZE - 1);
-        cfg.set_host_function_definition_size(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE - 1,
-        );
 
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            cfg.host_function_definition_size
-        );
     }
 
     mod proptests {
@@ -404,19 +484,6 @@ mod tests {
                 prop_assert_eq!(size, cfg.get_output_data_size());
             }
 
-            #[test]
-            fn host_function_definition_size(size in SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE..=SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE * 10) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_host_function_definition_size(size);
-                prop_assert_eq!(size, cfg.get_host_function_definition_size());
-            }
-
-            #[test]
-            fn stack_size_override(size in 0x1000..=0x10000u64) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_stack_size(size);
-                prop_assert_eq!(size, cfg.stack_size_override);
-            }
 
             #[test]
             fn heap_size_override(size in 0x1000..=0x10000u64) {

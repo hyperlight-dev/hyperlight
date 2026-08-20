@@ -473,3 +473,4 @@ hyperlight_guest.h
 .gdbinit
 trace/*
 .gdbguest
+.copilot-reviews/

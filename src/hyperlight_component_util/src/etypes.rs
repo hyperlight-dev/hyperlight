@@ -70,7 +70,6 @@ pub struct RecordField<'a> {
 pub struct VariantCase<'a> {
     pub name: Name<'a>,
     pub ty: Option<Value<'a>>,
-    pub refines: Option<u32>,
 }
 
 /// valtype_e in the specification

@@ -14,8 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/// Functionality for creating and configuring `Sandbox`es.
+pub mod builder;
 /// Configuration needed to establish a sandbox.
 pub mod config;
+/// Host-side file mapping preparation for `map_file_cow`.
+pub(crate) mod file_mapping;
 /// Functionality for reading, but not modifying host functions
 pub(crate) mod host_funcs;
 /// Functionality for dealing with initialized sandboxes that can
@@ -44,7 +48,7 @@ pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type
-pub use initialized_multi_use::MultiUseSandbox;
+pub use initialized_multi_use::{MultiUseSandbox, PtRootFinder, SandboxStatus};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
@@ -56,7 +60,7 @@ mod tests {
     use std::thread;
 
     use crossbeam_queue::ArrayQueue;
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
@@ -67,7 +71,7 @@ mod tests {
         let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
 
         for i in 0..10 {
-            let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+            let simple_guest_path = simple_guest_as_pathbuf();
             let unintializedsandbox =
                 UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)
                     .unwrap_or_else(|_| panic!("Failed to create UninitializedSandbox {}", i));

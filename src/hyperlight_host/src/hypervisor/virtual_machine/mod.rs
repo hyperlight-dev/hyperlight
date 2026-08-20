@@ -19,10 +19,24 @@ use std::sync::OnceLock;
 
 use tracing::{Span, instrument};
 
-use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(gdb)]
+use crate::hypervisor::gdb::DebugError;
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+use crate::hypervisor::regs::{
+    MSR_MTRR_CAP, filterless_core_reset_candidates, hyperv_mtrr_reset_indices,
+};
+#[cfg(target_arch = "x86_64")]
+use crate::hypervisor::regs::{MsrEntry, is_resettable_msr};
 use crate::mem::memory_region::MemoryRegion;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
+/// Hypervisor.framework functionality (MacOS)
+#[cfg(hvf)]
+pub(crate) mod hvf;
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
 pub(crate) mod kvm;
@@ -32,6 +46,10 @@ pub(crate) mod mshv;
 /// WHP (Windows Hypervisor Platform) functionality (windows)
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
+
+/// Shared x86-64 helpers for hardware interrupt support (MSHV and WHP)
+#[cfg(feature = "hw-interrupts")]
+pub(crate) mod x86_64;
 
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
@@ -68,6 +86,12 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 } else {
                     None
                 }
+            } else if #[cfg(hvf)] {
+                if hvf::is_hypervisor_present() {
+                    Some(HypervisorType::Hvf)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -83,7 +107,7 @@ pub fn is_hypervisor_present() -> bool {
 }
 
 /// The hypervisor types available for the current platform
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub(crate) enum HypervisorType {
     #[cfg(kvm)]
     Kvm,
@@ -93,19 +117,43 @@ pub(crate) enum HypervisorType {
 
     #[cfg(target_os = "windows")]
     Whp,
+
+    #[cfg(hvf)]
+    Hvf,
 }
 
-// Compiler error if no hypervisor type is available
-#[cfg(not(any(kvm, mshv3, target_os = "windows")))]
+/// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
+/// Only used by MSHV and WHP which use compacted XSAVE format and need to
+/// validate buffer size before accessing XCOMP_BV.
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+pub(crate) const XSAVE_MIN_SIZE: usize = 576;
+
+/// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
+/// WHP queries the required size dynamically.
+#[cfg(all(any(kvm, mshv3), test, not(target_arch = "aarch64")))]
+pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
+
+/// Architectural XCR0 reset value. Only x87 state is enabled.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const XCR0_RESET: u64 = 1;
+
+// Compiler error if no hypervisor type is available (not applicable on aarch64 yet)
+#[cfg(not(any(kvm, mshv3, target_os = "windows", target_arch = "aarch64")))]
 compile_error!(
     "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv3` cargo feature."
 );
 
 /// The various reasons a VM's vCPU can exit
+#[cfg_attr(target_os = "macos", allow(unused))]
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
-    Debug { dr6: u64, exception: u32 },
+    Debug {
+        #[cfg(target_arch = "x86_64")]
+        dr6: u64,
+        #[cfg(target_arch = "x86_64")]
+        exception: u32,
+    },
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
@@ -120,13 +168,269 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        target_os = "windows",
+        any(target_os = "windows", feature = "hw-interrupts"),
         expect(
             dead_code,
-            reason = "Retry() is never constructed on Windows, but it is still matched on (which dead_code lint ignores)"
+            reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
         )
     )]
     Retry(),
+}
+
+/// VM error
+#[derive(Debug, thiserror::Error)]
+pub enum VmError {
+    #[error("Failed to create vm: {0}")]
+    CreateVm(#[from] CreateVmError),
+    #[cfg(gdb)]
+    #[error("Debug operation failed: {0}")]
+    Debug(#[from] DebugError),
+    #[error("Map memory operation failed: {0}")]
+    MapMemory(#[from] MapMemoryError),
+    #[error("Register operation failed: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Failed to run vcpu: {0}")]
+    RunVcpu(#[from] RunVcpuError),
+    #[error("Unmap memory operation failed: {0}")]
+    UnmapMemory(#[from] UnmapMemoryError),
+}
+
+/// Create VM error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum CreateVmError {
+    #[error("VCPU creation failed: {0}")]
+    CreateVcpuFd(HypervisorError),
+    #[error("VM creation failed: {0}")]
+    CreateVmFd(HypervisorError),
+    #[error("Hypervisor is not available: {0}")]
+    HypervisorNotAvailable(HypervisorError),
+    #[error("Initialize VM failed: {0}")]
+    InitializeVm(HypervisorError),
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error("KVM MSR filtering requires KVM_CAP_X86_MSR_FILTER")]
+    MsrFilterNotSupported,
+    #[cfg(target_arch = "x86_64")]
+    #[error("MSR {msr:#x} cannot be declared as a guest MSR: {reason}")]
+    MsrNotDeclarable { msr: u32, reason: String },
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to read IA32_MTRRCAP: {0}")]
+    GetMtrrCap(RegisterError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Guest-visible MTRRs cannot be reset: {0}")]
+    RequiredMtrrsNotResettable(RegisterError),
+    #[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+    #[error("Core reset MSR {msr:#x} is readable but not writable on this host")]
+    MsrNotResettable { msr: u32 },
+    #[cfg(target_arch = "x86_64")]
+    #[error("Guest exposes {advertised} variable MTRR pairs, expected at most {maximum}")]
+    UnexpectedVariableMtrrCount { advertised: u8, maximum: u8 },
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error("Too many guest MSR filter ranges: {0}. Maximum is 16")]
+    TooManyMsrRanges(usize),
+    #[cfg(target_os = "windows")]
+    #[error("Get Partition Property failed: {0}")]
+    GetPartitionProperty(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("WHP exposes {advertised} processor feature banks, expected {expected}")]
+    UnexpectedProcessorFeatureBankCount { advertised: u32, expected: u32 },
+    #[error("Set Partition Property failed: {0}")]
+    SetPartitionProperty(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Surrogate process creation failed: {0}")]
+    SurrogateProcess(String),
+}
+
+/// RunVCPU error
+#[derive(Debug, thiserror::Error)]
+pub enum RunVcpuError {
+    #[error("Failed to decode message type: {0}")]
+    DecodeIOMessage(u32),
+    #[cfg(gdb)]
+    #[error("Failed to get DR6 debug register: {0}")]
+    GetDr6(HypervisorError),
+    #[error("Increment RIP failed: {0}")]
+    IncrementRip(HypervisorError),
+    #[error("Parse GPA access info failed")]
+    ParseGpaAccessInfo,
+    #[cfg(target_arch = "aarch64")]
+    #[error("Flush MMIO pending state failed: {0}")]
+    FlushMmioPending(String),
+    #[cfg(hvf)]
+    #[error("HVF sync error: {0}")]
+    HvfSync(HvfSyncError),
+    #[error("Unknown error: {0}")]
+    Unknown(HypervisorError),
+}
+
+/// Register error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RegisterError {
+    #[error("Failed to get registers: {0}")]
+    GetRegs(HypervisorError),
+    #[error("Failed to set registers: {0}")]
+    SetRegs(HypervisorError),
+    #[error("Failed to get FPU registers: {0}")]
+    GetFpu(HypervisorError),
+    #[error("Failed to set FPU registers: {0}")]
+    SetFpu(HypervisorError),
+    #[error("Failed to get special registers: {0}")]
+    GetSregs(HypervisorError),
+    #[error("Failed to set special registers: {0}")]
+    SetSregs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Snapshot APIC_BASE {value:#x} enables unsupported x2APIC mode")]
+    InvalidSnapshotApicBase {
+        /// APIC_BASE value supplied by the snapshot.
+        value: u64,
+    },
+    #[error("Failed to get debug registers: {0}")]
+    GetDebugRegs(HypervisorError),
+    #[error("Failed to set debug registers: {0}")]
+    SetDebugRegs(HypervisorError),
+    #[error("Failed to get xsave: {0}")]
+    GetXsave(HypervisorError),
+    #[error("Failed to set xsave: {0}")]
+    SetXsave(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to get XCRs: {0}")]
+    GetXcrs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to set XCRs: {0}")]
+    SetXcrs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Hypervisor did not return XCR0")]
+    MissingXcr0,
+    #[error("Xsave size mismatch: expected {expected} bytes, got {actual}")]
+    XsaveSizeMismatch {
+        /// Expected size in bytes
+        expected: u32,
+        /// Actual size in bytes
+        actual: u32,
+    },
+    #[error("Invalid xsave alignment")]
+    InvalidXsaveAlignment,
+    #[cfg(target_arch = "x86_64")]
+    #[error("MSR operation not supported on this hypervisor")]
+    MsrsUnsupported,
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to build MSR list: {0}")]
+    MsrBuild(String),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to get MSRs: {0}")]
+    GetMsrs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Failed to set MSRs: {0}")]
+    SetMsrs(HypervisorError),
+    #[cfg(target_arch = "x86_64")]
+    #[error("Snapshot MSR index {index:#x} is not in this VM's reset set")]
+    InvalidSnapshotMsrIndex {
+        /// Architectural MSR index supplied by the snapshot.
+        index: u32,
+    },
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error("MSR batch short count: expected {expected}, applied {actual}")]
+    MsrShortCount {
+        /// Number of MSRs requested
+        expected: usize,
+        /// Number of MSRs actually applied before KVM stopped
+        actual: usize,
+    },
+    #[cfg(target_os = "windows")]
+    #[error("Failed to get xsave size: {0}")]
+    GetXsaveSize(#[from] HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Failed to convert WHP registers: {0}")]
+    ConversionFailed(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResetVcpuError {
+    #[error("Single-operation vcpu reset not supported on this hypervisor")]
+    NotSupported,
+    #[error("Hypervisor operation failed: {0}")]
+    Hypervisor(HypervisorError),
+    #[error("Register operation failed: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Operation failed: {0}")]
+    Unknown(String),
+}
+
+/// Map memory error
+#[derive(Debug, thiserror::Error)]
+pub enum MapMemoryError {
+    #[cfg(target_os = "windows")]
+    #[error("Address conversion failed: {0}")]
+    AddressConversion(std::num::TryFromIntError),
+    #[error("Hypervisor error: {0}")]
+    Hypervisor(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Invalid memory region flags: {0}")]
+    InvalidFlags(String),
+    #[cfg(target_os = "windows")]
+    #[error("Failed to load API '{api_name}': {source}")]
+    LoadApi {
+        api_name: &'static str,
+        source: windows_result::Error,
+    },
+    #[cfg(target_os = "windows")]
+    #[error("Operation not supported: {0}")]
+    NotSupported(String),
+    #[cfg(target_os = "windows")]
+    #[error("Surrogate process creation failed: {0}")]
+    SurrogateProcess(String),
+}
+
+/// Unmap memory error
+#[derive(Debug, thiserror::Error)]
+pub enum UnmapMemoryError {
+    #[error("Hypervisor error: {0}")]
+    Hypervisor(HypervisorError),
+}
+
+/// Implementation-specific Hypervisor error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum HypervisorError {
+    #[cfg(test)]
+    #[error("Injected hypervisor error")]
+    Injected,
+    #[cfg(kvm)]
+    #[error("KVM error: {0}")]
+    KvmError(#[from] kvm_ioctls::Error),
+    #[cfg(mshv3)]
+    #[error("MSHV error: {0}")]
+    MshvError(#[from] mshv_ioctls::MshvError),
+    #[cfg(target_os = "windows")]
+    #[error("Windows error: {0}")]
+    WindowsError(#[from] windows_result::Error),
+    #[cfg(hvf)]
+    #[error("HVF error: {0}")]
+    HvfError(hvf::bindings::hv_return_t),
+}
+
+/// HVF-specific error synchronising vcpu state
+#[cfg(hvf)]
+#[derive(Debug, thiserror::Error)]
+pub enum MemorySpaceInstallError {
+    #[error("Failed to update VM/VCPU state: {0}")]
+    Hypervisor(#[from] HypervisorError),
+    #[error("Unexpected VCPU exit: {0:?}")]
+    UnexpectedExit(hvf::bindings::hv_vcpu_exit_t),
+    #[error("Failed to allocate ReadonlySharedMemory: {0}")]
+    SharedMemoryCreation(#[from] crate::mem::shared_mem::SharedMemoryError),
+}
+#[cfg(hvf)]
+#[derive(Debug, thiserror::Error)]
+pub enum HvfSyncError {
+    #[error("Error creating VCPU: {0}")]
+    CreateVcpu(HypervisorError),
+    #[error("Error resetting VCPU: {0}")]
+    ResetVcpu(HypervisorError),
+    #[error("Error reading/writing registers: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Error updating memory space: {0}")]
+    MemorySpace(#[from] MemorySpaceInstallError),
+    #[error("Invariant violation: vcpu in unexpected sync state: {0}")]
+    SyncInvariant(String),
 }
 
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
@@ -140,43 +444,178 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// The caller must ensure that the given u32 is not already mapped, otherwise previously mapped
     /// memory regions may be overwritten.
     /// The memory region must not overlap with an existing region, and depending on platform, must be aligned to page boundaries.
-    unsafe fn map_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
+    unsafe fn map_memory(
+        &mut self,
+        region: (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError>;
 
     /// Unmap memory region from this VM that has previously been mapped using `map_memory`.
-    fn unmap_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
+    fn unmap_memory(
+        &mut self,
+        region: (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError>;
 
     /// Runs the vCPU until it exits.
-    /// Note: this function should not emit any traces or spans as it is called after guest span is setup
-    fn run_vcpu(&mut self) -> Result<VmExit>;
+    /// Note: this function emits traces spans for guests
+    /// and the span setup is called right before the run virtual processor call of each hypervisor
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError>;
 
     /// Get regs
     #[allow(dead_code)]
-    fn regs(&self) -> Result<CommonRegisters>;
+    fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError>;
     /// Set regs
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError>;
     /// Get fpu regs
     #[allow(dead_code)]
-    fn fpu(&self) -> Result<CommonFpu>;
+    fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError>;
     /// Set fpu regs
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError>;
     /// Get special regs
     #[allow(dead_code)]
-    fn sregs(&self) -> Result<CommonSpecialRegisters>;
+    fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError>;
     /// Set special regs
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError>;
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
+    /// Set the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
-    /// xsave
-    #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>>;
+    /// Reads the requested MSRs.
+    #[cfg(target_arch = "x86_64")]
+    fn msrs(&self, indices: &[u32]) -> std::result::Result<Vec<MsrEntry>, RegisterError>;
+    /// Writes the supplied MSRs.
+    #[cfg(target_arch = "x86_64")]
+    fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError>;
+    /// Returns the MSRs whose state this backend must reset.
+    #[cfg(target_arch = "x86_64")]
+    fn msr_reset_indices(&self, guest_msrs: &[u32])
+    -> std::result::Result<Vec<u32>, CreateVmError>;
 
+    /// Get xsave
+    #[allow(dead_code)]
+    #[cfg(not(target_arch = "aarch64"))]
+    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
+    /// Reset xsave to default state
+    #[cfg(not(target_arch = "aarch64"))]
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
+    /// Set xsave - only used for tests
+    #[cfg(test)]
+    #[cfg(not(target_arch = "aarch64"))]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
+
+    #[cfg(all(test, target_arch = "x86_64"))]
+    fn xcr0(&self) -> std::result::Result<u64, RegisterError>;
+    #[cfg(target_arch = "x86_64")]
+    fn set_xcr0(&self, value: u64) -> std::result::Result<(), RegisterError>;
+
+    /// Single-operation vCPU reset
+    #[cfg(target_arch = "aarch64")]
+    fn can_reset_vcpu(&self) -> bool {
+        false
+    }
+    #[cfg(target_arch = "aarch64")]
+    fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
+        Err(ResetVcpuError::NotSupported)
+    }
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
+}
 
-    /// Mark that initial memory setup is complete. After this, map_memory will fail.
-    /// This is only needed on Windows where dynamic memory mapping is not yet supported.
-    #[cfg(target_os = "windows")]
-    fn complete_initial_memory_setup(&mut self);
+/// Why an MSR failed the read-then-write-back probe that restore relies on.
+#[cfg(target_arch = "x86_64")]
+enum MsrProbe {
+    /// The host cannot read the MSR.
+    Unreadable,
+    /// The host reads the MSR but rejects writing the value back.
+    Unwritable,
+}
+
+/// Reads `msr` and writes the captured value back, the round trip restore
+/// replays. Success means the host can reset the MSR.
+#[cfg(target_arch = "x86_64")]
+fn probe_resettable(vm: &dyn VirtualMachine, msr: u32) -> Result<(), MsrProbe> {
+    let captured = vm.msrs(&[msr]).map_err(|_| MsrProbe::Unreadable)?;
+    vm.set_msrs(&captured).map_err(|_| MsrProbe::Unwritable)
+}
+
+/// Validates that each declared guest MSR is restorable: reset replays a
+/// captured value, so the host must read and write it.
+/// Rejects e.g. a variable MTRR above the host VCNT.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn validate_guest_msrs(
+    vm: &dyn VirtualMachine,
+    guest_msrs: &[u32],
+) -> std::result::Result<(), CreateVmError> {
+    for &msr in guest_msrs {
+        if !is_resettable_msr(msr) {
+            return Err(CreateVmError::MsrNotDeclarable {
+                msr,
+                reason: "MSR is not a resettable MSR".to_string(),
+            });
+        }
+        // A declared MSR is user-named, so either failure is a config error.
+        probe_resettable(vm, msr).map_err(|probe| CreateVmError::MsrNotDeclarable {
+            msr,
+            reason: match probe {
+                MsrProbe::Unreadable => "MSR cannot be read on this host",
+                MsrProbe::Unwritable => "MSR cannot be written on this host",
+            }
+            .to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+/// Returns every guest-visible MTRR a filterless (MSHV/WHP) host must reset.
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+pub(crate) fn mtrr_reset_indices(
+    vm: &dyn VirtualMachine,
+) -> std::result::Result<Vec<u32>, CreateVmError> {
+    let mtrr_cap = vm
+        .msrs(&[MSR_MTRR_CAP])
+        .map_err(CreateVmError::GetMtrrCap)?[0]
+        .value;
+    let indices = hyperv_mtrr_reset_indices(mtrr_cap)?;
+    vm.msrs(&indices)
+        .map_err(CreateVmError::RequiredMtrrsNotResettable)?;
+    Ok(indices)
+}
+
+/// Builds the reset index set required by a filterless Hyper-V backend.
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+pub(crate) fn hyperv_msr_reset_indices(
+    vm: &dyn VirtualMachine,
+    guest_msrs: &[u32],
+) -> std::result::Result<Vec<u32>, CreateVmError> {
+    validate_guest_msrs(vm, guest_msrs)?;
+    let mut indices = filterless_core_reset_candidates()
+        .filter_map(|index| match probe_resettable(vm, index) {
+            // Readable and writable, so it joins the reset set.
+            Ok(()) => Some(Ok(index)),
+            // A read failure means the feature is absent, so nothing is retained. This is fine.
+            Err(MsrProbe::Unreadable) => None,
+            // A readable candidate must be writable, or restore cannot scrub it.
+            Err(MsrProbe::Unwritable) => Some(Err(CreateVmError::MsrNotResettable { msr: index })),
+        })
+        .collect::<Result<Vec<u32>, _>>()?;
+    // Guest-visible MTRRs, sized from the host MTRRCAP. mtrr_reset_indices
+    // read-probes them. Hyper-V stores MTRRs unconditionally, so a readable
+    // MTRR is always writable and needs no write probe.
+    indices.extend(mtrr_reset_indices(vm)?);
+    // The declared guest MSRs, validated above.
+    indices.extend(guest_msrs.iter().copied());
+    indices.sort_unstable();
+    indices.dedup();
+    Ok(indices)
 }
 
 #[cfg(test)]

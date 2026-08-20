@@ -15,11 +15,12 @@ limitations under the License.
  */
 
 use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
-    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
+    kebab_to_exports_name, kebab_to_fn, kebab_to_getter, kebab_to_imports_name, kebab_to_namespace,
+    kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{Component, ExternDecl, ExternDesc, Instance, Tyvar};
 use crate::hl::{
@@ -58,19 +59,22 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         fn #n(&mut self, #(#param_decls),*) -> #result_decl {
                             let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
                             let marshalled = {
-                                let mut rts = self.rt.lock().unwrap();
+                                let mut rts = self.rt
+                                    .lock()
+                                    .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
                                 #[allow(clippy::unused_unit)]
                                 (#(#marshal,)*)
                             };
                             let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
                                 #hln,
                                 marshalled,
-                            );
-                            let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            )?;
                             #[allow(clippy::unused_unit)]
-                            let mut rts = self.rt.lock().unwrap();
+                            let mut rts = self.rt
+                                .lock()
+                                .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
                             #[allow(clippy::unused_unit)]
-                            #unmarshal
+                            ::std::result::Result::Ok(#unmarshal)
                         }
                     }
                 }
@@ -135,8 +139,13 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
     let (root_ns, root_base_name) = s.root_component_name.unwrap();
     let wrapper_name = kebab_to_wrapper_name(root_base_name);
     let imports_name = kebab_to_imports_name(root_base_name);
+    let trait_path = if ns.is_empty() {
+        quote! { #trait_name }
+    } else {
+        quote! { #ns::#trait_name }
+    };
     s.root_mod.items.extend(quote! {
-        impl<I: #root_ns::#imports_name, S: ::hyperlight_host::sandbox::Callable> #ns::#trait_name <#(#tvs),*> for #wrapper_name<I, S> {
+        impl<I: #root_ns::#imports_name<::hyperlight_common::component::Negative>, S: ::hyperlight_host::sandbox::Callable> #trait_path <::hyperlight_common::component::Positive #(,#tvs)*> for #wrapper_name<I, S> {
             #(#exports)*
         }
     });
@@ -147,36 +156,59 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
 #[derive(Clone)]
 struct SelfInfo {
     orig_id: Ident,
-    type_id: Vec<Ident>,
+    /// identifier + trait bound
+    type_id: Vec<(Ident, TokenStream)>,
     outer_id: Ident,
     inner_preamble: TokenStream,
     inner_id: Ident,
 }
 impl SelfInfo {
-    fn new(orig_id: Ident) -> Self {
+    fn new(orig_id: Ident, imports_trait_bound: TokenStream) -> Self {
         let outer_id = format_ident!("captured_{}", orig_id);
         let inner_id = format_ident!("slf");
         SelfInfo {
             orig_id,
-            type_id: vec![format_ident!("I")],
+            type_id: vec![(format_ident!("I"), imports_trait_bound)],
             inner_preamble: quote! {
-                let mut #inner_id = #outer_id.lock().unwrap();
+                let mut #inner_id = #outer_id.lock()
+                .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
                 let mut #inner_id = ::std::ops::DerefMut::deref_mut(&mut #inner_id);
             },
             outer_id,
             inner_id,
         }
     }
+    fn type_inst(&self) -> TokenStream {
+        self.type_id[1..]
+            .iter()
+            .fold(
+                (
+                    self.type_id[0].0.to_token_stream() as TokenStream,
+                    &self.type_id[0].1,
+                ),
+                |(toks, last_bound), (tid, next_bound)| {
+                    (quote! { <#toks as #last_bound>::#tid }, next_bound)
+                },
+            )
+            .0
+    }
     /// Adjust a [`SelfInfo`] to get the portion of the state for the
     /// current instance via calling the given getter
-    fn with_getter(&self, tp: TokenStream, type_name: Ident, getter: Ident) -> Self {
+    fn with_getter(
+        &self,
+        tp: TokenStream,
+        type_name: Ident,
+        type_bound: TokenStream,
+        getter: Ident,
+    ) -> Self {
         let mut toks = self.inner_preamble.clone();
         let id = self.inner_id.clone();
-        let mut type_id = self.type_id.clone();
+        let type_inst = self.type_inst();
         toks.extend(quote! {
-            let mut #id = #tp::#getter(::std::borrow::BorrowMut::<#(#type_id)::*>::borrow_mut(&mut #id));
+            let mut #id = #tp::#getter(::std::borrow::BorrowMut::<#type_inst>::borrow_mut(&mut #id));
         });
-        type_id.push(type_name);
+        let mut type_id = self.type_id.clone();
+        type_id.push((type_name, type_bound));
         SelfInfo {
             orig_id: self.orig_id.clone(),
             type_id,
@@ -202,7 +234,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::CoreModule(_) => panic!("core module (im/ex)ports are not supported"),
         ExternDesc::Func(ft) => {
             let hln = emit_fn_hl_name(s, ed.kebab_name);
-            log::debug!("providing host function {}", hln);
+            tracing::debug!("providing host function {}", hln);
             let (pds, pus) = ft
                 .params
                 .iter()
@@ -226,12 +258,13 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                     }
                 }
             };
+            let type_inst = get_self.type_inst();
             let SelfInfo {
                 orig_id,
-                type_id,
                 outer_id,
                 inner_preamble,
                 inner_id,
+                ..
             } = get_self;
             let ret = format_ident!("ret");
             let marshal_result = emit_hl_marshal_result(s, ret.clone(), &ft.result);
@@ -239,17 +272,17 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                 let #outer_id = #orig_id.clone();
                 let captured_rts = rts.clone();
                 sb.register_host_function(#hln, move |#(#pds),*| {
-                    let mut rts = captured_rts.lock().unwrap();
+                    let mut rts = captured_rts.lock()
+                        .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
                     #inner_preamble
                     let #ret = #callname(
-                        ::std::borrow::BorrowMut::<#(#type_id)::*>::borrow_mut(
+                        ::std::borrow::BorrowMut::<#type_inst>::borrow_mut(
                             &mut #inner_id
                         ),
                         #(#pus),*
                     );
                     Ok(#marshal_result)
-                })
-                .unwrap();
+                })?;
             }
         }
         ExternDesc::Type(_) => {
@@ -259,10 +292,17 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::Instance(it) => {
             let mut s = s.clone();
             let wn = split_wit_name(ed.kebab_name);
-            let type_name = kebab_to_type(wn.name);
-            let getter = kebab_to_getter(wn.name);
+            let (type_name, getter) = import_member_names(&wn, &s.colliding_import_names);
             let tp = s.cur_trait_path();
-            let get_self = get_self.with_getter(tp, type_name, getter); //quote! { #get_self let mut slf = &mut #tp::#getter(&mut *slf); };
+            let trait_path = wn
+                .namespace_idents()
+                .iter()
+                .chain(&[kebab_to_type(wn.name)])
+                .cloned()
+                .collect::<Vec<_>>();
+            let trait_ref =
+                rtypes::trait_ref(&mut s, rtypes::EmitPositivity::Opposite, true, &trait_path);
+            let get_self = get_self.with_getter(tp, type_name, trait_ref, getter);
             emit_import_instance(&mut s, get_self, wn.clone(), it)
         }
         ExternDesc::Component(_) => {
@@ -321,10 +361,12 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
 
     let rtsid = format_ident!("{}Resources", r#trait);
     s.import_param_var = Some(format_ident!("I"));
+    s.positivity_param = Some(quote! { ::hyperlight_common::component::Positive });
+    s.colliding_import_names = find_colliding_import_names(&ct.imports);
     resource::emit_tables(
         &mut s,
         rtsid.clone(),
-        quote! { #ns::#import_trait },
+        quote! { #ns::#import_trait<::hyperlight_common::component::Negative> },
         None,
         false,
     );
@@ -334,14 +376,27 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
     let imports = ct
         .imports
         .iter()
-        .map(|ed| emit_import_extern_decl(&mut s, SelfInfo::new(import_id.clone()), ed))
+        .map(|ed| {
+            emit_import_extern_decl(
+                &mut s,
+                SelfInfo::new(
+                    import_id.clone(),
+                    quote! { #ns::#import_trait<::hyperlight_common::component::Negative> },
+                ),
+                ed,
+            )
+        })
         .collect::<Vec<_>>();
     s.var_offset = 0;
 
     s.root_component_name = Some((ns.clone(), wn.name));
     s.cur_trait = Some(export_trait.clone());
     s.import_param_var = Some(format_ident!("I"));
-    s.is_export = true;
+    s.positivity_param = Some(quote! { ::hyperlight_common::component::Positive });
+    // See Note [Origin paths and self parameters in impl codegen for higher-order components]
+    // in emit.rs
+    s.self_param_var =
+        Some(quote! { <Self as #ns::#export_trait<I, ::hyperlight_common::component::Negative>> });
 
     let exports = ct
         .instance
@@ -352,28 +407,28 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         .collect::<Vec<_>>();
 
     s.root_mod.items.extend(quote! {
-        pub struct #wrapper_name<T: #ns::#import_trait, S: ::hyperlight_host::sandbox::Callable> {
+        pub struct #wrapper_name<T: #ns::#import_trait<::hyperlight_common::component::Negative>, S: ::hyperlight_host::sandbox::Callable> {
             pub(crate) sb: S,
             pub(crate) rt: ::std::sync::Arc<::std::sync::Mutex<#rtsid<T>>>,
         }
-        pub(crate) fn register_host_functions<I: #ns::#import_trait + ::std::marker::Send + 'static, S: ::hyperlight_host::func::Registerable>(sb: &mut S, i: I) -> ::std::sync::Arc<::std::sync::Mutex<#rtsid<I>>> {
+        pub(crate) fn register_host_functions<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send + 'static, S: ::hyperlight_host::func::Registerable>(sb: &mut S, i: I) -> <::hyperlight_common::component::Positive as ::hyperlight_common::component::Positivity>::CallResult<::std::sync::Arc<::std::sync::Mutex<#rtsid<I>>>> {
             let rts = ::std::sync::Arc::new(::std::sync::Mutex::new(#rtsid::new()));
             let #import_id = ::std::sync::Arc::new(::std::sync::Mutex::new(i));
             #(#imports)*
-            rts
+            Ok(rts)
         }
-        impl<I: #ns::#import_trait + ::std::marker::Send, S: ::hyperlight_host::sandbox::Callable> #ns::#export_trait<I> for #wrapper_name<I, S> {
+        impl<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send, S: ::hyperlight_host::sandbox::Callable> #ns::#export_trait<::hyperlight_common::component::Positive, I> for #wrapper_name<I, S> {
             #(#exports)*
         }
-        impl #ns::#r#trait for ::hyperlight_host::sandbox::UninitializedSandbox {
-            type Exports<I: #ns::#import_trait + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::initialized_multi_use::MultiUseSandbox>;
-            fn instantiate<I: #ns::#import_trait + ::std::marker::Send + 'static>(mut self, i: I) -> Self::Exports<I> {
-                let rts = register_host_functions(&mut self, i);
-                let sb = self.evolve().unwrap();
-                #wrapper_name {
+        impl #ns::#r#trait<::hyperlight_common::component::Positive> for ::hyperlight_host::sandbox::UninitializedSandbox {
+            type Exports<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::initialized_multi_use::MultiUseSandbox>;
+            fn instantiate<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send + 'static>(mut self, i: I) -> <::hyperlight_common::component::Positive as ::hyperlight_common::component::Positivity>::CallResult<Self::Exports<I>> {
+                let rts = register_host_functions(&mut self, i)?;
+                let sb = self.evolve()?;
+                Ok(#wrapper_name {
                     sb,
                     rt: rts,
-                }
+                })
             }
         }
     });
@@ -382,7 +437,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
 /// See [`emit_component`]
 pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Component<'b>) {
     s.is_impl = true;
-    log::debug!("\n\n=== starting host emit ===\n");
+    tracing::debug!("\n\n=== starting host emit ===\n");
     let wn = split_wit_name(n);
     emit_component(s, wn, ct)
 }

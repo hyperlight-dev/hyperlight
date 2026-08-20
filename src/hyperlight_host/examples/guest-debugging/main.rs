@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![allow(clippy::disallowed_macros)]
 use std::thread;
 
 use hyperlight_host::sandbox::SandboxConfiguration;
@@ -41,17 +40,13 @@ fn main() -> hyperlight_host::Result<()> {
 
     // Create an uninitialized sandbox with a guest binary and debug enabled
     let mut uninitialized_sandbox_dbg = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         cfg, // sandbox configuration
     )?;
 
     // Create an uninitialized sandbox with a guest binary
     let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
+        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
         None, // sandbox configuration
     )?;
 
@@ -116,6 +111,76 @@ mod tests {
     #[cfg(windows)]
     const GDB_COMMAND: &str = "gdb";
 
+    /// Construct the (out_file_path, cmd_file_path, manifest_dir)
+    /// triple every gdb test needs.
+    fn gdb_test_paths(name: &str) -> (String, String, String) {
+        let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Failed to get manifest dir")
+            .replace('\\', "/");
+        let out_file_path = format!("{out_dir}/{name}.output");
+        let cmd_file_path = format!("{out_dir}/{name}-commands.txt");
+        (out_file_path, cmd_file_path, manifest_dir)
+    }
+
+    /// Build a gdb script that connects to `port`, sets a single
+    /// breakpoint at `breakpoint`, prints `echo_msg` when hit, and
+    /// detaches before quitting.
+    ///
+    /// The breakpoint commands end with `detach` + `quit` instead of
+    /// `continue`. The previous "inner continue, outer continue, quit"
+    /// shape races with the inferior exit. After the breakpoint hits
+    /// and the inner `continue` resumes the guest, the guest may run
+    /// to completion and the gdb stub may close the remote before gdb
+    /// has dispatched the outer `continue`, producing a non-zero exit
+    /// with `Remote connection closed`. Detaching from the breakpoint
+    /// commands removes that window. The host process keeps running
+    /// the guest call to completion on its own after detach.
+    fn single_breakpoint_script(
+        manifest_dir: &str,
+        port: u16,
+        out_file_path: &str,
+        breakpoint: &str,
+        echo_msg: &str,
+    ) -> String {
+        let cmd = format!(
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :{port}
+
+                set pagination off
+                set logging file {out_file_path}
+                set logging enabled on
+
+                break {breakpoint}
+                    commands
+                    echo \"{echo_msg}\\n\"
+                    backtrace
+
+                    set logging enabled off
+                    detach
+                    quit
+                end
+
+                continue
+            "
+        );
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{cmd}");
+        cmd
+    }
+
+    /// Spawn the gdb client to execute the script in `cmd_file_path`.
+    fn spawn_gdb_client(cmd_file_path: &str) -> std::process::Child {
+        Command::new(GDB_COMMAND)
+            .arg("-nx")
+            .arg("--nw")
+            .arg("--batch")
+            .arg("-x")
+            .arg(cmd_file_path)
+            .spawn()
+            .expect("Failed to start gdb")
+    }
+
     fn write_cmds_file(cmd_file_path: &str, cmd: &str) -> io::Result<()> {
         let file = File::create(cmd_file_path)?;
         let mut writer = BufWriter::new(file);
@@ -139,7 +204,7 @@ mod tests {
         let features = "gdb";
 
         // build it before running to avoid a race condition below
-        let mut guest_child = Command::new("cargo")
+        Command::new("cargo")
             .arg("build")
             .arg("--example")
             .arg("guest-debugging")
@@ -164,13 +229,7 @@ mod tests {
         // wait 3 seconds for the gdb to connect
         thread::sleep(Duration::from_secs(3));
 
-        let mut gdb = Command::new(GDB_COMMAND)
-            .arg("--nw")
-            .arg("--batch")
-            .arg("-x")
-            .arg(cmd_file_path)
-            .spawn()
-            .map_err(|e| new_error!("Failed to start gdb process: {}", e))?;
+        let mut gdb = spawn_gdb_client(cmd_file_path);
 
         // wait 3 seconds for the gdb to connect
         thread::sleep(Duration::from_secs(10));
@@ -233,75 +292,41 @@ mod tests {
         }
     }
 
-    fn cleanup(out_file_path: &str, cmd_file_path: &str) -> Result<()> {
-        let res1 = std::fs::remove_file(out_file_path)
-            .map_err(|e| new_error!("Failed to remove gdb.output file: {}", e));
-        let res2 = std::fs::remove_file(cmd_file_path)
-            .map_err(|e| new_error!("Failed to remove gdb-commands.txt file: {}", e));
-
-        res1?;
-        res2?;
-
-        Ok(())
+    fn cleanup(out_file_path: &str, cmd_file_path: &str) {
+        // Ignore missing files — they may not exist if the test failed early.
+        for path in [out_file_path, cmd_file_path] {
+            if let Err(e) = std::fs::remove_file(path) {
+                println!("Warning: failed to remove {} during cleanup: {}", path, e);
+            }
+        }
     }
 
     #[test]
     #[serial]
     fn test_gdb_end_to_end() {
-        let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("Failed to get manifest dir")
-            .replace('\\', "/");
-        let out_file_path = format!("{out_dir}/gdb.output");
-        let cmd_file_path = format!("{out_dir}/gdb-commands.txt");
+        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb");
 
-        let cmd = format!(
-            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
-                target remote :8080
-
-                set pagination off
-                set logging file {out_file_path}
-                set logging on
-
-                break hyperlight_main
-                    commands
-                    echo \"Stopped at hyperlight_main breakpoint\\n\"
-                    backtrace
-
-                    continue
-                end
-
-                continue
-
-                set logging off
-                quit
-            "
+        let cmd = single_breakpoint_script(
+            &manifest_dir,
+            8080,
+            &out_file_path,
+            "hyperlight_main",
+            "Stopped at hyperlight_main breakpoint",
         );
-
-        #[cfg(windows)]
-        let cmd = format!("set osabi none\n{}", cmd);
 
         let checker = |contents: String| contents.contains("Stopped at hyperlight_main breakpoint");
 
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
-        // cleanup
-        let cleanup_result = cleanup(&out_file_path, &cmd_file_path);
-        assert!(cleanup_result.is_ok(), "{}", cleanup_result.unwrap_err());
-        // check if the test passed - done at the end to ensure cleanup is done
+        cleanup(&out_file_path, &cmd_file_path);
         assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 
     #[test]
     #[serial]
     fn test_gdb_sse_check() {
-        let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("Failed to get manifest dir")
-            .replace('\\', "/");
+        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-sse");
         println!("manifest dir {manifest_dir}");
-        let out_file_path = format!("{out_dir}/gdb-sse.output");
-        let cmd_file_path = format!("{out_dir}/gdb-sse--commands.txt");
 
         let cmd = format!(
             "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
@@ -309,7 +334,7 @@ mod tests {
 
                 set pagination off
                 set logging file {out_file_path}
-                set logging on
+                set logging enabled on
 
                 break main.rs:simpleguest::use_sse2_registers
                 commands 1
@@ -317,16 +342,14 @@ mod tests {
                     break +2
                     commands 2
                         print $xmm1.v4_float
-                        continue
+                        set logging enabled off
+                        detach
+                        quit
                     end
                     continue
                 end
-                
 
                 continue
-
-                set logging off
-                quit
             "
         );
 
@@ -336,10 +359,75 @@ mod tests {
         let checker = |contents: String| contents.contains("$2 = [1.20000005, 0, 0, 0]");
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
-        // cleanup
-        let cleanup_result = cleanup(&out_file_path, &cmd_file_path);
-        assert!(cleanup_result.is_ok(), "{}", cleanup_result.unwrap_err());
-        // check if the test passed - done at the end to ensure cleanup is done
+        cleanup(&out_file_path, &cmd_file_path);
         assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_gdb_from_snapshot() {
+        use hyperlight_host::HostFunctions;
+
+        const PORT: u16 = 8081;
+
+        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-from-snapshot");
+
+        // Build a sandbox the normal way and snapshot it in-memory.
+        let mut producer: MultiUseSandbox = UninitializedSandbox::new(
+            hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_pathbuf()),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+        let snap = producer.snapshot().unwrap();
+
+        // Order matters. The gdb stub event loop must enter (i.e.
+        // `VcpuStopped` must be sent on the channel) before the gdb
+        // client connects, otherwise the wire protocol desyncs. The
+        // evolve case gets this for free because `evolve()` runs
+        // `vm.initialise()` which trips the entry breakpoint
+        // immediately. For a `Call` snapshot `vm.initialise` is a
+        // no-op, so we trigger the breakpoint by running `sbox.call`
+        // here before the client is launched below.
+        let snap_thread = snap.clone();
+        let sandbox_thread = thread::spawn(move || -> Result<()> {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_guest_debug_info(DebugInfo { port: PORT });
+
+            let mut sbox =
+                MultiUseSandbox::from_snapshot(snap_thread, HostFunctions::default(), Some(cfg))?;
+            sbox.call::<i32>(
+                "PrintOutput",
+                "Hello from a from_snapshot sandbox\n".to_string(),
+            )?;
+            Ok(())
+        });
+
+        // Wait for the sandbox thread to bind the listener, install
+        // the one-shot breakpoint, and trip it.
+        thread::sleep(Duration::from_secs(3));
+
+        let cmd = single_breakpoint_script(
+            &manifest_dir,
+            PORT,
+            &out_file_path,
+            "main.rs:simpleguest::print_output",
+            "Stopped at print_output breakpoint",
+        );
+        write_cmds_file(&cmd_file_path, &cmd).expect("Failed to write gdb commands");
+
+        let mut gdb = spawn_gdb_client(&cmd_file_path);
+        let _ = gdb.wait();
+        let sandbox_result = sandbox_thread
+            .join()
+            .expect("from_snapshot sandbox thread panicked");
+
+        let checker = |contents: String| contents.contains("Stopped at print_output breakpoint");
+        let result = check_output(&out_file_path, checker);
+
+        cleanup(&out_file_path, &cmd_file_path);
+        sandbox_result.expect("from_snapshot sandbox returned error");
+        result.expect("gdb output missing expected breakpoint hit");
     }
 }

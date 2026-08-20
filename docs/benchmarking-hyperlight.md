@@ -2,10 +2,10 @@
 
 Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/index.html) framework to run and analyze benchmarks. A benefit to this framework is that it doesn't require the nightly toolchain.
 
-## When Benchmarks are ran
+## When Benchmarks are run
 
-1. Every time a branch gets a push
-    - Compares the current branch benchmarking results to the "dev-latest" release (which is the most recent push to "main" branch). This is done as part of `dep_rust.yml`, which is invoked by `ValidatePullRequest.yml`. These benchmarks are for the developer to compare their branch to main, and the results can only be seen in the GitHub action logs, and nothing is saved. 
+1. Daily (scheduled)
+    - Benchmarks run daily via `DailyBenchmarks.yml`, comparing results against the previous day's run. Results are stored as workflow artifacts with 90-day retention.
 
     ```
     sandboxes/create_sandbox
@@ -15,9 +15,9 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
     ```
    
 2. For each release
-    - For each release, benchmarks are ran as part of the release pipeline in `CreateRelease.yml`, which invokes `Benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as port of the "Release assets" on the GitHub release page.
+    - For each release, benchmarks are run as part of the release pipeline in `CreateRelease.yml`, which invokes `dep_benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as part of the "Release assets" on the GitHub release page.
 
-Currently, benchmarks are ran on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
+Currently, benchmarks are run on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
 
 ## Criterion artifacts
 
@@ -72,6 +72,6 @@ Found 1 outliers among 100 measurements (1.00%)
 
 ## Running benchmarks locally
 
-Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to github-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor [tag] ` to download and extract the GitHub release benchmarks to the correct place folder. You can then run `just bench-ci main` to compare to (and overwrite) the previous release benchmarks. Note that `main` is the name of the baselines stored in GitHub.
+Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] ` to download and extract the GitHub release benchmarks to the correct folder. You can then run `just bench-ci main` to compare to (and overwrite) the previous release benchmarks. Note that `main` is the name of the baselines stored in GitHub.
 
 **Important**: The `just bench` command uses release builds by default to ensure meaningful performance measurements. For profiling purposes, you can compile benchmarks with debug symbols by running `cargo bench` directly.

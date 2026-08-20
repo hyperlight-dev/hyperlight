@@ -15,10 +15,13 @@ Shared implementation for the procedural macros that generate Hyperlight host an
 name = "hyperlight_component_util"
 
 [dependencies]
-wasmparser = { version = "0.243.0" }
-quote = { version = "1.0.42" }
-proc-macro2 = { version = "1.0.103" }
-syn = { version = "2.0.111" }
-itertools = { version = "0.14.0" }
-prettyplease = { version = "0.2.37" }
-log = { version = "0.4" }
+wasmparser = { version = "0.256.0" }
+wat = { version = "1.256.0" }
+wit-component = { version = "0.256.0" }
+wit-parser = { version = "0.256.0" }
+quote = { version = "1.0.45" }
+proc-macro2 = { version = "1.0.106" }
+syn = { version = "3.0.1" }
+itertools = { version = "0.15.0" }
+prettyplease = { version = "0.3.0" }
+tracing = { version = "0.1.44", features = ["log"]}

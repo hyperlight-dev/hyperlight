@@ -40,6 +40,15 @@ use crate::flatbuffers::hyperlight::generated::{
     OpenSpanTypeArgs as FbOpenSpanTypeArgs,
 };
 
+/// TODO: Change these constant to be configurable at runtime by the guest
+/// Maybe use a weak symbol that the guest can override at link time?
+///
+/// Pre-calculated capacity for the encoder buffer
+/// This is to avoid reallocations in the guest
+/// If the next event would exceed this size, the encoder will flush the current buffer to the host
+/// before encoding the new event.
+pub const MAX_TRACE_DATA_SIZE: usize = 4096;
+
 /// Key-Value pair structure used in tracing spans/events
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventKeyValue {

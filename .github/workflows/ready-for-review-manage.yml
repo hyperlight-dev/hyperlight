@@ -1,0 +1,73 @@
+name: Ready-for-review (manage)
+
+# Stage 2 of the two-stage "ready-for-review" label pipeline. It is triggered
+# when "Ready-for-review (collect)" completes and runs in the context of the
+# base repository's default branch, so it receives a read-write GITHUB_TOKEN
+# even when the originating event came from a fork. This is what lets us remove
+# the label from pull requests opened from forks. See ready-for-review-label.yml.
+#
+# SECURITY: the collect stage can run from untrusted fork code, so the artifact
+# it produces is UNTRUSTED. We therefore:
+#   * download it into a temporary directory,
+#   * never check out or execute any pull-request code, and
+#   * strictly validate the pull-request number (digits only) before use.
+# The downstream reusable workflow only ever *removes* the label, and only when
+# the PR genuinely meets a removal condition, so the worst a spoofed-but-valid
+# number could achieve is removing a single, manually re-addable label from a PR
+# that already qualified for removal.
+on:
+  workflow_run:
+    workflows: ["Ready-for-review (collect)"]
+    types: [completed]
+
+# Best-effort per-source-branch serialisation. The real PR number is only known
+# after the artifact is read, and the reusable workflow already tolerates a
+# concurrent label removal (HTTP 404), so this is belt-and-braces.
+concurrency:
+  group: ready-for-review-manage-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read          # download the artifact from the collect run
+  contents: read
+  pull-requests: write   # remove the label
+  issues: write          # labels are managed through the issues API
+
+jobs:
+  read-pr:
+    runs-on: ubuntu-latest
+    # Only act on a collect run that actually succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      pr_number: ${{ steps.read.outputs.pr_number }}
+    steps:
+      - name: Download the pull-request number
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ready-for-review-pr-number
+          path: ${{ runner.temp }}/pr        # temp dir, never the workspace
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read and validate the pull-request number
+        id: read
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/pr
+        run: |
+          set -euo pipefail
+          raw="$(cat "${ARTIFACT_DIR}/pr_number")"
+          # Untrusted input from a potentially fork-triggered run: digits only.
+          if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
+            echo "Refusing to act on non-numeric PR number" >&2
+            printf 'Value was: %q\n' "$raw" >&2
+            exit 1
+          fi
+          echo "pr_number=${raw}" >> "$GITHUB_OUTPUT"
+
+  manage-label:
+    needs: read-pr
+    # Shared workflow in the org-wide `.github` repository, pinned to a commit SHA.
+    uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@e5e471d927d3a72676ab48433da8a99d15a32ad7
+    with:
+      # fromJSON turns the validated digit-string into a numeric input.
+      pr-number: ${{ fromJSON(needs.read-pr.outputs.pr_number) }}

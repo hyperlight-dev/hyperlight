@@ -14,24 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#![expect(
-    clippy::disallowed_macros,
-    reason = "This is a benchmark file, so using disallowed macros is fine here."
-)]
-
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_host::GuestBinary;
+use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
+use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
 /// Sandbox heap size configurations for benchmarking.
 /// Only affects heap size - all other configuration remains at defaults.
@@ -61,11 +57,13 @@ impl SandboxSize {
             Self::Medium => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(MEDIUM_HEAP_SIZE);
+                cfg.set_scratch_size(0x50000);
                 Some(cfg)
             }
             Self::Large => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
                 Some(cfg)
             }
         }
@@ -88,7 +86,7 @@ impl SandboxSize {
 }
 
 fn create_uninit_sandbox_with_size(size: SandboxSize) -> UninitializedSandbox {
-    let path = simple_guest_as_string().unwrap();
+    let path = simple_guest_as_pathbuf();
     UninitializedSandbox::new(GuestBinary::FilePath(path), size.config()).unwrap()
 }
 
@@ -153,6 +151,15 @@ fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
             format!("create_initialized_and_drop/{}", size.name()),
             |b| bench_create_initialized_and_drop(b, size),
         );
+    }
+
+    // Isolates the cost of building a MultiUseSandbox from an
+    // already-resident Snapshot. The Snapshot is loaded outside the
+    // timed region.
+    for size in SandboxSize::all() {
+        group.bench_function(format!("sandbox_from_snapshot/{}", size.name()), |b| {
+            bench_sandbox_from_snapshot(b, size)
+        });
     }
 
     group.finish();
@@ -349,6 +356,28 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
     });
 }
 
+fn bench_sandbox_from_snapshot(b: &mut criterion::Bencher, size: SandboxSize) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+
+    let dir = tempfile::tempdir().unwrap();
+    let snap_path = dir.path().join("bench");
+    let tag = OciTag::new("latest").unwrap();
+    {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let snapshot = sbox.snapshot().unwrap();
+        snapshot.save(&snap_path, &tag).unwrap();
+    }
+    let loaded = std::sync::Arc::new(Snapshot::checked_load(&snap_path, tag).unwrap());
+
+    // Drop is not included.
+    b.iter_batched(
+        || (),
+        |_| MultiUseSandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None).unwrap(),
+        criterion::BatchSize::PerIteration,
+    );
+}
+
 fn snapshots_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("snapshots");
 
@@ -376,28 +405,31 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
     #[cfg(target_os = "windows")]
     group.sample_size(10); // This benchmark is very slow on Windows, so we reduce the sample size to avoid long test runs.
 
-    // This benchmark includes time to first clone a vector and string, so it is not a "pure' benchmark of the guest call, but it's still useful
     group.bench_function("guest_call_with_large_parameters", |b| {
         const SIZE: usize = 50 * 1024 * 1024; // 50 MB
         let large_vec = vec![0u8; SIZE];
-        let large_string = unsafe { String::from_utf8_unchecked(large_vec.clone()) }; // Safety: indeed above vec is valid utf8
+        let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
         let mut config = SandboxConfiguration::default();
         config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
         config.set_heap_size(SIZE as u64 * 15);
+        config.set_scratch_size(6 * SIZE + 4 * (1024 * 1024)); // Big enough for the IO data regions and enough of the heap to be used
 
         let sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+            GuestBinary::FilePath(simple_guest_as_pathbuf()),
             Some(config),
         )
         .unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
-        b.iter(|| {
-            sandbox
-                .call::<()>("LargeParameters", (large_vec.clone(), large_string.clone()))
-                .unwrap()
-        });
+        b.iter_with_setup(
+            || (large_vec.clone(), large_string.clone()),
+            |(vec_clone, string_clone)| {
+                sandbox
+                    .call::<()>("LargeParameters", (vec_clone, string_clone))
+                    .unwrap()
+            },
+        );
     });
 
     group.finish();
@@ -462,7 +494,7 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
 fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
-    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: String) {
+    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_input_data_size(25 * 1024);
 
@@ -482,12 +514,205 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     }
 
     group.bench_function("24K_in_8K_out_c", |b| {
-        bench_24k_in_8k_out(b, c_simple_guest_as_string().unwrap());
+        bench_24k_in_8k_out(b, c_simple_guest_as_pathbuf());
     });
 
     group.bench_function("24K_in_8K_out_rust", |b| {
-        bench_24k_in_8k_out(b, simple_guest_as_string().unwrap());
+        bench_24k_in_8k_out(b, simple_guest_as_pathbuf());
     });
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Shared Memory Operations
+// ============================================================================
+
+fn shared_memory_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shared_memory");
+
+    let sizes: &[(usize, &str)] = &[(1024 * 1024, "1MB"), (64 * 1024 * 1024, "64MB")];
+
+    // Benchmark fill
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::new("fill", name), &size, |b, &size| {
+            let eshm = ExclusiveSharedMemory::new(size).unwrap();
+            let (mut hshm, _) = eshm.build();
+            b.iter(|| {
+                hshm.fill(0xAB, 0, size).unwrap();
+            });
+        });
+    }
+
+    // Benchmark copy_to_slice (read from shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_to_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let mut dst = vec![0u8; size];
+                b.iter(|| {
+                    hshm.copy_to_slice(&mut dst, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    // Benchmark copy_from_slice (write to shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_from_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let src = vec![0xCDu8; size];
+                b.iter(|| {
+                    hshm.copy_from_slice(&src, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Snapshot Files
+// ============================================================================
+
+fn snapshot_file_benchmark(c: &mut Criterion) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+
+    let mut group = c.benchmark_group("snapshot_files");
+
+    // Pre-create OCI snapshot images for all sizes.
+    let dirs: Vec<_> = SandboxSize::all()
+        .iter()
+        .map(|size| {
+            let dir = tempfile::tempdir().unwrap();
+            let snap_path = dir.path().join(size.name());
+            let snapshot = {
+                let mut sbox = create_multiuse_sandbox_with_size(*size);
+                sbox.snapshot().unwrap()
+            };
+            snapshot
+                .save(&snap_path, &OciTag::new("latest").unwrap())
+                .unwrap();
+            (dir, snapshot, snap_path)
+        })
+        .collect();
+
+    // Benchmark: save_snapshot. Wipe the layout between iterations
+    // so each save measures a fresh write rather than a tag-append.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_dir = tempfile::tempdir().unwrap();
+        let path = snap_dir.path().join("bench");
+        let snapshot = &dirs[i].1;
+        group.bench_function(format!("save_snapshot/{}", size.name()), |b| {
+            b.iter_batched(
+                || {
+                    let _ = std::fs::remove_dir_all(&path);
+                },
+                |_| {
+                    snapshot
+                        .save(&path, &OciTag::new("latest").unwrap())
+                        .unwrap()
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: load_snapshot (parse manifest + config + mmap blob).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::checked_load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: load_snapshot_unchecked (skip blob digest verification).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot_unverified/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_evolve (new + evolve + call). Drop is not included.
+    for size in SandboxSize::all() {
+        group.bench_function(format!("cold_start_via_evolve/{}", size.name()), |b| {
+            b.iter_batched(
+                || (),
+                |_| {
+                    let mut sbox = create_multiuse_sandbox_with_size(size);
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                    sbox
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot (load + from_snapshot + call). Drop is not included.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("cold_start_via_snapshot/{}", size.name()), |b| {
+            b.iter_batched(
+                || (),
+                |_| {
+                    let loaded =
+                        Snapshot::checked_load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+                    let mut sbox = MultiUseSandbox::from_snapshot(
+                        std::sync::Arc::new(loaded),
+                        HostFunctions::default(),
+                        None,
+                    )
+                    .unwrap();
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                    sbox
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot_unverified (load unverified + from_snapshot + call). Drop is not included.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(
+            format!("cold_start_via_snapshot_unverified/{}", size.name()),
+            |b| {
+                b.iter_batched(
+                    || (),
+                    |_| {
+                        let loaded =
+                            Snapshot::load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+                        let mut sbox = MultiUseSandbox::from_snapshot(
+                            std::sync::Arc::new(loaded),
+                            HostFunctions::default(),
+                            None,
+                        )
+                        .unwrap();
+                        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                        sbox
+                    },
+                    criterion::BatchSize::PerIteration,
+                );
+            },
+        );
+    }
 
     group.finish();
 }
@@ -501,6 +726,8 @@ criterion_group! {
         snapshots_benchmark,
         guest_call_benchmark_large_param,
         function_call_serialization_benchmark,
-        sample_workloads_benchmark
+        sample_workloads_benchmark,
+        shared_memory_benchmark,
+        snapshot_file_benchmark
 }
 criterion_main!(benches);

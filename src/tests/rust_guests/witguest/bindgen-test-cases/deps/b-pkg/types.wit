@@ -1,0 +1,11 @@
+package b:pkg;
+
+interface types {
+    resource thing;
+
+    record detail {
+        label: string,
+        count: u64,
+    }
+    get-detail: func() -> detail;
+}

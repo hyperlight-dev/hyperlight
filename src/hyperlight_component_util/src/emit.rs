@@ -15,19 +15,127 @@ limitations under the License.
  */
 
 //! A bunch of utilities used by the actual code emit functions
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::vec::Vec;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use crate::etypes::{BoundedTyvar, Defined, Handleable, ImportExport, TypeBound, Tyvar};
+use crate::etypes::{
+    BoundedTyvar, Defined, ExternDecl, ExternDesc, Handleable, ImportExport, TypeBound, Tyvar,
+};
+
+fn version_to_kebab(version: &[&str]) -> String {
+    version
+        .join("-")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Scan a list of import extern decls for interface name collisions.
+/// Returns short import names that need disambiguating.
+pub fn find_colliding_import_names(imports: &[ExternDecl]) -> HashSet<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for ed in imports {
+        if let ExternDesc::Instance(_) = &ed.desc {
+            let wn = split_wit_name(ed.kebab_name);
+            *counts.entry(wn.name.to_string()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// Return `(type_name, getter_name)` for an import instance.
+///
+/// Colliding interface names are emitted with their namespace-qualified name,
+/// plus the version suffix when present:
+/// `wasi:http/types` -> `WasiHttpTypes` / `wasi_http_types`.
+pub fn import_member_names(wn: &WitName, collisions: &HashSet<String>) -> (Ident, Ident) {
+    if collisions.contains(wn.name) {
+        if wn.namespaces.is_empty() {
+            let mut type_name = component_first_camel(wn.name);
+            let mut getter = wn.name.to_string();
+            if !wn._version.is_empty() {
+                let v = version_to_kebab(&wn._version);
+                getter.push_str("-v");
+                getter.push_str(&v);
+                type_name.push('V');
+                type_name.push_str(&component_first_camel(&v));
+            }
+            return (format_ident!("{}", type_name), kebab_to_getter(&getter));
+        }
+
+        let (package, namespaces) = wn
+            .namespaces
+            .split_last()
+            .expect("colliding qualified imports have a package component");
+
+        // Preserve package hyphens as `_` so `a:bc/types` and
+        // `a:b-c/types` don't collide.
+        let mut getter_components = namespaces
+            .iter()
+            .map(|ns| ns.replace('-', ""))
+            .collect::<Vec<_>>();
+        getter_components.push(package.replace('-', "_"));
+        let getter_prefix = getter_components.join("_");
+        let mut qualified_getter = format!("{}-{}", getter_prefix, wn.name);
+
+        // Use the same boundary-preserving approach for type names.
+        let mut type_prefix: String = namespaces
+            .iter()
+            .map(|ns| component_first_camel(ns))
+            .collect();
+        type_prefix.push_str(&component_first_camel(&package.replace('-', "_")));
+        let mut type_name = format!("{}{}", type_prefix, component_first_camel(wn.name));
+
+        if !wn._version.is_empty() {
+            let v = version_to_kebab(&wn._version);
+            qualified_getter.push_str("-v");
+            qualified_getter.push_str(&v);
+            type_name.push('V');
+            type_name.push_str(&component_first_camel(&v));
+        }
+        (
+            format_ident!("{}", type_name),
+            kebab_to_getter(&qualified_getter),
+        )
+    } else {
+        (kebab_to_type(wn.name), kebab_to_getter(wn.name))
+    }
+}
+
+/// Capitalize only the first letter of a kebab component, removing hyphens
+/// without capitalizing subsequent sub-words.
+fn component_first_camel(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars();
+    if let Some(first) = chars.next() {
+        result.extend(first.to_uppercase());
+    }
+    for c in chars {
+        if c != '-' {
+            result.push(c);
+        }
+    }
+    result
+}
 
 /// A representation of a trait definition that we will eventually
 /// emit. This is used to allow easily adding onto the trait each time
 /// we see an extern decl.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Trait {
     /// A set of supertrait constraints, each associated with a
     /// bindings module path
@@ -86,11 +194,12 @@ impl Trait {
     /// Build a token stream for the type variable part of the trait
     /// declaration
     pub fn tv_toks(&mut self) -> TokenStream {
+        let p = quote! { P: ::hyperlight_common::component::Positivity };
         if !self.tvs.is_empty() {
             let toks = self.tv_toks_inner();
-            quote! { <#toks> }
+            quote! { <#p, #toks> }
         } else {
-            quote! {}
+            quote! { <#p> }
         }
     }
     /// Build a token stream for this entire trait definition
@@ -118,12 +227,12 @@ impl Trait {
 /// A representation of a module definition that we will eventually
 /// emit. This is used to allow easily adding onto the module each time
 /// we see a relevant decl.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Mod {
     pub submods: BTreeMap<Ident, Mod>,
     pub items: TokenStream,
     pub traits: BTreeMap<Ident, Trait>,
-    pub impls: BTreeMap<(Vec<Ident>, Ident), TokenStream>,
+    pub impls: BTreeMap<(Vec<Ident>, Ident), (TokenStream, TokenStream)>,
 }
 impl Mod {
     pub fn empty() -> Self {
@@ -160,7 +269,7 @@ impl Mod {
     ///
     /// Currently, we don't track much information about these, so
     /// it's just a mutable token stream.
-    pub fn r#impl<'a>(&'a mut self, t: Vec<Ident>, i: Ident) -> &'a mut TokenStream {
+    pub fn r#impl<'a>(&'a mut self, t: Vec<Ident>, i: Ident) -> &'a mut (TokenStream, TokenStream) {
         self.impls.entry((t, i)).or_default()
     }
     /// See [`State::adjust_vars`].
@@ -187,9 +296,9 @@ impl Mod {
             tt.extend(t.into_tokens(n));
         }
         tt.extend(self.items);
-        for ((ns, i), t) in self.impls {
+        for ((ns, i), (tvi, t)) in self.impls {
             tt.extend(quote! {
-                impl #(#ns)::* for #i { #t }
+                impl #(#ns)::* #tvi for #i { #t }
             })
         }
         tt
@@ -267,8 +376,39 @@ pub struct State<'a, 'b> {
     /// implements the imports of a component
     pub import_param_var: Option<Ident>,
     /// The Rust type parameter used to represent the current Rust
-    /// state type
-    pub self_param_var: Option<Ident>,
+    /// state type. In particular, this should let one find a `Self`
+    /// which Rust understands to be an impl of the instance trait
+    /// that `s.origin` refers to.
+    ///
+    /// # Note \[Origin paths and self parameters in impl codegen for higher-order components\]
+    ///
+    /// When extending impl (host.rs/guest.rs, as opposed to
+    /// rtypes.rs) codegen to higher-order components, it's not
+    /// entirely clear whether we should have this/the origin path
+    /// always refer to the true root component, or just to the
+    /// nearest component in which we are currently working.  At first
+    /// glance, updating the origin path at all during impl codegen
+    /// seems like a bad idea, since the impl should be instantiating
+    /// the Rust tyvars and can't generate new ones for
+    /// non-locally-defined types the way that rtypes codegen
+    /// can. However, it may be the case that referring to a tyvar
+    /// that does not follow our local definedness rules at the
+    /// granularity of components will be impossible due to the
+    /// `outer_boundary` rules! If this does turn out to be the case,
+    /// then updating `origin` on every instance the way that rtypes
+    /// does will still be a bad idea, but we might want to consider
+    /// updating it once per /component/.
+    ///
+    /// Whether or not `origin` gets updated, the trait bounds in
+    /// `self_param_var` need to match this. Currently, code in
+    /// host.rs/guest.rs does not update `origin`, but does update
+    /// `self_param_var`, which will need to be fixed when extending
+    /// higher-order component bindings generation to impls.
+    pub self_param_var: Option<TokenStream>,
+    /// The Rust type parameter used to represent the type that
+    /// provides the positivity of the (eventual use of the) current
+    /// component
+    pub positivity_param: Option<TokenStream>,
     /// Whether we are emitting an implementation of the component
     /// interfaces, or just the types of the interface
     pub is_impl: bool,
@@ -282,8 +422,11 @@ pub struct State<'a, 'b> {
     /// wasmtime guest emit. When that is refactored to use the host
     /// guest emit, this can go away.
     pub is_wasmtime_guest: bool,
-    /// Are we working on an export or an import of the component type?
-    pub is_export: bool,
+    /// Set of interface names that collide across different packages
+    /// (e.g. "types" appears in both wasi:filesystem/types and wasi:http/types).
+    /// When a name is in this set, the parent namespace is prepended to
+    /// disambiguate the trait member name.
+    pub colliding_import_names: HashSet<String>,
 }
 
 /// Create a State with all of its &mut references pointing to
@@ -331,11 +474,12 @@ impl<'a, 'b> State<'a, 'b> {
             vars_needs_vars,
             import_param_var: None,
             self_param_var: None,
+            positivity_param: None,
             is_impl: false,
             root_component_name: None,
             is_guest,
             is_wasmtime_guest,
-            is_export: false,
+            colliding_import_names: HashSet::new(),
         }
     }
     pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
@@ -351,12 +495,13 @@ impl<'a, 'b> State<'a, 'b> {
             cur_needs_vars: self.cur_needs_vars.as_deref_mut(),
             vars_needs_vars: self.vars_needs_vars,
             import_param_var: self.import_param_var.clone(),
+            positivity_param: self.positivity_param.clone(),
             self_param_var: self.self_param_var.clone(),
             is_impl: self.is_impl,
             root_component_name: self.root_component_name.clone(),
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
-            is_export: self.is_export,
+            colliding_import_names: self.colliding_import_names.clone(),
         }
     }
     /// Obtain a reference to the [`Mod`] that we are currently
@@ -400,6 +545,17 @@ impl<'a, 'b> State<'a, 'b> {
         s.cur_needs_vars = Some(needs_vars);
         s
     }
+    /// Copy the state, replacing its [`State::root_mod`] reference,
+    /// allowing a caller to capture _only_ the effects on
+    /// [`State::cur_needs_vars`]/[`State::vars_needs_vars`] of an
+    /// emit run with the resultant state
+    pub fn for_var_effects_only<F: for<'c> FnOnce(&mut State<'c, 'b>)>(&mut self, f: F) {
+        let mut new_mod = self.root_mod.clone();
+        let mut s = self.clone();
+        s.root_mod = &mut new_mod;
+        f(&mut s);
+    }
+
     /// Record that an emit sequence needed a var, given an absolute
     /// index for the var (i.e. ignoring [`State::var_offset`])
     pub fn need_noff_var(&mut self, n: u32) {
@@ -416,7 +572,7 @@ impl<'a, 'b> State<'a, 'b> {
         let Some(ref mut cnvs) = self.cur_needs_vars else {
             return;
         };
-        log::debug!("debug varref: recording {:?} for var {:?}", cnvs.iter(), un);
+        tracing::debug!("debug varref: recording {:?} for var {:?}", cnvs.iter(), un);
         self.vars_needs_vars[un].extend(cnvs.iter());
     }
     /// Get a list of all the variables needed by a var, given its absolute
@@ -426,7 +582,7 @@ impl<'a, 'b> State<'a, 'b> {
         if self.vars_needs_vars.len() < un + 1 {
             return BTreeSet::new();
         };
-        log::debug!(
+        tracing::debug!(
             "debug varref: looking up {:?} for var {:?}",
             self.vars_needs_vars[un].iter(),
             un
@@ -437,10 +593,17 @@ impl<'a, 'b> State<'a, 'b> {
     /// variable, given its absolute index (i.e. ignoring
     /// [`State::var_offset`])
     pub fn noff_var_id(&self, n: u32) -> Ident {
-        let Some(n) = self.bound_vars[n as usize].origin.last_name() else {
+        let origin = &self.bound_vars[n as usize].origin;
+        let Some(name) = origin.last_name() else {
             panic!("missing origin on tyvar in rust emit")
         };
-        kebab_to_type(n)
+        let wn = split_wit_name(name);
+        if origin.is_imported() {
+            let (tn, _) = import_member_names(&wn, &self.colliding_import_names);
+            tn
+        } else {
+            kebab_to_type(wn.name)
+        }
     }
     /// Copy the state, changing it to emit into the helper module of
     /// the current trait
@@ -535,13 +698,17 @@ impl<'a, 'b> State<'a, 'b> {
     /// Add an import/export to [`State::origin`], reflecting that we are now
     /// looking at code underneath it
     ///
-    /// origin_was_export differs from s.is_export in that s.is_export
-    /// keeps track of whether the item overall was imported or exported
-    /// from the root component (taking into account positivity), whereas
-    /// origin_was_export just checks if this particular extern_decl was
-    /// imported or exported from its parent instance (and so e.g. an
-    /// export of an instance that is imported by the root component has
-    /// !s.is_export && origin_was_export)
+    /// origin_was_export does not keep track of whether the item
+    /// overall was imported or exported from the root component
+    /// (taking into account positivity); it just checks if this
+    /// particular extern_decl was imported or exported from its
+    /// parent instance (and so e.g. an export of an instance that is
+    /// imported by the root component has origin_was_export).  Any
+    /// decisions that depend on positivity from the root component
+    /// should be made part of the
+    /// [`hyperlight_common::component::Positivity`] trait, which
+    /// correctly handles the fact that the same interface trait may
+    /// be used in both positive and negative positions.
     pub fn push_origin<'c>(&'c mut self, origin_was_export: bool, name: &'b str) -> State<'c, 'b> {
         let mut s = self.clone();
         s.origin.push(if origin_was_export {
@@ -559,7 +726,7 @@ impl<'a, 'b> State<'a, 'b> {
             Defined::Handleable(Handleable::Var(tv)) => match tv {
                 Tyvar::Bound(n) => {
                     let bv = &self.bound_vars[self.var_offset + (*n as usize)];
-                    log::debug!("checking an origin {:?} {:?}", bv.origin, self.origin);
+                    tracing::debug!("checking an origin {:?} {:?}", bv.origin, self.origin);
                     if bv.origin.matches(self.origin.iter()) {
                         Some((*n, bv.bound.clone()))
                     } else {
@@ -588,7 +755,7 @@ impl<'a, 'b> State<'a, 'b> {
     ///
     /// Precondition: all named traits/modules must exist
     pub fn resolve_trait_immut(&self, absolute: bool, path: &[Ident]) -> &Trait {
-        log::debug!("resolving trait {:?} {:?}", absolute, path);
+        tracing::debug!("resolving trait {:?} {:?}", absolute, path);
         let mut m = if absolute {
             &*self.root_mod
         } else {
@@ -611,7 +778,7 @@ impl<'a, 'b> State<'a, 'b> {
             .enumerate()
             .for_each(|(i, vs)| {
                 *vs = vs.iter().map(|v| v + n).collect();
-                log::debug!("updated {:?} to {:?}", i, *vs);
+                tracing::debug!("updated {:?} to {:?}", i, *vs);
             });
         for _ in 0..n {
             self.vars_needs_vars.push_front(BTreeSet::new());
@@ -763,6 +930,21 @@ pub fn kebab_to_imports_name(trait_name: &str) -> Ident {
 pub fn kebab_to_exports_name(trait_name: &str) -> Ident {
     format_ident!("{}Exports", kebab_to_type(trait_name))
 }
+/// Convert a kebab name to a SCREAMING_SNAKE_CASE identifier suitable
+/// for use as a constant in a `wasmtime::component::flags!` invocation.
+pub fn kebab_to_flags_const(n: &str) -> Ident {
+    let s: String = n
+        .chars()
+        .map(|c| {
+            if c == '-' {
+                '_'
+            } else {
+                c.to_ascii_uppercase()
+            }
+        })
+        .collect();
+    format_ident!("{}", s)
+}
 
 /// The kinds of names that a function associated with a resource in
 /// WIT can have
@@ -802,4 +984,254 @@ pub fn kebab_to_fn(n: &str) -> FnName {
         );
     }
     FnName::Plain(kebab_to_snake(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::etypes::{ExternDecl, ExternDesc, Instance};
+
+    /// Helper to build a minimal `ExternDecl` whose desc is an Instance.
+    fn instance_decl(kebab_name: &str) -> ExternDecl<'_> {
+        ExternDecl {
+            kebab_name,
+            desc: ExternDesc::Instance(Instance {
+                exports: Vec::new(),
+            }),
+        }
+    }
+
+    /// Helper to build a minimal `ExternDecl` whose desc is a Func (not an Instance).
+    fn func_decl(kebab_name: &str) -> ExternDecl<'_> {
+        ExternDecl {
+            kebab_name,
+            desc: ExternDesc::Func(crate::etypes::Func {
+                params: Vec::new(),
+                result: None,
+            }),
+        }
+    }
+
+    // --- split_wit_name tests ---
+
+    #[test]
+    fn split_wit_name_simple() {
+        let wn = split_wit_name("my-interface");
+        assert_eq!(wn.name, "my-interface");
+        assert!(wn.namespaces.is_empty());
+    }
+
+    #[test]
+    fn split_wit_name_with_package() {
+        let wn = split_wit_name("wasi:http/types");
+        assert_eq!(wn.name, "types");
+        assert_eq!(wn.namespaces, vec!["wasi", "http"]);
+    }
+
+    #[test]
+    fn split_wit_name_with_version() {
+        let wn = split_wit_name("wasi:http/types@0.2.0");
+        assert_eq!(wn.name, "types");
+        assert_eq!(wn.namespaces, vec!["wasi", "http"]);
+    }
+
+    // --- find_colliding_import_names tests ---
+
+    #[test]
+    fn no_collisions_with_distinct_names() {
+        let imports = vec![
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/preopens"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 0);
+    }
+
+    #[test]
+    fn detects_collision_on_same_short_name() {
+        let imports = vec![
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/types"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 1);
+        assert!(collisions.contains("types"));
+    }
+
+    #[test]
+    fn no_collision_for_non_instance_decls() {
+        let imports = vec![instance_decl("wasi:http/types"), func_decl("types")];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 0);
+    }
+
+    #[test]
+    fn multiple_collisions() {
+        let imports = vec![
+            instance_decl("a:foo/types"),
+            instance_decl("b:bar/types"),
+            instance_decl("a:foo/handler"),
+            instance_decl("c:baz/handler"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 2);
+        assert!(collisions.contains("types"));
+        assert!(collisions.contains("handler"));
+    }
+
+    #[test]
+    fn single_import_no_collision() {
+        let imports = vec![instance_decl("wasi:http/types")];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 0);
+    }
+
+    #[test]
+    fn empty_imports_no_collision() {
+        let collisions = find_colliding_import_names(&[]);
+        assert_eq!(collisions.len(), 0);
+    }
+
+    // --- import_member_names tests ---
+
+    #[test]
+    fn no_collision_uses_short_name() {
+        let wn = split_wit_name("wasi:http/types");
+        let collisions = HashSet::new();
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        assert_eq!(ty.to_string(), "Types");
+        assert_eq!(getter.to_string(), "r#types");
+    }
+
+    #[test]
+    fn collision_prepends_parent_namespace() {
+        let wn = split_wit_name("wasi:http/types");
+        let collisions = find_colliding_import_names(&[
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/types"),
+        ]);
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        assert_eq!(ty.to_string(), "WasiHttpTypes");
+        assert_eq!(getter.to_string(), "r#wasi_http_types");
+    }
+
+    #[test]
+    fn collision_different_parents_produce_different_names() {
+        let collisions = find_colliding_import_names(&[
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/types"),
+        ]);
+
+        let wn_http = split_wit_name("wasi:http/types");
+        let (ty_http, getter_http) = import_member_names(&wn_http, &collisions);
+
+        let wn_fs = split_wit_name("wasi:filesystem/types");
+        let (ty_fs, getter_fs) = import_member_names(&wn_fs, &collisions);
+
+        assert_eq!(ty_http.to_string(), "WasiHttpTypes");
+        assert_eq!(ty_fs.to_string(), "WasiFilesystemTypes");
+        assert_eq!(getter_http.to_string(), "r#wasi_http_types");
+        assert_eq!(getter_fs.to_string(), "r#wasi_filesystem_types");
+    }
+
+    #[test]
+    fn collision_same_parent_different_package_produces_different_names() {
+        let collisions = find_colliding_import_names(&[
+            instance_decl("a:pkg/types"),
+            instance_decl("b:pkg/types"),
+        ]);
+
+        let wn_a = split_wit_name("a:pkg/types");
+        let (ty_a, getter_a) = import_member_names(&wn_a, &collisions);
+
+        let wn_b = split_wit_name("b:pkg/types");
+        let (ty_b, getter_b) = import_member_names(&wn_b, &collisions);
+
+        assert_eq!(ty_a.to_string(), "APkgTypes");
+        assert_eq!(getter_a.to_string(), "r#a_pkg_types");
+        assert_eq!(ty_b.to_string(), "BPkgTypes");
+        assert_eq!(getter_b.to_string(), "r#b_pkg_types");
+    }
+
+    #[test]
+    fn colliding_bare_import_keeps_short_name() {
+        let wn = split_wit_name("types");
+        let collisions =
+            find_colliding_import_names(&[instance_decl("types"), instance_decl("pkg:types")]);
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        assert_eq!(ty.to_string(), "Types");
+        assert_eq!(getter.to_string(), "r#types");
+    }
+
+    #[test]
+    fn versioned_collision_adds_version_after_namespace() {
+        let collisions = find_colliding_import_names(&[
+            instance_decl("a:pkg/types@1.0.0"),
+            instance_decl("a:pkg/types@2.0.0"),
+        ]);
+
+        let wn_v1 = split_wit_name("a:pkg/types@1.0.0");
+        let (ty_v1, getter_v1) = import_member_names(&wn_v1, &collisions);
+
+        let wn_v2 = split_wit_name("a:pkg/types@2.0.0");
+        let (ty_v2, getter_v2) = import_member_names(&wn_v2, &collisions);
+
+        assert_eq!(ty_v1.to_string(), "APkgTypesV100");
+        assert_eq!(ty_v2.to_string(), "APkgTypesV200");
+        assert_eq!(getter_v1.to_string(), "r#a_pkg_types_v1_0_0");
+        assert_eq!(getter_v2.to_string(), "r#a_pkg_types_v2_0_0");
+    }
+
+    #[test]
+    fn version_is_added_for_colliding_versioned_imports() {
+        let collisions = find_colliding_import_names(&[
+            instance_decl("a:pkg/types@1.0.0"),
+            instance_decl("b:pkg/types@1.0.0"),
+        ]);
+
+        let wn = split_wit_name("a:pkg/types@1.0.0");
+        let (ty, getter) = import_member_names(&wn, &collisions);
+
+        assert_eq!(ty.to_string(), "APkgTypesV100");
+        assert_eq!(getter.to_string(), "r#a_pkg_types_v1_0_0");
+    }
+
+    #[test]
+    fn hyphenated_namespace_components_produce_distinct_type_names() {
+        // "a:b-c/types" has a hyphenated package component, while
+        // "a-b:c/types" has a hyphenated namespace component. Preserving the
+        // package hyphen as `_` keeps the generated names distinct.
+        let collisions = find_colliding_import_names(&[
+            instance_decl("a:b-c/types"),
+            instance_decl("a-b:c/types"),
+        ]);
+
+        let wn1 = split_wit_name("a:b-c/types");
+        let wn2 = split_wit_name("a-b:c/types");
+        let (ty1, getter1) = import_member_names(&wn1, &collisions);
+        let (ty2, getter2) = import_member_names(&wn2, &collisions);
+
+        assert_eq!(ty1.to_string(), "AB_cTypes");
+        assert_eq!(getter1.to_string(), "r#a_b_c_types");
+        assert_eq!(ty2.to_string(), "AbCTypes");
+        assert_eq!(getter2.to_string(), "r#ab_c_types");
+    }
+
+    #[test]
+    fn plain_and_hyphenated_namespace_components_produce_distinct_type_names() {
+        let collisions = find_colliding_import_names(&[
+            instance_decl("a:bc/types"),
+            instance_decl("a:b-c/types"),
+        ]);
+
+        let wn_plain = split_wit_name("a:bc/types");
+        let wn_hyphenated = split_wit_name("a:b-c/types");
+        let (ty_plain, getter_plain) = import_member_names(&wn_plain, &collisions);
+        let (ty_hyphenated, getter_hyphenated) = import_member_names(&wn_hyphenated, &collisions);
+
+        assert_eq!(ty_plain.to_string(), "ABcTypes");
+        assert_eq!(getter_plain.to_string(), "r#a_bc_types");
+        assert_eq!(ty_hyphenated.to_string(), "AB_cTypes");
+        assert_eq!(getter_hyphenated.to_string(), "r#a_b_c_types");
+    }
 }

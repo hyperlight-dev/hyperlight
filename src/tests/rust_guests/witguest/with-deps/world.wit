@@ -1,0 +1,5 @@
+package test:with-deps;
+
+world with-deps {
+  import deps:shared/types;
+}

@@ -13,17 +13,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
  */
-#![allow(clippy::disallowed_macros)]
 
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::component::{Negative, Positive};
 use hyperlight_common::resource::BorrowedResourceGuard;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::wit_guest_as_string;
+use hyperlight_testing::wit_guest_as_pathbuf;
 
 extern crate alloc;
 mod bindings {
-    hyperlight_component_macro::host_bindgen!("../tests/rust_guests/witguest/interface.wasm");
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/guest.wit");
 }
 
 use bindings::test::wit::roundtrip::{Testrecord, Testvariant};
@@ -67,7 +67,7 @@ impl Clone for Testvariant {
 
 struct Host {}
 
-impl test::wit::Roundtrip for Host {
+impl test::wit::Roundtrip<Negative> for Host {
     fn roundtrip_bool(&mut self, x: bool) -> bool {
         x
     }
@@ -231,7 +231,7 @@ impl Drop for TestResource {
     }
 }
 
-impl test::wit::host_resource::Testresource for Host {
+impl test::wit::host_resource::Testresource<Negative> for Host {
     type T = Arc<Mutex<TestResource>>;
     fn new(&mut self, x: String, last: char) -> Self::T {
         TestResource::new(x, last)
@@ -263,7 +263,7 @@ impl test::wit::host_resource::Testresource for Host {
     }
 }
 
-impl test::wit::HostResource for Host {
+impl test::wit::HostResource<Negative> for Host {
     fn roundtrip_own(&mut self, owned: Arc<Mutex<TestResource>>) -> Arc<Mutex<TestResource>> {
         owned
     }
@@ -274,7 +274,7 @@ impl test::wit::HostResource for Host {
 }
 
 #[allow(refining_impl_trait)]
-impl test::wit::TestImports for Host {
+impl test::wit::TestImports<Negative> for Host {
     type Roundtrip = Self;
     fn roundtrip(&mut self) -> &mut Self {
         self
@@ -286,17 +286,18 @@ impl test::wit::TestImports for Host {
 }
 
 fn sb() -> TestSandbox<Host, MultiUseSandbox> {
-    let path = wit_guest_as_string().unwrap();
+    let path = wit_guest_as_pathbuf();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None).unwrap();
-    test::wit::Test::instantiate(uninit, Host {})
+    test::wit::Test::instantiate(uninit, Host {}).unwrap()
 }
 
 mod wit_test {
-
     use proptest::prelude::*;
 
-    use crate::bindings::test::wit::{Roundtrip, TestExports, TestHostResource, roundtrip};
+    use crate::bindings::test::wit::{
+        Failable, Roundtrip, TestExports, TestHostResource, roundtrip,
+    };
     use crate::sb;
 
     prop_compose! {
@@ -348,7 +349,7 @@ mod wit_test {
             proptest! {
                 #[test]
                 fn $fn(x $($ty)*) {
-                    assert_eq!(x, sb().roundtrip().$fn(x.clone()))
+                    assert_eq!(x, sb().roundtrip().$fn(x.clone()).unwrap())
                 }
             }
         }
@@ -395,7 +396,16 @@ mod wit_test {
 
     #[test]
     fn test_roundtrip_no_result() {
-        sb().roundtrip().roundtrip_no_result(42);
+        sb().roundtrip().roundtrip_no_result(42).unwrap();
+    }
+
+    #[test]
+    fn test_guest_trap_returns_error() {
+        let err = sb().failable().will_trap().unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Guest aborted"),
+            "unexpected error: {err:?}"
+        );
     }
 
     use std::sync::atomic::Ordering::Relaxed;
@@ -405,7 +415,7 @@ mod wit_test {
         let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
         crate::HAS_BEEN_DROPPED.store(false, Relaxed);
         {
-            sb().test_host_resource().test_uses_locally();
+            sb().test_host_resource().test_uses_locally().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
@@ -417,10 +427,10 @@ mod wit_test {
         {
             let mut sb = sb();
             let inst = sb.test_host_resource();
-            let r = inst.test_makes();
-            inst.test_accepts_borrow(&r);
-            inst.test_accepts_own(r);
-            inst.test_returns();
+            let r = inst.test_makes().unwrap();
+            inst.test_accepts_borrow(&r).unwrap();
+            inst.test_accepts_own(r).unwrap();
+            inst.test_returns().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
@@ -428,7 +438,10 @@ mod wit_test {
 }
 
 mod pick_world_bindings {
-    hyperlight_component_macro::host_bindgen!({path: "../tests/rust_guests/witguest/twoworlds.wasm", world_name: "firstworld"});
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "firstworld",
+    });
 }
 mod pick_world_binding_test {
     use crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport;
@@ -451,7 +464,10 @@ mod pick_world_binding_test {
 }
 
 mod pick_world_bindings2 {
-    hyperlight_component_macro::host_bindgen!({path: "../tests/rust_guests/witguest/twoworlds.wasm", world_name: "secondworld"});
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "secondworld",
+    });
 }
 mod pick_world_binding_test2 {
     use crate::pick_world_bindings2::r#twoworlds::r#wit::r#second_export::RecSecondExport;
@@ -471,4 +487,145 @@ mod pick_world_binding_test2 {
         assert_eq!(first_import.r#key, "dummyKey");
         assert_eq!(first_import.r#value, "dummyValue");
     }
+}
+
+mod bindgen_test_case_bindings {
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/bindgen-test-cases");
+}
+mod bindgen_test_cases {
+    use super::{Negative, Positive};
+    use crate::bindgen_test_case_bindings::*;
+
+    #[test]
+    fn plain_export_interface_types_are_generated() {
+        let result = test::bindgen_test_cases::executor::ExecutionResult {
+            message: String::from("executed"),
+        };
+        assert_eq!(result.message, "executed");
+    }
+
+    #[allow(dead_code)]
+    struct ExportHost;
+
+    impl test::bindgen_test_cases::Executor<Positive> for ExportHost {
+        fn execute(
+            &mut self,
+        ) -> anyhow::Result<test::bindgen_test_cases::executor::ExecutionResult> {
+            Ok(test::bindgen_test_cases::executor::ExecutionResult {
+                message: String::from("executed"),
+            })
+        }
+    }
+
+    impl test::bindgen_test_cases::Types<Positive> for ExportHost {
+        fn get_status(&mut self) -> anyhow::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            })
+        }
+    }
+
+    impl
+        test::bindgen_test_cases::UsesExportedTypes<
+            Positive,
+            test::bindgen_test_cases::types::Status,
+        > for ExportHost
+    {
+        fn get_status(&mut self) -> anyhow::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            })
+        }
+    }
+
+    #[allow(refining_impl_trait)]
+    impl<I: test::bindgen_test_cases::BindgenTestCasesImports<Negative> + Send>
+        test::bindgen_test_cases::BindgenTestCasesExports<Positive, I> for ExportHost
+    {
+        type Executor = Self;
+        fn executor(&mut self) -> &mut Self {
+            self
+        }
+
+        type Types = Self;
+        fn types(&mut self) -> &mut Self {
+            self
+        }
+
+        type UsesExportedTypes = Self;
+        fn uses_exported_types(&mut self) -> &mut Self {
+            self
+        }
+    }
+}
+
+mod inline_bindings {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            package test:inline-bindgen;
+
+            world inline-world {
+                export types;
+            }
+
+            interface types {
+                record inline-record {
+                    value: string,
+                }
+            }
+        "#,
+        world: "inline-world",
+    });
+}
+mod inline_bindgen_test {
+    use crate::inline_bindings::test::inline_bindgen::types::InlineRecord;
+
+    #[test]
+    fn inline_wit_types_are_generated() {
+        let result = InlineRecord {
+            value: String::from("inline"),
+        };
+        assert_eq!(result.value, "inline");
+    }
+}
+
+mod deeply_nested {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            (component
+              (type (export "world") (component
+                (export "test:deeply-nested/world" (component
+                  (import "test:deeply-nested/int1" (instance $I1
+                    (export "test:deeply-nested/int2" (instance
+                      (export "r" (type $R (sub resource)))
+                      (export "f" (func (param "r" (own $R))))))))
+                  (alias export $I1 "test:deeply-nested/int2" (instance $I2))
+                  (alias export $I2 "r" (type $R))
+                  (import "test:deeply-nested/int3" (instance
+                    (export "test:deeply-nested/int4" (instance
+                      (export "r4" (type $R4 (eq $R)))
+                      (export "g" (func (param "r4" (own $R4))))))))
+                  (export "h" (func (param "r" (own $R)))))))))
+        "#,
+    });
+}
+
+mod imports_exports_same_interface_with_host_resource {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+          (component
+            (type (export "world") (component
+              (export "test:rie/world" (component
+                (import "test:rie/definer" (instance $DI
+                  (export "r" (type $R (sub resource)))
+                  (export "f" (func (param "r" (own $R))))))
+                (alias export $DI "r" (type $R))
+                (import "test:rie/user" (instance
+                  (export "r2" (type $R2 (eq $R)))
+                  (export "g" (func (param "r" (borrow $R2))))))
+                (export "test:rie/user" (instance
+                  (export "r2" (type $R2 (eq $R)))
+                  (export "g" (func (param "r" (borrow $R2)))))))))))
+        "#,
+    });
 }

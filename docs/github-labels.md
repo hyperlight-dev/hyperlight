@@ -7,6 +7,19 @@ We use GitHub labels to categorize PRs. Before a PR can be merged, it must be as
 - **kind/enhancement** - For PRs that introduce new features or improve existing functionality. This label also applies to improvements in documentation, testing, and similar areas. Any changes must be backward-compatible.
 - **kind/refactor** - For PRs that restructure or remove code without adding new functionality. This label also applies to changes that affect user-facing APIs.
 
+## Review readiness
+
+We use the **ready-for-review** label to signal that a PR is waiting for a (re-)review:
+
+- **Add** `ready-for-review` when you open a PR that is ready for review, or when a PR is ready for re-review (for example, once you have addressed requested changes and re-requested review).
+- The label is **removed automatically** by the ready-for-review label automation (the [`collect`](../.github/workflows/ready-for-review-label.yml) and [`manage`](../.github/workflows/ready-for-review-manage.yml) workflows) once the PR is no longer awaiting that review, specifically when any of the following become true:
+  - the PR is closed or merged,
+  - the PR is converted to a draft,
+  - the PR has two or more approvals, or
+  - the PR has two or more change requests.
+
+You only ever need to add the label; removal is fully automated.
+
 ---
 
 # **Issues**
@@ -48,12 +61,20 @@ In addition to lifecycle labels, we use the following labels to further categori
 In addition to **kind/*** labels, we use optional **area/*** labels to specify the focus of a PR or issue. These labels are purely for categorization, and are not mandatory.
 
 - **area/API** - Related to the API or public interface.
+- **area/ci-periodics** - Applied to issues that track failures from scheduled (periodic) CI jobs. These issues are opened automatically by the CI failure notifier (`dev/notify-ci-failure.sh`).
+- **area/ci-periodics-aarch64** - De-duplication label for failures from the daily aarch64 workflow (`.github/workflows/DailyArm64.yml`). It keeps those failures on their own dedicated, release-blocking issue instead of sharing the general `area/ci-periodics` issue.
 - **area/dependencies** - Concerns dependencies or related components. This label is different from **kind/dependencies**, which should only used for PRs.
 - **area/documentation** - Related to documentation updates or improvements.
 - **area/infrastructure** - Concerns infrastructure rather than core functionality.
 - **area/performance** - Addresses performance.
 - **area/security** - Involves security-related changes or fixes.
 - **area/testing** - Related to tests or testing infrastructure.
+
+## Workflow labels
+
+Some labels change CI behaviour on a PR rather than categorizing it:
+
+- **regen-goldens** - Switches the snapshot golden verify job into regenerate mode. A PR that intentionally changes the snapshot format and bumps `GOLDENS_VERSION` carries this label so the verify job generates the goldens from the branch and runs them back through the branch loader, rather than pulling a published tag set that does not exist yet. See [snapshot-versioning.md](snapshot-versioning.md).
 
 
 ## Notes

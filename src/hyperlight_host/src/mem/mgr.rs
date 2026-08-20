@@ -12,9 +12,7 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
-
-use std::cmp::Ordering;
+ */
 
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
@@ -23,109 +21,247 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-#[cfg(feature = "init-paging")]
-use hyperlight_common::vmem::{
-    self, BasicMapping, Mapping, MappingKind, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr,
-};
+use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
+#[cfg(crashdump)]
+use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
-use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
-use super::memory_region::MemoryRegion;
-#[cfg(feature = "init-paging")]
-use super::memory_region::MemoryRegionFlags;
-use super::ptr::{GuestPtr, RawPtr};
-use super::ptr_offset::Offset;
-use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
-use crate::sandbox::SandboxConfiguration;
-use crate::sandbox::snapshot::Snapshot;
-use crate::sandbox::uninitialized::GuestBlob;
-use crate::{Result, log_then_return, new_error};
+use super::shared_mem::{
+    ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
+};
+use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::mem::memory_region::MemoryRegion;
+#[cfg(crashdump)]
+use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
+use crate::sandbox::snapshot::{NextAction, Snapshot};
+use crate::{Result, new_error};
 
-/// The size of stack guard cookies
-pub(crate) const STACK_COOKIE_LEN: usize = 16;
+#[cfg(crashdump)]
+fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
+    match kind {
+        MappingKind::Basic(BasicMapping {
+            readable,
+            writable,
+            executable,
+        }) => {
+            let mut flags = MemoryRegionFlags::empty();
+            if *readable {
+                flags |= MemoryRegionFlags::READ;
+            }
+            if *writable {
+                flags |= MemoryRegionFlags::WRITE;
+            }
+            if *executable {
+                flags |= MemoryRegionFlags::EXECUTE;
+            }
+            (flags, MemoryRegionType::Snapshot)
+        }
+        MappingKind::Cow(cow) => {
+            let mut flags = MemoryRegionFlags::empty();
+            if cow.readable {
+                flags |= MemoryRegionFlags::READ;
+            }
+            if cow.executable {
+                flags |= MemoryRegionFlags::EXECUTE;
+            }
+            (flags, MemoryRegionType::Scratch)
+        }
+        MappingKind::Unmapped => (MemoryRegionFlags::empty(), MemoryRegionType::Snapshot),
+    }
+}
 
+/// Try to extend the last region in `regions` if the new page is contiguous
+/// in both guest and host address space and has the same flags.
+///
+/// Returns `true` if the region was coalesced, `false` if a new region is needed.
+#[cfg(crashdump)]
+fn try_coalesce_region(
+    regions: &mut [CrashDumpRegion],
+    virt_base: usize,
+    virt_end: usize,
+    host_base: usize,
+    flags: MemoryRegionFlags,
+) -> bool {
+    if let Some(last) = regions.last_mut()
+        && last.guest_region.end == virt_base
+        && last.host_region.end == host_base
+        && last.flags == flags
+    {
+        last.guest_region.end = virt_end;
+        last.host_region.end = host_base + (virt_end - virt_base);
+        return true;
+    }
+    false
+}
+
+// It would be nice to have a simple type alias
+// `SnapshotSharedMemory<S: SharedMemory>` that abstracts over the
+// fact that the snapshot shared memory is `ReadonlySharedMemory`
+// normally, but there is (temporary) support for writable
+// `GuestSharedMemory` with `#[cfg(gdb)]`. Unfortunately, rustc gets
+// annoyed about an unused type parameter, unless one goes to a little
+// bit of effort to trick it...
+mod unused_hack {
+    #[cfg(not(unshared_snapshot_mem))]
+    use crate::mem::shared_mem::ReadonlySharedMemory;
+    use crate::mem::shared_mem::SharedMemory;
+    pub trait SnapshotSharedMemoryT {
+        type T<S: SharedMemory>;
+    }
+    pub struct SnapshotSharedMemory_;
+    impl SnapshotSharedMemoryT for SnapshotSharedMemory_ {
+        #[cfg(not(unshared_snapshot_mem))]
+        type T<S: SharedMemory> = ReadonlySharedMemory;
+        #[cfg(unshared_snapshot_mem)]
+        type T<S: SharedMemory> = S;
+    }
+    pub type SnapshotSharedMemory<S> = <SnapshotSharedMemory_ as SnapshotSharedMemoryT>::T<S>;
+}
+impl ReadonlySharedMemory {
+    pub(crate) fn to_mgr_snapshot_mem(
+        &self,
+    ) -> Result<SnapshotSharedMemory<ExclusiveSharedMemory>> {
+        #[cfg(not(unshared_snapshot_mem))]
+        let ret = self.clone();
+        #[cfg(unshared_snapshot_mem)]
+        let ret = self.copy_to_writable()?;
+        Ok(ret)
+    }
+}
+pub(crate) use unused_hack::SnapshotSharedMemory;
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
-#[derive(Clone)]
-pub(crate) struct SandboxMemoryManager<S> {
+pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
-    pub(crate) shared_mem: S,
+    pub(crate) shared_mem: SnapshotSharedMemory<S>,
+    /// Scratch memory for the Sandbox
+    pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
-    /// Pointer to where to load memory from
-    pub(crate) load_addr: RawPtr,
-    /// Offset for the execution entrypoint from `load_addr`
-    pub(crate) entrypoint_offset: Offset,
-    /// How many memory regions were mapped after sandbox creation
-    pub(crate) mapped_rgns: u64,
-    /// Stack cookie for stack guard verification
-    pub(crate) stack_cookie: [u8; STACK_COOKIE_LEN],
+    /// The next action to perform when this sandbox resumes:
+    /// `Initialise` before the guest has run, `Call` afterwards.
+    pub(crate) next_action: NextAction,
+    /// Guest virtual address of the guest binary's ELF entry point,
+    /// preserved across the `Initialise` -> `Call` transition so it
+    /// can fill `AT_ENTRY` in guest core dumps. 0 if unknown.
+    pub(crate) original_entrypoint: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
+    /// Generation counter: how many snapshots have been taken from
+    /// this sandbox's execution path from init to here. Incremented
+    /// on each `snapshot` call; on `restore_snapshot` we inherit the
+    /// restored snapshot's own generation number so the guest-visible
+    /// counter tracks which snapshot the sandbox is a clone of.
+    pub(crate) snapshot_count: u64,
 }
 
-#[cfg(feature = "init-paging")]
-struct GuestPageTableBuffer {
+/// Buffer for building guest page tables during snapshot creation.
+/// `TableAddr` is an absolute GPA (u64) so the same address space is
+/// used regardless of entry size.
+pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
+    phys_base: usize,
+    /// Absolute GPA of the currently-active root table. For
+    /// multi-root guests, `set_root` switches which root subsequent
+    /// `vmem::map` / `vmem::space_aware_map` calls target — typically
+    /// to an address previously returned by `alloc_table`.
+    root: std::cell::Cell<u64>,
 }
 
-#[cfg(feature = "init-paging")]
-impl vmem::TableOps for GuestPageTableBuffer {
-    type TableAddr = (usize, usize); // (table_index, entry_index)
+impl vmem::TableReadOps for GuestPageTableBuffer {
+    type TableAddr = u64;
 
-    unsafe fn alloc_table(&self) -> (usize, usize) {
-        let mut b = self.buffer.borrow_mut();
-        let table_index = b.len() / PAGE_TABLE_SIZE;
-        let new_len = b.len() + PAGE_TABLE_SIZE;
-        b.resize(new_len, 0);
-        (table_index, 0)
+    fn entry_addr(addr: u64, offset: u64) -> u64 {
+        addr + offset
     }
 
-    fn entry_addr(addr: (usize, usize), offset: u64) -> (usize, usize) {
-        let phys = Self::to_phys(addr) + offset;
-        Self::from_phys(phys)
+    unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
+        let buffer = self.buffer.borrow();
+        let byte_offset = addr as usize - self.phys_base;
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        let Some(bytes) = buffer.get(byte_offset..byte_offset + pte_size) else {
+            return 0;
+        };
+        let mut buf = [0u8; 8];
+        buf[..pte_size].copy_from_slice(bytes);
+        vmem::PageTableEntry::from_le_bytes(buf[..pte_size].try_into().unwrap_or_default())
     }
 
-    unsafe fn read_entry(&self, addr: (usize, usize)) -> PageTableEntry {
-        let b = self.buffer.borrow();
-        let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
-        b.get(byte_offset..byte_offset + 8)
-            .and_then(|s| <[u8; 8]>::try_from(s).ok())
-            .map(u64::from_ne_bytes)
-            .unwrap_or(0)
+    fn to_phys(addr: u64) -> vmem::PhysAddr {
+        addr as vmem::PhysAddr
     }
 
-    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
-        let mut b = self.buffer.borrow_mut();
-        let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
-        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
-            slice.copy_from_slice(&x.to_ne_bytes());
+    fn from_phys(addr: vmem::PhysAddr) -> u64 {
+        #[allow(clippy::unnecessary_cast)]
+        {
+            addr as u64
         }
     }
 
-    fn to_phys(addr: (usize, usize)) -> PhysAddr {
-        (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + (addr.1 as u64 * 8)
-    }
-
-    fn from_phys(addr: PhysAddr) -> (usize, usize) {
-        (
-            addr as usize / PAGE_TABLE_SIZE,
-            (addr as usize % PAGE_TABLE_SIZE) / 8,
-        )
-    }
-
-    fn root_table(&self) -> (usize, usize) {
-        (0, 0)
+    fn root_table(&self) -> u64 {
+        self.root.get()
     }
 }
 
-#[cfg(feature = "init-paging")]
+impl vmem::TableOps for GuestPageTableBuffer {
+    type TableMovability = vmem::MayNotMoveTable;
+
+    unsafe fn alloc_table(&self) -> u64 {
+        let mut b = self.buffer.borrow_mut();
+        let offset = b.len();
+        b.resize(offset + PAGE_TABLE_SIZE, 0);
+        (self.phys_base + offset) as u64
+    }
+
+    unsafe fn write_entry(&self, addr: u64, entry: vmem::PageTableEntry) -> Option<vmem::Void> {
+        let mut b = self.buffer.borrow_mut();
+        let byte_offset = addr as usize - self.phys_base;
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + pte_size) {
+            slice.copy_from_slice(&entry.to_le_bytes()[..pte_size]);
+        }
+        None
+    }
+
+    unsafe fn update_root(&self, impossible: vmem::Void) {
+        match impossible {}
+    }
+}
+
+impl core::convert::AsRef<GuestPageTableBuffer> for GuestPageTableBuffer {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl GuestPageTableBuffer {
-    fn new() -> Self {
+    /// Create a new buffer with an initial zeroed root table at
+    /// `phys_base`. The returned buffer's current root is `phys_base`;
+    /// additional roots can be obtained by calling `alloc_table`.
+    pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
+            phys_base,
+            root: std::cell::Cell::new(phys_base as u64),
         }
+    }
+
+    /// Switch the active root. `addr` must have been obtained either
+    /// as the initial root GPA (`phys_base`) or via `alloc_table`.
+    pub(crate) fn set_root(&self, addr: u64) {
+        self.root.set(addr);
+    }
+
+    /// GPA of the initial root allocated by `new`.
+    pub(crate) fn initial_root(&self) -> u64 {
+        self.phys_base as u64
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn size(&self) -> usize {
+        self.buffer.borrow().len()
     }
 
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
@@ -141,26 +277,19 @@ where
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         layout: SandboxMemoryLayout,
-        shared_mem: S,
-        load_addr: RawPtr,
-        entrypoint_offset: Offset,
-        stack_cookie: [u8; STACK_COOKIE_LEN],
+        shared_mem: SnapshotSharedMemory<S>,
+        scratch_mem: S,
+        next_action: NextAction,
     ) -> Self {
         Self {
             layout,
             shared_mem,
-            load_addr,
-            entrypoint_offset,
-            mapped_rgns: 0,
-            stack_cookie,
+            scratch_mem,
+            next_action,
+            original_entrypoint: 0,
             abort_buffer: Vec::new(),
+            snapshot_count: 0,
         }
-    }
-
-    /// Get the stack cookie
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_stack_cookie(&self) -> &[u8; STACK_COOKIE_LEN] {
-        &self.stack_cookie
     }
 
     /// Get mutable access to the abort buffer
@@ -168,264 +297,105 @@ where
         &mut self.abort_buffer
     }
 
-    /// Get `SharedMemory` in `self` as a mutable reference
-    #[cfg(any(gdb, test))]
-    pub(crate) fn get_shared_mem_mut(&mut self) -> &mut S {
-        &mut self.shared_mem
-    }
-
-    /// Set up the guest page tables in the given `SharedMemory` parameter
-    /// `shared_mem`
-    // TODO: This should perhaps happen earlier and use an
-    // ExclusiveSharedMemory from the beginning.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(feature = "init-paging")]
-    pub(crate) fn set_up_shared_memory(&mut self, regions: &mut [MemoryRegion]) -> Result<u64> {
-        let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
-            + SandboxMemoryLayout::BASE_ADDRESS as u64
-            + self.layout.stack_size as u64
-            // TODO: subtracting 0x28 was a requirement for MSVC. It should no longer be
-            // necessary now, but, for some reason, without this, the `multiple_parameters`
-            // test from `sandbox_host_tests` fails. We should investigate this further.
-            // See issue #498 for more details.
-            - 0x28;
-
-        self.shared_mem.with_exclusivity(|shared_mem| {
-            let buffer = GuestPageTableBuffer::new();
-            for region in regions.iter() {
-                let readable = region.flags.contains(MemoryRegionFlags::READ);
-                let writable = region.flags.contains(MemoryRegionFlags::WRITE)
-                    // Temporary hack: the stack guard page is
-                    // currently checked for in the host, rather than
-                    // the guest, so we need to mark it writable in
-                    // the Stage 1 translation so that the fault
-                    // exception on a write is taken to the
-                    // hypervisor, rather than the guest kernel
-                    || region.flags.contains(MemoryRegionFlags::STACK_GUARD);
-                let executable = region.flags.contains(MemoryRegionFlags::EXECUTE);
-                let mapping = Mapping {
-                    phys_base: region.guest_region.start as u64,
-                    virt_base: region.guest_region.start as u64,
-                    len: region.guest_region.len() as u64,
-                    kind: MappingKind::BasicMapping(BasicMapping {
-                        readable,
-                        writable,
-                        executable,
-                    }),
-                };
-                unsafe { vmem::map(&buffer, mapping) };
-            }
-            shared_mem.copy_from_slice(&buffer.into_bytes(), SandboxMemoryLayout::PML4_OFFSET)?;
-            Ok::<(), crate::HyperlightError>(())
-        })??;
-
-        Ok(rsp)
-    }
-
     /// Create a snapshot with the given mapped regions
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn snapshot(
         &mut self,
-        sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
+        root_pt_gpas: &[u64],
+        rsp_gva: u64,
+        sregs: CommonSpecialRegisters,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
+        next_action: NextAction,
+        host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
-        Snapshot::new(&mut self.shared_mem, sandbox_id, mapped_regions)
-    }
-
-    /// This function restores a memory snapshot from a given snapshot.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        self.shared_mem.restore_from_snapshot(snapshot)?;
-        Ok(())
+        self.snapshot_count += 1;
+        Snapshot::new(
+            &mut self.shared_mem,
+            &mut self.scratch_mem,
+            self.layout,
+            crate::mem::exe::LoadInfo::dummy(),
+            mapped_regions,
+            root_pt_gpas,
+            rsp_gva,
+            sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs,
+            next_action,
+            self.original_entrypoint,
+            self.snapshot_count,
+            host_functions,
+        )
     }
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
-    /// Load the binary represented by `pe_info` into memory, ensuring
-    /// all necessary relocations are made prior to completing the load
-    /// operation, then create a new `SharedMemory` to store the new PE
-    /// file and a `SandboxMemoryLayout` to describe the layout of that
-    /// new `SharedMemory`.
-    ///
-    /// Returns the following:
-    ///
-    /// - The newly-created `SharedMemory`
-    /// - The `SandboxMemoryLayout` describing that `SharedMemory`
-    /// - The offset to the entrypoint.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn load_guest_binary_into_memory(
-        cfg: SandboxConfiguration,
-        exe_info: ExeInfo,
-        guest_blob: Option<&GuestBlob>,
-    ) -> Result<(Self, super::exe::LoadInfo)> {
-        let guest_blob_size = guest_blob.map(|b| b.data.len()).unwrap_or(0);
-        let guest_blob_mem_flags = guest_blob.map(|b| b.permissions);
-
-        let layout = SandboxMemoryLayout::new(
-            cfg,
-            exe_info.loaded_size(),
-            usize::try_from(cfg.get_stack_size())?,
-            usize::try_from(cfg.get_heap_size())?,
-            guest_blob_size,
-            guest_blob_mem_flags,
-        )?;
-        let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
-
-        let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
-
-        let entrypoint_offset = exe_info.entrypoint();
-
-        // The load method returns a LoadInfo which can also be a different type once the
-        // `mem_profile` feature is enabled.
-        #[allow(clippy::let_unit_value)]
-        let load_info = exe_info.load(
-            load_addr.clone().try_into()?,
-            &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
-        )?;
-
-        let stack_cookie = rand::random::<[u8; STACK_COOKIE_LEN]>();
-        let stack_offset = layout.get_top_of_user_stack_offset();
-        shared_mem.copy_from_slice(&stack_cookie, stack_offset)?;
-
-        Ok((
-            Self::new(
-                layout,
-                shared_mem,
-                load_addr,
-                entrypoint_offset,
-                stack_cookie,
-            ),
-            load_info,
-        ))
-    }
-
-    /// Writes host function details to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_buffer_host_function_details(&mut self, buffer: &[u8]) -> Result<()> {
-        let host_function_details = HostFunctionDetails::try_from(buffer).map_err(|e| {
-            new_error!(
-                "write_buffer_host_function_details: failed to convert buffer to HostFunctionDetails: {}",
-                e
-            )
-        })?;
-
-        let host_function_call_buffer: Vec<u8> = (&host_function_details).try_into().map_err(|_| {
-            new_error!(
-                "write_buffer_host_function_details: failed to convert HostFunctionDetails to Vec<u8>"
-            )
-        })?;
-
-        let buffer_size = {
-            let size_u64 = self
-                .shared_mem
-                .read_u64(self.layout.get_host_function_definitions_size_offset())?;
-            usize::try_from(size_u64)
-        }?;
-
-        if host_function_call_buffer.len() > buffer_size {
-            log_then_return!(
-                "Host Function Details buffer is too big for the host_function_definitions buffer"
-            );
-        }
-
-        self.shared_mem.copy_from_slice(
-            host_function_call_buffer.as_slice(),
-            self.layout.host_function_definitions_buffer_offset,
-        )?;
-        Ok(())
-    }
-
-    /// Write memory layout
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_memory_layout(&mut self) -> Result<()> {
-        let mem_size = self.shared_mem.mem_size();
-        self.layout.write(
-            &mut self.shared_mem,
-            SandboxMemoryLayout::BASE_ADDRESS,
-            mem_size,
-        )
-    }
-
-    /// Write init data
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_init_data(&mut self, user_memory: &[u8]) -> Result<()> {
-        self.layout
-            .write_init_data(&mut self.shared_mem, user_memory)?;
-        Ok(())
+    pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
+        let layout = *s.layout();
+        let shared_mem = s.memory().to_mgr_snapshot_mem()?;
+        let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
+        let next_action = s.next_action();
+        let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
+        mgr.original_entrypoint = s.original_entrypoint();
+        // Inherit the snapshot's generation number for the same
+        // reason `restore_snapshot` does: the guest-visible counter
+        // reflects "which snapshot is the sandbox currently a clone
+        // of", not "how many snapshots this partition has taken".
+        mgr.snapshot_count = s.snapshot_generation();
+        Ok(mgr)
     }
 
     /// Wraps ExclusiveSharedMemory::build
+    // Morally, this should not have to be a Result: this operation is
+    // infallible. The source of the Result is
+    // update_scratch_bookkeeping(), which calls functions that can
+    // fail due to bounds checks (which are statically known to be ok
+    // in this situation) or due to failing to take the scratch shared
+    // memory lock, but the scratch shared memory is built in this
+    // function, its lock does not escape before the end of the
+    // function, and the lock is taken by no other code path, so we
+    // know it is not contended.
     pub fn build(
         self,
-    ) -> (
+    ) -> Result<(
         SandboxMemoryManager<HostSharedMemory>,
         SandboxMemoryManager<GuestSharedMemory>,
-    ) {
+    )> {
         let (hshm, gshm) = self.shared_mem.build();
-        (
-            SandboxMemoryManager {
-                shared_mem: hshm,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                stack_cookie: self.stack_cookie,
-                abort_buffer: self.abort_buffer,
-            },
-            SandboxMemoryManager {
-                shared_mem: gshm,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                stack_cookie: self.stack_cookie,
-                abort_buffer: Vec::new(), // Guest doesn't need abort buffer
-            },
-        )
+        let (hscratch, gscratch) = self.scratch_mem.build();
+        let mut host_mgr = SandboxMemoryManager {
+            shared_mem: hshm,
+            scratch_mem: hscratch,
+            layout: self.layout,
+            next_action: self.next_action,
+            original_entrypoint: self.original_entrypoint,
+            abort_buffer: self.abort_buffer,
+            snapshot_count: self.snapshot_count,
+        };
+        let guest_mgr = SandboxMemoryManager {
+            shared_mem: gshm,
+            scratch_mem: gscratch,
+            layout: self.layout,
+            next_action: self.next_action,
+            original_entrypoint: self.original_entrypoint,
+            abort_buffer: Vec::new(), // Guest doesn't need abort buffer
+            snapshot_count: self.snapshot_count,
+        };
+        host_mgr.update_scratch_bookkeeping()?;
+        Ok((host_mgr, guest_mgr))
     }
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Check the stack guard of the memory in `shared_mem`, using
-    /// `layout` to calculate its location.
-    ///
-    /// Return `true`
-    /// if `shared_mem` could be accessed properly and the guard
-    /// matches `cookie`. If it could be accessed properly and the
-    /// guard doesn't match `cookie`, return `false`. Otherwise, return
-    /// a descriptive error.
-    ///
-    /// This method could be an associated function instead. See
-    /// documentation at the bottom `set_stack_guard` for description
-    /// of why it isn't.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
-        let expected = self.stack_cookie;
-        let offset = self.layout.get_top_of_user_stack_offset();
-        let actual: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
-        let cmp_res = expected.iter().cmp(actual.iter());
-        Ok(cmp_res == Ordering::Equal)
-    }
-
-    /// Get the address of the dispatch function in memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
-        let guest_dispatch_function_ptr = self
-            .shared_mem
-            .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
-
-        // This pointer is written by the guest library but is accessible to
-        // the guest engine so we should bounds check it before we return it.
-
-        let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
-        guest_ptr.absolute()
-    }
-
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.shared_mem.try_pop_buffer_into::<FunctionCall>(
-            self.layout.output_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
+        self.scratch_mem
+            .try_pop_buffer_into::<FunctionCall>(
+                self.layout.get_output_data_buffer_scratch_host_offset(),
+                self.layout.output_data_size(),
+            )
+            .map_err(From::from)
     }
 
     /// Writes a host function call result to memory
@@ -437,11 +407,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let mut builder = FlatBufferBuilder::new();
         let data = res.encode(&mut builder);
 
-        self.shared_mem.push_buffer(
-            self.layout.input_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_input_data_size(),
-            data,
-        )
+        self.scratch_mem
+            .push_buffer(
+                self.layout.get_input_data_buffer_scratch_host_offset(),
+                self.layout.input_data_size(),
+                data,
+            )
+            .map_err(From::from)
     }
 
     /// Writes a guest function call to memory
@@ -454,287 +426,413 @@ impl SandboxMemoryManager<HostSharedMemory> {
             )
         })?;
 
-        self.shared_mem.push_buffer(
-            self.layout.input_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_input_data_size(),
+        self.scratch_mem.push_buffer(
+            self.layout.get_input_data_buffer_scratch_host_offset(),
+            self.layout.input_data_size(),
             buffer,
-        )
+        )?;
+        Ok(())
     }
 
     /// Reads a function call result from memory.
     /// A function call result can be either an error or a successful return value.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
-        self.shared_mem.try_pop_buffer_into::<FunctionCallResult>(
-            self.layout.output_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
+        self.scratch_mem
+            .try_pop_buffer_into::<FunctionCallResult>(
+                self.layout.get_output_data_buffer_scratch_host_offset(),
+                self.layout.output_data_size(),
+            )
+            .map_err(From::from)
     }
 
     /// Read guest log data from the `SharedMemory` contained within `self`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.shared_mem.try_pop_buffer_into::<GuestLogData>(
-            self.layout.output_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
+        self.scratch_mem
+            .try_pop_buffer_into::<GuestLogData>(
+                self.layout.get_output_data_buffer_scratch_host_offset(),
+                self.layout.output_data_size(),
+            )
+            .map_err(From::from)
     }
 
     pub(crate) fn clear_io_buffers(&mut self) {
         // Clear the output data buffer
         loop {
-            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.output_data_buffer_offset,
-                self.layout.sandbox_memory_config.get_output_data_size(),
+            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.get_output_data_buffer_scratch_host_offset(),
+                self.layout.output_data_size(),
             ) else {
                 break;
             };
         }
         // Clear the input data buffer
         loop {
-            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.input_data_buffer_offset,
-                self.layout.sandbox_memory_config.get_input_data_size(),
+            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.get_input_data_buffer_scratch_host_offset(),
+                self.layout.input_data_size(),
             ) else {
                 break;
             };
         }
     }
-}
 
-#[cfg(test)]
-#[cfg(all(feature = "init-paging", target_arch = "x86_64"))]
-mod tests {
-    use hyperlight_common::vmem::arch::{PAGE_NX, PAGE_PRESENT, PAGE_RW};
-    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
-    use hyperlight_testing::simple_guest_as_string;
-
-    use super::*;
-    use crate::GuestBinary;
-    use crate::mem::memory_region::MemoryRegionType;
-    use crate::mem::shared_mem::GuestSharedMemory;
-    use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::uninitialized::UninitializedSandbox;
-
-    pub(crate) const PML4_OFFSET: usize = 0x0000;
-    pub(super) const PDPT_OFFSET: usize = 0x1000;
-    pub(super) const PD_OFFSET: usize = 0x2000;
-    pub(super) const PT_OFFSET: usize = 0x3000;
-    pub(super) const PD_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PD_OFFSET;
-    pub(super) const PDPT_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PDPT_OFFSET;
-    pub(super) const PT_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PT_OFFSET;
-
-    /// Helper to create a sandbox with page tables set up and return the manager
-    fn create_sandbox_with_page_tables(
-        config: Option<SandboxConfiguration>,
-    ) -> Result<SandboxMemoryManager<GuestSharedMemory>> {
-        let path = simple_guest_as_string().expect("failed to get simple guest path");
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), config)
-            .expect("failed to create sandbox");
-
-        // Build the shared memory to get GuestSharedMemory
-        let (_host_mem, guest_mem) = sandbox.mgr.shared_mem.build();
-        let mut mgr = SandboxMemoryManager {
-            shared_mem: guest_mem,
-            layout: sandbox.mgr.layout,
-            load_addr: sandbox.mgr.load_addr,
-            entrypoint_offset: sandbox.mgr.entrypoint_offset,
-            mapped_rgns: sandbox.mgr.mapped_rgns,
-            stack_cookie: sandbox.mgr.stack_cookie,
-            abort_buffer: sandbox.mgr.abort_buffer,
+    /// This function restores a memory snapshot from a given snapshot.
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<(
+        Option<SnapshotSharedMemory<GuestSharedMemory>>,
+        Option<GuestSharedMemory>,
+    )> {
+        let gsnapshot = if *snapshot.memory() == self.shared_mem {
+            // If the snapshot memory is already the correct memory,
+            // which is readonly, don't bother with restoring it,
+            // since its contents must be the same.  Note that in the
+            // #[cfg(unshared_snapshot_mem)] case, this condition will
+            // never be true, since even immediately after a restore,
+            // self.shared_mem is a (writable) copy, not the original
+            // shared_mem.
+            None
+        } else {
+            let new_snapshot_mem = snapshot.memory().to_mgr_snapshot_mem()?;
+            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+            self.shared_mem = hsnapshot;
+            Some(gsnapshot)
         };
+        let new_scratch_size = snapshot.layout().get_scratch_size();
+        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
+            self.scratch_mem.zero()?;
+            None
+        } else {
+            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
+            let (hscratch, gscratch) = new_scratch_mem.build();
+            // Even though this destroys the reference to the host
+            // side of the old scratch mapping, the VM should still
+            // own the reference to the guest side of the old scratch
+            // mapping, so it won't actually be deallocated until it
+            // has been unmapped from the VM.
+            self.scratch_mem = hscratch;
 
-        // Get regions and set up page tables
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        // set_up_shared_memory builds the page tables in shared memory
-        mgr.set_up_shared_memory(&mut regions)?;
+            Some(gscratch)
+        };
+        self.layout = *snapshot.layout();
+        // Inherit the snapshot's own generation number — the
+        // guest-visible counter reflects "which snapshot is the
+        // sandbox currently a clone of", not "how many restores have
+        // happened into this (possibly-reused) partition".
+        self.snapshot_count = snapshot.snapshot_generation();
+        // Carry the guest ELF entry point across restore so crashdumps
+        // report the restored image's entry.
+        self.original_entrypoint = snapshot.original_entrypoint();
 
-        Ok(mgr)
+        self.update_scratch_bookkeeping()?;
+        Ok((gsnapshot, gscratch))
     }
 
-    /// Verify a range of pages all have the same expected flags
-    fn verify_page_range(
-        excl_mem: &mut ExclusiveSharedMemory,
-        start_addr: usize,
-        end_addr: usize,
-        expected_flags: u64,
-        region_name: &str,
-    ) -> Result<()> {
-        let mut addr = start_addr;
-
-        while addr < end_addr {
-            let p = addr >> 21;
-            let i = (addr >> 12) & 0x1ff;
-            let pte_idx = p * 512 + i;
-            let offset = PT_OFFSET + (pte_idx * 8);
-
-            let pte_val = excl_mem.read_u64(offset)?;
-            let expected_pte = (addr as u64) | expected_flags;
-
-            if pte_val != expected_pte {
-                return Err(new_error!(
-                    "{} region: addr 0x{:x}: expected PTE 0x{:x}, got 0x{:x}",
-                    region_name,
-                    addr,
-                    expected_pte,
-                    pte_val
-                ));
-            }
-
-            addr += 0x1000;
-        }
-
-        Ok(())
+    #[inline]
+    fn update_scratch_bookkeeping_item(&mut self, offset: u64, value: u64) -> Result<()> {
+        let scratch_size = self.scratch_mem.mem_size();
+        let base_offset = scratch_size - offset as usize;
+        self.scratch_mem
+            .write::<u64>(base_offset, value)
+            .map_err(From::from)
     }
 
-    /// Get expected flags for a memory region type
-    /// we dont set User RW flag since (at present) we do not run code in user mode.
-    fn get_expected_flags(region: &MemoryRegion) -> u64 {
-        match region.region_type {
-            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW,
-            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            #[cfg(feature = "executable_heap")]
-            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW,
-            #[cfg(not(feature = "executable_heap"))]
-            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::GuardPage => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
-            MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::InitData => translate_flags(region.flags),
-        }
+    pub(crate) fn request_libc_rng_reseed(&mut self, seed: u32) -> Result<()> {
+        // Zero means no request. The upper half marks a pending request, and
+        // the lower half contains the complete u32 seed.
+        self.update_scratch_bookkeeping_item(
+            hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET,
+            (1_u64 << 32) | u64::from(seed),
+        )
     }
 
-    fn translate_flags(flags: MemoryRegionFlags) -> u64 {
-        let mut page_flags = 0;
+    fn update_scratch_bookkeeping(&mut self) -> Result<()> {
+        use hyperlight_common::layout::*;
+        let scratch_size = self.scratch_mem.mem_size();
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_SIZE_OFFSET, scratch_size as u64)?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_ALLOCATOR_OFFSET,
+            self.layout.get_first_free_scratch_gpa(),
+        )?;
+        // Record the GPA of the snapshot's copy of the page tables.
+        // The copy lives at the tail of the snapshot blob; we copy it
+        // into scratch below so the guest walker can run against
+        // mutable, TLB-fresh tables. The guest reads this GPA during
+        // CoW fault-in to follow the original PTs on the first write
+        // — until the HV can execute directly out of the
+        // snapshot-resident PTs, at which point the whole split goes
+        // away.
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET,
+            self.layout.get_pt_base_gpa(),
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
+            self.snapshot_count,
+        )?;
 
-        page_flags |= PAGE_PRESENT | PAGE_RW; // Mark page as present and writeable
+        // Initialise the guest input and output data buffers in
+        // scratch memory. TODO: remove the need for this.
+        self.scratch_mem.write::<u64>(
+            self.layout.get_input_data_buffer_scratch_host_offset(),
+            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
+        )?;
+        self.scratch_mem.write::<u64>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
+            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
+        )?;
 
-        if !flags.contains(MemoryRegionFlags::EXECUTE) {
-            page_flags |= PAGE_NX; // Mark as non-executable if EXECUTE is not set
-        }
-
-        page_flags
-    }
-
-    /// Verify the complete paging structure for a sandbox configuration
-    fn verify_paging_structure(name: &str, config: Option<SandboxConfiguration>) -> Result<()> {
-        let mut mgr = create_sandbox_with_page_tables(config)?;
-
-        let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let mem_size = mgr.layout.get_memory_size()?;
-
-        // Calculate how many PD entries should exist based on memory size
-        // Each PD entry covers 2MB (0x200000 bytes)
-        // we write enough PD entries to cover all memory, so we need
-        // enough entries to cover the actual memory size.
-        let num_pd_entries_needed = mem_size.div_ceil(0x200000);
-
-        mgr.shared_mem.with_exclusivity(|excl_mem| {
-            // Verify PML4 entry (single entry pointing to PDPT)
-            let pml4_val = excl_mem.read_u64(PML4_OFFSET)?;
-            let expected_pml4 = PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
-            if pml4_val != expected_pml4 {
-                return Err(new_error!(
-                    "{}: PML4[0] incorrect: expected 0x{:x}, got 0x{:x}",
-                    name,
-                    expected_pml4,
-                    pml4_val
-                ));
-            }
-
-            // Verify PDPT entry (single entry pointing to PD)
-            let pdpt_val = excl_mem.read_u64(PDPT_OFFSET)?;
-            let expected_pdpt = PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
-            if pdpt_val != expected_pdpt {
-                return Err(new_error!(
-                    "{}: PDPT[0] incorrect: expected 0x{:x}, got 0x{:x}",
-                    name,
-                    expected_pdpt,
-                    pdpt_val
-                ));
-            }
-
-            // Verify PD entries that should be present (based on memory size)
-            for i in 0..num_pd_entries_needed {
-                let offset = PD_OFFSET + (i * 8);
-                let pd_val = excl_mem.read_u64(offset)?;
-                let expected_pt_addr = PT_GUEST_ADDRESS as u64 + (i as u64 * 4096);
-                let expected_pd = expected_pt_addr | PAGE_PRESENT | PAGE_RW;
-                if pd_val != expected_pd {
-                    return Err(new_error!(
-                        "{}: PD[{}] incorrect: expected 0x{:x}, got 0x{:x}",
-                        name,
-                        i,
-                        expected_pd,
-                        pd_val
-                    ));
-                }
-            }
-
-            // Verify remaining PD entries are not present (0)
-            for i in num_pd_entries_needed..512 {
-                let offset = PD_OFFSET + (i * 8);
-                let pd_val = excl_mem.read_u64(offset)?;
-                if pd_val != 0 {
-                    return Err(new_error!(
-                        "{}: PD[{}] should be 0 (not present), got 0x{:x}",
-                        name,
-                        i,
-                        pd_val
-                    ));
-                }
-            }
-
-            // Verify PTEs for each memory region
-            for region in &regions {
-                let start = region.guest_region.start;
-                let end = region.guest_region.end;
-                let expected_flags = get_expected_flags(region);
-
-                verify_page_range(
-                    excl_mem,
-                    start,
-                    end,
-                    expected_flags,
-                    &format!("{} {:?}", name, region.region_type),
-                )?;
-            }
-
-            Ok(())
+        // Copy page tables from `shared_mem` into scratch. PT bytes
+        // are appended to the snapshot blob at build time and live
+        // just past the end of the guest-visible KVM slot (see
+        // `Snapshot::new`). Keeping them outside the KVM slot avoids
+        // overlapping with `map_file_cow` regions installed
+        // immediately after the snapshot in the guest PA space.
+        let snapshot_pt_end = self.shared_mem.mem_size();
+        let snapshot_pt_size = self.layout.get_pt_size();
+        let snapshot_pt_start =
+            snapshot_pt_end - snapshot_pt_size.next_multiple_of(page_size::get());
+        self.scratch_mem.with_exclusivity(|scratch| {
+            #[cfg(not(unshared_snapshot_mem))]
+            let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];
+            #[cfg(unshared_snapshot_mem)]
+            let bytes = {
+                let mut bytes = vec![0u8; snapshot_pt_size];
+                self.shared_mem
+                    .copy_to_slice(&mut bytes, snapshot_pt_start)?;
+                bytes
+            };
+            #[allow(clippy::needless_borrow)]
+            scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
         })??;
 
         Ok(())
     }
 
-    /// Test the complete paging structure (PML4, PDPT, PD, and all PTEs) for
-    /// sandboxes of different sizes: default, small (8MB), medium (64MB), and large (256MB)
+    /// Build the list of guest memory regions for a crash dump.
+    ///
+    /// By default, walks the guest page tables to discover
+    /// GVA→GPA mappings and translates them to host-backed regions.
+    #[cfg(crashdump)]
+    pub(crate) fn get_guest_memory_regions(
+        &mut self,
+        root_pt: u64,
+        mmap_regions: &[MemoryRegion],
+    ) -> Result<Vec<CrashDumpRegion>> {
+        use crate::sandbox::snapshot::SharedMemoryPageTableBuffer;
+
+        let len = hyperlight_common::layout::SCRATCH_TOP_GVA;
+
+        let regions = self.shared_mem.with_contents(|snapshot| {
+            self.scratch_mem.with_contents(|scratch| {
+                let pt_buf =
+                    SharedMemoryPageTableBuffer::new(snapshot, scratch, self.layout, root_pt);
+
+                let mappings: Vec<_> =
+                    unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
+                        .collect();
+
+                if mappings.is_empty() {
+                    return Err(new_error!("No page table mappings found (len {len})",));
+                }
+
+                let mut regions: Vec<CrashDumpRegion> = Vec::new();
+                for mapping in &mappings {
+                    let virt_base = mapping.virt_base as usize;
+                    let virt_end = (mapping.virt_base + mapping.len) as usize;
+
+                    if let Some(resolved) = self.layout.resolve_gpa(mapping.phys_base, mmap_regions)
+                    {
+                        let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
+                        let resolved = resolved.with_memories(snapshot, scratch);
+                        let contents = resolved.as_ref();
+                        let host_base = contents.as_ptr() as usize;
+                        let host_len = (mapping.len as usize).min(contents.len());
+
+                        if try_coalesce_region(&mut regions, virt_base, virt_end, host_base, flags)
+                        {
+                            continue;
+                        }
+
+                        regions.push(CrashDumpRegion {
+                            guest_region: virt_base..virt_end,
+                            host_region: host_base..host_base + host_len,
+                            flags,
+                            region_type,
+                        });
+                    }
+                }
+
+                Ok(regions)
+            })
+        })???;
+
+        Ok(regions)
+    }
+
+    /// Read guest memory at a Guest Virtual Address (GVA) by walking the
+    /// page tables to translate GVA → GPA, then reading from the correct
+    /// backing memory (shared_mem or scratch_mem).
+    ///
+    /// This is necessary because with Copy-on-Write (CoW) the guest's
+    /// virtual pages are backed by physical pages in the scratch
+    /// region rather than being identity-mapped.
+    ///
+    /// # Arguments
+    /// * `gva` - The Guest Virtual Address to read from
+    /// * `len` - The number of bytes to read
+    /// * `root_pt` - The root page table physical address (CR3)
+    #[cfg(feature = "trace_guest")]
+    pub(crate) fn read_guest_memory_by_gva(
+        &mut self,
+        gva: u64,
+        len: usize,
+        root_pt: u64,
+    ) -> Result<Vec<u8>> {
+        use hyperlight_common::vmem::PAGE_SIZE;
+
+        use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
+
+        self.shared_mem.with_contents(|snap| {
+            self.scratch_mem.with_contents(|scratch| {
+                let pt_buf = SharedMemoryPageTableBuffer::new(snap, scratch, self.layout, root_pt);
+
+                // Walk page tables to get all mappings that cover the GVA range
+                let mappings: Vec<_> = unsafe {
+                    hyperlight_common::vmem::virt_to_phys(&pt_buf, gva, len as u64)
+                }
+                .collect();
+
+                if mappings.is_empty() {
+                    return Err(new_error!(
+                        "No page table mappings found for GVA {:#x} (len {})",
+                        gva,
+                        len,
+                    ));
+                }
+
+                // Resulting vector of bytes to return
+                let mut result = Vec::with_capacity(len);
+                let mut current_gva = gva;
+
+                for mapping in &mappings {
+                    // The page table walker should only return valid mappings
+                    // that cover our current read position.
+                    if mapping.virt_base > current_gva {
+                        return Err(new_error!(
+                            "Page table walker returned mapping with virt_base {:#x} > current read position {:#x}",
+                            mapping.virt_base,
+                            current_gva,
+                        ));
+                    }
+
+                    // Calculate the offset within this page where to start copying
+                    let page_offset = (current_gva - mapping.virt_base) as usize;
+
+                    let bytes_remaining = len - result.len();
+                    let available_in_page = PAGE_SIZE - page_offset;
+                    let bytes_to_copy = bytes_remaining.min(available_in_page);
+
+                    // Translate the GPA to host memory
+                    let gpa = mapping.phys_base + page_offset as u64;
+                    let (mem, offset) = access_gpa(snap, scratch, self.layout, gpa)
+                        .ok_or_else(|| {
+                            new_error!(
+                                "Failed to resolve GPA {:#x} to host memory (GVA {:#x})",
+                                gpa,
+                                gva
+                            )
+                        })?;
+
+                    let slice = mem
+                        .get(offset..offset + bytes_to_copy)
+                        .ok_or_else(|| {
+                            new_error!(
+                                "GPA {:#x} resolved to out-of-bounds host offset {} (need {} bytes)",
+                                gpa,
+                                offset,
+                                bytes_to_copy
+                            )
+                        })?;
+
+                    result.extend_from_slice(slice);
+                    current_gva += bytes_to_copy as u64;
+                }
+
+                if result.len() != len {
+                    tracing::error!(
+                        "Page table walker returned mappings that don't cover the full requested length: got {}, expected {}",
+                        result.len(),
+                        len,
+                    );
+                    return Err(new_error!(
+                        "Could not read full GVA range: got {} of {} bytes {:?}",
+                        result.len(),
+                        len,
+                        mappings
+                    ));
+                }
+
+                Ok(result)
+            })
+        })??
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_arch = "x86_64")]
+mod tests {
+    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    use hyperlight_testing::simple_guest_as_pathbuf;
+
+    use crate::GuestBinary;
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::snapshot::Snapshot;
+
+    /// Build a Snapshot for the given configuration and verify the
+    /// NULL page is not mapped in its page tables.
+    fn verify_page_tables(name: &str, config: SandboxConfiguration) {
+        let path = simple_guest_as_pathbuf();
+        let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
+            .unwrap_or_else(|e| panic!("{}: failed to create snapshot: {}", name, e));
+
+        // Verify NULL page (0x0) is NOT mapped
+        assert!(
+            unsafe { hyperlight_common::vmem::virt_to_phys(&snapshot, 0, 1) }
+                .next()
+                .is_none(),
+            "{}: NULL page (0x0) should NOT be mapped",
+            name
+        );
+    }
+
     #[test]
-    fn test_page_table_contents() {
-        let test_cases: [(&str, Option<SandboxConfiguration>); 4] = [
-            ("default", None),
+    fn test_page_tables_for_various_configurations() {
+        let test_cases: [(&str, SandboxConfiguration); 4] = [
+            ("default", { SandboxConfiguration::default() }),
             ("small (8MB heap)", {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(SMALL_HEAP_SIZE);
-                Some(cfg)
+                cfg
             }),
             ("medium (64MB heap)", {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(MEDIUM_HEAP_SIZE);
-                Some(cfg)
+                cfg
             }),
             ("large (256MB heap)", {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
-                Some(cfg)
+                cfg.set_scratch_size(0x100000);
+                cfg
             }),
         ];
 
         for (name, config) in test_cases {
-            verify_paging_structure(name, config)
-                .unwrap_or_else(|e| panic!("Page table verification failed for {}: {}", name, e));
+            verify_page_tables(name, config);
         }
     }
 }

@@ -16,22 +16,22 @@ limitations under the License.
 
 use std::fmt::Debug;
 use std::option::Option;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
 use tracing::{Span, instrument};
+use tracing_core::LevelFilter;
 
-use super::host_funcs::{FunctionRegistry, default_writer_func};
+use super::host_funcs::FunctionRegistry;
+use super::snapshot::Snapshot;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
-use crate::mem::exe::ExeInfo;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::ExclusiveSharedMemory;
+use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
@@ -39,11 +39,19 @@ use crate::{MultiUseSandbox, Result, new_error};
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SandboxRuntimeConfig {
     #[cfg(crashdump)]
-    pub(crate) binary_path: Option<String>,
+    pub(crate) binary_path: Option<PathBuf>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<super::config::DebugInfo>,
     #[cfg(crashdump)]
     pub(crate) guest_core_dump: bool,
+    /// The original entry point address of the loaded guest binary
+    /// (load_addr + ELF entry offset). Used for AT_ENTRY in core dumps
+    /// so GDB can compute the correct load offset for PIE binaries.
+    ///
+    /// `None` until resolved from the snapshot's `NextAction::Initialise`
+    /// in `set_up_hypervisor_partition`.
+    #[cfg(crashdump)]
+    pub(crate) entry_point: Option<u64>,
 }
 
 /// A preliminary sandbox that represents allocated memory and registered host functions,
@@ -67,6 +75,12 @@ pub struct UninitializedSandbox {
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
     pub(crate) load_info: crate::mem::exe::LoadInfo,
+    // This is needed to convey the stack pointer between the snapshot
+    // and the HyperlightVm creation
+    pub(crate) stack_top_gva: u64,
+    /// File mappings prepared by [`Self::map_file_cow`] that will be
+    /// applied to the VM during [`Self::evolve`].
+    pub(crate) pending_file_mappings: Vec<super::file_mapping::PreparedFileMapping>,
 }
 
 impl Debug for UninitializedSandbox {
@@ -83,7 +97,24 @@ pub enum GuestBinary<'a> {
     /// A buffer containing the GuestBinary
     Buffer(&'a [u8]),
     /// A path to the GuestBinary
-    FilePath(String),
+    FilePath(PathBuf),
+}
+impl<'a> GuestBinary<'a> {
+    /// If the guest binary is identified by a file, canonicalise the path
+    ///
+    /// For [`GuestBinary::FilePath`], this resolves the path to its canonical
+    /// form. For [`GuestBinary::Buffer`], this method is a no-op.
+    /// TODO: Maybe we should make the GuestEnvironment or
+    ///       GuestBinary constructors crate-private and turn this
+    ///       into an invariant on one of those types.
+    pub fn canonicalize(&mut self) -> Result<()> {
+        if let GuestBinary::FilePath(p) = self {
+            *p = p
+                .canonicalize()
+                .map_err(|e| new_error!("GuestBinary not found: '{}': {}", p.display(), e))?;
+        }
+        Ok(())
+    }
 }
 
 /// A `GuestBlob` containing data and the permissions for its use.
@@ -137,6 +168,70 @@ impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
 }
 
 impl UninitializedSandbox {
+    // Creates a new uninitialized sandbox from a pre-built snapshot.
+    // Note that since memory configuration is part of the snapshot the only configuration
+    // that can be changed (from the original snapshot) is the configuration defines the behaviour of
+    // `InterruptHandler` on Linux.
+    //
+    // This is ok for now as this is not a public function
+    fn from_snapshot(
+        snapshot: Arc<Snapshot>,
+        cfg: Option<SandboxConfiguration>,
+        #[cfg(crashdump)] binary_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        #[cfg(feature = "build-metadata")]
+        log_build_details();
+
+        // hyperlight is only supported on Windows 11 and Windows Server 2022 and later
+        #[cfg(target_os = "windows")]
+        check_windows_version()?;
+
+        let sandbox_cfg = cfg.unwrap_or_default();
+
+        #[cfg(any(crashdump, gdb))]
+        let rt_cfg = {
+            #[cfg(crashdump)]
+            let guest_core_dump = sandbox_cfg.get_guest_core_dump();
+
+            #[cfg(gdb)]
+            let debug_info = sandbox_cfg.get_guest_debug_info();
+
+            SandboxRuntimeConfig {
+                #[cfg(crashdump)]
+                binary_path,
+                #[cfg(gdb)]
+                debug_info,
+                #[cfg(crashdump)]
+                guest_core_dump,
+                // entry_point is set later in set_up_hypervisor_partition
+                // once the entrypoint is resolved from the snapshot
+                #[cfg(crashdump)]
+                entry_point: None,
+            }
+        };
+
+        let mem_mgr_wrapper =
+            SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
+
+        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::with_default_host_print()));
+
+        let sandbox = Self {
+            host_funcs,
+            mgr: mem_mgr_wrapper,
+            max_guest_log_level: None,
+            config: sandbox_cfg,
+            #[cfg(any(crashdump, gdb))]
+            rt_cfg,
+            load_info: snapshot.load_info(),
+            stack_top_gva: snapshot.stack_top_gva(),
+            pending_file_mappings: Vec::new(),
+        };
+
+        crate::debug!("Sandbox created:  {:#?}", sandbox);
+
+        Ok(sandbox)
+    }
+
     /// Creates a new uninitialized sandbox for the given guest environment.
     ///
     /// The guest binary can be provided as either a file path or memory buffer.
@@ -152,90 +247,20 @@ impl UninitializedSandbox {
         env: impl Into<GuestEnvironment<'a, 'b>>,
         cfg: Option<SandboxConfiguration>,
     ) -> Result<Self> {
-        #[cfg(feature = "build-metadata")]
-        log_build_details();
-
-        // hyperlight is only supported on Windows 11 and Windows Server 2022 and later
-        #[cfg(target_os = "windows")]
-        check_windows_version()?;
-
-        let env: GuestEnvironment<'_, '_> = env.into();
-        let guest_binary = env.guest_binary;
-        let guest_blob = env.init_data;
-
-        // If the guest binary is a file make sure it exists
-        let guest_binary = match guest_binary {
-            GuestBinary::FilePath(binary_path) => {
-                let path = Path::new(&binary_path)
-                    .canonicalize()
-                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
-
-                GuestBinary::FilePath(path)
-            }
-            buffer @ GuestBinary::Buffer(_) => buffer,
+        let cfg = cfg.unwrap_or_default();
+        let env = env.into();
+        #[cfg(crashdump)]
+        let binary_path = match &env.guest_binary {
+            GuestBinary::FilePath(path) => Some(path.clone()),
+            GuestBinary::Buffer(_) => None,
         };
-
-        let sandbox_cfg = cfg.unwrap_or_default();
-
-        #[cfg(any(crashdump, gdb))]
-        let rt_cfg = {
+        let snapshot = Snapshot::from_env(env, cfg)?;
+        Self::from_snapshot(
+            Arc::new(snapshot),
+            Some(cfg),
             #[cfg(crashdump)]
-            let guest_core_dump = sandbox_cfg.get_guest_core_dump();
-
-            #[cfg(gdb)]
-            let debug_info = sandbox_cfg.get_guest_debug_info();
-
-            #[cfg(crashdump)]
-            let binary_path = if let GuestBinary::FilePath(ref path) = guest_binary {
-                Some(path.clone())
-            } else {
-                None
-            };
-
-            SandboxRuntimeConfig {
-                #[cfg(crashdump)]
-                binary_path,
-                #[cfg(gdb)]
-                debug_info,
-                #[cfg(crashdump)]
-                guest_core_dump,
-            }
-        };
-
-        let (mut mem_mgr_wrapper, load_info) = UninitializedSandbox::load_guest_binary(
-            sandbox_cfg,
-            &guest_binary,
-            guest_blob.as_ref(),
-        )?;
-
-        mem_mgr_wrapper.write_memory_layout()?;
-
-        // if env has a guest blob, load it into shared mem
-        if let Some(blob) = guest_blob {
-            mem_mgr_wrapper.write_init_data(blob.data)?;
-        }
-
-        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-
-        let mut sandbox = Self {
-            host_funcs,
-            mgr: mem_mgr_wrapper,
-            max_guest_log_level: None,
-            config: sandbox_cfg,
-            #[cfg(any(crashdump, gdb))]
-            rt_cfg,
-            load_info,
-        };
-
-        // If we were passed a writer for host print register it otherwise use the default.
-        sandbox.register_print(default_writer_func)?;
-
-        crate::debug!("Sandbox created:  {:#?}", sandbox);
-
-        Ok(sandbox)
+            binary_path,
+        )
     }
 
     /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
@@ -248,31 +273,79 @@ impl UninitializedSandbox {
         evolve_impl_multi_use(self)
     }
 
-    /// Load the file at `bin_path_str` into a PE file, then attempt to
-    /// load the PE file into a `SandboxMemoryManager` and return it.
+    /// Map the contents of a file into the guest at a particular address.
     ///
-    /// If `run_from_guest_binary` is passed as `true`, and this code is
-    /// running on windows, this function will call
-    /// `SandboxMemoryManager::load_guest_binary_using_load_library` to
-    /// create the new `SandboxMemoryManager`. If `run_from_guest_binary` is
-    /// passed as `true` and we're not running on windows, this function will
-    /// return an `Err`. Otherwise, if `run_from_guest_binary` is passed
-    /// as `false`, this function calls `SandboxMemoryManager::load_guest_binary_into_memory`.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn load_guest_binary(
-        cfg: SandboxConfiguration,
-        guest_binary: &GuestBinary,
-        guest_blob: Option<&GuestBlob>,
-    ) -> Result<(
-        SandboxMemoryManager<ExclusiveSharedMemory>,
-        crate::mem::exe::LoadInfo,
-    )> {
-        let exe_info = match guest_binary {
-            GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
-            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
-        };
+    /// The file mapping is prepared immediately (host-side OS work) but
+    /// the actual VM-side mapping is deferred until [`evolve()`](Self::evolve).
+    ///
+    /// The `guest_base` must be page-aligned and must lie **outside**
+    /// the sandbox's primary shared memory region (`BASE_ADDRESS` to
+    /// `BASE_ADDRESS + shared_mem_size`).
+    ///
+    /// Returns the length of the mapping in bytes.
+    #[instrument(err(Debug), skip(self, file_path, guest_base), parent = Span::current())]
+    pub fn map_file_cow(
+        &mut self,
+        file_path: &std::path::Path,
+        guest_base: u64,
+    ) -> crate::Result<u64> {
+        // Validate that guest_base is outside the sandbox's primary memory slot.
+        // (Full range check happens after prepare_file_cow when we know the mapped size.)
+        let shared_size = self.mgr.shared_mem.mem_size() as u64;
+        let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
 
-        SandboxMemoryManager::load_guest_binary_into_memory(cfg, exe_info, guest_blob)
+        let prepared = super::file_mapping::prepare_file_cow(file_path, guest_base)?;
+
+        // Validate full mapped range doesn't overlap shared memory.
+        let mapping_end = guest_base
+            .checked_add(prepared.size as u64)
+            .ok_or_else(|| {
+                crate::HyperlightError::Error(format!(
+                    "map_file_cow: guest address overflow: {:#x} + {:#x}",
+                    guest_base, prepared.size
+                ))
+            })?;
+        let shared_end = base_addr.checked_add(shared_size).ok_or_else(|| {
+            crate::HyperlightError::Error("shared memory end overflow".to_string())
+        })?;
+        if guest_base < shared_end && mapping_end > base_addr {
+            return Err(crate::HyperlightError::Error(format!(
+                "map_file_cow: mapping [{:#x}..{:#x}) overlaps sandbox shared memory [{:#x}..{:#x})",
+                guest_base, mapping_end, base_addr, shared_end,
+            )));
+        }
+
+        let size = prepared.size as u64;
+
+        // Check for overlaps with existing pending file mappings.
+        let new_start = guest_base;
+        let new_end = mapping_end;
+        for existing in &self.pending_file_mappings {
+            let ex_start = existing.guest_base;
+            let ex_end = ex_start.checked_add(existing.size as u64).ok_or_else(|| {
+                crate::HyperlightError::Error(format!(
+                    "map_file_cow: existing mapping address overflow: {:#x} + {:#x}",
+                    ex_start, existing.size
+                ))
+            })?;
+            if new_start < ex_end && new_end > ex_start {
+                return Err(crate::HyperlightError::Error(format!(
+                    "map_file_cow: mapping [{:#x}..{:#x}) overlaps existing mapping [{:#x}..{:#x})",
+                    new_start, new_end, ex_start, ex_end,
+                )));
+            }
+        }
+
+        self.pending_file_mappings.push(prepared);
+        Ok(size)
+    }
+
+    /// Returns the total size of the sandbox shared memory region in bytes.
+    ///
+    /// This is useful for placing file mappings at guest physical addresses
+    /// that don't overlap the primary shared memory slot.
+    pub fn shared_mem_size(&self) -> usize {
+        self.mgr.shared_mem.mem_size()
     }
 
     /// Sets the maximum log level for guest code execution.
@@ -337,15 +410,32 @@ mod tests {
 
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
     use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guest_binary_loads_from_non_utf8_path() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let guest_path = temp_dir
+            .path()
+            .join(OsString::from_vec(b"guest-\xff".to_vec()));
+        fs::copy(simple_guest_as_pathbuf(), &guest_path).unwrap();
+
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None);
+
+        assert!(sandbox.is_ok());
+    }
+
     #[test]
     fn test_load_extra_blob() {
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let buffer = [0xde, 0xad, 0xbe, 0xef];
         let guest_env =
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
@@ -364,14 +454,16 @@ mod tests {
     fn test_new_sandbox() {
         // Guest Binary exists at path
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), None);
         assert!(sandbox.is_ok());
 
         // Guest Binary does not exist at path
 
         let mut binary_path_does_not_exist = binary_path.clone();
-        binary_path_does_not_exist.push_str(".nonexistent");
+        binary_path_does_not_exist
+            .as_mut_os_string()
+            .push(".nonexistent");
         let uninitialized_sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(binary_path_does_not_exist), None);
         assert!(uninitialized_sandbox.is_err());
@@ -381,7 +473,6 @@ mod tests {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_input_data_size(0x1000);
             cfg.set_output_data_size(0x1000);
-            cfg.set_stack_size(0x1000);
             cfg.set_heap_size(0x1000);
             Some(cfg)
         };
@@ -399,14 +490,14 @@ mod tests {
 
         // Test with a valid guest binary buffer
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::Buffer(&fs::read(binary_path).unwrap()), None);
         assert!(sandbox.is_ok());
 
         // Test with a invalid guest binary buffer
 
-        let binary_path = simple_guest_as_string().unwrap();
+        let binary_path = simple_guest_as_pathbuf();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
         let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
@@ -414,27 +505,10 @@ mod tests {
     }
 
     #[test]
-    fn test_load_guest_binary_manual() {
-        let cfg = SandboxConfiguration::default();
-
-        let simple_guest_path = simple_guest_as_string().unwrap();
-
-        UninitializedSandbox::load_guest_binary(
-            cfg,
-            &GuestBinary::FilePath(simple_guest_path),
-            None.as_ref(),
-        )
-        .unwrap();
-    }
-
-    #[test]
     fn test_host_functions() {
         let uninitialized_sandbox = || {
-            UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-            )
-            .unwrap()
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
         };
 
         // simple register + call
@@ -548,11 +622,9 @@ mod tests {
             Ok(0)
         };
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(writer)
@@ -610,7 +682,7 @@ mod tests {
         // let writer_func = Arc::new(Mutex::new(writer));
         //
         // let sandbox = UninitializedSandbox::new(
-        //     GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+        //     GuestBinary::FilePath(simple_guest_as_pathbuf()),
         //     None,
         //     None,
         //     Some(&writer_func),
@@ -637,11 +709,9 @@ mod tests {
             Ok(0)
         }
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(fn_writer)
@@ -664,11 +734,9 @@ mod tests {
 
         let writer_closure = move |s| test_host_print.write(s);
 
-        let mut sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .expect("Failed to create sandbox");
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .expect("Failed to create sandbox");
 
         sandbox
             .register_print(writer_closure)
@@ -703,7 +771,7 @@ mod tests {
         let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
 
         for i in 0..10 {
-            let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+            let simple_guest_path = simple_guest_as_pathbuf();
             let unintializedsandbox = {
                 let err_string = format!("failed to create UninitializedSandbox {i}");
                 let err_str = err_string.as_str();
@@ -785,115 +853,126 @@ mod tests {
         }
     }
 
+    /// Tests that tracing spans and events are properly emitted when a tracing subscriber is set.
+    ///
+    /// This test verifies:
+    /// 1. Spans are created with correct attributes (correlation_id)
+    /// 2. Nested spans from UninitializedSandbox::new are properly parented
+    /// 3. Error events are emitted when sandbox creation fails
+    ///
+    /// NOTE: The `#[instrument]` callsite on `UninitializedSandbox::new` uses
+    /// tracing's global interest cache. If another test thread registers that
+    /// callsite first (with the no-op subscriber), the cached `Interest::never()`
+    /// will suppress span creation on our thread. To work around this, we:
+    /// 1. Make a warmup call to force-register the callsite
+    /// 2. Call `rebuild_interest_cache()` to overwrite the cached interest with
+    ///    our subscriber's `Interest::sometimes()`
+    /// 3. Clear recorded state and run the real test
     #[test]
-    // Tests that trace data are emitted when a trace subscriber is set
-    // this test is ignored because it is incompatible with other tests , specifically those which require a logger for tracing
-    // marking  this test as ignored means that running `cargo test` will not run this test but will allow a developer who runs that command
-    // from their workstation to be successful without needed to know about test interdependencies
-    // this test will be run explicitly as a part of the CI pipeline
-    #[ignore]
     #[cfg(feature = "build-metadata")]
     fn test_trace_trace() {
-        use hyperlight_testing::logger::Logger as TestLogger;
-        use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
-        use serde_json::{Map, Value};
-        use tracing::Level as tracing_level;
+        use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+        use tracing::Level;
         use tracing_core::Subscriber;
         use tracing_core::callsite::rebuild_interest_cache;
         use uuid::Uuid;
 
-        use crate::testing::log_values::build_metadata_testing::try_to_strings;
-        use crate::testing::log_values::test_value_as_str;
+        /// Helper to extract a string value from nested JSON: obj["span"]["attributes"][key]
+        fn get_span_attr<'a>(span: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+            span.get("span")?.get("attributes")?.get(key)?.as_str()
+        }
 
-        TestLogger::initialize_log_tracer();
-        rebuild_interest_cache();
-        let subscriber = TestSubscriber::new(tracing_level::TRACE);
+        /// Helper to extract event field: obj["event"][field]
+        fn get_event_field<'a>(event: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+            event.get("event")?.get(field)?.as_str()
+        }
+
+        /// Helper to extract event metadata field: obj["event"]["metadata"][field]
+        fn get_event_metadata<'a>(event: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+            event.get("event")?.get("metadata")?.get(field)?.as_str()
+        }
+
+        let subscriber = TracingSubscriber::new(Level::TRACE);
+
         tracing::subscriber::with_default(subscriber.clone(), || {
-            let correlation_id = Uuid::new_v4().as_hyphenated().to_string();
-            let span = tracing::error_span!("test_trace_logs", correlation_id).entered();
+            // Warmup: force-register the #[instrument] callsite on
+            // UninitializedSandbox::new by calling it once. This ensures the
+            // callsite exists in the global registry regardless of whether
+            // another thread already registered it.
+            let mut bad_path = simple_guest_as_pathbuf();
+            bad_path.as_mut_os_string().push("does_not_exist");
+            let _ = UninitializedSandbox::new(GuestBinary::FilePath(bad_path.clone()), None);
 
-            // We should be in span 1
+            // Rebuild the interest cache. Now that the callsite is guaranteed
+            // to be registered, this will overwrite any cached Interest::never()
+            // (from another thread's no-op subscriber) with our subscriber's
+            // Interest::sometimes(), ensuring subsequent calls create spans.
+            rebuild_interest_cache();
 
-            let current_span = subscriber.current_span();
-            assert!(current_span.is_known(), "Current span is unknown");
-            let current_span_metadata = current_span.into_inner().unwrap();
-            assert_eq!(
-                current_span_metadata.0.into_u64(),
-                1,
-                "Current span is not span 1"
-            );
-            assert_eq!(current_span_metadata.1.name(), "test_trace_logs");
-
-            // Get the span data and check the correlation id
-
-            let span_data = subscriber.get_span(1);
-            let span_attributes: &Map<String, Value> = span_data
-                .get("span")
-                .unwrap()
-                .get("attributes")
-                .unwrap()
-                .as_object()
-                .unwrap();
-
-            test_value_as_str(span_attributes, "correlation_id", correlation_id.as_str());
-
-            let mut binary_path = simple_guest_as_string().unwrap();
-            binary_path.push_str("does_not_exist");
-
-            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None);
-            assert!(sbox.is_err());
-
-            // Now we should still be in span 1 but span 2 should be created (we created entered and exited span 2 when we called UninitializedSandbox::new)
-
-            let current_span = subscriber.current_span();
-            assert!(current_span.is_known(), "Current span is unknown");
-            let current_span_metadata = current_span.into_inner().unwrap();
-            assert_eq!(
-                current_span_metadata.0.into_u64(),
-                1,
-                "Current span is not span 1"
-            );
-
-            let span_metadata = subscriber.get_span_metadata(2);
-            assert_eq!(span_metadata.name(), "new");
-
-            // There should be one event for the error that the binary path does not exist plus 14 info events for the logging of the crate info
-
-            let events = subscriber.get_events();
-            assert_eq!(events.len(), 15);
-
-            let mut count_matching_events = 0;
-
-            for json_value in events {
-                let event_values = json_value.as_object().unwrap().get("event").unwrap();
-                let metadata_values_map =
-                    event_values.get("metadata").unwrap().as_object().unwrap();
-                let event_values_map = event_values.as_object().unwrap();
-
-                let expected_error_start = "Error(\"GuestBinary not found:";
-
-                let err_vals_res = try_to_strings([
-                    (metadata_values_map, "level"),
-                    (event_values_map, "error"),
-                    (metadata_values_map, "module_path"),
-                    (metadata_values_map, "target"),
-                ]);
-                if let Ok(err_vals) = err_vals_res
-                    && err_vals[0] == "ERROR"
-                    && err_vals[1].starts_with(expected_error_start)
-                    && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
-                    && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
-                {
-                    count_matching_events += 1;
-                }
-            }
-            assert!(
-                count_matching_events == 1,
-                "Unexpected number of matching events {}",
-                count_matching_events
-            );
-            span.exit();
+            // Clear all state from the warmup call
             subscriber.clear();
+
+            let correlation_id = Uuid::new_v4().to_string();
+            let _span = tracing::error_span!("test_trace_logs", %correlation_id).entered();
+
+            // Verify we're in a span with correct name
+            let (test_span_id, span_meta) = subscriber
+                .current_span()
+                .into_inner()
+                .expect("Should be inside a span");
+            assert_eq!(span_meta.name(), "test_trace_logs");
+
+            // Verify correlation_id was recorded
+            let span_data = subscriber.get_span(test_span_id.into_u64());
+            let recorded_id =
+                get_span_attr(&span_data, "correlation_id").expect("correlation_id not found");
+            assert_eq!(recorded_id, correlation_id);
+
+            // Try to create a sandbox with a non-existent binary - this should fail
+            // and emit an error event
+            let result = UninitializedSandbox::new(GuestBinary::FilePath(bad_path), None);
+            assert!(result.is_err(), "Sandbox creation should fail");
+
+            // Verify we're still in our test span
+            let (current_id, _) = subscriber
+                .current_span()
+                .into_inner()
+                .expect("Should still be inside a span");
+            assert_eq!(
+                current_id.into_u64(),
+                test_span_id.into_u64(),
+                "Should still be in the test span"
+            );
+
+            // Verify a span named "new" was created by UninitializedSandbox::new
+            // (look up by name rather than hardcoded ID to avoid fragility)
+            let all_spans = subscriber.get_all_spans();
+            let _new_span_entry = all_spans
+                .iter()
+                .find(|&(&id, _)| {
+                    id != test_span_id.into_u64()
+                        && subscriber.get_span_metadata(id).name() == "new"
+                })
+                .expect("Expected a span named 'new' from UninitializedSandbox::new");
+
+            // Verify the error event was emitted
+            let events = subscriber.get_events();
+            assert_eq!(events.len(), 1, "Expected exactly one error event");
+
+            let event = &events[0];
+            let level = get_event_metadata(event, "level").expect("event should have level");
+            let error = get_event_field(event, "error").expect("event should have error field");
+            let target = get_event_metadata(event, "target").expect("event should have target");
+            let module_path =
+                get_event_metadata(event, "module_path").expect("event should have module_path");
+
+            assert_eq!(level, "ERROR");
+            assert!(
+                error.contains("GuestBinary not found"),
+                "Error should mention 'GuestBinary not found', got: {error}"
+            );
+            assert_eq!(target, "hyperlight_host::sandbox::uninitialized");
+            assert_eq!(module_path, "hyperlight_host::sandbox::uninitialized");
         });
     }
 
@@ -918,8 +997,10 @@ mod tests {
 
             rebuild_interest_cache();
 
-            let mut invalid_binary_path = simple_guest_as_string().unwrap();
-            invalid_binary_path.push_str("does_not_exist");
+            let mut invalid_binary_path = simple_guest_as_pathbuf();
+            invalid_binary_path
+                .as_mut_os_string()
+                .push("does_not_exist");
 
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_binary_path), None);
             assert!(sbox.is_err());
@@ -938,7 +1019,7 @@ mod tests {
             // load into the sandbox does not exist, plus the 14 info log records
 
             let num_calls = TEST_LOGGER.num_log_calls();
-            assert_eq!(19, num_calls);
+            assert_eq!(13, num_calls);
 
             // Log record 1
 
@@ -957,7 +1038,7 @@ mod tests {
 
             // Log record 17
 
-            let logcall = TEST_LOGGER.get_log_call(16).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(10).unwrap();
             assert_eq!(Level::Error, logcall.level);
             assert!(
                 logcall
@@ -968,14 +1049,14 @@ mod tests {
 
             // Log record 18
 
-            let logcall = TEST_LOGGER.get_log_call(17).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(11).unwrap();
             assert_eq!(Level::Trace, logcall.level);
             assert_eq!(logcall.args, "<- new;");
             assert_eq!("tracing::span::active", logcall.target);
 
             // Log record 19
 
-            let logcall = TEST_LOGGER.get_log_call(18).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(12).unwrap();
             assert_eq!(Level::Trace, logcall.level);
             assert_eq!(logcall.args, "-- new;");
             assert_eq!("tracing::span", logcall.target);
@@ -990,10 +1071,7 @@ mod tests {
             valid_binary_path.push("sandbox");
             valid_binary_path.push("initialized.rs");
 
-            let sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(valid_binary_path.into_os_string().into_string().unwrap()),
-                None,
-            );
+            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(valid_binary_path), None);
             assert!(sbox.is_err());
 
             // There should be 2 calls this time when we change to the log
@@ -1026,7 +1104,7 @@ mod tests {
 
             let sbox = {
                 let res = UninitializedSandbox::new(
-                    GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+                    GuestBinary::FilePath(simple_guest_as_pathbuf()),
                     None,
                 );
                 res.unwrap()
@@ -1042,7 +1120,7 @@ mod tests {
     #[test]
     fn test_invalid_path() {
         let invalid_path = "some/path/that/does/not/exist";
-        let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_path.to_string()), None);
+        let sbox = UninitializedSandbox::new(GuestBinary::FilePath(invalid_path.into()), None);
         println!("{:?}", sbox);
         #[cfg(target_os = "windows")]
         assert!(
@@ -1052,5 +1130,268 @@ mod tests {
         assert!(
             matches!(sbox, Err(e) if e.to_string().contains("GuestBinary not found: 'some/path/that/does/not/exist': No such file or directory (os error 2)"))
         );
+    }
+
+    #[test]
+    fn test_from_snapshot_various_configurations() {
+        use crate::sandbox::snapshot::Snapshot;
+
+        let binary_path = simple_guest_as_pathbuf();
+
+        // Test 1: Create snapshot with default config, create multiple sandboxes from it
+        {
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, Default::default())
+                    .expect("Failed to create snapshot with default config"),
+            );
+
+            // Create first sandbox from snapshot
+            let sandbox1 = UninitializedSandbox::from_snapshot(
+                snapshot.clone(),
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create first sandbox from snapshot");
+
+            // Create second sandbox from same snapshot
+            let sandbox2 = UninitializedSandbox::from_snapshot(
+                snapshot.clone(),
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create second sandbox from snapshot");
+
+            // Both should be able to evolve independently
+            let _evolved1: MultiUseSandbox = sandbox1.evolve().expect("Failed to evolve sandbox1");
+            let _evolved2: MultiUseSandbox = sandbox2.evolve().expect("Failed to evolve sandbox2");
+        }
+
+        // Test 2: Create snapshot with custom heap size
+        {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_heap_size(16 * 1024 * 1024); // 16MB heap
+
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, cfg)
+                    .expect("Failed to create snapshot with custom heap size"),
+            );
+
+            let sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox from snapshot with custom heap");
+
+            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+        }
+
+        // Test 3: Create snapshot with custom scratch size
+        {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_scratch_size(256 * 1024); // 256KB scratch
+
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, cfg)
+                    .expect("Failed to create snapshot with custom stack size"),
+            );
+
+            let sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox from snapshot with custom stack");
+
+            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+        }
+
+        // Test 4: Create snapshot with custom input/output buffer sizes
+        {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_input_data_size(64 * 1024); // 64KB input
+            cfg.set_output_data_size(64 * 1024); // 64KB output
+
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, cfg)
+                    .expect("Failed to create snapshot with custom buffer sizes"),
+            );
+
+            let sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox from snapshot with custom buffers");
+
+            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+        }
+
+        // Test 5: Create snapshot with all custom settings
+        {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
+            cfg.set_scratch_size(256 * 1024 * 2); // 512KB scratch (256KB will be input/output)
+            cfg.set_input_data_size(128 * 1024); // 128KB input
+            cfg.set_output_data_size(128 * 1024); // 128KB output
+
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, cfg)
+                    .expect("Failed to create snapshot with all custom settings"),
+            );
+
+            // Create multiple sandboxes from the same snapshot
+            let sandbox1 = UninitializedSandbox::from_snapshot(
+                snapshot.clone(),
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox1 from fully customized snapshot");
+            let sandbox2 = UninitializedSandbox::from_snapshot(
+                snapshot.clone(),
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox2 from fully customized snapshot");
+            let sandbox3 = UninitializedSandbox::from_snapshot(
+                snapshot.clone(),
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox3 from fully customized snapshot");
+
+            let _evolved1: MultiUseSandbox = sandbox1.evolve().expect("Failed to evolve sandbox1");
+            let _evolved2: MultiUseSandbox = sandbox2.evolve().expect("Failed to evolve sandbox2");
+            let _evolved3: MultiUseSandbox = sandbox3.evolve().expect("Failed to evolve sandbox3");
+        }
+
+        // Test 6: Create snapshot from binary buffer instead of file path
+        {
+            let binary_bytes = fs::read(&binary_path).expect("Failed to read binary file");
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(GuestBinary::Buffer(&binary_bytes), Default::default())
+                    .expect("Failed to create snapshot from buffer"),
+            );
+
+            let sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                None,
+            )
+            .expect("Failed to create sandbox from buffer-based snapshot");
+
+            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+        }
+
+        // Test 7: Register host functions on sandboxes created from snapshot
+        {
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(env, Default::default()).expect("Failed to create snapshot"),
+            );
+
+            let mut sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox from snapshot");
+
+            // Register a custom host function
+            sandbox
+                .register("CustomAdd", |a: i32, b: i32| Ok(a + b))
+                .expect("Failed to register custom function");
+
+            let evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+
+            // Verify the host function was registered
+            let host_funcs = evolved
+                .host_funcs
+                .try_lock()
+                .expect("Failed to lock host funcs");
+
+            let result = host_funcs
+                .call_host_function(
+                    "CustomAdd",
+                    vec![ParameterValue::Int(10), ParameterValue::Int(20)],
+                )
+                .expect("Failed to call CustomAdd");
+
+            assert_eq!(result, ReturnValue::Int(30));
+        }
+
+        // Test 8: Create snapshot with init data (guest blob)
+        {
+            let init_data = [0xCA, 0xFE, 0xBA, 0xBE];
+            let guest_env =
+                GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&init_data));
+
+            let snapshot = Arc::new(
+                Snapshot::from_env(guest_env, Default::default())
+                    .expect("Failed to create snapshot with init data"),
+            );
+
+            let sandbox = UninitializedSandbox::from_snapshot(
+                snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create sandbox from snapshot with init data");
+
+            let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
+        }
+
+        // Test 9: Create snapshot from existing sandbox
+        {
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let orig_snapshot = Arc::new(
+                Snapshot::from_env(env, Default::default())
+                    .expect("Failed to create snapshot with default config"),
+            );
+            let orig_sandbox = UninitializedSandbox::from_snapshot(
+                orig_snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create orig_sandbox");
+            let mut initialized_sandbox = orig_sandbox
+                .evolve()
+                .expect("Failed to evolve orig_sandbox");
+            let new_snapshot = initialized_sandbox
+                .snapshot()
+                .expect("Failed to create new_snapshot");
+            let new_sandbox = UninitializedSandbox::from_snapshot(
+                new_snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create new_sandbox");
+            let _evolved = new_sandbox.evolve().expect("Failed to evolve new_sandbox");
+        }
     }
 }

@@ -48,6 +48,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_virtq_packed_ring"
+path = "fuzz_targets/virtq_packed_ring.rs"
+test = false
+doc = false
+bench = false
+
 [features]
 default = []
 trace = ["hyperlight-host/trace_guest", "hyperlight-common/trace_guest"]

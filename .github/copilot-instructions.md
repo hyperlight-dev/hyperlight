@@ -1,82 +1,132 @@
-This repository contains hyperlight. Hyperlight is a lightweight Virtual Machine Manager (VMM) designed to be embedded within applications.
-It enables safe execution of untrusted code within micro virtual machines with very low latency and minimal overhead.
+# Hyperlight: Copilot instructions
 
-This project uses just as a runner for building, testing etc. Just should already be installed. Most of the code in the repository is written in Rust, with a few files in C.
+Hyperlight is a lightweight Virtual Machine Manager (VMM) embedded within
+applications to run untrusted code inside micro virtual machines with very low
+latency and minimal overhead. Mostly Rust, with a few C files. `just` is the
+task runner and is already installed.
 
-## Code Standards
+## Build & test commands
 
-Make sure that code is formatted and linted before committing. You can do this by running the following command:
+Most recipes take an optional profile argument that defaults to debug. Append
+`release` for a release build (e.g. `just build release`). You rarely need to
+run both profiles for one change.
 
-```bash
-just fmt-apply
-```
-This will format the code and apply any necessary changes. You can also run the following command to check for any linting errors:
+* `just build`: build the host and libraries.
+* `just guests`: build the guest library and test guests (both profiles).
+* `just test`: run all tests.
+* `just fmt-apply`: format and apply fixes.
+* `just clippy`: lint.
+* `just clippyw`: cross-compile clippy for Windows. Run it on Linux when you
+  edit Windows-specific code.
+* `just test-like-ci`: full CI-equivalent run. Slow.
 
-```bash
-just clippy debug
-just clippy release
-```
+**Run `just guests` before `just test` when you've changed guest code.**
+Tests use the prebuilt guest binaries, so rebuild them to pick up guest
+changes. Not needed if you only touched host code.
 
-If any lints fail you can try to fix them by running the following command for debug failures:
+## Definition of done
 
-```bash
-    cargo clippy --fix --all
-```
-And the following command for release failures:
+Before considering a change complete:
+1. `just fmt-apply`.
+2. `just clippy` passes.
+3. `just test` passes. Run `just guests` first if you changed guest code.
+   Tests are slow. Run the release profile too only when the change
+   specifically warrants it.
+4. New code has tests and rustdoc following existing patterns.
+5. Docs updated if behavior documented in `README.md` or `docs/` changed.
 
-```bash
-    cargo clippy --fix --all --release
-```
+## Code conventions
 
-If this does not work, you should try and fix the errors and then run the commands again.
+* Follow idiomatic Rust and match the surrounding code style.
+* Do not add new crates or dependencies without discussing first.
+* Maintain the existing structure and organization. Do not refactor beyond
+  what the task requires.
+* Do not commit large binary files.
 
-## Development flow
+## Writing
 
-- build:
-    - `just build` - builds the project in debug mode
-    - `just build release` - builds the project in release mode
-    - `just guests` - builds the guest library and test guests for both debug and release modes
-- test
-    - `just test` - runs all tests in debug mode
-    - `just test release` - runs all tests in release mode
+Applies to all writing: code comments, docstrings, docs, commit messages, PR
+descriptions. Conciseness is the top rule. The rest serves it.
 
-**IMPORTANT** You will need to run `just guests` to build the guest library before running the tests.
+Be concise.
+* Use the fewest words that make the point. No filler.
+* Say each point once. Never restate the same idea in other words.
+* Cut anything the reader can see in the code or context.
+* Short plain sentences, one clause each. Common everyday words.
 
-Before pushing your code, make sure to run the following commands to ensure that everything is working correctly make sure all tests pass by running
-```bash
-just test-like-ci
-just test-like-ci release
-```
+Mechanics.
+* No em dashes or hyphens as prose connectors. Use periods or commas.
+* No semicolons. Use periods.
+* Prefer `*` over `-` for bullets.
 
-## Key Instructions
+Say what IS, not what changed or what it isn't.
+* Write what the thing IS and WHY. The reader has no knowledge of the diff
+  that introduced it. Git history is where to learn what changed.
+* Avoid contrastive language ("no longer", "previously", "instead of",
+  "used to", "now", "just").
+* Avoid diff narration ("moved from", "extracted from", "X drops here").
+* No PR or review references unless permanently relevant.
 
-**IMPORTANT**: Please make sure to follow these instructions when making changes to the codebase. If you cannot follow these instructions, please discuss it with the team first.
+Comment only when needed.
+* Skip comments the code or a descriptive name already makes clear.
+* A docstring that restates the function or test name is noise. Drop it.
+* Keep comments that explain a non-obvious mechanism or a real WHY.
+* Default 1-2 sentences for a docstring, 1 short line for an inline comment.
+  If it does not fit, the code probably needs to be simpler.
 
-Follow best practices and idioms for writing Rust code.
-Maintain the structure and organization of the codebase. Do not introduce new crates or dependencies without discussing them first.
-Make sure to write tests for any new code you add. Follow the existing testing patterns in the codebase.
-Make sure to fully document any new code you add. Use rustdoc comments and follow guidelines for good documentation.
-Make sure that any changes which alter anything documented in the README or the documentation in the docs directory are reflected in the documentation.
-Make sure that you label the PRs that you create with the correct labels. You can find details about which labels to use in the documents `docs/github-labels.md`.
-Make sure that you do not include any large binary files in your PR. If you need to include a large binary file, please discuss it with the team first.
-Make sure that you keep commits small and focused. Each commit should represent a single change or addition to the codebase. This will make it easier for reviewers to understand your changes and for you to revert them if necessary.
-Make sure that you arrange your commits in a logical order. You can use `git rebase -i` to do this.
-If you update your PR branch with new commits, make sure to rebase your branch on top of the main branch. This will help keep the commit history clean and make it easier to review your changes.
-Make sure that you do not have any merge commits in your PR.
-If you see the error "No Hypervisor was found for Sandbox" then you if you are running on Linux you should check to see if there is a device called "kvm" or "mshv" in `/dev` and if it is present you should also check to see if you have rw access to it. You should ensure that you output the results of these checks for diagnostic purposes. 
-This repository requires commits to be signed you should ensure that any commits that you create are done with `commit.gpgsign=true`. Also commits should also be signed with the `--signoff` option to comply with the DCO requirement.
+## Git & commits
 
-## Repository Structure
-- `dev/` - contains development scripts and tools
-- `src/` - contains the source code for the project
-- `.editorconfig` - contains the editor config for the project you should use this to configure your editor to use the same settings as the rest of the project
-- `Justfile` - contains the just commands for building, testing and running the project
-- `fuzz` - contains the fuzzing tests for the project
-- `src/hyperlight_common/` - contains the common code shared between the host and guest
-- `src/hyperlight_guest/` - contains the hyperlight-guest library code
-- `src/hyperlight_guest_bin/` - contains the hyperlight-guest-bin library code
-- `src/hyperlight_host/` - contains the hyperlight-host library code
-- `src/hyperlight_guest_capi/` - contains the hyperlight-guest C library code
-- `src/hyperlight_testing/` - contains the shared code for tests
-- `schema/` - contains the flatbuffer schemas for the project
-- `tests/` - contains the test guest code for the project in C and Rust
+* Sign commits (`commit.gpgsign=true`) and add `--signoff` for DCO.
+* Keep commits small, focused, and in logical order.
+* Rebase your branch on `main`. No merge commits.
+* Label PRs per `docs/github-labels.md`.
+
+## Reviewing code
+
+When reviewing a diff (your own or a PR), weight these for Hyperlight:
+* Correctness: edge cases, error paths, broken invariants.
+* Security boundary: the VMM/guest split, paging, and syscall surface. Treat
+  all guest input as untrusted and watch for sandbox-escape risk.
+* Unsafe: every `unsafe` block needs an accurate `// SAFETY:` comment and
+  every `unsafe fn` a `# Safety` rustdoc precondition. Check soundness: the
+  block must uphold the invariants it claims. A fn is `unsafe fn` only when a
+  caller must uphold a precondition for memory safety. Flag both missing and
+  gratuitous `unsafe`.
+* Necessity: challenge each added abstraction, field, variant, parameter, branch.
+  If nothing exercises it, say so, and prefer the simpler form.
+* Design: judge the seams and boundaries the change draws (module/crate
+  splits, what gets serialized, public vs private, where state lives). Prefer
+  fitting an existing pattern over a parallel second way.
+* Performance: review every change for cost. Look for work that can be
+  dropped or made cheaper, including hot-path allocations, unnecessary copies,
+  lock contention, syscalls, hypercalls.
+* Idioms: do not reinvent what std or an existing dependency already provides.
+* Changelog: user-facing changes need a `CHANGELOG.md` entry. Internal-only
+  changes do not.
+* External APIs (Win32, POSIX, KVM/mshv/WHP): verify calls against the
+  authoritative docs rather than from memory.
+
+## Agent behavior
+
+* When the user asks a question, analyze and answer only. Do not edit code
+  until explicitly asked.
+
+## Repository structure
+
+* `src/hyperlight_common/`: code shared between host and guest.
+* `src/hyperlight_guest/`: hyperlight-guest library.
+* `src/hyperlight_guest_bin/`: hyperlight-guest-bin library.
+* `src/hyperlight_guest_capi/`: guest C library.
+* `src/hyperlight_host/`: hyperlight-host library.
+* `src/hyperlight_testing/`: shared test code.
+* `schema/`: flatbuffer schemas.
+* `tests/`: test guest code in C and Rust.
+* `dev/`: development scripts and tools.
+* `fuzz/`: fuzzing tests.
+* `Justfile`: build/test/run tasks.
+
+## Troubleshooting
+
+* **"No Hypervisor was found for Sandbox"** on Linux: check for a `kvm` or
+  `mshv` device in `/dev`, and that you have rw access to it. Output the
+  results of both checks for diagnostics.

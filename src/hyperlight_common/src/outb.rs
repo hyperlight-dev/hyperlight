@@ -86,6 +86,7 @@ impl TryFrom<u8> for Exception {
 }
 
 /// Supported actions when issuing an OUTB actions by Hyperlight.
+/// These are handled by the sandbox-level outb dispatcher.
 /// - Log: for logging,
 /// - CallFunction: makes a call to a host function,
 /// - Abort: aborts the execution of the guest,
@@ -106,6 +107,22 @@ pub enum OutBAction {
     TraceMemoryFree = 106,
 }
 
+/// IO-port actions intercepted at the hypervisor level (in `run_vcpu`)
+/// before they ever reach the sandbox outb handler.  These are split
+/// from [`OutBAction`] so the outb handler does not need unreachable
+/// match arms for ports it can never see.
+pub enum VmAction {
+    /// IO port for PV timer configuration. The guest writes a 32-bit
+    /// LE value representing the desired timer period in microseconds.
+    /// A value of 0 disables the timer.
+    PvTimerConfig = 107,
+    /// IO port the guest writes to signal "I'm done" to the host.
+    /// This replaces the `hlt` instruction for halt signaling so that
+    /// KVM's in-kernel LAPIC (which absorbs HLT exits) does not interfere
+    /// with hyperlight's halt-based guest-host protocol.
+    Halt = 108,
+}
+
 impl TryFrom<u16> for OutBAction {
     type Error = anyhow::Error;
     fn try_from(val: u16) -> anyhow::Result<Self> {
@@ -121,6 +138,17 @@ impl TryFrom<u16> for OutBAction {
             #[cfg(feature = "mem_profile")]
             106 => Ok(OutBAction::TraceMemoryFree),
             _ => Err(anyhow::anyhow!("Invalid OutBAction value: {}", val)),
+        }
+    }
+}
+
+impl TryFrom<u16> for VmAction {
+    type Error = anyhow::Error;
+    fn try_from(val: u16) -> anyhow::Result<Self> {
+        match val {
+            107 => Ok(VmAction::PvTimerConfig),
+            108 => Ok(VmAction::Halt),
+            _ => Err(anyhow::anyhow!("Invalid VmAction value: {}", val)),
         }
     }
 }

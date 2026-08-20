@@ -25,7 +25,7 @@ use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_for_fuzzing_as_string;
+use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::arbitrary::Arbitrary;
 use libfuzzer_sys::{Corpus, fuzz_target};
 
@@ -70,13 +70,10 @@ fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
         // In local tests, 256 KiB seemed sufficient for deep recursion
-        cfg.set_stack_size(256 * 1024);
-        let path = simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing");
-        let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(path),
-            Some(cfg),
-        )
-        .unwrap();
+        cfg.set_scratch_size(256 * 1024);
+        let path = simple_guest_for_fuzzing_as_pathbuf();
+        let u_sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
 
         let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
 

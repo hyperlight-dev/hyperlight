@@ -38,7 +38,6 @@ limitations under the License.
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::panic))]
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::expect_used))]
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::unwrap_used))]
-#![cfg_attr(any(test, debug_assertions), allow(clippy::disallowed_macros))]
 
 #[cfg(feature = "build-metadata")]
 use std::sync::Once;
@@ -90,10 +89,29 @@ pub use hypervisor::virtual_machine::is_hypervisor_present;
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
 pub use sandbox::MultiUseSandbox;
+/// The lifecycle state of a [`MultiUseSandbox`].
+pub use sandbox::SandboxStatus;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
+/// The re-export for the `SandboxBuilder` type
+pub use sandbox::builder::SandboxBuilder;
+/// A collection of host functions that can be supplied to a sandbox
+/// constructor (e.g. [`MultiUseSandbox::from_snapshot`]).
+pub use sandbox::host_funcs::HostFunctions;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
+
+/// Unstable, internal API surface exposed solely for Hyperlight's own
+/// integration tests. Not part of the public API: anything here may
+/// change or disappear without notice. Do not depend on it.
+#[doc(hidden)]
+pub mod __private {
+    /// Short golden-tag token for the host CPU vendor, or `None` if the
+    /// goldens do not cover it. See the snapshot golden tests.
+    pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
+        crate::sandbox::snapshot::host_cpu_vendor_golden_tag()
+    }
+}
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;
@@ -109,33 +127,33 @@ macro_rules! log_then_return {
             None => std::format!($msg),
         };
         let __err = $crate::HyperlightError::Error(__err_msg);
-        log::error!("{}", __err);
+        tracing::error!("{}", __err);
         return Err(__err);
     }};
     ($err:expr $(,)?) => {
-        log::error!("{}", $err);
+        tracing::error!("{}", $err);
         return Err($err);
     };
     ($err:stmt $(,)?) => {
-        log::error!("{}", $err);
+        tracing::error!("{}", $err);
         return Err($err);
     };
     ($fmtstr:expr, $($arg:tt)*) => {
            let __err_msg = std::format!($fmtstr, $($arg)*);
            let __err = $crate::error::HyperlightError::Error(__err_msg);
-           log::error!("{}", __err);
+           tracing::error!("{}", __err);
            return Err(__err);
     };
 }
 
-/// Same as log::debug!, but will additionally print to stdout if the print_debug feature is enabled
+/// Same as tracing::debug!, but will additionally print to stdout if the print_debug feature is enabled
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)+) =>
     {
         #[cfg(print_debug)]
         println!($($arg)+);
-        log::debug!($($arg)+);
+        tracing::debug!($($arg)+);
     }
 }
 
@@ -145,7 +163,7 @@ static LOG_ONCE: Once = Once::new();
 
 #[cfg(feature = "build-metadata")]
 pub(crate) fn log_build_details() {
-    use log::info;
+    use tracing::info;
     LOG_ONCE.call_once(|| {
         info!("Package name: {}", built_info::PKG_NAME);
         info!("Package version: {}", built_info::PKG_VERSION);

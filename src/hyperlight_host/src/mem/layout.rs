@@ -12,546 +12,469 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
-use std::fmt::Debug;
-use std::mem::{offset_of, size_of};
+ */
+//! This module describes the virtual and physical addresses of a
+//! number of special regions in the hyperlight VM, although we hope
+//! to reduce the number of these over time.
+//!
+//! A snapshot freshly created from an empty VM will result in roughly
+//! the following physical layout:
+//!
+//! +-------------------------------------------+
+//! |             Guest Page Tables             |
+//! +-------------------------------------------+
+//! |              Init Data                    | (GuestBlob size)
+//! +-------------------------------------------+
+//! |             Guest Heap                    |
+//! +-------------------------------------------+
+//! |                PEB Struct                 | (HyperlightPEB size)
+//! +-------------------------------------------+
+//! |               Guest Code                  |
+//! +-------------------------------------------+ 0x1_000
+//! |              NULL guard page              |
+//! +-------------------------------------------+ 0x0_000
+//!
+//! Everything except for the guest page tables is currently
+//! identity-mapped; the guest page tables themselves are mapped at
+//! [`hyperlight_common::layout::SNAPSHOT_PT_GVA`] =
+//! 0xffff_8000_0000_0000.
+//!
+//! - `InitData` - some extra data that can be loaded onto the sandbox during
+//!   initialization.
+//!
+//! - `GuestHeap` - this is a buffer that is used for heap data in the guest. the length
+//!   of this field is returned by the `heap_size()` method of this struct
+//!
+//! There is also a scratch region at the top of physical memory,
+//! which is mostly laid out as a large undifferentiated blob of
+//! memory, although at present the snapshot process specially
+//! privileges the statically allocated input and output data regions:
+//!
+//! +-------------------------------------------+ (top of physical memory)
+//! |         Exception Stack, Metadata         |
+//! +-------------------------------------------+ (1 page below)
+//! |              Scratch Memory               |
+//! +-------------------------------------------+
+//! |                Output Data                |
+//! +-------------------------------------------+
+//! |                Input Data                 |
+//! +-------------------------------------------+ (scratch size)
 
-use hyperlight_common::mem::{GuestMemoryRegion, HyperlightPEB, PAGE_SIZE_USIZE};
-use rand::{RngCore, rng};
+use std::fmt::Debug;
+use std::mem::size_of;
+
+use hyperlight_common::mem::HyperlightPEB;
+use hyperlight_common::vmem::PAGE_SIZE;
 use tracing::{Span, instrument};
 
-#[cfg(feature = "init-paging")]
-use super::memory_region::MemoryRegionType::PageTables;
-use super::memory_region::MemoryRegionType::{
-    Code, GuardPage, Heap, HostFunctionDefinitions, InitData, InputData, OutputData, Peb, Stack,
-};
+use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegionFlags, MemoryRegionVecBuilder,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
+    MemoryRegionVecBuilder,
 };
-use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
-use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
+#[cfg(readable_shared_mem)]
+use super::shared_mem::HostSharedMemory;
+use super::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
+use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
 
-// +-------------------------------------------+
-// |              Init Data                    | (GuestBlob size)
-// +-------------------------------------------+
-// |             Guest (User) Stack            |
-// +-------------------------------------------+
-// |             Guard Page (4KiB)             |
-// +-------------------------------------------+
-// |             Guest Heap                    |
-// +-------------------------------------------+
-// |             Output Data                   |
-// +-------------------------------------------+
-// |              Input Data                   |
-// +-------------------------------------------+
-// |        Host Function Definitions          |
-// +-------------------------------------------+
-// |                PEB Struct                 | (HyperlightPEB size)
-// +-------------------------------------------+
-// |               Guest Code                  |
-// +-------------------------------------------+
-// |                    PT                     |
-// +-------------------------------------------+ 0x3_000
-// |                    PD                     |
-// +-------------------------------------------+ 0x2_000
-// |                   PDPT                    |
-// +-------------------------------------------+ 0x1_000
-// |                   PML4                    |
-// +-------------------------------------------+ 0x0_000
+pub(crate) enum BaseGpaRegion<Sn, Sc> {
+    Snapshot(Sn),
+    Scratch(Sc),
+    Mmap(MemoryRegion),
+}
 
-/// - `InitData` - some extra data that can be loaded onto the sandbox during
-///   initialization.
+// It's an invariant of this type, checked on creation, that the
+// offset is in bounds for the base region.
+pub(crate) struct ResolvedGpa<Sn, Sc> {
+    pub(crate) offset: usize,
+    pub(crate) base: BaseGpaRegion<Sn, Sc>,
+}
+
+impl AsRef<[u8]> for ExclusiveSharedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+impl AsRef<[u8]> for ReadonlySharedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<Sn, Sc> ResolvedGpa<Sn, Sc> {
+    pub(crate) fn with_memories<Sn2, Sc2>(self, sn: Sn2, sc: Sc2) -> ResolvedGpa<Sn2, Sc2> {
+        ResolvedGpa {
+            offset: self.offset,
+            base: match self.base {
+                BaseGpaRegion::Snapshot(_) => BaseGpaRegion::Snapshot(sn),
+                BaseGpaRegion::Scratch(_) => BaseGpaRegion::Scratch(sc),
+                BaseGpaRegion::Mmap(r) => BaseGpaRegion::Mmap(r),
+            },
+        }
+    }
+}
+impl<'a> BaseGpaRegion<&'a [u8], &'a [u8]> {
+    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
+        match self {
+            BaseGpaRegion::Snapshot(sn) => sn,
+            BaseGpaRegion::Scratch(sc) => sc,
+            BaseGpaRegion::Mmap(r) => unsafe {
+                #[allow(clippy::useless_conversion)]
+                let host_region_base: usize = r.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let host_region_end: usize = r.host_region.end.into();
+                let len = host_region_end - host_region_base;
+                std::slice::from_raw_parts(host_region_base as *const u8, len)
+            },
+        }
+    }
+}
+impl<'a> ResolvedGpa<&'a [u8], &'a [u8]> {
+    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
+        let base = self.base.as_ref();
+        if self.offset > base.len() {
+            return &[];
+        }
+        &self.base.as_ref()[self.offset..]
+    }
+}
+/// A read-only abstraction over the different kinds of backing memory
+/// a [`ResolvedGpa`] can point at (the host snapshot mapping, the
+/// scratch mapping, or a raw `&[u8]` view of either), letting callers
+/// copy guest bytes out without caring which concrete memory type they
+/// hold.
 ///
-/// - `HostDefinitions` - the length of this is the `HostFunctionDefinitionSize`
-///   field from `SandboxConfiguration`
+/// This trait only exists in builds that actually read guest memory
+/// through it — see the `readable_shared_mem` cfg alias in `build.rs`
+/// for the exact conditions (the `gdb` debug path and the
+/// shared-snapshot `mem_profile` path). In every other configuration it
+/// is compiled out entirely, so there is no dead code to `#[allow]`.
+#[cfg(readable_shared_mem)]
+pub(crate) trait ReadableSharedMemory {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()>;
+}
+#[cfg(readable_shared_mem)]
+impl ReadableSharedMemory for &HostSharedMemory {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        Ok(HostSharedMemory::copy_to_slice(self, slice, offset)?)
+    }
+}
+/// Coherence workaround for the blanket impl below.
 ///
-/// - `InputData` -  this is a buffer that is used for input data to the host program.
-///   the length of this field is `InputDataSize` from `SandboxConfiguration`
+/// We want `ReadableSharedMemory` for both `&HostSharedMemory` (above)
+/// and for any `T: AsRef<[u8]>` (so that `ExclusiveSharedMemory` /
+/// `ReadonlySharedMemory` and their references are covered by a single
+/// impl). A naive `impl<T: AsRef<[u8]>> ReadableSharedMemory for T`
+/// would *overlap* the `&HostSharedMemory` impl — the compiler can't
+/// prove `&HostSharedMemory` never implements `AsRef<[u8]>` — and is
+/// rejected with E0119.
 ///
-/// - `OutputData` - this is a buffer that is used for output data from host program.
-///   the length of this field is `OutputDataSize` from `SandboxConfiguration`
+/// To break the overlap we introduce a private marker trait and
+/// implement it *only* for the specific types we want the blanket impl
+/// to cover (deliberately excluding `&HostSharedMemory`). The blanket
+/// impl is then bounded on this marker rather than on `AsRef<[u8]>`
+/// directly, so the two impls provably never overlap.
+#[cfg(readable_shared_mem)]
+mod coherence_hack {
+    use super::{ExclusiveSharedMemory, ReadonlySharedMemory};
+    // Used only as a bound on the blanket impl below, so the name reads
+    // as unused even though removing it breaks compilation.
+    #[allow(unused)]
+    pub(super) trait SharedMemoryAsRefMarker: AsRef<[u8]> {}
+    impl SharedMemoryAsRefMarker for ExclusiveSharedMemory {}
+    impl SharedMemoryAsRefMarker for &ExclusiveSharedMemory {}
+    impl SharedMemoryAsRefMarker for ReadonlySharedMemory {}
+    impl SharedMemoryAsRefMarker for &ReadonlySharedMemory {}
+}
+#[cfg(readable_shared_mem)]
+impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        let ss: &[u8] = self.as_ref();
+        let end = offset + slice.len();
+        if end > ss.len() {
+            return Err(new_error!(
+                "Attempt to read up to {} in memory of size {}",
+                offset + slice.len(),
+                self.as_ref().len()
+            ));
+        }
+        slice.copy_from_slice(&ss[offset..end]);
+        Ok(())
+    }
+}
+/// Copy `slice.len()` bytes out of the resolved guest region.
 ///
-/// - `GuestHeap` - this is a buffer that is used for heap data in the guest. the length
-///   of this field is returned by the `heap_size()` method of this struct
-///
-/// - `GuestStack` - this is a buffer that is used for stack data in the guest. the length
-///   of this field is returned by the `stack_size()` method of this struct. in reality,
-///   the stack might be slightly bigger or smaller than this value since total memory
-///   size is rounded up to the nearest 4K, and there is a 16-byte stack guard written
-///   to the top of the stack. (see below for more details
-// The amount of memory that can be mapped per page table
-#[cfg(feature = "init-paging")]
-const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
+/// Only the `gdb` debug path uses this one-argument convenience (it
+/// already carries the offset inside `self`); `mem_profile` reads via
+/// the two-argument inherent methods instead. Hence it is gated on the
+/// `gdb` cfg alone, even though the [`ReadableSharedMemory`] trait it
+/// relies on is available slightly more widely.
+#[cfg(gdb)]
+impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
+    pub(crate) fn copy_to_slice(&self, slice: &mut [u8]) -> Result<()> {
+        match &self.base {
+            BaseGpaRegion::Snapshot(sn) => sn.copy_to_slice(slice, self.offset),
+            BaseGpaRegion::Scratch(sc) => sc.copy_to_slice(slice, self.offset),
+            BaseGpaRegion::Mmap(r) => unsafe {
+                #[allow(clippy::useless_conversion)]
+                let host_region_base: usize = r.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let host_region_end: usize = r.host_region.end.into();
+                let len = host_region_end - host_region_base;
+                // Safety: it's a documented invariant of MemoryRegion
+                // that the memory must remain alive as long as the
+                // sandbox is alive, and the way this code is used,
+                // the lifetimes of the snapshot and scratch memories
+                // ensure that the sandbox is still alive. This could
+                // perhaps be cleaned up/improved/made harder to
+                // misuse significantly, but it would require a much
+                // larger rework.
+                let ss = std::slice::from_raw_parts(host_region_base as *const u8, len);
+                let end = self.offset + slice.len();
+                if end > ss.len() {
+                    return Err(new_error!(
+                        "Attempt to read up to {} in memory of size {}",
+                        self.offset + slice.len(),
+                        ss.len()
+                    ));
+                }
+                slice.copy_from_slice(&ss[self.offset..end]);
+                Ok(())
+            },
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
-    pub(super) sandbox_memory_config: SandboxConfiguration,
-    /// The total stack size of this sandbox.
-    pub(super) stack_size: usize,
+    /// Input data buffer size (from SandboxConfiguration).
+    input_data_size: usize,
+    /// Output data buffer size (from SandboxConfiguration).
+    output_data_size: usize,
     /// The heap size of this sandbox.
-    pub(super) heap_size: usize,
-    init_data_size: usize,
-
-    /// The following fields are offsets to the actual PEB struct fields.
-    /// They are used when writing the PEB struct itself
-    peb_offset: usize,
-    peb_security_cookie_seed_offset: usize,
-    peb_guest_dispatch_function_ptr_offset: usize, // set by guest in guest entrypoint
-    pub(super) peb_host_function_definitions_offset: usize,
-    peb_input_data_offset: usize,
-    peb_output_data_offset: usize,
-    peb_init_data_offset: usize,
-    peb_heap_data_offset: usize,
-    peb_guest_stack_data_offset: usize,
-
-    // The following are the actual values
-    // that are written to the PEB struct
-    pub(crate) host_function_definitions_buffer_offset: usize,
-    pub(super) input_data_buffer_offset: usize,
-    pub(super) output_data_buffer_offset: usize,
-    guest_heap_buffer_offset: usize,
-    guard_page_offset: usize,
-    guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
-    init_data_offset: usize,
-
-    // other
-    pub(crate) peb_address: usize,
+    heap_size: usize,
+    /// The size of the guest code section.
     code_size: usize,
-    // The total size of the page tables
-    total_page_table_size: usize,
-    // The offset in the sandbox memory where the code starts
-    guest_code_offset: usize,
-    pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
+    /// The size of the init data section (guest blob).
+    init_data_size: usize,
+    /// Permission flags for the init data region.
+    init_data_permissions: Option<MemoryRegionFlags>,
+    /// The size of the scratch region in physical memory.
+    scratch_size: usize,
+    /// Size of the primary guest memory region at `BASE_ADDRESS`
+    /// (code, PEB, heap, init data). For a snapshot-backed layout
+    /// this is also the guest-visible prefix of the host snapshot
+    /// mapping.
+    snapshot_size: usize,
+    /// Size of the page-table region. Sits at the tail of the host
+    /// snapshot mapping but is never mapped to the guest from there.
+    /// On restore the host copies it into scratch, where the guest
+    /// sees it at `SNAPSHOT_PT_GVA`. `None` until page tables are built.
+    pt_size: Option<usize>,
 }
 
 impl Debug for SandboxMemoryLayout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SandboxMemoryLayout")
-            .field(
-                "Total Memory Size",
-                &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
-            )
-            .field("Stack Size", &format_args!("{:#x}", self.stack_size))
-            .field("Heap Size", &format_args!("{:#x}", self.heap_size))
-            .field(
-                "Init Data Size",
-                &format_args!("{:#x}", self.init_data_size),
-            )
-            .field("PEB Address", &format_args!("{:#x}", self.peb_address))
-            .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
-            .field("Code Size", &format_args!("{:#x}", self.code_size))
-            .field(
-                "Security Cookie Seed Offset",
-                &format_args!("{:#x}", self.peb_security_cookie_seed_offset),
-            )
-            .field(
-                "Guest Dispatch Function Pointer Offset",
-                &format_args!("{:#x}", self.peb_guest_dispatch_function_ptr_offset),
-            )
-            .field(
-                "Host Function Definitions Offset",
-                &format_args!("{:#x}", self.peb_host_function_definitions_offset),
-            )
-            .field(
-                "Input Data Offset",
-                &format_args!("{:#x}", self.peb_input_data_offset),
-            )
-            .field(
-                "Output Data Offset",
-                &format_args!("{:#x}", self.peb_output_data_offset),
-            )
-            .field(
-                "Init Data Offset",
-                &format_args!("{:#x}", self.peb_init_data_offset),
-            )
-            .field(
-                "Guest Heap Offset",
-                &format_args!("{:#x}", self.peb_heap_data_offset),
-            )
-            .field(
-                "Guest Stack Offset",
-                &format_args!("{:#x}", self.peb_guest_stack_data_offset),
-            )
-            .field(
-                "Host Function Definitions Buffer Offset",
-                &format_args!("{:#x}", self.host_function_definitions_buffer_offset),
-            )
-            .field(
-                "Input Data Buffer Offset",
-                &format_args!("{:#x}", self.input_data_buffer_offset),
-            )
-            .field(
-                "Output Data Buffer Offset",
-                &format_args!("{:#x}", self.output_data_buffer_offset),
-            )
-            .field(
-                "Guest Heap Buffer Offset",
-                &format_args!("{:#x}", self.guest_heap_buffer_offset),
-            )
-            .field(
-                "Guard Page Offset",
-                &format_args!("{:#x}", self.guard_page_offset),
-            )
-            .field(
-                "Guest User Stack Buffer Offset",
-                &format_args!("{:#x}", self.guest_user_stack_buffer_offset),
-            )
-            .field(
-                "Init Data Offset",
-                &format_args!("{:#x}", self.init_data_offset),
-            )
-            .field(
-                "Page Table Size",
-                &format_args!("{:#x}", self.total_page_table_size),
-            )
-            .field(
-                "Guest Code Offset",
-                &format_args!("{:#x}", self.guest_code_offset),
-            )
-            .finish()
+        let mut ff = f.debug_struct("SandboxMemoryLayout");
+        ff.field(
+            "Total Memory Size",
+            &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
+        )
+        .field("Code Size", &format_args!("{:#x}", self.code_size))
+        .field("Heap Size", &format_args!("{:#x}", self.heap_size))
+        .field(
+            "Init Data Size",
+            &format_args!("{:#x}", self.init_data_size),
+        )
+        .field(
+            "Input Data Size",
+            &format_args!("{:#x}", self.input_data_size),
+        )
+        .field(
+            "Output Data Size",
+            &format_args!("{:#x}", self.output_data_size),
+        )
+        .field("Scratch Size", &format_args!("{:#x}", self.scratch_size))
+        .field("Snapshot Size", &format_args!("{:#x}", self.snapshot_size))
+        .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
+        .field(
+            "Guest Code Offset",
+            &format_args!("{:#x}", self.guest_code_offset()),
+        )
+        .field("PEB Offset", &format_args!("{:#x}", self.peb_offset()))
+        .field("PEB Address", &format_args!("{:#x}", self.peb_address()));
+        ff.field(
+            "Guest Heap Buffer Offset",
+            &format_args!("{:#x}", self.guest_heap_buffer_offset()),
+        )
+        .field(
+            "Init Data Offset",
+            &format_args!("{:#x}", self.init_data_offset()),
+        )
+        .finish()
     }
 }
 
 impl SandboxMemoryLayout {
-    /// The offset into the sandbox's memory where the PML4 Table is located.
-    /// See https://www.pagetable.com/?p=14 for more information.
-    pub(crate) const PML4_OFFSET: usize = 0x0000;
+    /// Whether `other` has the same layout configuration as `self`,
+    /// i.e. the fields that come from the guest binary and the
+    /// `SandboxConfiguration`. `snapshot_size` and `pt_size` are
+    /// excluded because they are outputs of building a snapshot blob
+    /// (the compacted data size and the size of the rebuilt
+    /// page-table tail), not configuration inputs, so they differ
+    /// between the sandbox's live layout and any snapshot taken
+    /// from it.
+    ///
+    /// TODO: separate/remove snapshot_size and pt_size from this struct.
+    pub(crate) fn is_compatible_with(&self, other: &Self) -> bool {
+        // Exhaustive destructure so adding a field to
+        // `SandboxMemoryLayout` fails to compile here, forcing the
+        // author to decide whether it participates in compatibility.
+        let Self {
+            input_data_size,
+            output_data_size,
+            heap_size,
+            code_size,
+            init_data_size,
+            init_data_permissions,
+            scratch_size,
+            snapshot_size: _,
+            pt_size: _,
+        } = self;
+        *input_data_size == other.input_data_size
+            && *output_data_size == other.output_data_size
+            && *heap_size == other.heap_size
+            && *code_size == other.code_size
+            && *init_data_size == other.init_data_size
+            && *init_data_permissions == other.init_data_permissions
+            && *scratch_size == other.scratch_size
+    }
+
     /// The maximum amount of memory a single sandbox will be allowed.
-    /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
-    /// However, the memory up to Self::BASE_ADDRESS is not used.
-    const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
+    ///
+    /// Both the scratch region and the snapshot region are bounded by
+    /// this size. The value is arbitrary but chosen to be large enough
+    /// for most workloads while preventing accidental resource exhaustion.
+    pub(crate) const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x0;
+    pub(crate) const BASE_ADDRESS: usize = 0x4000;
 
     // the offset into a sandbox's input/output buffer where the stack starts
-    const STACK_POINTER_SIZE_BYTES: u64 = 8;
+    pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
 
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         cfg: SandboxConfiguration,
         code_size: usize,
-        stack_size: usize,
-        heap_size: usize,
         init_data_size: usize,
         init_data_permissions: Option<MemoryRegionFlags>,
     ) -> Result<Self> {
-        #[cfg(feature = "init-paging")]
-        let base = Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
-        #[cfg(not(feature = "init-paging"))]
-        let base = Self::BASE_ADDRESS;
-        let guest_code_offset = base;
-        // The following offsets are to the fields of the PEB struct itself!
-        let peb_offset = base + round_up_to(code_size, PAGE_SIZE_USIZE);
-        let peb_security_cookie_seed_offset =
-            peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
-        let peb_guest_dispatch_function_ptr_offset =
-            peb_offset + offset_of!(HyperlightPEB, guest_function_dispatch_ptr);
-        let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
-        let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
-        let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
-        let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
-        let peb_guest_stack_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_stack);
-        let peb_host_function_definitions_offset =
-            peb_offset + offset_of!(HyperlightPEB, host_function_definitions);
+        let heap_size = usize::try_from(cfg.get_heap_size())?;
+        let scratch_size = cfg.get_scratch_size();
+        if scratch_size > Self::MAX_MEMORY_SIZE {
+            return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
+        }
+        let input_data_size = cfg.get_input_data_size();
+        let output_data_size = cfg.get_output_data_size();
+        let min_scratch_size =
+            hyperlight_common::layout::min_scratch_size(input_data_size, output_data_size);
+        if scratch_size < min_scratch_size {
+            return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
+        }
 
-        // The following offsets are the actual values that relate to memory layout,
-        // which are written to PEB struct
-        let peb_address = Self::BASE_ADDRESS + peb_offset;
-        // make sure host function definitions buffer starts at 4K boundary
-        let host_function_definitions_buffer_offset = round_up_to(
-            peb_host_function_definitions_offset + size_of::<GuestMemoryRegion>(),
-            PAGE_SIZE_USIZE,
-        );
-        let input_data_buffer_offset = round_up_to(
-            host_function_definitions_buffer_offset + cfg.get_host_function_definition_size(),
-            PAGE_SIZE_USIZE,
-        );
-        let output_data_buffer_offset = round_up_to(
-            input_data_buffer_offset + cfg.get_input_data_size(),
-            PAGE_SIZE_USIZE,
-        );
-        // make sure heap buffer starts at 4K boundary
-        let guest_heap_buffer_offset = round_up_to(
-            output_data_buffer_offset + cfg.get_output_data_size(),
-            PAGE_SIZE_USIZE,
-        );
-        // make sure guard page starts at 4K boundary
-        let guard_page_offset = round_up_to(guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE);
-        let guest_user_stack_buffer_offset = guard_page_offset + PAGE_SIZE_USIZE;
-        // round up stack size to page size. This is needed for MemoryRegion
-        let stack_size_rounded = round_up_to(stack_size, PAGE_SIZE_USIZE);
-        let init_data_offset = guest_user_stack_buffer_offset + stack_size_rounded;
-
-        Ok(Self {
-            peb_offset,
-            stack_size: stack_size_rounded,
+        let mut ret = Self {
+            input_data_size,
+            output_data_size,
             heap_size,
-            peb_security_cookie_seed_offset,
-            peb_guest_dispatch_function_ptr_offset,
-            peb_host_function_definitions_offset,
-            peb_input_data_offset,
-            peb_output_data_offset,
-            peb_init_data_offset,
-            peb_heap_data_offset,
-            peb_guest_stack_data_offset,
-            sandbox_memory_config: cfg,
             code_size,
-            host_function_definitions_buffer_offset,
-            input_data_buffer_offset,
-            output_data_buffer_offset,
-            guest_heap_buffer_offset,
-            guest_user_stack_buffer_offset,
-            peb_address,
-            guard_page_offset,
-            total_page_table_size: base,
-            guest_code_offset,
-            init_data_offset,
             init_data_size,
             init_data_permissions,
-        })
-    }
-
-    /// Get the offset in guest memory to the output data size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_output_data_size_offset(&self) -> usize {
-        // The size field is the first field in the `OutputData` struct
-        self.peb_output_data_offset
-    }
-
-    /// Get the offset in guest memory to the host function definitions
-    /// size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_host_function_definitions_size_offset(&self) -> usize {
-        // The size field is the first field in the `HostFunctions` struct
-        self.peb_host_function_definitions_offset
-    }
-
-    /// Get the offset in guest memory to the host function definitions
-    /// pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_host_function_definitions_pointer_offset(&self) -> usize {
-        // The size field is the field after the size field in the `HostFunctions` struct which is a u64
-        self.peb_host_function_definitions_offset + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the init data size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_init_data_size_offset(&self) -> usize {
-        // The init data size is the first field in the `GuestMemoryRegion` struct
-        self.peb_init_data_offset
-    }
-
-    /// Get the offset in guest memory to the minimum guest stack address.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_min_guest_stack_address_offset(&self) -> usize {
-        // The minimum guest user stack address is the start of the guest stack
-        self.peb_guest_stack_data_offset
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_stack_size(&self) -> usize {
-        self.stack_size
-    }
-
-    /// Get the offset in guest memory to the output data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_output_data_pointer_offset(&self) -> usize {
-        // This field is immediately after the output data size field,
-        // which is a `u64`.
-        self.get_output_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the init data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_init_data_pointer_offset(&self) -> usize {
-        // The init data pointer is immediately after the init data size field,
-        // which is a `u64`.
-        self.get_init_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the start of output data.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(test)]
-    pub(crate) fn get_output_data_offset(&self) -> usize {
-        self.output_data_buffer_offset
-    }
-
-    /// Get the offset in guest memory to the input data size.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_input_data_size_offset(&self) -> usize {
-        // The input data size is the first field in the input stack's `GuestMemoryRegion` struct
-        self.peb_input_data_offset
-    }
-
-    /// Get the offset in guest memory to the input data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_pointer_offset(&self) -> usize {
-        // The input data pointer is immediately after the input
-        // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
-        self.get_input_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to where the guest dispatch function
-    /// pointer is written
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_dispatch_function_pointer_offset(&self) -> usize {
-        self.peb_guest_dispatch_function_ptr_offset
-    }
-
-    /// Get the offset in guest memory to the heap size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_heap_size_offset(&self) -> usize {
-        self.peb_heap_data_offset
-    }
-
-    /// Get the offset of the heap pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_heap_pointer_offset(&self) -> usize {
-        // The heap pointer is immediately after the
-        // heap size field in the guest heap's `GuestMemoryRegion` struct which is a `u64`.
-        self.get_heap_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset to the top of the stack in guest memory
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_top_of_user_stack_offset(&self) -> usize {
-        self.guest_user_stack_buffer_offset
-    }
-
-    /// Get the offset of the user stack pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_user_stack_pointer_offset(&self) -> usize {
-        // The userStackAddress is immediately after the
-        // minUserStackAddress (top of user stack) field in the `GuestStackData` struct which is a `u64`.
-        self.get_min_guest_stack_address_offset() + size_of::<u64>()
-    }
-
-    /// Get the total size of guest memory in `self`'s memory
-    /// layout.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_unaligned_memory_size(&self) -> usize {
-        self.init_data_offset + self.init_data_size
-    }
-
-    /// get the code offset
-    /// This is the offset in the sandbox memory where the code starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_code_offset(&self) -> usize {
-        self.guest_code_offset
-    }
-
-    /// Get the guest address of the code section in the sandbox
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_code_address(&self) -> usize {
-        Self::BASE_ADDRESS + self.guest_code_offset
-    }
-
-    #[cfg(test)]
-    #[cfg(feature = "init-paging")]
-    /// Get the page table size
-    fn get_page_table_size(&self) -> usize {
-        self.total_page_table_size
-    }
-
-    // This function calculates the page table size for the sandbox
-    // We need enough memory to store the PML4, PDPT, PD and PTs
-    // The size of a single table is 4K, we can map up to 1GB total memory which requires 1 PML4, 1 PDPT, 1 PD and 512 PTs
-    // but we only need enough PTs to map the memory we are using. (In other words we only up to 512 PTs to map the memory if the memory size is 1GB)
-    //
-    // We can calculate the amount of memory needed for the PTs by calculating how much memory is needed for the sandbox configuration in total,
-    // and then add 3 * 4K (for the PML4, PDPT and PD)  to that,
-    // then add 2MB to that (the maximum size of memory required for the PTs themselves is 2MB when we map 1GB of memory in 4K pages),
-    // then divide that by 0x200_000 (as we can map 2MB in each PT).
-    // This will give us the total size of the PTs required for the sandbox to which we can add the size of the PML4, PDPT and PD.
-    // TODO: This over-counts on small sandboxes (because not all 512
-    // PTs may be required), under-counts on sandboxes with more than
-    // 1GiB memory - which are not currently supported as we only support MAX_MEMORY_SIZE, and would get unreasonably complicated if we
-    // needed to support hugepages.
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(feature = "init-paging")]
-    fn get_total_page_table_size(
-        cfg: SandboxConfiguration,
-        code_size: usize,
-        stack_size: usize,
-        heap_size: usize,
-    ) -> usize {
-        // Get the configured memory size (assume each section is 4K aligned)
-
-        let mut total_mapped_memory_size: usize = round_up_to(code_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(stack_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(heap_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size +=
-            round_up_to(cfg.get_host_function_definition_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(cfg.get_input_data_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(cfg.get_output_data_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(size_of::<HyperlightPEB>(), PAGE_SIZE_USIZE);
-
-        // Add the base address of the sandbox
-        total_mapped_memory_size += Self::BASE_ADDRESS;
-
-        // Add the size of  the PML4, PDPT and PD
-        total_mapped_memory_size += 3 * PAGE_SIZE_USIZE;
-
-        // Add the maximum possible size of the PTs
-        total_mapped_memory_size += 512 * PAGE_SIZE_USIZE;
-
-        // Get the number of pages needed for the PTs
-
-        let num_pages: usize = total_mapped_memory_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT) + 3; // PML4, PDPT, PD
-
-        num_pages * PAGE_SIZE_USIZE
-    }
-
-    /// Get the total size of guest memory in `self`'s memory
-    /// layout aligned to page size boundaries.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_memory_size(&self) -> Result<usize> {
-        let total_memory = self.get_unaligned_memory_size();
-
-        // Size should be a multiple of page size.
-        let remainder = total_memory % PAGE_SIZE_USIZE;
-        let multiples = total_memory / PAGE_SIZE_USIZE;
-        let size = match remainder {
-            0 => total_memory,
-            _ => (multiples + 1) * PAGE_SIZE_USIZE,
+            pt_size: None,
+            scratch_size,
+            snapshot_size: 0,
         };
+        ret.set_snapshot_size(ret.get_memory_size()?);
+        Ok(ret)
+    }
 
-        if size > Self::MAX_MEMORY_SIZE {
-            Err(MemoryRequestTooBig(size, Self::MAX_MEMORY_SIZE))
-        } else {
-            Ok(size)
+    pub(crate) fn input_data_size(&self) -> usize {
+        self.input_data_size
+    }
+
+    pub(crate) fn output_data_size(&self) -> usize {
+        self.output_data_size
+    }
+
+    pub(crate) fn heap_size(&self) -> usize {
+        self.heap_size
+    }
+
+    pub(crate) fn code_size(&self) -> usize {
+        self.code_size
+    }
+
+    pub(crate) fn init_data_size(&self) -> usize {
+        self.init_data_size
+    }
+
+    pub(crate) fn init_data_permissions(&self) -> Option<MemoryRegionFlags> {
+        self.init_data_permissions
+    }
+
+    pub(crate) fn get_scratch_size(&self) -> usize {
+        self.scratch_size
+    }
+
+    /// Guest-visible prefix size of the snapshot blob.
+    pub(crate) fn snapshot_size(&self) -> usize {
+        self.snapshot_size
+    }
+
+    /// Recorded page-table tail size, `None` until page tables are built.
+    pub(crate) fn pt_size(&self) -> Option<usize> {
+        self.pt_size
+    }
+
+    /// Page-table tail size, or 0 if page tables are not yet built.
+    pub(crate) fn get_pt_size(&self) -> usize {
+        self.pt_size.unwrap_or(0)
+    }
+
+    /// Record the size of the page-table tail appended to the
+    /// snapshot blob. The PT bytes live at the end of the blob and
+    /// the host mapping, outside the guest mapping of the snapshot
+    /// region, and are copied into the scratch region on restore.
+    /// `snapshot_size` (the guest-visible prefix of the blob) is an
+    /// independent field and must be set separately.
+    pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
+        let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
+            self.input_data_size,
+            self.output_data_size,
+        );
+        let min_scratch = min_fixed_scratch + size;
+        if self.scratch_size < min_scratch {
+            return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
         }
+        self.pt_size = Some(size);
+        Ok(())
+    }
+
+    pub(crate) fn set_snapshot_size(&mut self, new_size: usize) {
+        self.snapshot_size = new_size;
     }
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
-        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, shared_mem.base_addr());
-
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "init-paging")] {
-                // PML4, PDPT, PD
-                let code_offset = builder.push_page_aligned(
-                    self.total_page_table_size,
-                    MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-                    PageTables,
-                );
-
-                if code_offset != self.guest_code_offset {
-                    return Err(new_error!(
-                        "Code offset does not match expected code offset expected:  {}, actual:  {}",
-                        self.guest_code_offset,
-                        code_offset
-                    ));
-                }
-            }
-        }
+    pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
+        &self,
+        host_base: K::HostBaseType,
+    ) -> Result<Vec<MemoryRegion_<K>>> {
+        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, host_base);
 
         // code
         let peb_offset = builder.push_page_aligned(
@@ -560,7 +483,7 @@ impl SandboxMemoryLayout {
             Code,
         );
 
-        let expected_peb_offset = TryInto::<usize>::try_into(self.peb_offset)?;
+        let expected_peb_offset = TryInto::<usize>::try_into(self.peb_offset())?;
 
         if peb_offset != expected_peb_offset {
             return Err(new_error!(
@@ -571,67 +494,10 @@ impl SandboxMemoryLayout {
         }
 
         // PEB
-        let host_functions_definitions_offset = builder.push_page_aligned(
-            size_of::<HyperlightPEB>(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            Peb,
-        );
+        let heap_offset =
+            builder.push_page_aligned(size_of::<HyperlightPEB>(), MemoryRegionFlags::READ, Peb);
 
-        let expected_host_functions_definitions_offset =
-            TryInto::<usize>::try_into(self.host_function_definitions_buffer_offset)?;
-
-        if host_functions_definitions_offset != expected_host_functions_definitions_offset {
-            return Err(new_error!(
-                "Host Function Definitions offset does not match expected Host Function Definitions offset expected:  {}, actual:  {}",
-                expected_host_functions_definitions_offset,
-                host_functions_definitions_offset
-            ));
-        }
-
-        // host function definitions
-        let input_data_offset = builder.push_page_aligned(
-            self.sandbox_memory_config
-                .get_host_function_definition_size(),
-            MemoryRegionFlags::READ,
-            HostFunctionDefinitions,
-        );
-
-        let expected_input_data_offset = TryInto::<usize>::try_into(self.input_data_buffer_offset)?;
-
-        if input_data_offset != expected_input_data_offset {
-            return Err(new_error!(
-                "Input Data offset does not match expected Input Data offset expected:  {}, actual:  {}",
-                expected_input_data_offset,
-                input_data_offset
-            ));
-        }
-
-        // guest input data
-        let output_data_offset = builder.push_page_aligned(
-            self.sandbox_memory_config.get_input_data_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            InputData,
-        );
-
-        let expected_output_data_offset =
-            TryInto::<usize>::try_into(self.output_data_buffer_offset)?;
-
-        if output_data_offset != expected_output_data_offset {
-            return Err(new_error!(
-                "Output Data offset does not match expected Output Data offset expected:  {}, actual:  {}",
-                expected_output_data_offset,
-                output_data_offset
-            ));
-        }
-
-        // guest output data
-        let heap_offset = builder.push_page_aligned(
-            self.sandbox_memory_config.get_output_data_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            OutputData,
-        );
-
-        let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset)?;
+        let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset())?;
 
         if heap_offset != expected_heap_offset {
             return Err(new_error!(
@@ -643,54 +509,19 @@ impl SandboxMemoryLayout {
 
         // heap
         #[cfg(feature = "executable_heap")]
-        let guard_page_offset = builder.push_page_aligned(
+        let init_data_offset = builder.push_page_aligned(
             self.heap_size,
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             Heap,
         );
         #[cfg(not(feature = "executable_heap"))]
-        let guard_page_offset = builder.push_page_aligned(
+        let init_data_offset = builder.push_page_aligned(
             self.heap_size,
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             Heap,
         );
 
-        let expected_guard_page_offset = TryInto::<usize>::try_into(self.guard_page_offset)?;
-
-        if guard_page_offset != expected_guard_page_offset {
-            return Err(new_error!(
-                "Guard Page offset does not match expected Guard Page offset expected:  {}, actual:  {}",
-                expected_guard_page_offset,
-                guard_page_offset
-            ));
-        }
-
-        // guard page
-        let stack_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::STACK_GUARD,
-            GuardPage,
-        );
-
-        let expected_stack_offset =
-            TryInto::<usize>::try_into(self.guest_user_stack_buffer_offset)?;
-
-        if stack_offset != expected_stack_offset {
-            return Err(new_error!(
-                "Stack offset does not match expected Stack offset expected:  {}, actual:  {}",
-                expected_stack_offset,
-                stack_offset
-            ));
-        }
-
-        // stack
-        let init_data_offset = builder.push_page_aligned(
-            self.get_guest_stack_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            Stack,
-        );
-
-        let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset)?;
+        let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset())?;
 
         if init_data_offset != expected_init_data_offset {
             return Err(new_error!(
@@ -700,7 +531,8 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        let final_offset = if self.init_data_size > 0 {
+        // init data
+        let after_init_offset = if self.init_data_size > 0 {
             let mem_flags = self
                 .init_data_permissions
                 .unwrap_or(DEFAULT_GUEST_BLOB_MEM_FLAGS);
@@ -709,7 +541,20 @@ impl SandboxMemoryLayout {
             init_data_offset
         };
 
+        let final_offset = after_init_offset;
+
         let expected_final_offset = TryInto::<usize>::try_into(self.get_memory_size()?)?;
+
+        // This function is primarily used to construct
+        // GuestMemoryRegions used to populate initial guest page
+        // tables. Therefore, the regions above are aligned based on
+        // the guest page size. However, the total final size of the
+        // region mapped into the guest needs to be aligned based on
+        // the host page size. Therefore, align both of these values
+        // to both page sizes before comparing them.
+        let final_offset = final_offset.next_multiple_of(page_size::get());
+        let expected_final_offset =
+            expected_final_offset.next_multiple_of(hyperlight_common::vmem::PAGE_SIZE);
 
         if final_offset != expected_final_offset {
             return Err(new_error!(
@@ -723,199 +568,434 @@ impl SandboxMemoryLayout {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_init_data(
-        &self,
-        shared_mem: &mut ExclusiveSharedMemory,
-        bytes: &[u8],
-    ) -> Result<()> {
-        shared_mem.copy_from_slice(bytes, self.init_data_offset)?;
+    pub(crate) fn write_init_data(&self, out: &mut [u8], bytes: &[u8]) -> Result<()> {
+        out[self.init_data_offset()..self.init_data_offset() + self.init_data_size]
+            .copy_from_slice(bytes);
         Ok(())
     }
 
-    /// Write the finished memory layout to `shared_mem` and return
-    /// `Ok` if successful.
+    /// Write the finished memory layout to `mem` and return `Ok` if
+    /// successful.
     ///
-    /// Note: `shared_mem` may have been modified, even if `Err` was returned
+    /// Note: `mem` may have been modified, even if `Err` was returned
     /// from this function.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write(
-        &self,
-        shared_mem: &mut ExclusiveSharedMemory,
-        guest_offset: usize,
-        size: usize,
-    ) -> Result<()> {
-        macro_rules! get_address {
-            ($something:ident) => {
-                u64::try_from(guest_offset + self.$something)?
-            };
-        }
+    pub(crate) fn write_peb(&self, mem: &mut [u8]) -> Result<()> {
+        use hyperlight_common::mem::GuestMemoryRegion;
 
-        if guest_offset != SandboxMemoryLayout::BASE_ADDRESS
-            && guest_offset != shared_mem.base_addr()
-        {
-            return Err(GuestOffsetIsInvalid(guest_offset));
-        }
+        let guest_base = Self::BASE_ADDRESS as u64;
 
-        // Start of setting up the PEB. The following are in the order of the PEB fields
+        let peb = HyperlightPEB {
+            input_stack: GuestMemoryRegion {
+                size: self.input_data_size as u64,
+                ptr: self.get_input_data_buffer_gva(),
+            },
+            output_stack: GuestMemoryRegion {
+                size: self.output_data_size as u64,
+                ptr: self.get_output_data_buffer_gva(),
+            },
+            init_data: GuestMemoryRegion {
+                size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
+                ptr: guest_base + self.init_data_offset() as u64,
+            },
+            guest_heap: GuestMemoryRegion {
+                size: self.heap_size as u64,
+                ptr: guest_base + self.guest_heap_buffer_offset() as u64,
+            },
+        };
 
-        // Set up the security cookie seed
-        let mut security_cookie_seed = [0u8; 8];
-        rng().fill_bytes(&mut security_cookie_seed);
-        shared_mem.copy_from_slice(&security_cookie_seed, self.peb_security_cookie_seed_offset)?;
+        let offset = self.peb_offset();
+        let bytes = bytemuck::bytes_of(&peb);
+        let end = offset + bytes.len();
+        let mem_len = mem.len();
+        let dst = mem.get_mut(offset..end).ok_or_else(|| {
+            new_error!(
+                "memory too small to write PEB: need {} bytes at offset {:#x}, have {} bytes",
+                bytes.len(),
+                offset,
+                mem_len
+            )
+        })?;
+        dst.copy_from_slice(bytes);
 
-        // Skip guest_dispatch_function_ptr_offset because it is set by the guest
-
-        // Set up Host Function Definition
-        shared_mem.write_u64(
-            self.get_host_function_definitions_size_offset(),
-            self.sandbox_memory_config
-                .get_host_function_definition_size()
-                .try_into()?,
-        )?;
-        let addr = get_address!(host_function_definitions_buffer_offset);
-        shared_mem.write_u64(self.get_host_function_definitions_pointer_offset(), addr)?;
-
-        // Skip code, is set when loading binary
-        // skip outb and outb context, is set when running in_proc
-
-        // Set up input buffer pointer
-        shared_mem.write_u64(
-            self.get_input_data_size_offset(),
-            self.sandbox_memory_config
-                .get_input_data_size()
-                .try_into()?,
-        )?;
-        let addr = get_address!(input_data_buffer_offset);
-        shared_mem.write_u64(self.get_input_data_pointer_offset(), addr)?;
-
-        // Set up output buffer pointer
-        shared_mem.write_u64(
-            self.get_output_data_size_offset(),
-            self.sandbox_memory_config
-                .get_output_data_size()
-                .try_into()?,
-        )?;
-        let addr = get_address!(output_data_buffer_offset);
-        shared_mem.write_u64(self.get_output_data_pointer_offset(), addr)?;
-
-        // Set up init data pointer
-        shared_mem.write_u64(
-            self.get_init_data_size_offset(),
-            (self.get_unaligned_memory_size() - self.init_data_offset).try_into()?,
-        )?;
-        let addr = get_address!(init_data_offset);
-        shared_mem.write_u64(self.get_init_data_pointer_offset(), addr)?;
-
-        // Set up heap buffer pointer
-        let addr = get_address!(guest_heap_buffer_offset);
-        shared_mem.write_u64(self.get_heap_size_offset(), self.heap_size.try_into()?)?;
-        shared_mem.write_u64(self.get_heap_pointer_offset(), addr)?;
-
-        // Set up user stack pointers
-
-        // Set up Min Guest User Stack Address
-
-        // The top of the user stack is calculated as the size of the guest memory + the guest offset which gives us the
-        // address at the bottom of the guest memory.
-
-        let bottom = guest_offset + size;
-        let min_user_stack_address = bottom - self.stack_size;
-
-        // Top of user stack
-
-        shared_mem.write_u64(
-            self.get_min_guest_stack_address_offset(),
-            min_user_stack_address.try_into()?,
-        )?;
-
-        // Start of user stack
-
-        let start_of_user_stack: u64 = (min_user_stack_address + self.stack_size).try_into()?;
-
-        shared_mem.write_u64(self.get_user_stack_pointer_offset(), start_of_user_stack)?;
-
-        // End of setting up the PEB
-
-        // Initialize the stack pointers of input data and output data
-        // to point to the ninth (index 8) byte, which is the first free address
-        // of the each respective stack. The first 8 bytes are the stack pointer itself.
-        shared_mem.write_u64(
-            self.input_data_buffer_offset,
-            Self::STACK_POINTER_SIZE_BYTES,
-        )?;
-        shared_mem.write_u64(
-            self.output_data_buffer_offset,
-            Self::STACK_POINTER_SIZE_BYTES,
-        )?;
+        // The input and output data regions do not have their layout
+        // initialised here, because they are in the scratch
+        // region---they are instead set in
+        // [`SandboxMemoryManager::update_scratch_bookkeeping`].
 
         Ok(())
+    }
+
+    /// Determine what region this gpa is in, and its offset into that region
+    pub(crate) fn resolve_gpa(
+        &self,
+        gpa: u64,
+        mmap_regions: &[MemoryRegion],
+    ) -> Option<ResolvedGpa<(), ()>> {
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_size);
+        if gpa >= scratch_base && gpa < scratch_base + self.scratch_size as u64 {
+            return Some(ResolvedGpa {
+                offset: (gpa - scratch_base) as usize,
+                base: BaseGpaRegion::Scratch(()),
+            });
+        } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64
+            && gpa < SandboxMemoryLayout::BASE_ADDRESS as u64 + self.snapshot_size as u64
+        {
+            return Some(ResolvedGpa {
+                offset: gpa as usize - SandboxMemoryLayout::BASE_ADDRESS,
+                base: BaseGpaRegion::Snapshot(()),
+            });
+        }
+        for rgn in mmap_regions {
+            if gpa >= rgn.guest_region.start as u64 && gpa < rgn.guest_region.end as u64 {
+                return Some(ResolvedGpa {
+                    offset: gpa as usize - rgn.guest_region.start,
+                    base: BaseGpaRegion::Mmap(rgn.clone()),
+                });
+            }
+        }
+        None
     }
 }
 
-fn round_up_to(value: usize, multiple: usize) -> usize {
-    (value + multiple - 1) & !(multiple - 1)
+/// Changes to the below methods is part of Snapshot ABI, and
+/// changing any output shifts where the loader
+/// reads captured bytes and breaks existing snapshots. Any change here
+/// is a snapshot ABI break: see the `layout_offsets_are_pinned` test
+/// and docs/snapshot-versioning.md.
+impl SandboxMemoryLayout {
+    /// Offset of the PEB struct within the snapshot region.
+    pub(crate) fn peb_offset(&self) -> usize {
+        self.code_size.next_multiple_of(PAGE_SIZE)
+    }
+
+    /// Guest physical address of the PEB.
+    pub(crate) fn peb_address(&self) -> usize {
+        Self::BASE_ADDRESS + self.peb_offset()
+    }
+
+    /// Offset of the guest heap buffer within the snapshot region.
+    pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
+        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE)
+    }
+
+    /// Offset of the init data section within the snapshot region.
+    pub(crate) fn init_data_offset(&self) -> usize {
+        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE)
+    }
+
+    /// The code offset is always 0.
+    pub(crate) fn guest_code_offset(&self) -> usize {
+        0
+    }
+
+    /// Guest address of the code section in the sandbox.
+    pub(crate) fn get_guest_code_address(&self) -> usize {
+        Self::BASE_ADDRESS + self.guest_code_offset()
+    }
+
+    /// Guest virtual address of the start of output data.
+    pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size) + self.input_data_size as u64
+    }
+
+    /// Offset into the host scratch buffer of the start of the output data.
+    pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
+        self.input_data_size
+    }
+
+    /// Guest virtual address of the start of input data.
+    fn get_input_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+    }
+
+    /// Offset into the host scratch buffer of the start of the input data.
+    pub(crate) fn get_input_data_buffer_scratch_host_offset(&self) -> usize {
+        0
+    }
+
+    /// Offset from the beginning of the scratch region to the location
+    /// where page tables are eagerly copied on restore.
+    pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
+        (self.input_data_size + self.output_data_size).next_multiple_of(PAGE_SIZE)
+    }
+
+    /// Base GPA to which the page tables are eagerly copied on restore.
+    pub(crate) fn get_pt_base_gpa(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
+            + self.get_pt_base_scratch_offset() as u64
+    }
+
+    /// First GPA of the scratch region the host has not used for
+    /// something else.
+    pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
+        self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
+    }
+
+    /// Total size of guest memory in `self`'s memory layout.
+    fn get_unaligned_memory_size(&self) -> usize {
+        self.init_data_offset() + self.init_data_size
+    }
+
+    /// Total size of guest memory in `self`'s memory layout, aligned
+    /// to page size boundaries.
+    pub(crate) fn get_memory_size(&self) -> Result<usize> {
+        let total_memory = self.get_unaligned_memory_size();
+
+        // Size should be a multiple of host page size.
+        let remainder = total_memory % page_size::get();
+        let multiples = total_memory / page_size::get();
+        let size = match remainder {
+            0 => total_memory,
+            _ => (multiples + 1) * page_size::get(),
+        };
+
+        if size > Self::MAX_MEMORY_SIZE {
+            Err(MemoryRequestTooBig(size, Self::MAX_MEMORY_SIZE))
+        } else {
+            Ok(size)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::mem::PAGE_SIZE_USIZE;
-
     use super::*;
-
-    #[test]
-    fn test_round_up() {
-        assert_eq!(0, round_up_to(0, 4));
-        assert_eq!(4, round_up_to(1, 4));
-        assert_eq!(4, round_up_to(2, 4));
-        assert_eq!(4, round_up_to(3, 4));
-        assert_eq!(4, round_up_to(4, 4));
-        assert_eq!(8, round_up_to(5, 4));
-        assert_eq!(8, round_up_to(6, 4));
-        assert_eq!(8, round_up_to(7, 4));
-        assert_eq!(8, round_up_to(8, 4));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(44, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(4095, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(4096, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE * 2, round_up_to(4097, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE * 2, round_up_to(8191, PAGE_SIZE_USIZE));
-    }
 
     // helper func for testing
     fn get_expected_memory_size(layout: &SandboxMemoryLayout) -> usize {
-        let cfg = layout.sandbox_memory_config;
         let mut expected_size = 0;
         // in order of layout
-        #[cfg(feature = "init-paging")]
-        {
-            expected_size += layout.get_page_table_size();
-        }
         expected_size += layout.code_size;
 
-        expected_size += round_up_to(size_of::<HyperlightPEB>(), PAGE_SIZE_USIZE);
+        // PEB
+        let peb_and_array = size_of::<HyperlightPEB>();
+        expected_size += peb_and_array.next_multiple_of(PAGE_SIZE);
 
-        expected_size += round_up_to(cfg.get_host_function_definition_size(), PAGE_SIZE_USIZE);
+        expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE);
 
-        expected_size += round_up_to(cfg.get_input_data_size(), PAGE_SIZE_USIZE);
-
-        expected_size += round_up_to(cfg.get_output_data_size(), PAGE_SIZE_USIZE);
-
-        expected_size += round_up_to(layout.heap_size, PAGE_SIZE_USIZE);
-
-        expected_size += PAGE_SIZE_USIZE; // guard page
-
-        expected_size += round_up_to(layout.stack_size, PAGE_SIZE_USIZE);
-
-        expected_size
+        expected_size.next_multiple_of(page_size::get())
     }
 
     #[test]
     fn test_get_memory_size() {
         let sbox_cfg = SandboxConfiguration::default();
-        let sbox_mem_layout =
-            SandboxMemoryLayout::new(sbox_cfg, 4096, 2048, 4096, 0, None).unwrap();
+        let sbox_mem_layout = SandboxMemoryLayout::new(sbox_cfg, 4096, 0, None).unwrap();
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)
+        );
+    }
+
+    #[test]
+    fn test_max_memory_sandbox() {
+        let mut cfg = SandboxConfiguration::default();
+        // scratch_size exceeds 16 GiB limit
+        cfg.set_scratch_size(17 * 1024 * 1024 * 1024);
+        cfg.set_input_data_size(16 * 1024 * 1024 * 1024);
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 4096, None);
+        assert!(matches!(layout.unwrap_err(), MemoryRequestTooBig(..)));
+    }
+
+    #[test]
+    fn is_compatible_with_identical_layouts() {
+        let cfg = SandboxConfiguration::default();
+        let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let b = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        assert!(a.is_compatible_with(&b));
+        assert!(b.is_compatible_with(&a));
+    }
+
+    #[test]
+    fn is_compatible_with_ignores_snapshot_size_and_pt_size() {
+        // `snapshot_size` and `pt_size` are outputs of building a
+        // snapshot blob, not configuration inputs, so flipping
+        // them must not break compatibility.
+        let cfg = SandboxConfiguration::default();
+        let a = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let mut b = a;
+        b.snapshot_size = a.snapshot_size + PAGE_SIZE;
+        b.set_pt_size(PAGE_SIZE).unwrap();
+        assert!(a.is_compatible_with(&b));
+        assert!(b.is_compatible_with(&a));
+    }
+
+    #[test]
+    fn is_compatible_with_rejects_each_configured_field() {
+        let cfg = SandboxConfiguration::default();
+        let base = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+
+        // Each mutation must independently break compatibility.
+        let mutators: &[fn(&mut SandboxMemoryLayout)] = &[
+            |l| l.input_data_size += PAGE_SIZE,
+            |l| l.output_data_size += PAGE_SIZE,
+            |l| l.heap_size += PAGE_SIZE,
+            |l| l.code_size += PAGE_SIZE,
+            |l| l.init_data_size += PAGE_SIZE,
+            |l| l.scratch_size += PAGE_SIZE,
+            |l| {
+                l.init_data_permissions = Some(MemoryRegionFlags::READ);
+            },
+        ];
+        for mutate in mutators {
+            let mut other = base;
+            mutate(&mut other);
+            assert!(
+                !base.is_compatible_with(&other),
+                "mutation should have broken compatibility: {:?} vs {:?}",
+                base,
+                other,
+            );
+        }
+    }
+
+    /// Pinned region offsets. These methods place every region that a
+    /// restored snapshot is interpreted against, so a change shifts
+    /// where the loader reads captured bytes and breaks existing
+    /// snapshots. Treat a failure as an ABI change: follow
+    /// docs/snapshot-versioning.md rather than editing the constants.
+    #[test]
+    fn layout_offsets_are_pinned() {
+        /// `assert_eq!` carrying the shared snapshot-ABI failure
+        /// message, mirroring `abi_assert!` in the snapshot tripwires.
+        macro_rules! pin_eq {
+            ($left:expr, $right:expr) => {
+                assert_eq!(
+                    $left, $right,
+                    "snapshot ABI changed: this breaks loading of existing snapshots. \
+                     Do not just update the expected value to make this compile. \
+                     See docs/snapshot-versioning.md."
+                );
+            };
+        }
+
+        // The scratch region's top GVA and GPA are baked into snapshot
+        // page tables by `map_specials`, so they are part of the
+        // snapshot ABI. The pins below fix offsets from this base.
+        #[cfg(target_arch = "x86_64")]
+        {
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GVA,
+                0xffff_ffff_ffff_efff
+            );
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GPA,
+                0x0000_000f_ffff_ffff
+            );
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GVA,
+                0x0000_ffff_ffff_dfff
+            );
+            pin_eq!(
+                hyperlight_common::layout::SCRATCH_TOP_GPA,
+                0x0000_000f_ffff_bfff
+            );
+        }
+
+        // `map_specials` bakes the IO page mapping into snapshot page
+        // tables, so its address is part of the snapshot ABI. amd64 has
+        // no IO page. aarch64 maps one fixed GPA to one fixed GVA.
+        #[cfg(target_arch = "x86_64")]
+        pin_eq!(hyperlight_common::layout::io_page(), None);
+        #[cfg(target_arch = "aarch64")]
+        pin_eq!(
+            hyperlight_common::layout::io_page(),
+            Some((0x0000_000f_ffff_f000, 0x0000_ffff_ffff_e000))
+        );
+
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x2000);
+        cfg.set_output_data_size(0x2000);
+        cfg.set_heap_size(0x2000);
+        cfg.set_scratch_size(0x10000);
+        let layout = SandboxMemoryLayout::new(cfg, 0x1000, 0, None).unwrap();
+
+        pin_eq!(layout.guest_code_offset(), 0);
+        pin_eq!(layout.peb_offset(), 0x1000);
+        pin_eq!(layout.peb_address(), 0x5000);
+        pin_eq!(layout.guest_heap_buffer_offset(), 0x2000);
+        pin_eq!(layout.init_data_offset(), 0x4000);
+        pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
+
+        pin_eq!(layout.get_scratch_size(), 0x10000);
+        pin_eq!(layout.get_pt_size(), 0);
+
+        pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
+        pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x2000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x4000);
+
+        // The output buffer sits one input buffer past the input
+        // buffer in the guest's scratch view.
+        pin_eq!(
+            layout.get_output_data_buffer_gva() - layout.get_input_data_buffer_gva(),
+            0x2000
+        );
+
+        // The input buffer sits at the scratch base. The page tables
+        // sit `get_pt_base_scratch_offset` above it. With the
+        // `SCRATCH_TOP` pins above, these fix the absolute addresses.
+        pin_eq!(
+            layout.get_input_data_buffer_gva()
+                - hyperlight_common::layout::scratch_base_gva(0x10000),
+            0
+        );
+        pin_eq!(
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x10000),
+            0x4000
+        );
+        // pt_size is zero here, so the first free scratch GPA equals
+        // the page table base.
+        pin_eq!(
+            layout.get_first_free_scratch_gpa(),
+            layout.get_pt_base_gpa()
+        );
+
+        // A second config with different sizes shifts the offsets off
+        // the first config's page boundaries.
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x4000);
+        cfg.set_output_data_size(0x2000);
+        cfg.set_heap_size(0x5000);
+        cfg.set_scratch_size(0x20000);
+        let layout = SandboxMemoryLayout::new(cfg, 0x3000, 0, None).unwrap();
+
+        pin_eq!(layout.guest_code_offset(), 0);
+        pin_eq!(layout.peb_offset(), 0x3000);
+        pin_eq!(layout.peb_address(), 0x7000);
+        pin_eq!(layout.guest_heap_buffer_offset(), 0x4000);
+        pin_eq!(layout.init_data_offset(), 0x9000);
+        pin_eq!(
+            layout.get_memory_size().unwrap(),
+            0x9000_usize.next_multiple_of(page_size::get())
+        );
+
+        pin_eq!(layout.get_scratch_size(), 0x20000);
+        pin_eq!(layout.get_pt_size(), 0);
+
+        pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
+        pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x4000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x6000);
+
+        pin_eq!(
+            layout.get_output_data_buffer_gva() - layout.get_input_data_buffer_gva(),
+            0x4000
+        );
+
+        pin_eq!(
+            layout.get_input_data_buffer_gva()
+                - hyperlight_common::layout::scratch_base_gva(0x20000),
+            0
+        );
+        pin_eq!(
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x20000),
+            0x6000
+        );
+        pin_eq!(
+            layout.get_first_free_scratch_gpa(),
+            layout.get_pt_base_gpa()
         );
     }
 }

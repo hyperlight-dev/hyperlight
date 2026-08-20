@@ -24,10 +24,10 @@ limitations under the License.
 //! substitute.rs for more details of the approach here).
 
 use wasmparser::{
-    ComponentAlias, ComponentDefinedType, ComponentFuncType, ComponentOuterAliasKind,
-    ComponentType, ComponentTypeDeclaration, ComponentTypeRef, ComponentValType,
-    CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration, OuterAliasKind,
-    PrimitiveValType, TypeBounds, TypeRef,
+    ComponentAlias, ComponentDefinedType, ComponentExternName, ComponentFuncType,
+    ComponentOuterAliasKind, ComponentType, ComponentTypeDeclaration, ComponentTypeRef,
+    ComponentValType, CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration,
+    OuterAliasKind, PrimitiveValType, TypeBounds, TypeRef,
 };
 
 use crate::etypes::{
@@ -402,7 +402,6 @@ impl<'p, 'a> Ctx<'p, 'a> {
                         Ok(VariantCase {
                             name: Name { name: vc.name },
                             ty: vc.ty.as_ref().map(|ty| self.elab_value(ty)).transpose()?,
-                            refines: vc.refines,
                         })
                     })
                     .collect::<Result<Vec<_>, Error<'a>>>()?;
@@ -433,16 +432,22 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 Defined::Handleable(h) => Ok(Value::Borrow(h.clone())),
                 _ => Err(Error::HandleToNonResource),
             },
-            ComponentDefinedType::FixedSizeList(vt, size) => {
+            ComponentDefinedType::FixedLengthList(vt, size) => {
                 Ok(Value::FixList(Box::new(self.elab_value(vt)?), *size))
             }
             ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
                 panic!("async not yet supported")
             }
+            ComponentDefinedType::Map(_, _) => {
+                panic!("map type not yet supported")
+            }
         }
     }
 
     fn elab_func<'c>(&'c mut self, ft: &ComponentFuncType<'a>) -> Result<Func<'a>, Error<'a>> {
+        if ft.async_ {
+            panic!("async not yet supported")
+        }
         Ok(Func {
             params: ft
                 .params
@@ -531,13 +536,19 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 self.add_core_or_component_ed(ed);
                 Ok(None)
             }
-            InstanceTypeDeclaration::Export { name, ty } => {
+            InstanceTypeDeclaration::Export {
+                name: export_name,
+                ty,
+            } => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = *export_name;
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.0), &vs);
+                let sub = self.bound_to_evars(Some(kebab_name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok(Some(ExternDecl {
-                    kebab_name: name.0,
+                    kebab_name,
                     desc: ed,
                 }))
             }
@@ -629,27 +640,37 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 self.add_core_or_component_ed(ed);
                 Ok((None, None))
             }
-            ComponentTypeDeclaration::Export { name, ty, .. } => {
+            ComponentTypeDeclaration::Export {
+                name: export_name,
+                ty,
+                ..
+            } => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = *export_name;
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.0), &vs);
+                let sub = self.bound_to_evars(Some(kebab_name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     None,
                     Some(ExternDecl {
-                        kebab_name: name.0,
+                        kebab_name,
                         desc: ed,
                     }),
                 ))
             }
             ComponentTypeDeclaration::Import(i) => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = i.name;
                 let (vs, ed) = self.elab_extern_desc(&i.ty)?;
-                let sub = self.bound_to_uvars(Some(i.name.0), &vs, true);
+                let sub = self.bound_to_uvars(Some(kebab_name), &vs, true);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     Some(ExternDecl {
-                        kebab_name: i.name.0,
+                        kebab_name,
                         desc: ed,
                     }),
                     None,

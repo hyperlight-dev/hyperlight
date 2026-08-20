@@ -21,36 +21,42 @@ bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-
 workspace = true
 
 [dependencies]
-gdbstub = { version = "0.7.8", optional = true }
-gdbstub_arch = { version = "0.3.2", optional = true }
+gdbstub = { version = "0.7.10", optional = true }
+gdbstub_arch = { version = "0.3.3", optional = true }
 goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
-rand = { version = "0.9" }
+rand = { version = "0.10" }
 cfg-if = { version = "1.0.4" }
-libc = { version = "0.2.178" }
-flatbuffers = "25.9.23"
-framehop = { version = "0.15.0", optional = true }
+libc = { version = "0.2.186" }
+flatbuffers = "25.12.19"
+framehop = { version = "0.16.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
-blake3 = "1.8.2"
+blake3 = "1.8.5"
+bytemuck = { version = "1.24", features = ["derive"] }
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.10.0"
-log = "0.4.29"
-opentelemetry = { version = "0.31.0", optional = true }
-tracing = { version = "0.1.43", features = ["log"] }
-tracing-log = "0.2.0"
-tracing-core = "0.1.35"
-tracing-opentelemetry = { version = "0.32.0", optional = true }
-hyperlight-common = { workspace = true, default-features = true, features = [ "std", "init-paging" ] }
+bitflags = "2.13.0"
+log = "0.4.32"
+opentelemetry = { version = "0.32.0", optional = true }
+tracing = { version = "0.1.44", features = ["log"] }
+tracing-core = "0.1.36"
+tracing-opentelemetry = { version = "0.33.0", optional = true }
+hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 chrono = { version = "0.4", optional = true }
 anyhow = "1.0"
-metrics = "0.24.3"
+metrics = "0.24.6"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-elfcore = "2.0"
-uuid = { version = "1.19.0", features = ["v4"] }
+elfcore = { version = "2.0", optional = true }
+uuid = { version = "1.23.3", features = ["v4"] }
+oci-spec = { version = "0.10", default-features = false, features = ["image"] }
+sha2 = "0.11"
+hex = "0.4"
+tempfile = "3.27.0"
+parking_lot = "0.12.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -69,44 +75,42 @@ windows = { version = "0.62", features = [
 ] }
 windows-sys = { version = "0.61", features = ["Win32"] }
 windows-result = "0.4"
-rust-embed = { version = "8.9.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
-sha256 = "1.6.0"
+rust-embed = { version = "8.11.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 windows-version = "0.1"
 lazy_static = "1.4.0"
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true }
-kvm-ioctls = { version = "0.24", optional = true }
+kvm-ioctls = { version = "0.25", optional = true }
 mshv-bindings = { version = "0.6", optional = true }
 mshv-ioctls = { version = "0.6", optional = true}
 
 [dev-dependencies]
-uuid = { version = "1.19.0", features = ["v4"] }
-signal-hook-registry = "1.4.7"
-serde = "1.0"
-proptest = "1.9.0"
-tempfile = "3.23.0"
+uuid = { version = "1.23.3", features = ["v4"] }
+signal-hook-registry = "1.4.8"
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "code_asm"] }
+proptest = "1.11.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
-serial_test = "3.1.1"
+serial_test = "4.0.1"
 hyperlight-testing = { workspace = true }
-env_logger = "0.11.8"
-tracing-forest = { version = "0.3.0", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
-tracing = "0.1.43"
-tracing-subscriber = {version = "0.3.22", features = ["std", "env-filter"]}
-tracing-opentelemetry = "0.32.0"
-opentelemetry = "0.31.0"
-opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
-opentelemetry-semantic-conventions = "0.31"
-opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
-tokio = { version = "1.48.0", features = ["full"] }
-criterion = "0.8.1"
+env_logger = "0.11.10"
+tracing-forest = { version = "0.3.1", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = {version = "0.3.23", features = ["std", "env-filter"]}
+tracing-opentelemetry = "0.33.0"
+opentelemetry = "0.32.0"
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
+opentelemetry-semantic-conventions = "0.32"
+opentelemetry_sdk = { version = "0.32.0", features = ["rt-tokio"] }
+tokio = { version = "1.52.3", features = ["full"] }
+criterion = "0.8.2"
 tracing-chrome = "0.7.2"
-metrics-util = "0.20.1"
-metrics-exporter-prometheus = { version = "0.18.1", default-features = false }
-tracing-tracy = "0.11.4"
+metrics-util = "0.20.4"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 serde_json = "1.0"
 hyperlight-component-macro = { workspace = true }
+libtest-mimic = "0.8.2"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.62", features = [
@@ -114,31 +118,40 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(unix)'.dev-dependencies]
-proc-maps = "0.4.0"
+proc-maps = "0.5.0"
 
 [build-dependencies]
-anyhow = { version = "1.0.100" }
+anyhow = { version = "1.0.102" }
 cfg_aliases = "0.2.1"
-built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
+built = { version = "0.8.1", optional = true, features = ["chrono", "git2"] }
+bindgen = { version = "0.72", features = ["prettyplease"] }
+cc = "1.2"
 
 [features]
-default = ["kvm", "mshv3", "build-metadata", "init-paging"]
+default = ["kvm", "mshv3", "hvf", "build-metadata"]
 function_call_metrics = []
 executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
-crashdump = ["dep:chrono"]
+crashdump = ["dep:chrono", "dep:elfcore"]
 trace_guest = ["dep:opentelemetry", "dep:tracing-opentelemetry", "dep:hyperlight-guest-tracing", "hyperlight-common/trace_guest"]
 mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/mem_profile" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
+hvf = []
+hw-interrupts = []
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
-init-paging = []
 
 [[bench]]
 name = "benchmarks"
+harness = false
+
+[[test]]
+name = "snapshot_goldens"
+path = "tests/snapshot_goldens/main.rs"
+# Custom harness (see main.rs).
 harness = false

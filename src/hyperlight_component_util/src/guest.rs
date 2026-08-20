@@ -18,9 +18,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::emit::{
-    FnName, ResolvedBoundVar, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn,
-    kebab_to_getter, kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var,
-    split_wit_name,
+    FnName, ResourceItemName, State, WitName, find_colliding_import_names, import_member_names,
+    kebab_to_exports_name, kebab_to_fn, kebab_to_getter, kebab_to_imports_name, kebab_to_namespace,
+    kebab_to_type, kebab_to_var, split_wit_name,
 };
 use crate::etypes::{Component, Defined, ExternDecl, ExternDesc, Handleable, Instance, Tyvar};
 use crate::hl::{
@@ -91,7 +91,10 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                     // here, but that is not the case at the
                     // moment.
                     let path = s.resource_trait_path(r);
-                    s.root_mod.r#impl(path, format_ident!("Host")).extend(decl);
+                    s.root_mod
+                        .r#impl(path, format_ident!("Host"))
+                        .1
+                        .extend(decl);
                     TokenStream::new()
                 }
             }
@@ -99,16 +102,17 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::Type(t) => match t {
             Defined::Handleable(Handleable::Var(Tyvar::Bound(b))) => {
                 // only resources need something emitted
-                let ResolvedBoundVar::Resource { rtidx } = s.resolve_bound_var(*b) else {
+                let noff = (s.var_offset as u32 + b) as usize;
+                let crate::etypes::TypeBound::SubResource = &s.bound_vars[noff].bound else {
                     return quote! {};
                 };
-                let rtid = format_ident!("HostResource{}", rtidx as usize);
+                let rtid = format_ident!("HostResource{}", noff);
                 let path = s.resource_trait_path(kebab_to_type(ed.kebab_name));
-                s.root_mod
-                    .r#impl(path, format_ident!("Host"))
-                    .extend(quote! {
-                        type T = #rtid;
-                    });
+                let r#impl = s.root_mod.r#impl(path, format_ident!("Host"));
+                r#impl.0 = quote! { <::hyperlight_common::component::Negative> };
+                r#impl.1.extend(quote! {
+                    type T = #rtid;
+                });
                 TokenStream::new()
             }
             _ => quote! {},
@@ -117,8 +121,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
             let wn = split_wit_name(ed.kebab_name);
             emit_import_instance(s, wn.clone(), it);
 
-            let getter = kebab_to_getter(wn.name);
-            let tn = kebab_to_type(wn.name);
+            let (tn, getter) = import_member_names(&wn, &s.colliding_import_names);
             quote! {
                 type #tn = Self;
                 #[allow(refining_impl_trait)]
@@ -146,21 +149,15 @@ fn emit_import_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
         .map(|ed| emit_import_extern_decl(&mut s, ed))
         .collect::<Vec<_>>();
 
-    let ns = wn.namespace_path();
-    let nsi = wn.namespace_idents();
-    let trait_name = kebab_to_type(wn.name);
-    let r#trait = s.r#trait(&nsi, trait_name.clone());
-    let tvs = r#trait
-        .tvs
+    let trait_path = wn
+        .namespace_idents()
         .iter()
-        .map(|(_, (tv, _))| tv.unwrap())
+        .chain(&[kebab_to_type(wn.name)])
+        .cloned()
         .collect::<Vec<_>>();
-    let tvs = tvs
-        .iter()
-        .map(|tv| rtypes::emit_var_ref(&mut s, &Tyvar::Bound(*tv)))
-        .collect::<Vec<_>>();
+    let trait_ref = rtypes::trait_ref(&mut s, rtypes::EmitPositivity::Opposite, true, &trait_path);
     s.root_mod.items.extend(quote! {
-        impl #ns::#trait_name <#(#tvs),*> for Host {
+        impl #trait_ref for Host {
             #(#imports)*
         }
     });
@@ -210,7 +207,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
             let marshal_result = emit_hl_marshal_result(s, ret.clone(), &ft.result);
             let trait_path = s.cur_trait_path();
             quote! {
-                fn #n<T: Guest>(fc: &::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::alloc::vec::Vec<u8>> {
+                fn #n<T: Guest>(fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::alloc::vec::Vec<u8>> {
                     <T as Guest>::with_guest_state(|state| {
                         #(#pds)*
                         #(#get_instance)*
@@ -223,7 +220,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         ::alloc::string::ToString::to_string(#fname),
                         ::alloc::vec![#(#pts),*],
                         ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
-                        #n::<T> as usize
+                        #n::<T>
                     )
                 );
             }
@@ -285,15 +282,22 @@ fn emit_component<'a, 'b, 'c>(
     let r#trait = kebab_to_type(wn.name);
     let import_trait = kebab_to_imports_name(wn.name);
     let export_trait = kebab_to_exports_name(wn.name);
-    s.import_param_var = Some(format_ident!("I"));
-    s.self_param_var = Some(format_ident!("S"));
+    s.positivity_param = Some(quote! { ::hyperlight_common::component::Positive });
+    // We don't set s.self_param_var or s.import_param_var at all
+    // here, because they are currently obviated by the (s.is_guest &&
+    // s.is_impl) hack in rtypes::emit_resource_ref. For when we
+    // eventually do:
+    //
+    // See Note [Origin paths and self parameters in impl codegen for higher-order components]
+    // in emit.rs
+    s.colliding_import_names = find_colliding_import_names(&ct.imports);
 
     let rtsid = format_ident!("{}Resources", r#trait);
     resource::emit_tables(
         &mut s,
         rtsid.clone(),
-        quote! { #ns::#import_trait + ::core::marker::Send + 'static },
-        Some(quote! { #ns::#export_trait<I> }),
+        quote! { #ns::#import_trait<::hyperlight_common::component::Negative> + ::core::marker::Send + 'static },
+        Some(quote! { #ns::#export_trait<::hyperlight_common::component::Positive, I> }),
         true,
     );
     s.root_mod
@@ -312,11 +316,16 @@ fn emit_component<'a, 'b, 'c>(
         .iter()
         .map(|ed| emit_import_extern_decl(&mut s, ed))
         .collect::<Vec<_>>();
-
     s.var_offset = 0;
-
-    s.is_export = true;
-
+    s.positivity_param = Some(quote! { ::hyperlight_common::component::Positive });
+    // We don't set s.self_param_var or s.import_param_var at all
+    // here, because it is currently obviated by the (s.is_guest &&
+    // s.is_impl) hack in rtypes::emit_resource_ref. For when we
+    // eventually do:
+    //
+    // See Note [Origin paths and self parameters in impl codegen for higher-order components]
+    // in emit.rs
+    s.cur_trait = Some(export_trait.clone());
     let exports = ct
         .instance
         .unqualified
@@ -326,7 +335,7 @@ fn emit_component<'a, 'b, 'c>(
         .collect::<Vec<_>>();
 
     s.root_mod.items.extend(quote! {
-        impl #ns::#import_trait for Host {
+        impl #ns::#import_trait<::hyperlight_common::component::Negative> for Host {
             #(#imports)*
         }
     });
@@ -344,7 +353,7 @@ fn emit_component<'a, 'b, 'c>(
 /// - functions when given a type that implements the `Guest` trait
 pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Component<'b>) {
     s.is_impl = true;
-    log::debug!("\n\n=== starting guest emit ===\n");
+    tracing::debug!("\n\n=== starting guest emit ===\n");
     let wn = split_wit_name(n);
 
     let ns = wn.namespace_path();
@@ -358,7 +367,7 @@ pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Comp
         /// Because Hyperlight guest functions can't close over any
         /// state, this function is used on each guest call to acquire
         /// any state that the guest functions might need.
-        pub trait Guest: #ns::#export_trait<Host> {
+        pub trait Guest: #ns::#export_trait<::hyperlight_common::component::Positive, Host> {
             fn with_guest_state<R, F: FnOnce(&mut Self) -> R>(f: F) -> R;
         }
         /// Register all guest functions.

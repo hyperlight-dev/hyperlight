@@ -1,0 +1,46 @@
+name: Ready-for-review (collect)
+
+# Stage 1 of a two-stage pipeline that removes the "ready-for-review" label from
+# a pull request once it is no longer awaiting review.
+#
+# Pull-request and review events originating from FORKED repositories only ever
+# receive a read-only GITHUB_TOKEN, so a workflow triggered directly by them
+# cannot modify labels.
+# This stage therefore performs no privileged work: it
+# simply records the pull-request number and hands it to the privileged
+# "Ready-for-review (manage)" workflow, which is triggered via `workflow_run`
+# and runs with a read-write token. See
+# ready-for-review-manage.yml.
+on:
+  pull_request:
+    types: [closed, converted_to_draft]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# Serialise runs per pull request so that concurrent events cannot race.
+concurrency:
+  group: ready-for-review-collect-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record the pull-request number
+        env:
+          # Always a GitHub-provided integer; present on both the pull_request
+          # and pull_request_review event payloads.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p pr
+          printf '%s' "$PR_NUMBER" > pr/pr_number
+
+      - name: Upload the pull-request number
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ready-for-review-pr-number
+          path: pr/
+          retention-days: 1

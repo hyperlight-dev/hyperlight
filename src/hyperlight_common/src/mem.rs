@@ -14,12 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub const PAGE_SHIFT: u64 = 12;
-pub const PAGE_SIZE: u64 = 1 << 12;
-pub const PAGE_SIZE_USIZE: usize = 1 << 12;
-
 /// A memory region in the guest address space
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct GuestMemoryRegion {
     /// The size of the memory region
@@ -28,25 +24,43 @@ pub struct GuestMemoryRegion {
     pub ptr: u64,
 }
 
-/// A memory region in the guest address space that is used for the stack
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GuestStack {
-    /// The top of the user stack
-    pub min_user_stack_address: u64,
-    /// The user stack pointer
-    pub user_stack_address: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct HyperlightPEB {
-    pub security_cookie_seed: u64,
-    pub guest_function_dispatch_ptr: u64,
     pub input_stack: GuestMemoryRegion,
     pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
-    pub guest_stack: GuestStack,
-    pub host_function_definitions: GuestMemoryRegion,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peb_round_trip() {
+        let peb = HyperlightPEB {
+            input_stack: GuestMemoryRegion {
+                size: 0x1111,
+                ptr: 0x2222,
+            },
+            output_stack: GuestMemoryRegion {
+                size: 0x3333,
+                ptr: 0x4444,
+            },
+            init_data: GuestMemoryRegion {
+                size: 0x5555,
+                ptr: 0x6666,
+            },
+            guest_heap: GuestMemoryRegion {
+                size: 0x7777,
+                ptr: 0x8888,
+            },
+        };
+        let bytes = bytemuck::bytes_of(&peb);
+        let peb2 = *bytemuck::from_bytes::<HyperlightPEB>(bytes);
+        let peb2_bytes = bytemuck::bytes_of(&peb2);
+        assert_eq!(peb, peb2);
+        assert_eq!(bytes, peb2_bytes);
+    }
 }

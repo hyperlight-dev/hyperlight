@@ -22,19 +22,20 @@ permissions:
 
 jobs:
   publish-hyperlight-packages:
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=publish-hyperlight-packages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
 
     if: ${{ startsWith(github.ref, 'refs/heads/release/v') || inputs.dry_run }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          submodules: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
         with:
-          rust-toolchain: "1.89"
+          rust-toolchain: "1.94"
 
       - name: Check crate versions
         shell: bash
@@ -69,6 +70,7 @@ jobs:
             fi
           }
           
+          needs_publish hyperlight-libc
           needs_publish hyperlight-common
           needs_publish hyperlight-guest
           needs_publish hyperlight-guest-macro
@@ -79,8 +81,15 @@ jobs:
           needs_publish hyperlight-guest-tracing
 
       - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
         id: crates-io-auth
+
+      - name: Publish hyperlight-libc
+        continue-on-error: ${{ inputs.dry_run }}
+        run: cargo publish --manifest-path ./src/hyperlight_libc/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+        if: env.PUBLISH_HYPERLIGHT_LIBC != 'false'
         
       - name: Publish hyperlight-common
         continue-on-error: ${{ inputs.dry_run }}

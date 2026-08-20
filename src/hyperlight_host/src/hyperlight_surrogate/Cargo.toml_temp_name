@@ -9,6 +9,17 @@ edition = "2021"
 
 [dependencies]
 
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+panic = "abort"
+
 # Note - This crate will currently get built during the build.rs script for the hyperlight-host crate.
 # Cargo package does not allow for files named 'Cargo.toml' to be included in a crate so we'll rename
 # during the build.rs script so this file can be included with source for hyperlight_surrogate.exe 

@@ -21,15 +21,25 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_guest::bail;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::exit::halt;
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
-type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
+core::arch::global_asm!(
+    ".weak guest_dispatch_function",
+    ".set guest_dispatch_function, {}",
+    sym guest_dispatch_function_default,
+);
 
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+#[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
+fn guest_dispatch_function_default(function_call: FunctionCall) -> Result<Vec<u8>> {
+    let name = &function_call.function_name;
+    bail!(ErrorCode::GuestFunctionNotFound => "No handler found for function call: {name:#?}");
+}
+
+#[instrument(skip_all, level = "Info")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
@@ -59,14 +69,10 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
         // Verify that the function call has the correct parameter types and length.
         registered_function_definition.verify_parameters(&function_call_parameter_types)?;
 
-        let p_function = unsafe {
-            let function_pointer = registered_function_definition.function_pointer;
-            core::mem::transmute::<usize, GuestFunc>(function_pointer)
-        };
-
-        p_function(&function_call)
+        (registered_function_definition.function_pointer)(function_call)
     } else {
-        // The given function is not registered. The guest should implement a function called guest_dispatch_function to handle this.
+        // The given function is not registered. The guest should implement a function called
+        // guest_dispatch_function to handle this.
 
         // TODO: ideally we would define a default implementation of this with weak linkage so the guest is not required
         // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
@@ -79,22 +85,28 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
     }
 }
 
-// This function is marked as no_mangle/inline to prevent the compiler from inlining it , if its inlined the epilogue will not be called
-// and we will leak memory as the epilogue will not be called as halt() is not going to return.
-//
-// This function may panic, as we have no other ways of dealing with errors at this level
-#[unsafe(no_mangle)]
-#[inline(never)]
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-fn internal_dispatch_function() {
-    let handle = unsafe { GUEST_HANDLE };
+pub(crate) fn internal_dispatch_function() {
+    // Read the current TSC to report it to the host with the spans/events
+    // This helps calculating the timestamps relative to the guest call
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
+    let _entered = {
+        let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        // Reset the trace state for the new guest function call with the new start TSC
+        // This clears any existing spans/events from previous calls ensuring a clean state
+        hyperlight_guest_tracing::new_call(guest_start_tsc);
 
-    #[cfg(debug_assertions)]
-    log::trace!("internal_dispatch_function");
+        tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
+    };
+
+    let handle = unsafe { GUEST_HANDLE };
 
     let function_call = handle
         .try_pop_shared_input_data_into::<FunctionCall>()
         .expect("Function call deserialization failed");
+
+    // Reseed the libc PRNG if requested by the host.
+    #[cfg(feature = "libc")]
+    crate::refresh_libc_rng();
 
     let res = call_guest_function(function_call);
 
@@ -114,35 +126,21 @@ fn internal_dispatch_function() {
                 .expect("Failed to serialize function call result");
         }
     }
-}
 
-// This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
-// which if it were included in the internal_dispatch_function cause the epilogue to not be called because the halt() would not return
-// when running in the hypervisor.
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) extern "C" fn dispatch_function() {
-    // The hyperlight host likes to use one partition and reset it in
-    // various ways; if that has happened, there might stale TLB
-    // entries hanging around from the former user of the
-    // partition. Flushing the TLB here is not quite the right thing
-    // to do, since incorrectly cached entries could make even this
-    // code not exist, but regrettably there is not a simple way for
-    // the host to trigger flushing when it ought to happen, so for
-    // now this works in practice, since the text segment is always
-    // part of the big identity-mapped region at the base of the
-    // guest.
-    crate::paging::flush_tlb();
-
-    // Read the current TSC to report it to the host with the spans/events
-    // This helps calculating the timestamps relative to the guest call
-    #[cfg(feature = "trace_guest")]
+    // All this tracing logic shall be done right before the call to `hlt` which is done after this
+    // function returns
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     {
-        let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
-        // Reset the trace state for the new guest function call with the new start TSC
-        // This clears any existing spans/events from previous calls ensuring a clean state
-        hyperlight_guest_tracing::new_call(guest_start_tsc);
-    }
+        // This span captures the internal dispatch function only, without tracing internals.
+        // Close the span before flushing to ensure that the `flush` call is not included in the span
+        // NOTE: This is necessary to avoid closing the span twice. Flush closes all the open
+        // spans, when preparing to close a guest function call context.
+        // It is not mandatory, though, but avoids a warning on the host that alerts a spans
+        // that has not been opened but is being closed.
+        _entered.exit();
 
-    internal_dispatch_function();
-    halt();
+        // Ensure that any tracing output during the call is flushed to
+        // the host, if necessary.
+        hyperlight_guest_tracing::flush();
+    }
 }

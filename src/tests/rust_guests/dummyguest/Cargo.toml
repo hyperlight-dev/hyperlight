@@ -5,7 +5,7 @@ edition = "2021"
 
 
 [dependencies]
-hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
+hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin", default-features = false }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 
 [features]

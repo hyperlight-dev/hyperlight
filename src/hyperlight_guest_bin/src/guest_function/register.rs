@@ -19,19 +19,27 @@ use alloc::string::String;
 
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 
-use super::definition::GuestFunctionDefinition;
+use super::definition::{GuestFunc, GuestFunctionDefinition};
 use crate::REGISTERED_GUEST_FUNCTIONS;
 use crate::guest_function::definition::AsGuestFunctionDefinition;
 
 /// Represents the functions that the guest exposes to the host.
-#[derive(Debug, Default, Clone)]
-pub struct GuestFunctionRegister {
+#[derive(Debug, Clone)]
+pub struct GuestFunctionRegister<F: Copy> {
     /// Currently registered guest functions
-    guest_functions: BTreeMap<String, GuestFunctionDefinition>,
+    guest_functions: BTreeMap<String, GuestFunctionDefinition<F>>,
 }
 
-impl GuestFunctionRegister {
-    /// Create a new `GuestFunctionDetails`.
+impl<F: Copy> Default for GuestFunctionRegister<F> {
+    fn default() -> Self {
+        Self {
+            guest_functions: BTreeMap::new(),
+        }
+    }
+}
+
+impl<F: Copy> GuestFunctionRegister<F> {
+    /// Create a new `GuestFunctionRegister`.
     pub const fn new() -> Self {
         Self {
             guest_functions: BTreeMap::new(),
@@ -44,12 +52,19 @@ impl GuestFunctionRegister {
     /// otherwise the previous `GuestFunctionDefinition` is returned.
     pub fn register(
         &mut self,
-        guest_function: GuestFunctionDefinition,
-    ) -> Option<GuestFunctionDefinition> {
+        guest_function: GuestFunctionDefinition<F>,
+    ) -> Option<GuestFunctionDefinition<F>> {
         self.guest_functions
             .insert(guest_function.function_name.clone(), guest_function)
     }
 
+    /// Gets a `GuestFunctionDefinition` by its `name` field.
+    pub fn get(&self, function_name: &str) -> Option<&GuestFunctionDefinition<F>> {
+        self.guest_functions.get(function_name)
+    }
+}
+
+impl GuestFunctionRegister<GuestFunc> {
     pub fn register_fn<Output, Args>(
         &mut self,
         name: impl Into<String>,
@@ -61,14 +76,9 @@ impl GuestFunctionRegister {
         let gfd = f.as_guest_function_definition(name);
         self.register(gfd);
     }
-
-    /// Gets a `GuestFunctionDefinition` by its `name` field.
-    pub fn get(&self, function_name: &str) -> Option<&GuestFunctionDefinition> {
-        self.guest_functions.get(function_name)
-    }
 }
 
-pub fn register_function(function_definition: GuestFunctionDefinition) {
+pub fn register_function(function_definition: GuestFunctionDefinition<GuestFunc>) {
     unsafe {
         // This is currently safe, because we are single threaded, but we
         // should find a better way to do this, see issue #808

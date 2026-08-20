@@ -16,7 +16,7 @@ limitations under the License.
 
 #![no_std]
 #![no_main]
-const DEFAULT_GUEST_STACK_SIZE: i32 = 65536; // default stack size
+const DEFAULT_GUEST_SCRATCH_SIZE: i32 = 0x40000; // default scratch size
 const MAX_BUFFER_SIZE: usize = 1024;
 // ^^^ arbitrary value for max buffer size
 // to support allocations when we'd get a
@@ -32,7 +32,8 @@ use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
-use core::ptr::write_volatile;
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -42,28 +43,35 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
-use hyperlight_guest_bin::exceptions::handler::{Context, ExceptionInfo};
-use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+#[cfg(target_arch = "x86_64")]
+use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
+use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
     call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
     print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_function, guest_logger, host_function};
-use log::{LevelFilter, error};
-use tracing::{Span, instrument};
+use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
+// `log` is intentionally kept here: the LogMessage guest function exercises the
+// guest-side `log` crate path to verify that guests using `log` are still supported.
+use log::LevelFilter;
+use tracing::{Span, error, instrument};
 
 extern crate hyperlight_guest;
 
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 // Exception handler test state
 static HANDLER_INVOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_VALUE: u64 = 0x1234567890ABCDEF;
+#[cfg(target_arch = "x86_64")]
 const TEST_R9_MODIFIED_VALUE: u64 = 0xBADC0FFEE;
+#[cfg(target_arch = "x86_64")]
 const TEST_R10_VALUE: u64 = 0xDEADBEEF;
 
 #[guest_function("SetStatic")]
@@ -83,6 +91,7 @@ fn echo_double(value: f64) -> f64 {
 
 // Test exception handler that validates stack layout and records invocation
 // It is designed to interact with the trigger_int3 breakpoint exception function below
+#[cfg(target_arch = "x86_64")]
 fn test_exception_handler(
     exception_number: u64,
     _exception_info: *mut ExceptionInfo,
@@ -131,9 +140,17 @@ fn test_exception_handler(
 
 /// Install handler for a specific vector
 #[guest_function("InstallHandler")]
+#[cfg(target_arch = "x86_64")]
 fn install_handler(vector: i32) {
-    hyperlight_guest_bin::exceptions::handler::HANDLERS[vector as usize]
-        .store(test_exception_handler as usize as u64, Ordering::Release);
+    // The exception handler increments a counter that starts on a
+    // copy-on-write page. Write the counter once here so its page copies
+    // into scratch. The handler then increments a writable page and does
+    // not fault while it runs on the exception stack.
+    HANDLER_INVOCATION_COUNT.fetch_add(0, Ordering::SeqCst);
+    hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize].store(
+        test_exception_handler as *const () as usize as u64,
+        Ordering::Release,
+    );
 }
 
 /// Get how many times the handler was invoked
@@ -145,6 +162,7 @@ fn get_exception_handler_call_count() -> i32 {
 
 /// Trigger an INT3 breakpoint exception (vector 3)
 #[guest_function("TriggerInt3")]
+#[cfg(target_arch = "x86_64")]
 fn trigger_int3() -> i32 {
     // Set up test value in R9 before triggering exception
     let test_value: u64 = TEST_R9_VALUE;
@@ -318,8 +336,8 @@ fn loop_stack_overflow(i: i32) {
 
 #[guest_function("LargeVar")]
 fn large_var() -> i32 {
-    let _buffer = black_box([0u8; (DEFAULT_GUEST_STACK_SIZE + 1) as usize]);
-    DEFAULT_GUEST_STACK_SIZE + 1
+    let _buffer = black_box([0u8; DEFAULT_GUEST_SCRATCH_SIZE as usize]);
+    DEFAULT_GUEST_SCRATCH_SIZE
 }
 
 #[guest_function("SmallVar")]
@@ -346,7 +364,7 @@ fn fill_heap_and_cause_exception() {
     }
 
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    trigger_exception();
 }
 
 #[guest_function("ExhaustHeap")]
@@ -368,11 +386,7 @@ fn exhaust_heap() {
 
 #[guest_function("MallocAndFree")]
 fn malloc_and_free(size: i32) -> i32 {
-    let alloc_length = if size < DEFAULT_GUEST_STACK_SIZE {
-        size
-    } else {
-        size.min(MAX_BUFFER_SIZE as i32)
-    };
+    let alloc_length = size.min(MAX_BUFFER_SIZE as i32);
     let allocated_buffer = vec![0; alloc_length as usize];
     drop(allocated_buffer);
 
@@ -387,6 +401,132 @@ fn echo(value: String) -> String {
 #[guest_function("GetSizePrefixedBuffer")]
 fn get_size_prefixed_buffer(data: Vec<u8>) -> Vec<u8> {
     data
+}
+
+#[guest_function("EchoI32")]
+fn echo_i32(v: i32) -> i32 {
+    v
+}
+
+#[guest_function("EchoU32")]
+fn echo_u32(v: u32) -> u32 {
+    v
+}
+
+#[guest_function("EchoI64")]
+fn echo_i64(v: i64) -> i64 {
+    v
+}
+
+#[guest_function("EchoU64")]
+fn echo_u64(v: u64) -> u64 {
+    v
+}
+
+#[guest_function("EchoBool")]
+fn echo_bool(v: bool) -> bool {
+    v
+}
+
+#[guest_function("NoOp")]
+fn no_op() {}
+
+#[host_function("HostEchoI32")]
+fn host_echo_i32(v: i32) -> Result<i32>;
+
+#[host_function("HostEchoU32")]
+fn host_echo_u32(v: u32) -> Result<u32>;
+
+#[host_function("HostEchoI64")]
+fn host_echo_i64(v: i64) -> Result<i64>;
+
+#[host_function("HostEchoU64")]
+fn host_echo_u64(v: u64) -> Result<u64>;
+
+#[host_function("HostEchoF32")]
+fn host_echo_f32(v: f32) -> Result<f32>;
+
+#[host_function("HostEchoF64")]
+fn host_echo_f64(v: f64) -> Result<f64>;
+
+#[host_function("HostEchoBool")]
+fn host_echo_bool(v: bool) -> Result<bool>;
+
+#[host_function("HostEchoString")]
+fn host_echo_string(v: String) -> Result<String>;
+
+#[host_function("HostEchoVecBytes")]
+fn host_echo_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>>;
+
+#[host_function("HostNoOp")]
+fn host_noop() -> Result<()>;
+
+#[guest_function("RoundTripHostI32")]
+fn round_trip_host_i32(v: i32) -> Result<i32> {
+    host_echo_i32(v)
+}
+
+#[guest_function("RoundTripHostU32")]
+fn round_trip_host_u32(v: u32) -> Result<u32> {
+    host_echo_u32(v)
+}
+
+#[guest_function("RoundTripHostI64")]
+fn round_trip_host_i64(v: i64) -> Result<i64> {
+    host_echo_i64(v)
+}
+
+#[guest_function("RoundTripHostU64")]
+fn round_trip_host_u64(v: u64) -> Result<u64> {
+    host_echo_u64(v)
+}
+
+#[guest_function("RoundTripHostF32")]
+fn round_trip_host_f32(v: f32) -> Result<f32> {
+    host_echo_f32(v)
+}
+
+#[guest_function("RoundTripHostF64")]
+fn round_trip_host_f64(v: f64) -> Result<f64> {
+    host_echo_f64(v)
+}
+
+#[guest_function("RoundTripHostBool")]
+fn round_trip_host_bool(v: bool) -> Result<bool> {
+    host_echo_bool(v)
+}
+
+#[guest_function("RoundTripHostString")]
+fn round_trip_host_string(v: String) -> Result<String> {
+    host_echo_string(v)
+}
+
+#[guest_function("RoundTripHostVecBytes")]
+fn round_trip_host_vec_bytes(v: Vec<u8>) -> Result<Vec<u8>> {
+    host_echo_vec_bytes(v)
+}
+
+#[guest_function("RoundTripHostNoOp")]
+fn round_trip_host_noop() -> Result<()> {
+    host_noop()
+}
+
+static mut HEAP_PATTERN: Option<Vec<u8>> = None;
+
+#[guest_function("AllocAndWritePattern")]
+fn alloc_and_write_pattern(len: u64) {
+    let v: Vec<u8> = (0..len as usize).map(|i| (i & 0xff) as u8).collect();
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { HEAP_PATTERN = Some(v) };
+}
+
+#[guest_function("ReadPattern")]
+fn read_pattern() -> Vec<u8> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        HEAP_PATTERN.clone().unwrap_or_default()
+    }
 }
 
 #[expect(
@@ -447,49 +587,23 @@ fn test_guest_panic(message: String) {
     panic!("{}", message);
 }
 
-#[guest_function]
-fn test_write_raw_ptr(offset: i64) -> String {
-    let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
-    let page_guard_start = min_stack_addr - PAGE_SIZE;
-    let addr = {
-        let abs = u64::try_from(offset.abs())
-            .map_err(|_| error!("Invalid offset"))
-            .unwrap();
-        if offset.is_negative() {
-            page_guard_start - abs
-        } else {
-            page_guard_start + abs
-        }
-    };
-    unsafe {
-        // host_print(format!("writing to {:#x}\n", addr).as_str());
-        write_volatile(addr as *mut u8, 0u8);
-    }
-    String::from("success")
-}
-
-#[guest_function("ExecuteOnStack")]
-fn execute_on_stack() -> String {
-    unsafe {
-        let mut noop: u8 = 0x90;
-        let stack_fn: fn() = core::mem::transmute(&mut noop as *mut u8);
-        stack_fn();
-    };
-    // will only reach this point if stack is executable
-    String::from("fail")
-}
-
 #[guest_function("ExecuteOnHeap")]
 fn execute_on_heap() -> String {
     unsafe {
         // NO-OP followed by RET
-        let heap_memory = Box::new([0x90u8, 0xC3]);
+        let mut heap_memory = Box::new(
+            #[cfg(target_arch = "x86_64")]
+            [0x90u8, 0xC3],
+            #[cfg(target_arch = "aarch64")]
+            [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6],
+        );
+        dicachesync(heap_memory.as_mut_ptr(), heap_memory.len());
         let heap_fn: fn() = core::mem::transmute(Box::into_raw(heap_memory));
         heap_fn();
         black_box(heap_fn); // avoid optimization when running in release mode
     }
     // will only reach this point if heap is executable
-    String::from("fail")
+    String::from("Executed on heap successfully")
 }
 
 #[guest_function("TestMalloc")]
@@ -500,10 +614,15 @@ fn test_rust_malloc(code: i32) -> i32 {
 
 #[guest_function("LogMessage")]
 fn log_message(message: String, level: i32) {
-    let level = LevelFilter::iter().nth(level as usize).unwrap().to_level();
+    let level_filter =
+        LevelFilter::from(GuestLogFilter::try_from(level as u64).expect("Invalid log level"));
+    let level = level_filter.to_level();
 
     match level {
-        Some(level) => log::log!(level, "{}", &message),
+        Some(level) => {
+            // Shall not fail because we have already validated the log level
+            log::log!(level, "{}", &message)
+        }
         None => {
             // was passed LevelFilter::Off, do nothing
         }
@@ -513,7 +632,204 @@ fn log_message(message: String, level: i32) {
 #[guest_function("TriggerException")]
 fn trigger_exception() {
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("udf #0")
+    };
+}
+
+/// Execute an OUT instruction with an arbitrary port and value.
+/// This is used to test that invalid OUT ports cause errors.
+#[guest_function("OutbWithPort")]
+fn outb_with_port(port: u32, value: u32) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") port as u16,
+            in("eax") value,
+            options(preserves_flags, nomem, nostack)
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        (hyperlight_common::layout::io_page().unwrap().1 as *mut u64)
+            .wrapping_add(port as usize)
+            .write_volatile(value as u64);
+    }
+}
+
+// =============================================================================
+// Hardware timer interrupt test infrastructure
+// =============================================================================
+
+/// Counter incremented by the timer interrupt handler.
+#[cfg(target_arch = "x86_64")]
+static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+// Timer IRQ handler (vector 0x20 = IRQ0 after PIC remapping).
+// Increments the global counter, sends PIC EOI, and returns from interrupt.
+//
+// This handler is intentionally minimal: it only touches RAX, uses `lock inc`
+// for the atomic counter update, and sends a non-specific EOI to the master PIC.
+//
+// NOTE: global_asm! on x86_64 in Rust defaults to Intel syntax.
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".globl _timer_irq_handler",
+    "_timer_irq_handler:",
+    "push rax",
+    "lock inc dword ptr [rip + {counter}]",
+    "mov al, 0x20",
+    "out 0x20, al",
+    "pop rax",
+    "iretq",
+    counter = sym TIMER_IRQ_COUNT,
+);
+
+unsafe extern "C" {
+    fn _timer_irq_handler();
+}
+
+/// IDT pointer structure for SIDT/LIDT instructions.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, packed)]
+struct IdtPtr {
+    limit: u16,
+    base: u64,
+}
+
+/// Test hardware timer interrupt delivery.
+///
+/// This function:
+/// 1. Initializes the PIC (remaps IRQ0 to vector 0x20)
+/// 2. Installs an IDT entry for vector 0x20 pointing to `_timer_irq_handler`
+/// 3. Programs PIT channel 0 as a rate generator at the requested period
+/// 4. Arms the PV timer by writing the period to VmAction::PvTimerConfig port (for MSHV/WHP)
+/// 5. Enables interrupts (STI) and busy-waits for timer delivery
+/// 6. Disables interrupts (CLI) and returns the interrupt count
+///
+/// Parameters:
+/// - `period_us`: timer period in microseconds (written to VmAction::PvTimerConfig port)
+/// - `max_spin`:  maximum busy-wait iterations before giving up
+///
+/// Returns the number of timer interrupts received.
+#[cfg(target_arch = "x86_64")]
+#[guest_function("TestTimerInterrupts")]
+fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
+    // Reset counter
+    TIMER_IRQ_COUNT.store(0, Ordering::SeqCst);
+
+    // 1) Initialize PIC — remap IRQ0 to vector 0x20
+    unsafe {
+        // Master PIC
+        core::arch::asm!("out 0x20, al", in("al") 0x11u8, options(nomem, nostack)); // ICW1
+        core::arch::asm!("out 0x21, al", in("al") 0x20u8, options(nomem, nostack)); // ICW2: base 0x20
+        core::arch::asm!("out 0x21, al", in("al") 0x04u8, options(nomem, nostack)); // ICW3
+        core::arch::asm!("out 0x21, al", in("al") 0x01u8, options(nomem, nostack)); // ICW4
+        core::arch::asm!("out 0x21, al", in("al") 0xFEu8, options(nomem, nostack)); // IMR: unmask IRQ0
+
+        // Slave PIC
+        core::arch::asm!("out 0xA0, al", in("al") 0x11u8, options(nomem, nostack)); // ICW1
+        core::arch::asm!("out 0xA1, al", in("al") 0x28u8, options(nomem, nostack)); // ICW2: base 0x28
+        core::arch::asm!("out 0xA1, al", in("al") 0x02u8, options(nomem, nostack)); // ICW3
+        core::arch::asm!("out 0xA1, al", in("al") 0x01u8, options(nomem, nostack)); // ICW4
+        core::arch::asm!("out 0xA1, al", in("al") 0xFFu8, options(nomem, nostack)); // IMR: mask all
+    }
+
+    // 2) Install IDT entry for vector 0x20 (timer interrupt)
+    let handler_addr = _timer_irq_handler as *const () as u64;
+
+    // Read current IDT base via SIDT
+    let mut idtr = IdtPtr { limit: 0, base: 0 };
+    unsafe {
+        core::arch::asm!(
+            "sidt [{}]",
+            in(reg) &mut idtr as *mut IdtPtr,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    // Vector 0x20 needs bytes at offset 0x200..0x210 (16-byte entry).
+    // Ensure the IDT is large enough.
+    const VECTOR: usize = 0x20;
+    let required_end = (VECTOR + 1) * 16; // byte just past the entry
+    if (idtr.limit as usize + 1) < required_end {
+        return -1; // IDT too small
+    }
+
+    // Write a 16-byte IDT entry at vector 0x20 (offset = 0x20 * 16 = 0x200)
+    let entry_ptr = (idtr.base as usize + VECTOR * 16) as *mut u8;
+    unsafe {
+        // offset_low (bits 0-15 of handler)
+        core::ptr::write_volatile(entry_ptr as *mut u16, handler_addr as u16);
+        // selector: 0x08 = kernel code segment
+        core::ptr::write_volatile(entry_ptr.add(2) as *mut u16, 0x08);
+        // IST=0, reserved=0
+        core::ptr::write_volatile(entry_ptr.add(4), 0);
+        // type_attr: 0x8E = interrupt gate, present, DPL=0
+        core::ptr::write_volatile(entry_ptr.add(5), 0x8E);
+        // offset_mid (bits 16-31)
+        core::ptr::write_volatile(entry_ptr.add(6) as *mut u16, (handler_addr >> 16) as u16);
+        // offset_high (bits 32-63)
+        core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, (handler_addr >> 32) as u32);
+        // reserved
+        core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
+    }
+
+    // Ensure the IDT writes are visible before enabling interrupts.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+    // 3) Program PIT channel 0 as rate generator (mode 2).
+    //    Divisor = period_us * 1_193_182 / 1_000_000 (PIT oscillator is 1.193182 MHz).
+    //    On KVM the in-kernel PIT handles these IO writes directly.
+    //    On MSHV/WHP these ports are silently absorbed (timer is set via VmAction::PvTimerConfig).
+    if period_us <= 0 {
+        return -1; // invalid period
+    }
+    let divisor = ((period_us as u64) * 1_193_182 / 1_000_000).clamp(1, 0xFFFF) as u16;
+    unsafe {
+        // Command: channel 0, lobyte/hibyte access, mode 2 (rate generator)
+        core::arch::asm!("out 0x43, al", in("al") 0x34u8, options(nomem, nostack));
+        // Channel 0 data: low byte of divisor
+        core::arch::asm!("out 0x40, al", in("al") (divisor & 0xFF) as u8, options(nomem, nostack));
+        // Channel 0 data: high byte of divisor
+        core::arch::asm!("out 0x40, al", in("al") (divisor >> 8) as u8, options(nomem, nostack));
+    }
+
+    // 4) Arm timer: write period_us to VmAction::PvTimerConfig port
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") hyperlight_common::outb::VmAction::PvTimerConfig as u16,
+            in("eax") period_us as u32,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    // 5) Enable interrupts and wait for at least one timer tick
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+
+    let max = max_spin as u32;
+    for _ in 0..max {
+        if TIMER_IRQ_COUNT.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // 6) Disable interrupts and return count
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+
+    TIMER_IRQ_COUNT.load(Ordering::SeqCst) as i32
 }
 
 static mut COUNTER: i32 = 0;
@@ -552,9 +868,86 @@ fn call_given_paramless_hostfunc_that_returns_i64(hostfuncname: String) -> Resul
 }
 
 #[guest_function("UseSSE2Registers")]
+#[cfg(target_arch = "x86_64")]
 fn use_sse2_registers() {
     let val: f32 = 1.2f32;
     unsafe { core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val) };
+}
+
+#[guest_function("SetDr0")]
+fn set_dr0(value: u64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov dr0, {}", in(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr dbgbvr0_el1, {}", in(reg) value)
+    };
+}
+
+#[guest_function("GetDr0")]
+fn get_dr0() -> u64 {
+    let value: u64;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, dr0", out(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, dbgbvr0_el1", out(reg) value)
+    };
+    value
+}
+
+#[guest_function("ReadXcr0")]
+#[cfg(target_arch = "x86_64")]
+fn read_xcr0() -> u64 {
+    let value_low: u32;
+    let value_high: u32;
+    // SAFETY: The test guest runs at CPL0. CR4 is restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {osxsave}",
+            "mov cr4, {enabled_cr4}",
+            "xgetbv",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            osxsave = const 1u64 << 18,
+            in("ecx") 0u32,
+            out("eax") value_low,
+            out("edx") value_high,
+            options(nostack, nomem)
+        );
+    }
+    ((value_high as u64) << 32) | value_low as u64
+}
+
+#[guest_function("WriteXcr0")]
+#[cfg(target_arch = "x86_64")]
+fn write_xcr0(value: u64) {
+    // SAFETY: The test guest runs at CPL0. The caller supplies a valid XCR0
+    // value, and CR4 is restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {osxsave}",
+            "mov cr4, {enabled_cr4}",
+            "xsetbv",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            osxsave = const 1u64 << 18,
+            in("ecx") 0u32,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nostack, nomem)
+        );
+    }
 }
 
 #[guest_function("Add")]
@@ -588,15 +981,36 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
 }
 
 #[guest_function("ReadMappedBuffer")]
-fn read_mapped_buffer(base: u64, len: u64) -> Vec<u8> {
+fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     let base = base as usize as *const u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    if do_map {
+        unsafe {
+            hyperlight_guest_bin::paging::map_region(
+                base as _,
+                base as _,
+                len as u64 + 4096,
+                MappingKind::Basic(BasicMapping {
+                    readable: true,
+                    writable: true,
+                    executable: true,
+                }),
+            );
+            hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+        }
+    }
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
 
     data.to_vec()
+}
+
+#[guest_function("CheckMapped")]
+fn check_mapped_buffer(base: u64) -> bool {
+    hyperlight_guest_bin::paging::virt_to_phys(base)
+        .next()
+        .is_some()
 }
 
 #[guest_function("WriteMappedBuffer")]
@@ -604,7 +1018,19 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            base as _,
+            base as _,
+            len as u64 + 4096,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: true,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+    };
 
     let data = unsafe { core::slice::from_raw_parts_mut(base, len) };
 
@@ -615,17 +1041,86 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     true
 }
 
+fn dicachesync(_base: *mut u8, _len: usize) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let ctr_el0: u64;
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0);
+        let iminline = 4 * (1 << (ctr_el0 & 0xf));
+        #[allow(unused)]
+        let dminline = 4 * (1 << ((ctr_el0 >> 16) & 0xf));
+        // See the comment in the `KVM_EXIT_ARM_NISV` case of
+        // `run_vcpu` in
+        // src/hyperlight_host/src/hypervisor/virtual_machine/kvm.rs
+        // for an explanation of why this cache maintenance sequence
+        // is so complex.
+        core::arch::asm!("
+            ldr xzr, [{addr}]
+            msr nzcv, xzr
+            b 2f
+
+        0:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 3f
+        1:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 4f
+
+        2:  mov {tmp}, {addr}
+
+        3:  dc cvau, {tmp}
+            b.eq 0b
+            add {tmp}, {tmp}, {dminline:x}
+            cmp {tmp}, {max}
+            b.lt 3b
+
+            dsb ish
+
+            mov {tmp}, {addr}
+
+        4:  ic ivau, {tmp}
+            b.eq 1b
+            add {tmp}, {tmp}, {iminline:x}
+            cmp {tmp}, {max}
+            b.lt 4b
+
+            dsb ish
+            isb
+        ",
+            iminline = in(reg) iminline,
+            dminline = in(reg) dminline,
+            addr = in(reg) _base as usize,
+            max = in(reg) _base as usize + _len,
+            tmp = out(reg) _);
+    }
+}
+
 #[guest_function("ExecMappedBuffer")]
 fn exec_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            base as _,
+            base as _,
+            len as u64 + 4096,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: true,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+    };
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
 
     // Should be safe as long as data is something like a NOOP followed by a RET
     let func: fn() = unsafe { core::mem::transmute(data.as_ptr()) };
+
+    dicachesync(base, len);
+
     func();
 
     true
@@ -650,14 +1145,270 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
-#[no_mangle]
+#[guest_function("ReadMSR")]
+#[cfg(target_arch = "x86_64")]
+fn read_msr(msr: u32) -> u64 {
+    let (read_eax, read_edx): (u32, u32);
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") read_eax,
+            out("edx") read_edx,
+            options(nostack, nomem)
+        );
+    }
+    ((read_edx as u64) << 32) | (read_eax as u64)
+}
+
+#[guest_function("IncrementActiveSsp")]
+#[cfg(target_arch = "x86_64")]
+fn increment_active_ssp() -> u64 {
+    const MSR_IA32_S_CET: u32 = 0x6A2;
+    const CR4_CET: u64 = 1 << 23;
+
+    let shadow_stack_gpa = unsafe { hyperlight_guest::prim_alloc::alloc_phys_pages(1) };
+    let shadow_stack = hyperlight_guest_bin::paging::phys_to_virt(shadow_stack_gpa)
+        .expect("allocated shadow stack is outside scratch");
+    let restore_token = (shadow_stack as u64 + 8) | 1;
+    unsafe {
+        core::ptr::write_volatile(shadow_stack.cast::<u64>(), restore_token);
+        hyperlight_guest_bin::paging::map_region(
+            shadow_stack_gpa,
+            shadow_stack,
+            hyperlight_common::vmem::PAGE_SIZE as u64,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: false,
+                executable: false,
+            }),
+        );
+        core::arch::asm!("invlpg [{shadow_stack}]", shadow_stack = in(reg) shadow_stack);
+    }
+
+    let original_s_cet = read_msr(MSR_IA32_S_CET);
+    let original_s_cet_low = original_s_cet as u32;
+    let original_s_cet_high = (original_s_cet >> 32) as u32;
+    let after: u64;
+
+    // SAFETY: The test guest runs at CPL0. The restore token is on a read-only, dirty page,
+    // and CET is disabled before the function returns.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {cet_cr4}, {original_cr4}",
+            "or {cet_cr4}, {cr4_cet}",
+            "mov cr4, {cet_cr4}",
+            "mov ecx, {s_cet}",
+            "mov eax, 1",
+            "xor edx, edx",
+            "wrmsr",
+            "rstorssp [{shadow_stack}]",
+            "incsspq {increment}",
+            "rdsspq {after}",
+            "mov ecx, {s_cet}",
+            "mov eax, {original_s_cet_low:e}",
+            "mov edx, {original_s_cet_high:e}",
+            "wrmsr",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            cet_cr4 = out(reg) _,
+            after = out(reg) after,
+            shadow_stack = in(reg) shadow_stack,
+            increment = in(reg) 1_u64,
+            original_s_cet_low = in(reg) original_s_cet_low,
+            original_s_cet_high = in(reg) original_s_cet_high,
+            s_cet = const MSR_IA32_S_CET,
+            cr4_cet = const CR4_CET,
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack)
+        );
+    }
+
+    after
+}
+
+#[guest_function("CetShadowStackSupported")]
+#[cfg(target_arch = "x86_64")]
+fn cet_shadow_stack_supported() -> bool {
+    core::arch::x86_64::__cpuid(0).eax >= 7
+        && core::arch::x86_64::__cpuid_count(7, 0).ecx & (1 << 7) != 0
+}
+
+#[guest_function("ReadActiveSsp")]
+#[cfg(target_arch = "x86_64")]
+fn read_active_ssp() -> u64 {
+    const MSR_IA32_S_CET: u32 = 0x6A2;
+    const CR4_CET: u64 = 1 << 23;
+
+    let original_s_cet = read_msr(MSR_IA32_S_CET);
+    let original_s_cet_low = original_s_cet as u32;
+    let original_s_cet_high = (original_s_cet >> 32) as u32;
+    let ssp: u64;
+
+    // SAFETY: The test guest runs at CPL0. RDSSPQ only reads the SSP register,
+    // and CET is disabled before the function returns.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {cet_cr4}, {original_cr4}",
+            "or {cet_cr4}, {cr4_cet}",
+            "mov cr4, {cet_cr4}",
+            "mov ecx, {s_cet}",
+            "mov eax, 1",
+            "xor edx, edx",
+            "wrmsr",
+            "rdsspq {ssp}",
+            "mov ecx, {s_cet}",
+            "mov eax, {original_s_cet_low:e}",
+            "mov edx, {original_s_cet_high:e}",
+            "wrmsr",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            cet_cr4 = out(reg) _,
+            ssp = out(reg) ssp,
+            original_s_cet_low = in(reg) original_s_cet_low,
+            original_s_cet_high = in(reg) original_s_cet_high,
+            s_cet = const MSR_IA32_S_CET,
+            cr4_cet = const CR4_CET,
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack)
+        );
+    }
+
+    ssp
+}
+
+#[guest_function("NestedVirtualizationCpuid")]
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn nested_virtualization_cpuid() -> u32 {
+    // SAFETY: CPUID leaves 0, 1, and 0x80000000 are always available on x86_64.
+    let vmx = unsafe { core::arch::x86_64::__cpuid(1) }.ecx & (1 << 5) != 0;
+    let max_extended = unsafe { core::arch::x86_64::__cpuid(0x8000_0000) }.eax;
+    let svm = max_extended >= 0x8000_0001
+        && unsafe { core::arch::x86_64::__cpuid(0x8000_0001) }.ecx & (1 << 2) != 0;
+    u32::from(vmx) | (u32::from(svm) << 1)
+}
+
+#[guest_function("WriteKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn write_kernel_gs_base_via_swapgs(value: u64) {
+    // SAFETY: The test guest runs at CPL0, and CR4 is restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "wrgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            fsgsbase = const 1 << 16,
+            value = in(reg) value,
+            options(nostack)
+        );
+    }
+}
+
+#[guest_function("ReadKernelGsBaseViaSwapgs")]
+#[cfg(target_arch = "x86_64")]
+fn read_kernel_gs_base_via_swapgs() -> u64 {
+    let value: u64;
+    // SAFETY: The test guest runs at CPL0, and SWAPGS and CR4 are restored before returning.
+    unsafe {
+        core::arch::asm!(
+            "mov {original_cr4}, cr4",
+            "mov {enabled_cr4}, {original_cr4}",
+            "or {enabled_cr4}, {fsgsbase}",
+            "mov cr4, {enabled_cr4}",
+            "swapgs",
+            "rdgsbase {value}",
+            "swapgs",
+            "mov cr4, {original_cr4}",
+            original_cr4 = out(reg) _,
+            enabled_cr4 = out(reg) _,
+            value = lateout(reg) value,
+            fsgsbase = const 1 << 16,
+            options(nostack)
+        );
+    }
+    value
+}
+
+#[guest_function("WriteMSR")]
+#[cfg(target_arch = "x86_64")]
+fn write_msr(msr: u32, value: u64) {
+    let eax = (value & 0xFFFFFFFF) as u32;
+    let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+    // SAFETY: The test guest runs at CPL0, and the operands declare every register used.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") eax,
+            in("edx") edx,
+            options(nostack, nomem)
+        );
+    }
+}
+
+/// Attempts to enter VMX operation by setting `CR4.VMXE`, the prerequisite for
+/// `VMXON` and any nested VM-enter or VM-exit. Hyperlight hides VMX from guest
+/// CPUID, so `CR4.VMXE` is a reserved bit and the write faults.
+#[guest_function("EnableVmxOperation")]
+#[cfg(target_arch = "x86_64")]
+fn enable_vmx_operation() {
+    // SAFETY: The test guest runs at CPL0. The write is expected to fault, and
+    // the sandbox is discarded afterward.
+    unsafe {
+        core::arch::asm!(
+            "mov {cr4}, cr4",
+            "or {cr4}, {vmxe}",
+            "mov cr4, {cr4}",
+            cr4 = out(reg) _,
+            vmxe = const 1u64 << 13,
+            options(nostack)
+        );
+    }
+}
+
+/// Returns whether the guest CPUID advertises x2APIC (`CPUID.1:ECX[21]`).
+#[guest_function("X2apicSupported")]
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn x2apic_supported() -> bool {
+    // SAFETY: CPUID leaf 1 is always available on x86_64.
+    unsafe { core::arch::x86_64::__cpuid(1) }.ecx & (1 << 21) != 0
+}
+
+/// Executes `VMLAUNCH`, a VM-enter. The guest can never enter VMX operation, so
+/// the instruction raises `#UD` before any VMCS-field MSR load or store runs.
+#[guest_function("ExecuteVmlaunch")]
+#[cfg(target_arch = "x86_64")]
+fn execute_vmlaunch() {
+    // SAFETY: The test guest runs at CPL0. The instruction is expected to fault
+    // (#UD outside VMX operation), and the sandbox is discarded afterward.
+    unsafe {
+        core::arch::asm!("vmlaunch", options(nostack));
+    }
+}
+
+#[hyperlight_guest_bin::main]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub extern "C" fn hyperlight_main() {
-    let print_output_def = GuestFunctionDefinition::new(
+fn main() {
+    let print_output_def = GuestFunctionDefinition::<GuestFunc>::new(
         "PrintOutputWithHostPrint".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        print_output_with_host_print as usize,
+        print_output_with_host_print,
     );
     register_function(print_output_def);
 }
@@ -757,7 +1508,7 @@ fn call_host_then_spin(host_func_name: String) -> Result<()> {
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn fuzz_traced_function(depth: u32, max_depth: u32, msg: &str) -> u32 {
     if depth < max_depth {
-        log::info!("{}", msg);
+        tracing::info!("{}", msg);
 
         fuzz_traced_function(depth + 1, max_depth, msg) + 1
     } else {
@@ -768,6 +1519,39 @@ fn fuzz_traced_function(depth: u32, max_depth: u32, msg: &str) -> u32 {
 #[guest_function("FuzzGuestTrace")]
 fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
+}
+
+#[guest_function("CorruptOutputSizePrefix")]
+fn corrupt_output_size_prefix() -> i32 {
+    unsafe {
+        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
+        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
+
+        // Write a fake stack entry with a ~4 GB size prefix (0xFFFF_FFFB + 4).
+        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
+        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
+        buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
+        buf[12..16].copy_from_slice(&[0u8; 4]);
+        buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
+    }
+}
+
+#[guest_function("CorruptOutputBackPointer")]
+fn corrupt_output_back_pointer() -> i32 {
+    unsafe {
+        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
+        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
+
+        // Write a fake stack entry with back-pointer 0xDEAD (past stack pointer 24).
+        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
+        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
+        buf[8..16].copy_from_slice(&[0u8; 8]);
+        buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
+    }
 }
 
 // Interprets the given guest function call as a host function call and dispatches it to the host.
@@ -815,9 +1599,9 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-#[no_mangle]
+#[hyperlight_guest_bin::dispatch]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+fn dispatch(function_call: FunctionCall) -> Result<Vec<u8>> {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.
     // If the stack is not working correctly, the input or output buffer will be

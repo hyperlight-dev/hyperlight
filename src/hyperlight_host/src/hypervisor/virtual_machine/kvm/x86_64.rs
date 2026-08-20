@@ -1,0 +1,837 @@
+/*
+Copyright 2025  The Hyperlight Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+use std::sync::LazyLock;
+
+use hyperlight_common::outb::VmAction;
+#[cfg(gdb)]
+use kvm_bindings::kvm_guest_debug;
+use kvm_bindings::{
+    Msrs, kvm_debugregs, kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
+    kvm_xsave,
+};
+use kvm_ioctls::Cap::UserMemory;
+use kvm_ioctls::{
+    Cap, Kvm, MsrFilterDefaultAction, MsrFilterRange, MsrFilterRangeFlags, VcpuExit, VcpuFd, VmFd,
+};
+use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+#[cfg(feature = "hw-interrupts")]
+use vmm_sys_util::eventfd::EventFd;
+
+#[cfg(gdb)]
+use crate::hypervisor::gdb::{DebugError, DebuggableVm};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
+    MSR_KERNEL_GS_BASE, MSR_TSC, MXCSR_DEFAULT, MsrEntry,
+};
+#[cfg(test)]
+use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
+use crate::hypervisor::virtual_machine::{
+    CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
+    VmExit, validate_guest_msrs,
+};
+use crate::mem::memory_region::MemoryRegion;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
+
+/// On KVM x86-64 only, we have to set this in order to set the guest
+/// physical address width.
+///
+/// The requirement to set this to configure the guest physical
+/// address width for KVM is not well documented, but see e.g. Linux
+/// v6.18.6 arch/x86/kvm/cpuid.c:kvm_vcpu_after_set_cpuid()
+/// (https://elixir.bootlin.com/linux/v6.18.6/source/arch/x86/kvm/cpuid.c#L444)
+/// for how it is processed.
+///
+/// For the architectural definition and format of the system register:
+/// See AMD64 Architecture Programmer's Manual, Volume 3: General-Purpose and
+///                                                       System Instructions
+///     Appendix E: Obtaining Processor Information Via the CPUID Instruction
+///         E.4.7: Function 8000_0008h---Processor Capacity Parameters and
+///                Extended Feature Identification, pp. 627--628
+const CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION: u32 =
+    0x8000_0008;
+const CPUID_FUNCTION_FEATURE_INFORMATION: u32 = 0x1;
+const CPUID_FUNCTION_STRUCTURED_EXTENDED_FEATURES: u32 = 0x7;
+const CPUID_FUNCTION_EXTENDED_FEATURE_INFORMATION: u32 = 0x8000_0001;
+const CPUID_FEATURE_VMX: u32 = 1 << 5;
+const CPUID_FEATURE_SVM: u32 = 1 << 2;
+/// CPUID.1:ECX[21], x2APIC support.
+const CPUID_FEATURE_X2APIC: u32 = 1 << 21;
+/// CPUID.(EAX=7,ECX=0):ECX[7], shadow-stack support.
+const CPUID_FEATURE_SHSTK: u32 = 1 << 7;
+/// CPUID.(EAX=7,ECX=0):EDX[20], indirect-branch-tracking support.
+const CPUID_FEATURE_IBT: u32 = 1 << 20;
+
+/// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
+#[instrument(skip_all, parent = Span::current(), level = "Trace")]
+pub(crate) fn is_hypervisor_present() -> bool {
+    if let Ok(kvm) = Kvm::new() {
+        let api_version = kvm.get_api_version();
+        match api_version {
+            version if version == 12 && kvm.check_extension(UserMemory) => true,
+            12 => {
+                tracing::info!("KVM does not have KVM_CAP_USER_MEMORY capability");
+                false
+            }
+            version => {
+                tracing::info!("KVM GET_API_VERSION returned {}, expected 12", version);
+                false
+            }
+        }
+    } else {
+        tracing::info!("KVM is not available on this system");
+        false
+    }
+}
+
+/// A KVM implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(crate) struct KvmVm {
+    vm_fd: VmFd,
+    vcpu_fd: VcpuFd,
+
+    /// EventFd registered via irqfd for GSI 0 (IRQ0). A timer thread
+    /// writes to this to inject periodic timer interrupts.
+    #[cfg(feature = "hw-interrupts")]
+    timer_irq_eventfd: EventFd,
+    /// Handle to the background timer (if started).
+    #[cfg(feature = "hw-interrupts")]
+    timer: Option<TimerThread>,
+
+    // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
+    #[cfg(gdb)]
+    debug_regs: kvm_guest_debug,
+}
+
+static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
+    LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+/// KVM allows at most this many MSR filter ranges.
+const KVM_MSR_FILTER_MAX_RANGES: usize = 16;
+
+/// Returns the smallest contiguous ranges covering the supplied indices.
+fn coalesce_msr_ranges(indices: &[u32]) -> Vec<(u32, usize)> {
+    let mut sorted: Vec<u32> = indices.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut groups: Vec<(u32, usize)> = Vec::new();
+    for idx in sorted {
+        match groups.last_mut() {
+            Some((base, count)) if *base + *count as u32 == idx => *count += 1,
+            _ => groups.push((idx, 1)),
+        }
+    }
+    groups
+}
+
+#[cfg(feature = "hw-interrupts")]
+impl KvmVm {
+    /// Create the in-kernel IRQ chip and register an irqfd for GSI 0.
+    ///
+    /// When hw-interrupts is enabled, create the in-kernel IRQ chip
+    /// (PIC + IOAPIC + LAPIC) before creating the vCPU so the
+    /// per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
+    /// The guest programs the PIC remap via standard IO port writes,
+    /// which the in-kernel PIC handles transparently.
+    ///
+    /// Instead of creating an in-kernel PIT (create_pit2), we use a
+    /// host-side timer thread + irqfd to inject IRQ0 at the rate
+    /// requested by the guest via VmAction::PvTimerConfig (port 107).
+    /// This eliminates the in-kernel PIT device. Guest PIT port writes
+    /// (0x40, 0x43) become no-ops handled in the run loop.
+    fn setup_irqfd(vm_fd: &VmFd) -> std::result::Result<EventFd, CreateVmError> {
+        vm_fd
+            .create_irq_chip()
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        // Create an EventFd and register it via irqfd for GSI 0 (IRQ0).
+        // When the timer thread writes to this EventFd, the in-kernel
+        // PIC will assert IRQ0, which is delivered as the vector the
+        // guest configured during PIC remap (typically vector 0x20).
+        let eventfd = EventFd::new(0).map_err(|e| {
+            CreateVmError::InitializeVm(
+                kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into(),
+            )
+        })?;
+        vm_fd
+            .register_irqfd(&eventfd, 0)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(eventfd)
+    }
+}
+
+impl KvmVm {
+    /// Create a new instance of a `KvmVm`
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
+        let hv = KVM.as_ref().map_err(|e| e.clone())?;
+
+        let vm_fd = hv
+            .create_vm_with_type(0)
+            .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+
+        #[cfg(feature = "hw-interrupts")]
+        let timer_irq_eventfd = Self::setup_irqfd(&vm_fd)?;
+
+        let vcpu_fd = vm_fd
+            .create_vcpu(0)
+            .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
+
+        // Configure the guest CPUID for Hyperlight's supported CPU model.
+        let mut kvm_cpuid = hv
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        for entry in kvm_cpuid.as_mut_slice().iter_mut() {
+            match entry.function {
+                CPUID_FUNCTION_FEATURE_INFORMATION => {
+                    // Hyperlight does not support nested Intel virtualization.
+                    entry.ecx &= !CPUID_FEATURE_VMX;
+                    // Hyperlight keeps the APIC in xAPIC mode and denies the
+                    // x2APIC MSRs, so it does not advertise x2APIC.
+                    entry.ecx &= !CPUID_FEATURE_X2APIC;
+                }
+                // Hyperlight does not support nested AMD virtualization.
+                CPUID_FUNCTION_EXTENDED_FEATURE_INFORMATION => {
+                    entry.ecx &= !CPUID_FEATURE_SVM;
+                }
+                // Hyperlight does not expose CET. Shadow stacks let the guest
+                // move active SSP. It has no architectural MSR, so it is not in
+                // the KVM reset set, and the backend does not make the separate
+                // KVM register access needed to restore it.
+                CPUID_FUNCTION_STRUCTURED_EXTENDED_FEATURES if entry.index == 0 => {
+                    entry.ecx &= !CPUID_FEATURE_SHSTK;
+                    entry.edx &= !CPUID_FEATURE_IBT;
+                }
+                // KVM allows MaxPhysAddr to be overridden and defaults it too low for
+                // Hyperlight's memory layout. MSHV passes it through from hardware
+                // unless an intercept is installed.
+                CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION => {
+                    entry.eax &= !0xff;
+                    entry.eax |= hyperlight_common::layout::SCRATCH_TOP_GPA.ilog2() + 1;
+                }
+                _ => {}
+            }
+        }
+        vcpu_fd
+            .set_cpuid2(&kvm_cpuid)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        Ok(Self {
+            vm_fd,
+            vcpu_fd,
+            #[cfg(feature = "hw-interrupts")]
+            timer_irq_eventfd,
+            #[cfg(feature = "hw-interrupts")]
+            timer: None,
+            #[cfg(gdb)]
+            debug_regs: kvm_guest_debug::default(),
+        })
+    }
+
+    /// Run the vCPU loop with hardware interrupt support.
+    ///
+    /// When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
+    /// interrupts triggered by the host-side timer thread via irqfd.
+    /// There is no in-kernel PIT; guest PIT port writes are no-ops.
+    /// The guest signals "I'm done" by writing to VmAction::Halt
+    /// (an IO port exit) instead of using HLT, because the in-kernel
+    /// LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
+    #[cfg(feature = "hw-interrupts")]
+    fn run_vcpu_hw_interrupts(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+        loop {
+            match self.vcpu_fd.run() {
+                Ok(VcpuExit::IoOut(port, data)) => {
+                    if port == VmAction::Halt as u16 {
+                        // Stop the timer thread before returning.
+                        if let Some(mut t) = self.timer.take() {
+                            t.stop();
+                        }
+                        return Ok(VmExit::Halt());
+                    }
+                    if port == VmAction::PvTimerConfig as u16 {
+                        let data_copy = data.to_vec();
+                        self.handle_pv_timer_config(&data_copy);
+                        continue;
+                    }
+                    // PIT ports (0x40-0x43): no in-kernel PIT, so these
+                    // exit to userspace. Silently ignore them.
+                    if (0x40..=0x43).contains(&port) {
+                        continue;
+                    }
+                    return Ok(VmExit::IoOut(port, data.to_vec()));
+                }
+                Ok(VcpuExit::MmioRead(addr, _)) => return Ok(VmExit::MmioRead(addr)),
+                Ok(VcpuExit::MmioWrite(addr, _)) => return Ok(VmExit::MmioWrite(addr)),
+                #[cfg(gdb)]
+                Ok(VcpuExit::Debug(debug_exit)) => {
+                    return Ok(VmExit::Debug {
+                        dr6: debug_exit.dr6,
+                        exception: debug_exit.exception,
+                    });
+                }
+                Err(e) => match e.errno() {
+                    libc::EINTR => return Ok(VmExit::Cancelled()),
+                    libc::EAGAIN => continue,
+                    _ => return Err(RunVcpuError::Unknown(e.into())),
+                },
+                Ok(other) => {
+                    return Ok(VmExit::Unknown(format!(
+                        "Unknown KVM VCPU exit: {:?}",
+                        other
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "hw-interrupts")]
+    fn handle_pv_timer_config(&mut self, data: &[u8]) {
+        use super::super::x86_64::hw_interrupts::handle_pv_timer_config;
+
+        let eventfd_clone = match self.timer_irq_eventfd.try_clone() {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("failed to clone eventfd for timer config: {e}");
+                return;
+            }
+        };
+        handle_pv_timer_config(&mut self.timer, data, move || {
+            let _ = eventfd_clone.write(1);
+        });
+    }
+
+    /// Run the vCPU once without hardware interrupt support (default path).
+    #[cfg(not(feature = "hw-interrupts"))]
+    fn run_vcpu_default(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, _)) if port == VmAction::Halt as u16 => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
+            #[cfg(gdb)]
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
+            Err(e) => match e.errno() {
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                libc::EINTR => Ok(VmExit::Cancelled()),
+                libc::EAGAIN => Ok(VmExit::Retry()),
+                _ => Err(RunVcpuError::Unknown(e.into())),
+            },
+            Ok(other) => Ok(VmExit::Unknown(format!(
+                "Unknown KVM VCPU exit: {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Installs a deny filter that permits only the declared guest MSRs.
+    /// Requires `KVM_CAP_X86_MSR_FILTER`.
+    pub(crate) fn configure_msr_access(
+        &self,
+        guest_msrs: &[u32],
+    ) -> std::result::Result<(), CreateVmError> {
+        let hv = KVM.as_ref().map_err(|e| e.clone())?;
+        if !hv.check_extension(Cap::X86MsrFilter) {
+            tracing::error!("KVM does not support KVM_CAP_X86_MSR_FILTER.");
+            return Err(CreateVmError::MsrFilterNotSupported);
+        }
+
+        validate_guest_msrs(self, guest_msrs)?;
+
+        // Each contiguous group consumes one KVM filter range.
+        let groups = coalesce_msr_ranges(guest_msrs);
+        if groups.len() > KVM_MSR_FILTER_MAX_RANGES {
+            return Err(CreateVmError::TooManyMsrRanges(groups.len()));
+        }
+
+        // The bitmaps must live through set_msr_filter.
+        let bitmaps: Vec<Vec<u8>> = groups
+            .iter()
+            .map(|(_, count)| {
+                let mut bytes = vec![0u8; count.div_ceil(8)];
+                for bit in 0..*count {
+                    bytes[bit / 8] |= 1 << (bit % 8);
+                }
+                bytes
+            })
+            .collect();
+
+        // Default deny requires at least one range.
+        static DENY_BITMAP: [u8; 1] = [0u8];
+        let ranges: Vec<MsrFilterRange> = if groups.is_empty() {
+            vec![MsrFilterRange {
+                flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                base: 0,
+                msr_count: 1,
+                bitmap: &DENY_BITMAP,
+            }]
+        } else {
+            groups
+                .iter()
+                .zip(bitmaps.iter())
+                .map(|((base, count), bitmap)| MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: *base,
+                    msr_count: *count as u32,
+                    bitmap: bitmap.as_slice(),
+                })
+                .collect()
+        };
+
+        self.vm_fd
+            .set_msr_filter(MsrFilterDefaultAction::DENY, &ranges)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(())
+    }
+}
+
+impl VirtualMachine for KvmVm {
+    unsafe fn map_memory(
+        &mut self,
+        (slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
+            .map_err(|e| MapMemoryError::Hypervisor(e.into()))
+    }
+
+    fn unmap_memory(
+        &mut self,
+        (slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        // Setting memory_size to 0 unmaps the slot's region
+        // From https://docs.kernel.org/virt/kvm/api.html
+        // > Deleting a slot is done by passing zero for memory_size.
+        kvm_region.memory_size = 0;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
+            .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
+    }
+
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError> {
+        // setup_trace_guest must be called right before vcpu_run.run() call, because
+        // it sets the guest span, no other traces or spans must be setup in between these calls.
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
+
+        #[cfg(feature = "hw-interrupts")]
+        return self.run_vcpu_hw_interrupts();
+
+        #[cfg(not(feature = "hw-interrupts"))]
+        self.run_vcpu_default()
+    }
+
+    fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
+        let kvm_regs = self
+            .vcpu_fd
+            .get_regs()
+            .map_err(|e| RegisterError::GetRegs(e.into()))?;
+        Ok((&kvm_regs).into())
+    }
+
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
+        let kvm_regs: kvm_regs = regs.into();
+        self.vcpu_fd
+            .set_regs(&kvm_regs)
+            .map_err(|e| RegisterError::SetRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError> {
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
+        let kvm_fpu = self
+            .vcpu_fd
+            .get_fpu()
+            .map_err(|e| RegisterError::GetFpu(e.into()))?;
+        Ok((&kvm_fpu).into())
+    }
+
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
+        let kvm_fpu: kvm_fpu = fpu.into();
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
+        self.vcpu_fd
+            .set_fpu(&kvm_fpu)
+            .map_err(|e| RegisterError::SetFpu(e.into()))?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError> {
+        let kvm_sregs = self
+            .vcpu_fd
+            .get_sregs()
+            .map_err(|e| RegisterError::GetSregs(e.into()))?;
+        Ok((&kvm_sregs).into())
+    }
+
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
+        let kvm_sregs: kvm_sregs = sregs.into();
+        self.vcpu_fd
+            .set_sregs(&kvm_sregs)
+            .map_err(|e| RegisterError::SetSregs(e.into()))?;
+        Ok(())
+    }
+
+    fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
+        let kvm_debug_regs = self
+            .vcpu_fd
+            .get_debug_regs()
+            .map_err(|e| RegisterError::GetDebugRegs(e.into()))?;
+        Ok(kvm_debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError> {
+        let kvm_debug_regs: kvm_debugregs = drs.into();
+        self.vcpu_fd
+            .set_debug_regs(&kvm_debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn msrs(&self, indices: &[u32]) -> std::result::Result<Vec<MsrEntry>, RegisterError> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<kvm_msr_entry> = indices
+            .iter()
+            .map(|&index| kvm_msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .get_msrs(&mut msrs)
+            .map_err(|e| RegisterError::GetMsrs(e.into()))?;
+        if n != indices.len() {
+            return Err(RegisterError::MsrShortCount {
+                expected: indices.len(),
+                actual: n,
+            });
+        }
+        Ok(indices
+            .iter()
+            .zip(msrs.as_slice())
+            .map(|(&index, entry)| MsrEntry {
+                index,
+                value: entry.data,
+            })
+            .collect())
+    }
+
+    fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
+        let entries: Vec<kvm_msr_entry> = msrs
+            .iter()
+            .map(|e| kvm_msr_entry {
+                index: e.index,
+                data: e.value,
+                ..Default::default()
+            })
+            .collect();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let kvm_msrs =
+            Msrs::from_entries(&entries).map_err(|e| RegisterError::MsrBuild(format!("{e:?}")))?;
+        let n = self
+            .vcpu_fd
+            .set_msrs(&kvm_msrs)
+            .map_err(|e| RegisterError::SetMsrs(e.into()))?;
+        if n != entries.len() {
+            return Err(RegisterError::MsrShortCount {
+                expected: entries.len(),
+                actual: n,
+            });
+        }
+        Ok(())
+    }
+
+    fn msr_reset_indices(
+        &self,
+        guest_msrs: &[u32],
+    ) -> std::result::Result<Vec<u32>, CreateVmError> {
+        Ok([MSR_KERNEL_GS_BASE, MSR_TSC]
+            .into_iter()
+            .chain(guest_msrs.iter().copied())
+            .collect())
+    }
+
+    #[allow(dead_code)]
+    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
+        let xsave = self
+            .vcpu_fd
+            .get_xsave()
+            .map_err(|e| RegisterError::GetXsave(e.into()))?;
+        Ok(xsave
+            .region
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect())
+    }
+
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
+        let mut xsave = kvm_xsave::default(); // default is zeroed 4KB buffer with no FAM
+
+        // XSAVE legacy region layout (Intel SDM Vol. 1 Section 13.4.1):
+        // - Bytes 0-1: FCW, 2-3: FSW
+        // - Bytes 24-27: MXCSR
+        // - Bytes 512-519: XSTATE_BV
+        // - Bytes 520-527: XCOMP_BV (compaction format indicator)
+        //
+        // kvm_xsave.region is [u32], so region[0] covers FCW (low 16) and FSW (high 16, stays 0).
+        xsave.region[0] = FP_CONTROL_WORD_DEFAULT as u32;
+        xsave.region[6] = MXCSR_DEFAULT;
+        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. This tells KVM to apply
+        // the legacy region from this buffer. Without this, some KVM versions
+        // may ignore set_xsave entirely when XSTATE_BV=0.
+        xsave.region[128] = 0x3;
+        // Note: Unlike MSHV/WHP, we don't preserve XCOMP_BV because KVM uses
+        // standard (non-compacted) XSAVE format where XCOMP_BV remains 0.
+
+        // SAFETY: No dynamic features enabled, 4KB is sufficient
+        unsafe {
+            self.vcpu_fd
+                .set_xsave(&xsave)
+                .map_err(|e| RegisterError::SetXsave(e.into()))?
+        };
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn xcr0(&self) -> std::result::Result<u64, RegisterError> {
+        let xcrs = self
+            .vcpu_fd
+            .get_xcrs()
+            .map_err(|e| RegisterError::GetXcrs(e.into()))?;
+        xcrs.xcrs
+            .iter()
+            .take(xcrs.nr_xcrs as usize)
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .ok_or(RegisterError::MissingXcr0)
+    }
+
+    fn set_xcr0(&self, value: u64) -> std::result::Result<(), RegisterError> {
+        let mut xcrs = self
+            .vcpu_fd
+            .get_xcrs()
+            .map_err(|e| RegisterError::GetXcrs(e.into()))?;
+        let xcr0 = xcrs
+            .xcrs
+            .iter_mut()
+            .take(xcrs.nr_xcrs as usize)
+            .find(|xcr| xcr.xcr == 0)
+            .ok_or(RegisterError::MissingXcr0)?;
+        xcr0.value = value;
+        self.vcpu_fd
+            .set_xcrs(&xcrs)
+            .map_err(|e| RegisterError::SetXcrs(e.into()))
+    }
+
+    #[cfg(test)]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
+        if std::mem::size_of_val(xsave) != XSAVE_BUFFER_SIZE {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_BUFFER_SIZE as u32,
+                actual: std::mem::size_of_val(xsave) as u32,
+            });
+        }
+        let xsave = kvm_xsave {
+            region: xsave.try_into().expect("xsave slice has correct length"),
+            ..Default::default()
+        };
+        // Safety: Safe because we only copy 4096 bytes
+        // and have not enabled any dynamic xsave features
+        unsafe {
+            self.vcpu_fd
+                .set_xsave(&xsave)
+                .map_err(|e| RegisterError::SetXsave(e.into()))?
+        };
+
+        Ok(())
+    }
+}
+
+#[cfg(gdb)]
+impl DebuggableVm for KvmVm {
+    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
+        let gpa = self
+            .vcpu_fd
+            .translate_gva(gva)
+            .map_err(|_| DebugError::TranslateGva(gva))?;
+        if gpa.valid == 0 {
+            Err(DebugError::TranslateGva(gva))
+        } else {
+            Ok(gpa.physical_address)
+        }
+    }
+
+    fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP};
+
+        tracing::info!("Setting debug to {}", enable);
+        if enable {
+            self.debug_regs.control |=
+                KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP;
+        } else {
+            self.debug_regs.control &=
+                !(KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP);
+        }
+        self.vcpu_fd
+            .set_guest_debug(&self.debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        use kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+
+        tracing::info!("Setting single step to {}", enable);
+        if enable {
+            self.debug_regs.control |= KVM_GUESTDBG_SINGLESTEP;
+        } else {
+            self.debug_regs.control &= !KVM_GUESTDBG_SINGLESTEP;
+        }
+        self.vcpu_fd
+            .set_guest_debug(&self.debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+
+        // Set TF Flag to enable Traps
+        let mut regs = self.regs()?;
+        if enable {
+            regs.rflags |= 1 << 8;
+        } else {
+            regs.rflags &= !(1 << 8);
+        }
+        self.set_regs(&regs)?;
+        Ok(())
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
+        use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
+
+        // Check if breakpoint already exists
+        if self.debug_regs.arch.debugreg[..4].contains(&addr) {
+            return Ok(());
+        }
+
+        // Find the first available LOCAL (L0–L3) slot
+        let i = (0..MAX_NO_OF_HW_BP)
+            .position(|i| self.debug_regs.arch.debugreg[7] & (1 << (i * 2)) == 0)
+            .ok_or(DebugError::TooManyHwBreakpoints(MAX_NO_OF_HW_BP))?;
+
+        // Assign to corresponding debug register
+        self.debug_regs.arch.debugreg[i] = addr;
+
+        // Enable LOCAL bit
+        self.debug_regs.arch.debugreg[7] |= 1 << (i * 2);
+
+        self.vcpu_fd
+            .set_guest_debug(&self.debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
+        // Find the index of the breakpoint
+        let index = self.debug_regs.arch.debugreg[..4]
+            .iter()
+            .position(|&a| a == addr)
+            .ok_or(DebugError::HwBreakpointNotFound(addr))?;
+
+        // Clear the address
+        self.debug_regs.arch.debugreg[index] = 0;
+
+        // Disable LOCAL bit
+        self.debug_regs.arch.debugreg[7] &= !(1 << (index * 2));
+
+        self.vcpu_fd
+            .set_guest_debug(&self.debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coalesces_unsorted_contiguous_indices() {
+        assert_eq!(
+            coalesce_msr_ranges(&[0x176, 0x174, 0x175]),
+            vec![(0x174, 3)]
+        );
+    }
+
+    #[test]
+    fn deduplicates_indices() {
+        assert_eq!(
+            coalesce_msr_ranges(&[0x174, 0x174, 0x176]),
+            vec![(0x174, 1), (0x176, 1)]
+        );
+    }
+
+    #[test]
+    fn preserves_sixteen_range_boundary() {
+        let indices: Vec<u32> = (0..KVM_MSR_FILTER_MAX_RANGES as u32)
+            .map(|index| index * 2)
+            .collect();
+        let ranges = coalesce_msr_ranges(&indices);
+        assert_eq!(ranges.len(), KVM_MSR_FILTER_MAX_RANGES);
+        assert!(ranges.iter().all(|(_, count)| *count == 1));
+    }
+
+    #[test]
+    fn scattered_indices_exceed_sixteen_range_limit() {
+        let indices: Vec<u32> = (0..=KVM_MSR_FILTER_MAX_RANGES as u32)
+            .map(|index| index * 2)
+            .collect();
+        let ranges = coalesce_msr_ranges(&indices);
+        assert!(ranges.len() > KVM_MSR_FILTER_MAX_RANGES);
+    }
+
+    #[cfg(feature = "hw-interrupts")]
+    #[test]
+    fn halt_port_is_not_standard_device() {
+        // VmAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports
+        const HALT: u16 = VmAction::Halt as u16;
+        const _: () = assert!(HALT != 0x20 && HALT != 0x21);
+        const _: () = assert!(HALT != 0xA0 && HALT != 0xA1);
+        const _: () = assert!(HALT != 0x40 && HALT != 0x41 && HALT != 0x42 && HALT != 0x43);
+        const _: () = assert!(HALT != 0x61);
+    }
+}

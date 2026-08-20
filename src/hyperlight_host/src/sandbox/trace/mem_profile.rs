@@ -20,9 +20,12 @@ use fallible_iterator::FallibleIterator;
 use framehop::Unwinder;
 
 use crate::hypervisor::regs::CommonRegisters;
+#[cfg(not(unshared_snapshot_mem))]
+use crate::mem::layout::ReadableSharedMemory;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+use crate::sandbox::outb::HandleOutbError;
 use crate::{Result, new_error};
 
 /// The type of trace frame being recorded.
@@ -62,7 +65,7 @@ impl MemTraceInfo {
         path.push(uuid::Uuid::new_v4().to_string());
         path.set_extension("trace");
 
-        log::info!("Creating trace file at: {}", path.display());
+        tracing::info!("Creating trace file at: {}", path.display());
         println!("Creating trace file at: {}", path.display());
 
         let hash = unwind_module.hash();
@@ -95,10 +98,15 @@ impl MemTraceInfo {
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
     ) -> Result<Vec<u64>> {
         let mut read_stack = |addr| {
+            let mut buf: [u8; 8] = [0u8; 8];
             mem_mgr
                 .shared_mem
-                .read::<u64>((addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize)
-                .map_err(|_| ())
+                .copy_to_slice(
+                    &mut buf,
+                    (addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize,
+                )
+                .map_err(|_| ())?;
+            Ok(u64::from_ne_bytes(buf))
         };
         let mut cache = self
             .unwind_cache
@@ -147,7 +155,7 @@ impl MemTraceInfo {
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
         trace_identifier: TraceFrameType,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         let Ok(stack) = self.unwind(regs, mem_mgr) else {
             return Ok(());
         };
@@ -156,20 +164,20 @@ impl MemTraceInfo {
         let ptr = regs.rcx;
 
         match trace_identifier {
-            TraceFrameType::MemAlloc => {
-                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+            TraceFrameType::MemAlloc => self
+                .record_trace_frame(self.epoch, trace_identifier as u64, |f| {
                     let _ = f.write_all(&ptr.to_ne_bytes());
                     let _ = f.write_all(&amt.to_ne_bytes());
                     self.write_stack(f, &stack);
                 })
-            }
+                .map_err(|e| HandleOutbError::MemProfile(e.to_string())),
             // The MemFree case does not expect an amount, only a pointer
-            TraceFrameType::MemFree => {
-                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+            TraceFrameType::MemFree => self
+                .record_trace_frame(self.epoch, trace_identifier as u64, |f| {
                     let _ = f.write_all(&ptr.to_ne_bytes());
                     self.write_stack(f, &stack);
                 })
-            }
+                .map_err(|e| HandleOutbError::MemProfile(e.to_string())),
         }
     }
 
@@ -178,7 +186,7 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         self.handle_trace(regs, mem_mgr, TraceFrameType::MemAlloc)
     }
 
@@ -187,7 +195,7 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         self.handle_trace(regs, mem_mgr, TraceFrameType::MemFree)
     }
 }
