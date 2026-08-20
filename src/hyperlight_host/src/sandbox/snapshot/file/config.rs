@@ -773,7 +773,6 @@ mod tests {
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
-            code_virt_base: 0,
             sregs: distinct_sregs(),
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
@@ -858,7 +857,6 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
-  "code_virt_base": 0,
   "sregs": {
     "cs": {
       "base": 1,
@@ -1046,7 +1044,6 @@ mod schema_pin {
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
-  "code_virt_base": 0,
   "sregs": {
     "tcr_el1": 1,
     "mair_el1": 2,

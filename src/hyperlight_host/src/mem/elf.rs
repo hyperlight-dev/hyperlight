@@ -15,6 +15,53 @@ use goblin::elf64::program_header::PT_LOAD;
 use super::exe::LoadInfo;
 use crate::{Result, log_then_return, new_error};
 
+fn apply_relative_relocation(
+    name: &str,
+    relocation_va: u64,
+    addend: i64,
+    base_va: u64,
+    load_gva: u64,
+    target: &mut [u8],
+) -> Result<()> {
+    let offset = relocation_va.checked_sub(base_va).ok_or_else(|| {
+        new_error!(
+            "{} target VA ({:#x}) is below ELF base VA ({:#x})",
+            name,
+            relocation_va,
+            base_va
+        )
+    })?;
+    let offset: usize = offset.try_into()?;
+    let end = offset
+        .checked_add(size_of::<u64>())
+        .ok_or_else(|| new_error!("{} target offset overflow", name))?;
+    let target_len = target.len();
+    let destination = target.get_mut(offset..end).ok_or_else(|| {
+        new_error!(
+            "{} target range [{:#x}, {:#x}) exceeds loaded image size ({:#x})",
+            name,
+            offset,
+            end,
+            target_len
+        )
+    })?;
+
+    let load_bias = i128::from(load_gva) - i128::from(base_va);
+    let value = i128::from(addend)
+        .checked_add(load_bias)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            new_error!(
+                "{} result does not fit in u64: addend ({:#x}) + load bias ({:#x})",
+                name,
+                addend,
+                load_bias
+            )
+        })?;
+    destination.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
 #[cfg(feature = "mem_profile")]
 struct ResolvedSectionHeader {
     name: String,
@@ -189,7 +236,7 @@ impl ElfInfo {
             .unwrap();
         (max_phdr.p_vaddr + max_phdr.p_memsz - self.get_base_va()) as usize
     }
-    pub(crate) fn load_at(self, load_addr: usize, target: &mut [u8]) -> Result<LoadInfo> {
+    pub(crate) fn load_at(self, load_gva: u64, target: &mut [u8]) -> Result<LoadInfo> {
         let base_va = self.get_base_va();
         for phdr in self.phdrs.iter().filter(|phdr| phdr.p_type == PT_LOAD) {
             let start_va = (phdr.p_vaddr - base_va) as usize;
@@ -208,8 +255,14 @@ impl ElfInfo {
             match r.r_type {
                 R_AARCH64_RELATIVE => {
                     let addend = get_addend("R_AARCH64_RELATIVE", r)?;
-                    target[r.r_offset as usize..r.r_offset as usize + 8]
-                        .copy_from_slice(&(load_addr as i64 + addend).to_le_bytes());
+                    apply_relative_relocation(
+                        "R_AARCH64_RELATIVE",
+                        r.r_offset,
+                        addend,
+                        base_va,
+                        load_gva,
+                        target,
+                    )?;
                 }
                 R_AARCH64_NONE => {}
                 _ => {
@@ -220,8 +273,14 @@ impl ElfInfo {
             match r.r_type {
                 R_X86_64_RELATIVE => {
                     let addend = get_addend("R_X86_64_RELATIVE", r)?;
-                    target[r.r_offset as usize..r.r_offset as usize + 8]
-                        .copy_from_slice(&(load_addr as i64 + addend).to_le_bytes());
+                    apply_relative_relocation(
+                        "R_X86_64_RELATIVE",
+                        r.r_offset,
+                        addend,
+                        base_va,
+                        load_gva,
+                        target,
+                    )?;
                 }
                 R_X86_64_NONE => {}
                 _ => {
@@ -236,7 +295,7 @@ impl ElfInfo {
                 Ok(LoadInfo {
                     info: Arc::new(UnwindInfo {
                         payload: self.payload,
-                        load_addr: load_addr as u64,
+                        load_addr: load_gva,
                         va_size,
                         base_svma,
                         shdrs: self.shdrs,
@@ -246,5 +305,30 @@ impl ElfInfo {
                 Ok(LoadInfo {})
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_relative_relocation;
+
+    #[test]
+    fn relative_relocation_uses_link_base() {
+        let mut target = [0u8; 16];
+
+        apply_relative_relocation("R_RELATIVE", 0x1008, 0x1010, 0x1000, 0x3000, &mut target)
+            .unwrap();
+
+        assert_eq!(u64::from_le_bytes(target[8..].try_into().unwrap()), 0x3010);
+    }
+
+    #[test]
+    fn relative_relocation_supports_negative_load_bias() {
+        let mut target = [0u8; 8];
+
+        apply_relative_relocation("R_RELATIVE", 0x1000, 0x1010, 0x1000, 0x800, &mut target)
+            .unwrap();
+
+        assert_eq!(u64::from_le_bytes(target), 0x810);
     }
 }
