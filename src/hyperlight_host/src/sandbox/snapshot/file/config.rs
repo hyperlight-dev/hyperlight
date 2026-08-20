@@ -180,12 +180,6 @@ pub(super) struct OciSnapshotConfig {
     /// Initialise->Call transition. Fills `AT_ENTRY` in core dumps so
     /// gdb resolves PIE symbols.
     pub(super) original_entrypoint_addr: u64,
-    /// Virtual base address of the code region. For PIE guests this equals
-    /// the physical load address; for non-PIE guests it is the ELF-declared
-    /// base VA. Optional: older snapshots deserialize to `0`, meaning
-    /// identity-mapped (VA == GPA).
-    #[serde(default)]
-    pub(super) code_virt_base: u64,
     /// Special registers captured from the paused vCPU, restored
     /// verbatim when resuming the call.
     pub(super) sregs: CommonSpecialRegisters,
@@ -214,6 +208,10 @@ pub(super) struct OciSnapshotConfig {
 pub(super) struct MemoryLayout {
     pub(super) heap_size: usize,
     pub(super) code_size: usize,
+    /// Virtual base address of the code region. A value of zero means the
+    /// code region is identity mapped.
+    #[serde(default)]
+    pub(super) code_virt_base: u64,
     pub(super) init_data_size: usize,
     /// Memory region flag bits. `None` means default permissions.
     pub(super) init_data_permissions: Option<u32>,
@@ -546,8 +544,8 @@ impl OciSnapshotConfig {
         // The saved dispatch entrypoint must be in the executable code
         // region. For non-PIE or ASLR guests the code region's virtual
         // base differs from the physical load address.
-        let code_lo = if self.code_virt_base != 0 {
-            self.code_virt_base
+        let code_lo = if self.layout.code_virt_base != 0 {
+            self.layout.code_virt_base
         } else {
             SandboxMemoryLayout::BASE_ADDRESS as u64
         };
@@ -845,6 +843,7 @@ mod tests {
             layout: MemoryLayout {
                 heap_size: 0,
                 code_size: 0,
+                code_virt_base: 0,
                 init_data_size: 0,
                 init_data_permissions: None,
                 scratch_size: 0,
@@ -927,6 +926,9 @@ mod schema_pin {
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
   "code_virt_base": 0,
+  "sregs": {
+    "cs": {
+      "base": 1,
       "limit": 2,
       "selector": 3,
       "type_": 4,
@@ -1079,6 +1081,7 @@ mod schema_pin {
   "layout": {
     "heap_size": 3,
     "code_size": 4,
+    "code_virt_base": 0,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
@@ -1126,6 +1129,7 @@ mod schema_pin {
   "layout": {
     "heap_size": 3,
     "code_size": 4,
+    "code_virt_base": 0,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
