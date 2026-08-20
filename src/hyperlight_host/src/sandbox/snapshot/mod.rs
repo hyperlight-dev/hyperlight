@@ -333,7 +333,7 @@ impl Snapshot {
         let mut memory = vec![0; layout.get_memory_size()?];
 
         let load_info = exe_info.load(
-            load_addr.try_into()?,
+            layout.get_guest_code_gva() as u64,
             &mut memory[layout.guest_code_offset()..],
         )?;
 
