@@ -2046,7 +2046,7 @@ fn original_entrypoint_addr_zero_rejected() {
 fn entrypoint_addr_outside_code_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
-        let code_virt_base = cfg["code_virt_base"].as_u64().unwrap();
+        let code_virt_base = cfg["layout"]["code_virt_base"].as_u64().unwrap();
         let code_size = cfg["layout"]["code_size"].as_u64().unwrap();
         let page_size = hyperlight_common::vmem::PAGE_SIZE as u64;
         let beyond_code = code_virt_base + code_size.next_multiple_of(page_size);
