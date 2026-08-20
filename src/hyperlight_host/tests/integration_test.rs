@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::GuestLogFilter;
-use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, SandboxBuilder, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
