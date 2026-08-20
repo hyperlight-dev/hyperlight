@@ -1,18 +1,5 @@
-/*
-Copyright 2026  The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
 
 #pragma once
 
@@ -29,43 +16,43 @@ limitations under the License.
 
 // static configuration - enabled features
 #define __ASSERT_VERBOSE
-#define __SINGLE_THREAD // -Dsingle-thread=true
-#define __GLOBAL_ERRNO // -Dnewlib-global-errno=true
+#define __SINGLE_THREAD   // -Dsingle-thread=true
+#define __GLOBAL_ERRNO    // -Dnewlib-global-errno=true
 #define __INIT_FINI_ARRAY // -Dinitfini-array=true
-#define __TINY_STDIO // tinystdio is now the only stdio
-#define __IO_DEFAULT 'd' // -Dformat-default=double
-#define __IO_FLOAT_EXACT // default
-#define __IO_WCHAR // -Dio-wchar=true
-#define __IEEE_LIBM // math library without errno
-#define __FAST_STRCMP // default optimization
-#define __FAST_BUFIO // -Dfast-bufio=true
-#define __IO_SMALL_ULTOA // avoid division in conversion
+#define __TINY_STDIO      // tinystdio is now the only stdio
+#define __IO_DEFAULT 'd'  // -Dformat-default=double
+#define __IO_FLOAT_EXACT  // default
+#define __IO_WCHAR        // -Dio-wchar=true
+#define __IEEE_LIBM       // math library without errno
+#define __FAST_STRCMP     // default optimization
+#define __FAST_BUFIO      // -Dfast-bufio=true
+#define __IO_SMALL_ULTOA  // avoid division in conversion
 
 // static configuration - disabled features
-#undef __ARM_SEMIHOST // -Dsemihost=false
-#undef __SEMIHOST // -Dsemihost=false
+#undef __ARM_SEMIHOST         // -Dsemihost=false
+#undef __SEMIHOST             // -Dsemihost=false
 #undef __THREAD_LOCAL_STORAGE // -Dthread-local-storage=false
 #undef __THREAD_LOCAL_STORAGE_API
 #undef __THREAD_LOCAL_STORAGE_RP2040
 #undef __THREAD_LOCAL_STORAGE_STACK_GUARD
 #undef __ENABLE_MALLOC // -Denable-malloc=false
 #undef __MALLOC_CLEAR_FREED
-#undef __MB_CAPABLE // no multibyte support
-#undef __HAVE_FCNTL // freestanding environment
-#undef __STDIO_LOCKING // single-thread
+#undef __MB_CAPABLE     // no multibyte support
+#undef __HAVE_FCNTL     // freestanding environment
+#undef __STDIO_LOCKING  // single-thread
 #undef __IO_C99_FORMATS // -Dio-c99-formats=false
 #undef __IO_LONG_DOUBLE // not enabled
-#undef __IO_LONG_LONG // minimal format
+#undef __IO_LONG_LONG   // minimal format
 #undef __IO_MINIMAL_LONG_LONG
 #undef __IO_PERCENT_B // not enabled
 #undef __IO_PERCENT_N // not enabled
-#undef __IO_POS_ARGS // not enabled
-#undef __MATH_ERRNO // IEEE math only
+#undef __IO_POS_ARGS  // not enabled
+#undef __MATH_ERRNO   // IEEE math only
 #undef __OBSOLETE_MATH
 #undef __OBSOLETE_MATH_DOUBLE
 #undef __OBSOLETE_MATH_FLOAT
 #undef __PREFER_SIZE_OVER_SPEED // release build
-#undef __ATOMIC_UNGETC // single-thread
+#undef __ATOMIC_UNGETC          // single-thread
 #undef __IEEEFP_FUNCS
 #undef __INIT_FINI_FUNCS // using INIT_FINI_ARRAY instead
 #undef __HAVE_BITFIELDS_IN_PACKED_STRUCTS
