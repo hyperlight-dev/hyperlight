@@ -227,16 +227,26 @@
 
           buildRustPackageClang = rust-platform.buildRustPackage.override { stdenv = clangStdenv; };
 
-          cargo-hyperlight = buildRustPackageClang rec {
-            pname = "cargo-hyperlight";
-            version = "0.1.14-pre";
-            src = fetchFromGitHub {
-              owner = "hyperlight-dev";
-              repo = "cargo-hyperlight";
-              rev = "33384c0c4ed9dea4f0525943809fc444c41a27df";
-              hash = "sha256-A2/SNHCdPPzW86bd00IucZEyZHZWDqXVKPccZULcEu0=";
+          # Keep the version in lockstep with the one pinned in the Justfile.
+          # `dev/update-cargo-hyperlight-version.sh` updates both.
+          cargo-hyperlight = let
+            version = "0.1.14";
+            # The .crate tarball is hashed flat, so the pin can be refreshed
+            # from the checksum crates.io publishes, without running Nix.
+            src = fetchurl {
+              url = "https://static.crates.io/crates/cargo-hyperlight/cargo-hyperlight-${version}.crate";
+              name = "cargo-hyperlight-${version}.tar.gz";
+              hash = "sha256-xS8cnUthc677Zv3C4+ES3bNZ/i+9uq/hubol96xXizk=";
             };
-            cargoHash = "sha256-ImWnNzXvDKokML0BDyyjifrZ1bnG6ymXt5vAMRIpwUY==";
+          in buildRustPackageClang {
+            pname = "cargo-hyperlight";
+            inherit version src;
+            # The tarball ships a Cargo.lock, so the dependencies need no
+            # vendor hash of their own.
+            cargoDeps = rust-platform.importCargoLock {
+              lockFile = runCommand "cargo-hyperlight-${version}-Cargo.lock" {}
+                "tar -xzOf ${src} cargo-hyperlight-${version}/Cargo.lock > $out";
+            };
             doCheck = false;
           };
         in (buildRustPackageClang (mkDerivationAttrs: {
