@@ -26,8 +26,8 @@ use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
-use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
+use crate::sandbox::{PtRootFinder, SandboxConfiguration};
 
 const PTE_SIZE: usize = size_of::<vmem::PageTableEntry>();
 
@@ -110,6 +110,9 @@ pub struct Snapshot {
     /// `HostFunctions` set that is missing required functions or
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
+
+    /// Runtime-only page-table root finder retained by in-memory snapshots.
+    pt_root_finder: Option<PtRootFinder>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -393,6 +396,7 @@ impl Snapshot {
             host_functions: HostFunctionDetails {
                 host_functions: None,
             },
+            pt_root_finder: None,
         })
     }
 
@@ -419,6 +423,7 @@ impl Snapshot {
         original_entrypoint: u64,
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
+        pt_root_finder: Option<PtRootFinder>,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
@@ -580,12 +585,17 @@ impl Snapshot {
             original_entrypoint,
             snapshot_generation,
             host_functions,
+            pt_root_finder,
         })
     }
 
     /// Generation number assigned to this snapshot when it was taken.
     pub(crate) fn snapshot_generation(&self) -> u64 {
         self.snapshot_generation
+    }
+
+    pub(crate) fn pt_root_finder(&self) -> Option<&PtRootFinder> {
+        self.pt_root_finder.as_ref()
     }
 
     /// Return the main memory contents of the snapshot
@@ -779,6 +789,7 @@ mod tests {
             0,
             1,
             HostFunctionDetails::default(),
+            None,
         )
         .unwrap();
 
@@ -799,6 +810,7 @@ mod tests {
             0,
             2,
             HostFunctionDetails::default(),
+            None,
         )
         .unwrap();
 

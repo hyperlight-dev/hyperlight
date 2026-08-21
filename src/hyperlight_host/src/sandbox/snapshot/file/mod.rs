@@ -321,6 +321,10 @@ impl Snapshot {
     /// guest is running. Any release that breaks the format is called
     /// out in the Hyperlight changelog.
     ///
+    /// A [`PtRootFinder`](crate::sandbox::PtRootFinder) configured with
+    /// [`set_pt_root_finder`](crate::MultiUseSandbox::set_pt_root_finder) is not
+    /// serialized. Set it again on any sandbox created from the loaded snapshot.
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -655,6 +659,11 @@ impl Snapshot {
     /// guest is running. Any release that breaks the format is called
     /// out in the Hyperlight changelog.
     ///
+    /// If the source sandbox used
+    /// [`MultiUseSandbox::set_pt_root_finder`](crate::MultiUseSandbox::set_pt_root_finder),
+    /// set the finder again on the sandbox created from this snapshot. The finder
+    /// is not serialized.
+    ///
     /// # Verification
     ///
     /// This method does not check the manifest, config, or snapshot
@@ -896,6 +905,7 @@ impl Snapshot {
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,
             host_functions,
+            pt_root_finder: None,
         })
     }
 }

@@ -14,6 +14,7 @@ use sha2::{Digest as _, Sha256};
 use crate::func::Registerable;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::SharedMemory as _;
+use crate::sandbox::PtRootFinder;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
 
@@ -110,9 +111,21 @@ fn find_snapshot_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
 
 #[test]
 fn from_snapshot_already_initialized_in_memory() {
-    let snapshot = create_snapshot();
+    let mut source = create_test_sandbox();
+    let initial_snapshot = source.snapshot().unwrap();
+    let finder: PtRootFinder = Arc::new(|_, _, root| vec![root]);
+    source.set_pt_root_finder(finder.clone());
+    let snapshot = source.snapshot().unwrap();
+    assert!(!Arc::ptr_eq(&initial_snapshot, &snapshot));
+    assert!(Arc::ptr_eq(snapshot.pt_root_finder().unwrap(), &finder));
+
     let mut sbox2 =
         MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None).unwrap();
+    let restored_snapshot = sbox2.snapshot().unwrap();
+    assert!(Arc::ptr_eq(
+        restored_snapshot.pt_root_finder().unwrap(),
+        &finder
+    ));
     let result: i32 = sbox2.call("GetStatic", ()).unwrap();
     assert_eq!(result, 0);
 }
@@ -135,7 +148,9 @@ fn from_snapshot_in_memory_pre_init() {
 
 #[test]
 fn round_trip_save_load_call() {
-    let snapshot = create_snapshot();
+    let mut source = create_test_sandbox();
+    source.set_pt_root_finder(Arc::new(|_, _, root| vec![root]));
+    let snapshot = source.snapshot().unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let oci = dir.path().join("snap");
@@ -144,6 +159,7 @@ fn round_trip_save_load_call() {
         .unwrap();
 
     let loaded = Snapshot::checked_load(&oci, OciTag::new("latest").unwrap()).unwrap();
+    assert!(loaded.pt_root_finder().is_none());
     let mut sbox2 =
         MultiUseSandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
 
