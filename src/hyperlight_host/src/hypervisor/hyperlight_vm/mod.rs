@@ -583,6 +583,11 @@ impl HyperlightVm {
         self.rt_cfg.entry_point = Some(entry_point);
     }
 
+    #[cfg(crashdump)]
+    pub(crate) fn clear_crashdump_binary_path(&mut self) {
+        self.rt_cfg.binary_path = None;
+    }
+
     pub(crate) fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
     }
