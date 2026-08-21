@@ -37,7 +37,8 @@ pub enum SandboxStatus {
     Ready,
     /// The sandbox requires a successful restore before further use.
     Poisoned,
-    /// The sandbox cannot be used and must be discarded.
+    /// The sandbox cannot be used and cannot be restored.
+    /// [`MultiUseSandbox::recreate()`] can be used to replace an unrecoverable sandbox with a new one.
     Unrecoverable,
 }
 
@@ -52,9 +53,30 @@ impl SandboxStatus {
         matches!(self, Self::Poisoned)
     }
 
-    /// Returns whether the sandbox must be discarded.
+    /// Returns whether the sandbox is unrecoverable. An unrecoverable sandbox
+    /// cannot be used and cannot be restored.
+    /// [`MultiUseSandbox::recreate()`] can be used to replace an unrecoverable sandbox with a new one.
     pub const fn is_unrecoverable(self) -> bool {
         matches!(self, Self::Unrecoverable)
+    }
+}
+
+enum SandboxLifecycle {
+    Ready,
+    Poisoned,
+    Unrecoverable {
+        #[cfg_attr(gdb, allow(dead_code))]
+        recreation_snapshot: Arc<Snapshot>,
+    },
+}
+
+impl SandboxLifecycle {
+    const fn status(&self) -> SandboxStatus {
+        match self {
+            Self::Ready => SandboxStatus::Ready,
+            Self::Poisoned => SandboxStatus::Poisoned,
+            Self::Unrecoverable { .. } => SandboxStatus::Unrecoverable,
+        }
     }
 }
 
@@ -77,11 +99,14 @@ impl SandboxStatus {
 /// captured memory and vCPU state and removes dynamic mappings.
 ///
 /// A restore failure that prevents Hyperlight from establishing valid base
-/// memory mappings can leave the sandbox
-/// [`Unrecoverable`](SandboxStatus::Unrecoverable). Further restore attempts and
-/// guest operations are rejected. The sandbox must be discarded.
+/// memory mappings can leave the sandbox [`Unrecoverable`](SandboxStatus::Unrecoverable). Such failures usually indicate
+/// an unexpected hypervisor mapping error. Further restore attempts and guest operations
+/// are rejected. Use [`recreate()`](Self::recreate) on a supported build, or discard the
+/// sandbox.
 pub struct MultiUseSandbox {
-    status: SandboxStatus,
+    lifecycle: SandboxLifecycle,
+    #[cfg_attr(gdb, allow(dead_code))]
+    config: crate::sandbox::SandboxConfiguration,
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: HyperlightVm,
@@ -116,7 +141,7 @@ impl MultiUseSandbox {
     }
 
     fn check_ready(&self) -> Result<()> {
-        match self.status {
+        match self.lifecycle.status() {
             SandboxStatus::Ready => Ok(()),
             SandboxStatus::Poisoned => Err(HyperlightError::PoisonedSandbox),
             SandboxStatus::Unrecoverable => Err(HyperlightError::UnrecoverableSandbox),
@@ -124,8 +149,8 @@ impl MultiUseSandbox {
     }
 
     fn poison(&mut self) {
-        if self.status.is_ready() {
-            self.status = SandboxStatus::Poisoned;
+        if self.lifecycle.status().is_ready() {
+            self.lifecycle = SandboxLifecycle::Poisoned;
         }
     }
 
@@ -139,9 +164,11 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
+        config: crate::sandbox::SandboxConfiguration,
     ) -> MultiUseSandbox {
         Self {
-            status: SandboxStatus::Ready,
+            lifecycle: SandboxLifecycle::Ready,
+            config,
             host_funcs,
             mem_mgr: mgr,
             vm,
@@ -324,7 +351,7 @@ impl MultiUseSandbox {
             })?;
         }
 
-        let sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
+        let sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm, config);
         Ok(sbox)
     }
 
@@ -469,9 +496,8 @@ impl MultiUseSandbox {
     ///
     /// * Snapshot compatibility failures happen before mutation and leave the
     ///   current status unchanged.
-    /// * A failure while restoring base memory or its VM mappings sets the
-    ///   status to [`Unrecoverable`](SandboxStatus::Unrecoverable). The sandbox
-    ///   must be discarded.
+    /// * A failure while restoring base memory or its VM mappings may result in
+    ///   an [`Unrecoverable`](SandboxStatus::Unrecoverable) status.
     /// * A later failure while restoring vCPU state, MSRs, or dynamic mappings
     ///   leaves the sandbox [`Poisoned`](SandboxStatus::Poisoned). Restore can be
     ///   retried with a compatible snapshot.
@@ -529,7 +555,7 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
-        if self.status.is_unrecoverable() {
+        if self.lifecycle.status().is_unrecoverable() {
             return Err(HyperlightError::UnrecoverableSandbox);
         }
 
@@ -569,13 +595,15 @@ impl MultiUseSandbox {
         })?;
 
         if let Err(error) = self.restore_memory_and_mappings(&snapshot) {
-            self.status = SandboxStatus::Unrecoverable;
+            self.lifecycle = SandboxLifecycle::Unrecoverable {
+                recreation_snapshot: snapshot,
+            };
             self.snapshot = None;
             return Err(error);
         }
 
         // Errors below here leave the sandbox poisoned (restore must be retried to unpoison).
-        self.status = SandboxStatus::Poisoned;
+        self.lifecycle = SandboxLifecycle::Poisoned;
         self.snapshot = None;
 
         self.vm
@@ -618,9 +646,102 @@ impl MultiUseSandbox {
         //    - All leaked heap allocations (memory is restored to snapshot state)
         //    - All corrupted data structures (overwritten with consistent snapshot data)
         //    - All inconsistent global state (reset to snapshot values)
-        self.status = SandboxStatus::Ready;
+        self.lifecycle = SandboxLifecycle::Ready;
 
         Ok(())
+    }
+
+    /// Recreates this sandbox from scratch using its configuration.
+    ///
+    /// This convenience method rebuilds an unrecoverable sandbox. The rebuilt
+    /// sandbox has the state of the snapshot passed to the failed
+    /// [`restore()`](Self::restore) call that made this sandbox
+    /// [`Unrecoverable`](SandboxStatus::Unrecoverable).
+    ///
+    /// Recreation requires [`Unrecoverable`](SandboxStatus::Unrecoverable)
+    /// sandbox status and is unsupported when the `gdb` Cargo feature is
+    /// enabled. Any error consumes the sandbox.
+    ///
+    /// Recreation transfers host functions, any registered [`PtRootFinder`]
+    /// callback, interrupt retry delay, interrupt signal offset, x86_64 guest
+    /// MSR declarations, and crashdump enablement from the unrecoverable sandbox
+    /// to the rebuilt sandbox.
+    ///
+    /// Memory regions added through [`map_region()`](Self::map_region) or
+    /// [`map_file_cow()`](Self::map_file_cow) are not transferred. Map them
+    /// again on the rebuilt sandbox.
+    ///
+    /// Existing interrupt handles do not apply to the rebuilt sandbox. Call
+    /// [`interrupt_handle()`](Self::interrupt_handle) on the rebuilt sandbox to
+    /// obtain new handles.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{HyperlightError, MultiUseSandbox};
+    /// # use hyperlight_host::sandbox::snapshot::Snapshot;
+    /// # fn example(mut sandbox: MultiUseSandbox, snapshot: Arc<Snapshot>) -> Result<MultiUseSandbox, HyperlightError> {
+    /// if let Err(error) = sandbox.restore(snapshot) {
+    ///     if sandbox.status().is_unrecoverable() {
+    ///         sandbox = sandbox.recreate()?;
+    ///     } else {
+    ///         return Err(error);
+    ///     }
+    /// }
+    /// # Ok(sandbox)
+    /// # }
+    /// ```
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn recreate(self) -> Result<Self> {
+        #[cfg(gdb)]
+        {
+            return Err(HyperlightError::SandboxRecreationUnsupported);
+        }
+
+        #[cfg(not(gdb))]
+        {
+            let recreation_snapshot = match &self.lifecycle {
+                SandboxLifecycle::Ready => {
+                    return Err(HyperlightError::SandboxRecreationWrongState(
+                        SandboxStatus::Ready,
+                    ));
+                }
+                SandboxLifecycle::Poisoned => {
+                    return Err(HyperlightError::SandboxRecreationWrongState(
+                        SandboxStatus::Poisoned,
+                    ));
+                }
+                SandboxLifecycle::Unrecoverable {
+                    recreation_snapshot,
+                } => recreation_snapshot,
+            };
+            let recreation_snapshot = recreation_snapshot.clone();
+            let Self {
+                lifecycle: _,
+                config,
+                host_funcs,
+                mem_mgr,
+                vm,
+                snapshot: _,
+                pt_root_finder,
+            } = self;
+
+            drop(vm);
+            drop(mem_mgr);
+
+            let host_funcs = Arc::into_inner(host_funcs)
+                .ok_or_else(|| crate::new_error!("host function registry is still shared"))?
+                .into_inner()
+                .map_err(|error| crate::new_error!("Error locking host_funcs: {}", error))?;
+            let mut recreated = Self::from_snapshot(
+                recreation_snapshot,
+                crate::HostFunctions::from_inner(host_funcs),
+                Some(config),
+            )?;
+            recreated.pt_root_finder = pt_root_finder;
+            Ok(recreated)
+        }
     }
 
     /// Calls a guest function by name with the specified arguments.
@@ -1083,7 +1204,7 @@ impl MultiUseSandbox {
     /// ```
     #[deprecated(since = "0.16.0", note = "use status().is_poisoned()")]
     pub fn poisoned(&self) -> bool {
-        self.status.is_poisoned()
+        self.status().is_poisoned()
     }
 
     /// Returns the sandbox lifecycle status.
@@ -1092,9 +1213,9 @@ impl MultiUseSandbox {
     /// * [`Poisoned`](SandboxStatus::Poisoned) rejects guest operations and
     ///   snapshots. A successful [`restore()`](Self::restore) makes it ready.
     /// * [`Unrecoverable`](SandboxStatus::Unrecoverable) rejects all further
-    ///   operations, including restore. The sandbox must be discarded.
+    ///   operations except supported recreation.
     pub fn status(&self) -> SandboxStatus {
-        self.status
+        self.lifecycle.status()
     }
 }
 
@@ -1166,6 +1287,8 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_pathbuf;
 
+    #[cfg(not(gdb))]
+    use crate::func::Registerable;
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -1760,13 +1883,51 @@ mod tests {
             .evolve()
             .unwrap();
         source.call::<i32>("AddToStatic", 42i32).unwrap();
+        #[cfg(crashdump)]
+        {
+            source.mem_mgr.original_entrypoint = 0;
+        }
         let snapshot = source.snapshot().unwrap();
+        #[cfg(crashdump)]
+        let expected_entry_point = snapshot.original_entrypoint();
 
         let path = simple_guest_as_pathbuf();
-        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
-            .unwrap()
-            .evolve()
+        let mut target_config = SandboxConfiguration::default();
+        #[cfg(any(kvm, mshv3, hvf))]
+        target_config.set_interrupt_retry_delay(std::time::Duration::from_micros(137));
+        #[cfg(target_os = "linux")]
+        target_config.set_interrupt_vcpu_sigrtmin_offset(1).unwrap();
+        #[cfg(crashdump)]
+        target_config.set_guest_core_dump(false);
+        #[cfg(target_arch = "x86_64")]
+        target_config
+            .guest_msrs(&[crate::hypervisor::regs::MSR_SYSENTER_CS])
             .unwrap();
+        let mut target =
+            UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_config))
+                .unwrap()
+                .evolve()
+                .unwrap();
+        let callback_called = {
+            target
+                .register_host_function("RecoveryHostFunction", || Ok(7_i64))
+                .unwrap();
+            let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let callback_called = called.clone();
+            target.set_pt_root_finder(Box::new(move |_, _, _| {
+                callback_called.store(true, std::sync::atomic::Ordering::Release);
+                Vec::new()
+            }));
+            called
+        };
+        let map_mem = allocate_guest_memory();
+        let region = region_for_memory(&map_mem, 0x200000000_usize, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` remains alive and unmodified until recreation consumes `target`.
+        unsafe { target.map_region(&region).unwrap() };
+        let (mapped_path, _) =
+            create_test_file("hyperlight_test_recreation_file_mapping.bin", &[0; 4096]);
+        target.map_file_cow(&mapped_path, 0x300000000).unwrap();
+        assert_eq!(target.vm.get_mapped_regions().count(), 2);
         let mappings = target.vm.base_mapping_state();
         let fault_plan = target
             .vm
@@ -1791,11 +1952,163 @@ mod tests {
             Err(HyperlightError::UnrecoverableSandbox)
         ));
 
-        let map_mem = allocate_guest_memory();
-        let region = region_for_memory(&map_mem, 0x200000000_usize, MemoryRegionFlags::READ);
         assert!(matches!(
             unsafe { target.map_region(&region) },
             Err(HyperlightError::UnrecoverableSandbox)
+        ));
+
+        let old_interrupt = target.interrupt_handle();
+        assert!(!old_interrupt.kill());
+        let mut recreated = target.recreate().unwrap();
+        let new_interrupt = recreated.interrupt_handle();
+
+        assert_eq!(recreated.status(), SandboxStatus::Ready);
+        #[cfg(crashdump)]
+        {
+            assert!(!recreated.config.get_guest_core_dump());
+            assert_eq!(recreated.mem_mgr.original_entrypoint, expected_entry_point);
+        }
+        #[cfg(any(kvm, mshv3, hvf))]
+        assert_eq!(
+            recreated.config.get_interrupt_retry_delay(),
+            target_config.get_interrupt_retry_delay()
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            recreated.config.get_interrupt_vcpu_sigrtmin_offset(),
+            target_config.get_interrupt_vcpu_sigrtmin_offset()
+        );
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            recreated.config.get_guest_msrs(),
+            target_config.get_guest_msrs()
+        );
+        assert_eq!(recreated.vm.get_mapped_regions().count(), 0);
+        std::fs::remove_file(mapped_path).unwrap();
+        assert!(old_interrupt.dropped());
+        assert!(!Arc::ptr_eq(&old_interrupt, &new_interrupt));
+        assert_eq!(recreated.call::<i32>("GetStatic", ()).unwrap(), 42);
+        assert_eq!(
+            recreated
+                .call::<i64>(
+                    "CallGivenParamlessHostFuncThatReturnsI64",
+                    "RecoveryHostFunction".to_string(),
+                )
+                .unwrap(),
+            7
+        );
+        recreated.snapshot().unwrap();
+        assert!(callback_called.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[cfg(not(gdb))]
+    fn sandbox_with_failed_snapshot_mapping() -> MultiUseSandbox {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+        let fault_plan = sandbox
+            .vm
+            .inject_vm_faults([VmOperation::Map(MemoryRegionType::Snapshot)]);
+
+        let error = sandbox.restore(snapshot).unwrap_err();
+
+        assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
+        assert_eq!(sandbox.status(), SandboxStatus::Unrecoverable);
+        assert!(fault_plan.is_consumed());
+        sandbox
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn recreation_fails_when_host_function_registry_is_shared() {
+        let sandbox = sandbox_with_failed_snapshot_mapping();
+        let old_interrupt = sandbox.interrupt_handle();
+        let shared_host_funcs = sandbox.host_funcs.clone();
+
+        let error = match sandbox.recreate() {
+            Ok(_) => panic!("recreation should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            HyperlightError::Error(message) if message == "host function registry is still shared"
+        ));
+        assert!(old_interrupt.dropped());
+        drop(shared_host_funcs);
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn recreation_fails_when_host_function_registry_is_poisoned() {
+        let sandbox = sandbox_with_failed_snapshot_mapping();
+        let old_interrupt = sandbox.interrupt_handle();
+        let host_funcs = sandbox.host_funcs.clone();
+        let thread_result = thread::spawn(move || {
+            let _guard = host_funcs.lock().unwrap();
+            panic!("poison host function registry");
+        })
+        .join();
+        assert!(thread_result.is_err());
+
+        let error = match sandbox.recreate() {
+            Ok(_) => panic!("recreation should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            HyperlightError::Error(message) if message.starts_with("Error locking host_funcs:")
+        ));
+        assert!(old_interrupt.dropped());
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn recreation_rejects_ready_and_poisoned_sandboxes() {
+        let path = simple_guest_as_pathbuf();
+        let ready = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        assert!(matches!(
+            ready.recreate(),
+            Err(HyperlightError::SandboxRecreationWrongState(
+                SandboxStatus::Ready
+            ))
+        ));
+
+        let path = simple_guest_as_pathbuf();
+        let mut poisoned = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        poisoned
+            .call::<()>("guest_panic", "poison recovery".to_string())
+            .unwrap_err();
+        assert!(matches!(
+            poisoned.recreate(),
+            Err(HyperlightError::SandboxRecreationWrongState(
+                SandboxStatus::Poisoned
+            ))
+        ));
+    }
+
+    #[test]
+    #[cfg(gdb)]
+    fn recreation_is_unsupported_with_gdb() {
+        let path = simple_guest_as_pathbuf();
+        let ready = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        assert!(matches!(
+            ready.recreate(),
+            Err(HyperlightError::SandboxRecreationUnsupported)
         ));
     }
 
@@ -1845,6 +2158,10 @@ mod tests {
         assert_eq!(target.status(), SandboxStatus::Unrecoverable);
         assert_eq!(target.vm.base_mapping_state(), mappings);
         assert!(fault_plan.is_consumed());
+
+        let mut recreated = target.recreate().unwrap();
+        assert_eq!(recreated.status(), SandboxStatus::Ready);
+        assert_eq!(recreated.call::<i32>("GetStatic", ()).unwrap(), 42);
     }
 
     #[test]

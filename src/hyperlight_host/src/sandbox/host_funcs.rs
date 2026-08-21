@@ -69,6 +69,11 @@ impl HostFunctions {
         self.0
     }
 
+    #[cfg(not(gdb))]
+    pub(crate) fn from_inner(inner: FunctionRegistry) -> Self {
+        Self(inner)
+    }
+
     /// Borrow the inner registry mutably.
     pub(crate) fn inner_mut(&mut self) -> &mut FunctionRegistry {
         &mut self.0

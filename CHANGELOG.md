@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
   snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
 * Add `MultiUseSandbox::status()`, which returns `SandboxStatus` for inspecting sandbox lifecycle state (poisoned, unrecoverable).
+* Add `MultiUseSandbox::recreate()` for conveniently recreating an unrecoverable sandbox.
 
 ### Changed
 * **Breaking:** Guest MSR state is now saved and restored across snapshots.
