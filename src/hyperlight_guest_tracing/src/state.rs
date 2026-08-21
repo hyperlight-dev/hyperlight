@@ -16,10 +16,6 @@ use tracing_core::span::{Attributes, Id, Record};
 use crate::invariant_tsc;
 use crate::visitor::FieldsVisitor;
 
-pub struct TraceBatchInfo {
-    pub serialized_data: Vec<u8>,
-}
-
 /// Internal state of the tracing subscriber
 pub(crate) struct GuestState {
     /// Encoder for events
@@ -44,6 +40,7 @@ fn send_to_host(data: &[u8]) {
             in("r8") OutBAction::TraceBatch as u64,
             in("r9") data.as_ptr() as u64,
             in("r10") data.len() as u64,
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -91,12 +88,6 @@ impl GuestState {
             .encode(&GuestEvent::GuestStart { tsc: start_tsc });
     }
 
-    /// Reset the trace state, clearing all existing spans and events
-    /// This is called after the trace has been flushed to the host
-    pub(crate) fn reset(&mut self) {
-        self.encoder.reset();
-    }
-
     /// Closes the trace by ending all spans
     /// NOTE: This expects an outb call to send the spans to the host.
     pub(crate) fn end_trace(&mut self) {
@@ -110,17 +101,6 @@ impl GuestState {
 
             // Serialize the event
             self.encoder.encode(&event);
-        }
-    }
-
-    /// Return (ptr, len) for serialized data if any is available
-    pub(crate) fn serialized_data(&self) -> Option<(u64, u64)> {
-        let data = self.encoder.finish();
-
-        if data.is_empty() {
-            None
-        } else {
-            Some((data.as_ptr() as u64, data.len() as u64))
         }
     }
 
