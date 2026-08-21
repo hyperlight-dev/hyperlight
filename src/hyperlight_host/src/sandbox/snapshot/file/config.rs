@@ -130,6 +130,12 @@ impl CpuVendor {
         {
             Self("0x61".to_string())
         }
+        #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+        {
+            // Windows does not expose MIDR_EL1 directly. ARM64 virtualization
+            // uses one architectural interface, so snapshots use one token.
+            Self("arm-windows".to_owned())
+        }
     }
 
     pub(super) fn as_str(&self) -> &str {
@@ -739,6 +745,8 @@ mod tests {
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
+        #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+        assert_eq!(v, "arm-windows", "unexpected Windows ARM64 CPU vendor");
     }
 
     /// The architecture the current host is not running.

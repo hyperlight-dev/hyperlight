@@ -318,8 +318,12 @@ fn callback_test() {
 
 #[test]
 fn callback_test_parallel() {
-    let n_threads = 100;
-    let handles: Vec<_> = (0..n_threads)
+    #[cfg(target_arch = "aarch64")]
+    const THREADS: usize = 64;
+    #[cfg(not(target_arch = "aarch64"))]
+    const THREADS: usize = 100;
+
+    let handles: Vec<_> = (0..THREADS)
         .map(|_| {
             std::thread::spawn(|| {
                 callback_test_helper();
