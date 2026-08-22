@@ -23,7 +23,7 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::hypervisor::regs::MsrEntry;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -89,7 +89,7 @@ pub struct Snapshot {
     next_action: NextAction,
 
     /// Guest virtual address of the guest binary's ELF entry point
-    /// (`load_addr + e_entry - base_va`). Unlike `next_action`, which
+    /// (`code GVA + e_entry - base_va`). Unlike `next_action`, which
     /// transitions to `Call(dispatch_addr)` once the guest has run,
     /// this preserves the original entry across that transition. Used
     /// to fill `AT_ENTRY` in guest core dumps so a debugger can
@@ -321,14 +321,20 @@ impl Snapshot {
             guest_blob_mem_flags,
         )?;
 
-        let load_addr = layout.get_guest_code_address() as u64;
         let base_va = exe_info.base_va();
         let entrypoint_va: u64 = exe_info.entrypoint().into();
+        let is_pie = exe_info.is_pie();
+
+        let (code_virt_base, regions) = layout.get_guest_regions_with_code_va(
+            is_pie,
+            base_va,
+            exe_info.loaded_size() as u64,
+        )?;
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
         let load_info = exe_info.load(
-            load_addr.try_into()?,
+            code_virt_base.try_into()?,
             &mut memory[layout.guest_code_offset()..],
         )?;
 
@@ -341,7 +347,7 @@ impl Snapshot {
         let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
         // 1. Map the (ideally readonly) pages of snapshot data
-        for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
+        for rgn in regions.iter() {
             let readable = rgn.flags.contains(MemoryRegionFlags::READ);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
             let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
@@ -357,8 +363,9 @@ impl Snapshot {
                     executable,
                 })
             };
+
             let mapping = Mapping {
-                phys_base: rgn.guest_region.start as u64,
+                phys_base: rgn.host_region.start as u64,
                 virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
                 kind,
@@ -377,7 +384,23 @@ impl Snapshot {
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
-        let entrypoint_gva = load_addr + entrypoint_va - base_va;
+        let entrypoint_offset = entrypoint_va.checked_sub(base_va).ok_or_else(|| {
+            crate::new_error!(
+                "ELF entrypoint VA ({:#x}) is below base VA ({:#x})",
+                entrypoint_va,
+                base_va
+            )
+        })?;
+
+        let entrypoint_gva = code_virt_base
+            .checked_add(entrypoint_offset)
+            .ok_or_else(|| {
+                crate::new_error!(
+                    "Entrypoint overflow: code_virt_base {:#x} + offset {:#x}",
+                    code_virt_base,
+                    entrypoint_offset
+                )
+            })?;
 
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,
@@ -635,6 +658,12 @@ impl Snapshot {
     /// to fill `AT_ENTRY` in guest core dumps. 0 if unknown.
     pub(crate) fn original_entrypoint(&self) -> u64 {
         self.original_entrypoint
+    }
+
+    /// Returns the virtual base address of the code region in guest space.
+    #[allow(dead_code)]
+    pub(crate) fn code_virt_base(&self) -> u64 {
+        self.code_virt_base
     }
 
     /// Validate that `provided` is a superset of the host functions

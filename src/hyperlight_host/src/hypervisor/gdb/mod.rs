@@ -94,7 +94,7 @@ impl<'a> DebugMemoryView<'a> {
     }
 
     pub(crate) fn code_section_offset(&self) -> u64 {
-        self.mem_mgr.layout.get_guest_code_address() as u64
+        self.mem_mgr.code_virt_base
     }
 
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
