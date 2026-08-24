@@ -104,9 +104,9 @@ fn invalid_guest_function_name() {
 #[test]
 fn set_static() {
     with_all_guests(|path| {
-        let mut sandbox = SandboxBuilder::new()
+        let mut sandbox = SandboxBuilder::from_file(path)
             .scratch_size(0x100C000)
-            .build_from_file(path)
+            .build()
             .unwrap();
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
@@ -148,9 +148,9 @@ fn multiple_parameters() {
     }
 
     with_all_guests(|path| {
-        let mut sb = SandboxBuilder::new()
+        let mut sb = SandboxBuilder::from_file(path)
             .host_print(writer.clone())
-            .build_from_file(path)
+            .build()
             .unwrap();
         test_case!(sb, rx, "PrintTwoArgs", (a, b));
         test_case!(sb, rx, "PrintThreeArgs", (a, b, c));
@@ -198,11 +198,11 @@ fn incorrect_parameter_num() {
 
 #[test]
 fn small_scratch_sandbox() {
-    let a = SandboxBuilder::new()
+    let a = SandboxBuilder::from_file(simple_guest_as_pathbuf())
         .scratch_size(0x48000)
         .input_data_size(0x24000)
         .output_data_size(0x24000)
-        .build_from_file(simple_guest_as_pathbuf());
+        .build();
 
     assert!(matches!(
         a.unwrap_err(),
@@ -237,9 +237,9 @@ fn simple_test_helper() {
     let message2 = "world";
 
     with_all_guests(|path| {
-        let mut sandbox = SandboxBuilder::new()
+        let mut sandbox = SandboxBuilder::from_file(path)
             .host_print(writer.clone())
-            .build_from_file(path)
+            .build()
             .unwrap();
         let res: i32 = sandbox.call("PrintOutput", message.to_string()).unwrap();
         assert_eq!(res, 5);
@@ -291,13 +291,13 @@ fn callback_test_helper() {
     with_all_guests(|path| {
         // create host function
         let (tx, rx) = channel();
-        let mut init_sandbox = SandboxBuilder::new()
+        let mut init_sandbox = SandboxBuilder::from_file(path)
             .host_function("HostMethod1", move |msg: String| {
                 let len = msg.len();
                 tx.send(msg).unwrap();
                 Ok(len as i32)
             })
-            .build_from_file(path)
+            .build()
             .unwrap();
 
         // call guest function that calls host function
@@ -336,11 +336,11 @@ fn callback_test_parallel() {
 fn host_function_error() {
     with_all_guests(|path| {
         // create host function
-        let mut init_sandbox = SandboxBuilder::new()
+        let mut init_sandbox = SandboxBuilder::from_file(path)
             .host_function("HostMethod1", |_: String| -> Result<String> {
                 Err(new_error!("Host function error!"))
             })
-            .build_from_file(path)
+            .build()
             .unwrap();
 
         // call guest function that calls host function

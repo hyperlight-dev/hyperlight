@@ -54,9 +54,9 @@ impl<'a> Arbitrary<'a> for FuzzInput {
 fuzz_target!(
     init: {
         // In local tests, 256 KiB seemed sufficient for deep recursion
-        let mu_sbox = SandboxBuilder::new()
+        let mu_sbox = SandboxBuilder::from_file(simple_guest_for_fuzzing_as_pathbuf())
             .scratch_size(256 * 1024)
-            .build_from_file(simple_guest_for_fuzzing_as_pathbuf())
+            .build()
             .unwrap();
 
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();

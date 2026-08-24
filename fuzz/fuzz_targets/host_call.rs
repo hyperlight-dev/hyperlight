@@ -17,11 +17,11 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 // For fuzzing efficiency, we create one Sandbox and reuse it for all fuzzing iterations.
 fuzz_target!(
     init: {
-        let mu_sbox = SandboxBuilder::new()
+        let mu_sbox = SandboxBuilder::from_file(simple_guest_for_fuzzing_as_pathbuf())
             .output_data_size(64 * 1024) // 64 KB output buffer
             .input_data_size(64 * 1024) // 64 KB input buffer
             .scratch_size(512 * 1024) // large scratch region to contain those buffers, any data copies, etc.
-            .build_from_file(simple_guest_for_fuzzing_as_pathbuf())
+            .build()
             .unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },

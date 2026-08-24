@@ -109,9 +109,9 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 let _entered = span.enter();
 
                 // Create a new sandbox.
-                let mut multiuse_sandbox = SandboxBuilder::new()
+                let mut multiuse_sandbox = SandboxBuilder::from_file(path.clone())
                     .host_print(fn_writer)
-                    .build_from_file(path.clone())?;
+                    .build()?;
 
                 // Call a guest function 5 times to generate some log entries.
                 for _ in 0..5 {

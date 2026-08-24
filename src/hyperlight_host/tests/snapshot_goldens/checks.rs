@@ -48,10 +48,10 @@ impl<'a> GoldenTest<'a> {
             .map_err(|e| format!("Snapshot::checked_load({}): {e}", self.tag()))?;
         let mut funcs = HostFunctions::default();
         register_host_echo_fns(&mut funcs);
-        SandboxBuilder::new()
+        SandboxBuilder::from_snapshot(Arc::new(snap))
             .host_functions(funcs)
-            .build_from_snapshot(Arc::new(snap))
-            .map_err(|e| format!("build_from_snapshot({}): {e}", self.tag()))
+            .build()
+            .map_err(|e| format!("build({}): {e}", self.tag()))
     }
 }
 
@@ -297,10 +297,10 @@ fn chained_snapshot(golden: &GoldenTest) -> Result<(), String> {
     let loaded = Snapshot::checked_load(&layout, tag).map_err(|e| format!("checked_load: {e}"))?;
     let mut funcs = HostFunctions::default();
     register_host_echo_fns(&mut funcs);
-    let mut sbox2 = SandboxBuilder::new()
+    let mut sbox2 = SandboxBuilder::from_snapshot(Arc::new(loaded))
         .host_functions(funcs)
-        .build_from_snapshot(Arc::new(loaded))
-        .map_err(|e| format!("build_from_snapshot: {e}"))?;
+        .build()
+        .map_err(|e| format!("build: {e}"))?;
     let val: i32 = sbox2
         .call("GetStatic", ())
         .map_err(|e| format!("GetStatic on chained: {e}"))?;

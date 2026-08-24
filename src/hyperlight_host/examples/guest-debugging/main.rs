@@ -8,7 +8,7 @@ use hyperlight_host::sandbox::config::DebugInfo;
 
 /// Build a sandbox builder that enables GDB debugging when the `gdb` feature is enabled.
 fn debuggable_builder() -> SandboxBuilder {
-    let builder = SandboxBuilder::new();
+    let builder = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf());
 
     #[cfg(gdb)]
     let builder = builder.guest_debug_info(DebugInfo { port: 8080 });
@@ -26,12 +26,13 @@ fn main() -> hyperlight_host::Result<()> {
     // Build a sandbox with a guest binary and debug enabled
     let mut multi_use_sandbox_dbg = debuggable_builder()
         .host_function("Sleep5Secs", sleep_5_secs)
-        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
+        .build()?;
 
     // Build a sandbox with a guest binary
-    let mut multi_use_sandbox = SandboxBuilder::new()
-        .host_function("Sleep5Secs", sleep_5_secs)
-        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
+    let mut multi_use_sandbox =
+        SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+            .host_function("Sleep5Secs", sleep_5_secs)
+            .build()?;
 
     // Call guest function
     multi_use_sandbox_dbg
@@ -338,8 +339,8 @@ mod tests {
         let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-from-snapshot");
 
         // Build a sandbox the normal way and snapshot it in-memory.
-        let mut producer = SandboxBuilder::new()
-            .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        let mut producer = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+            .build()
             .unwrap();
         let snap = producer.snapshot().unwrap();
 
@@ -353,9 +354,9 @@ mod tests {
         // here before the client is launched below.
         let snap_thread = snap.clone();
         let sandbox_thread = thread::spawn(move || -> Result<()> {
-            let mut sbox = SandboxBuilder::new()
+            let mut sbox = SandboxBuilder::from_snapshot(snap_thread)
                 .guest_debug_info(DebugInfo { port: PORT })
-                .build_from_snapshot(snap_thread)?;
+                .build()?;
             sbox.call::<i32>(
                 "PrintOutput",
                 "Hello from a from_snapshot sandbox\n".to_string(),

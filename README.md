@@ -24,9 +24,9 @@ Hyperlight lets you safely run untrusted code inside hypervisor-isolated micro V
 // Build a sandbox from a guest binary, registering a host function the guest
 // can call. In a real app that function might query a database, read a config,
 // or call an external API. By default, guests can only print to the host.
-let mut sandbox = SandboxBuilder::new()
+let mut sandbox = SandboxBuilder::from_file(guest_path)
     .host_function("GetWeekday", || Ok("Monday".to_string()))
-    .build_from_file(guest_path)?;
+    .build()?;
 
 // Call a function inside the VM
 let greeting: String = sandbox.call("SayHello", "World".to_string())?;

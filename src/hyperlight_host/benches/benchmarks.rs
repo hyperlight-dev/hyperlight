@@ -31,9 +31,9 @@ enum SandboxSize {
 }
 
 impl SandboxSize {
-    /// Returns a builder configured for this sandbox size.
+    /// Returns a builder for the simple guest, configured for this sandbox size.
     fn builder(&self) -> SandboxBuilder {
-        let builder = SandboxBuilder::new();
+        let builder = SandboxBuilder::from_file(simple_guest_as_pathbuf());
         match self {
             Self::Default => builder,
             Self::Small => builder.heap_size(SMALL_HEAP_SIZE),
@@ -59,9 +59,7 @@ impl SandboxSize {
 }
 
 fn create_multiuse_sandbox_with_size(size: SandboxSize) -> MultiUseSandbox {
-    size.builder()
-        .build_from_file(simple_guest_as_pathbuf())
-        .unwrap()
+    size.builder().build().unwrap()
 }
 
 // ============================================================================
@@ -132,7 +130,7 @@ fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: Sandbox
     let mut multiuse_sandbox = size
         .builder()
         .host_function("HostAdd", |a: i32, b: i32| Ok(a + b))
-        .build_from_file(simple_guest_as_pathbuf())
+        .build()
         .unwrap();
 
     b.iter(|| {
@@ -352,13 +350,13 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let large_vec = vec![0u8; SIZE];
         let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
-        let mut sandbox = SandboxBuilder::new()
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
             .input_data_size(2 * SIZE + (1024 * 1024))
             .heap_size(SIZE as u64 * 15)
             // Big enough for the IO data regions and enough of the heap to be used
             .scratch_size(6 * SIZE + 4 * (1024 * 1024))
-            .build_from_file(simple_guest_as_pathbuf())
+            .build()
             .unwrap();
 
         b.iter_with_setup(
@@ -434,9 +432,9 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
-        let mut sandbox = SandboxBuilder::new()
+        let mut sandbox = SandboxBuilder::from_file(guest_path)
             .input_data_size(25 * 1024)
-            .build_from_file(guest_path)
+            .build()
             .unwrap();
 
         b.iter_with_setup(

@@ -26,7 +26,7 @@ pub(crate) const CALL_COUNTER_BUMP: i32 = 42;
 /// silent arithmetic change in `SandboxMemoryLayout::new` shifts at
 /// least one region between generate-time and load-time.
 fn golden_builder() -> SandboxBuilder {
-    SandboxBuilder::new()
+    SandboxBuilder::from_file(simpleguest_path())
         .input_data_size(64 * 1024)
         .output_data_size(64 * 1024)
         .heap_size(256 * 1024)
@@ -42,7 +42,7 @@ pub(crate) fn generate() -> Arc<Snapshot> {
     register_host_echo_fns(&mut funcs);
     let mut sbox = golden_builder()
         .host_functions(funcs)
-        .build_from_file(simpleguest_path())
+        .build()
         .expect("build golden sandbox");
     run_canonical_calls(&mut sbox);
     sbox.snapshot().expect("snapshot")

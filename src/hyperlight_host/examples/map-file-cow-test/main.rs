@@ -20,11 +20,11 @@ use std::path::Path;
 use hyperlight_host::SandboxBuilder;
 
 fn run_once(test_file: &Path, label: &str) -> hyperlight_host::Result<()> {
-    let mut sandbox = SandboxBuilder::new()
+    let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
         .heap_size(4 * 1024 * 1024)
         .scratch_size(64 * 1024 * 1024)
         .mapped_file_cow(test_file, 0xC000_0000)
-        .build_from_file(hyperlight_testing::simple_guest_as_pathbuf())?;
+        .build()?;
     eprintln!(
         "[{label}] sandbox built with a {} byte file mapped",
         std::fs::metadata(test_file)?.len()

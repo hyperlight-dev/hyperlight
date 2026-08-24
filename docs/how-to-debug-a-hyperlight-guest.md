@@ -222,9 +222,9 @@ The name and location of the dump file will be printed to the console and logged
 **NOTE**: By enabling the `crashdump` feature, you instruct Hyperlight to create core dump files for all sandboxes when an unhandled crash occurs.
 To selectively disable this feature for a specific sandbox, call `guest_core_dump(false)` on the `SandboxBuilder`.
 ```rust
-    let sandbox = SandboxBuilder::new()
+    let sandbox = SandboxBuilder::from_file(guest_path)
         .guest_core_dump(false) // Disable core dump for this sandbox
-        .build_from_file(guest_path)?;
+        .build()?;
 ```
 
 ## Creating a dump on demand

@@ -53,9 +53,9 @@ fn run_example() -> Result<()> {
             let _entered = span.enter();
 
             // Create a new sandbox.
-            let mut multiuse_sandbox = SandboxBuilder::new()
+            let mut multiuse_sandbox = SandboxBuilder::from_file(path)
                 .host_print(fn_writer)
-                .build_from_file(path)?;
+                .build()?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -80,8 +80,7 @@ fn run_example() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let mut multiuse_sandbox =
-        SandboxBuilder::new().build_from_file(hyperlight_guest_path.clone())?;
+    let mut multiuse_sandbox = SandboxBuilder::from_file(hyperlight_guest_path.clone()).build()?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.

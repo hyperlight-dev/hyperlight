@@ -25,9 +25,9 @@ fn main() -> Result<()> {
         let path = hyperlight_guest_path.clone();
         let res: Result<()> = {
             // Create a new sandbox.
-            let mut multiuse_sandbox = SandboxBuilder::new()
+            let mut multiuse_sandbox = SandboxBuilder::from_file(path)
                 .host_print(fn_writer)
-                .build_from_file(path)?;
+                .build()?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -53,8 +53,7 @@ fn main() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let mut multiuse_sandbox =
-        SandboxBuilder::new().build_from_file(hyperlight_guest_path.clone())?;
+    let mut multiuse_sandbox = SandboxBuilder::from_file(hyperlight_guest_path.clone()).build()?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();

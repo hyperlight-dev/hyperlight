@@ -93,8 +93,8 @@ mod tests {
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let snapshot = with_local_recorder(&recorder, || {
-            let mut multi = SandboxBuilder::new()
-                .build_from_file(simple_guest_as_pathbuf())
+            let mut multi = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .build()
                 .unwrap();
             let interrupt_handle = multi.interrupt_handle();
 

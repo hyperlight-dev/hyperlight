@@ -8,7 +8,7 @@ fn main() {
     // create a new `MultiUseSandbox` configured to run the `simpleguest.exe`
     // test guest binary
     let path = simple_guest_as_pathbuf();
-    let mut sbox = SandboxBuilder::new().build_from_file(path).unwrap();
+    let mut sbox = SandboxBuilder::from_file(path).build().unwrap();
 
     // Do several calls against a sandbox running the `simpleguest.exe` binary,
     // and print their results

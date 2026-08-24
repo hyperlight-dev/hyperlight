@@ -85,10 +85,10 @@ impl Default for HostFunctions {
     /// `HostPrint` function (writes UTF-8 strings to the host's
     /// stdout in green).
     ///
-    /// This matches the default registry installed by
-    /// `SandboxBuilder::new()`, so a snapshot taken from a
+    /// This matches the default registry installed by the
+    /// `SandboxBuilder` constructors, so a snapshot taken from a
     /// regular sandbox can be loaded with
-    /// `SandboxBuilder::new().build_from_snapshot(snap)`
+    /// `SandboxBuilder::from_snapshot(snap).build()`
     /// without registering anything else.
     ///
     /// Use [`HostFunctions::empty`] for an empty registry.

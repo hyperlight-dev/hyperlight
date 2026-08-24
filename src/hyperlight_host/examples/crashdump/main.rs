@@ -126,7 +126,7 @@ fn main() -> hyperlight_host::Result<()> {
 /// 4. The crash dump is written automatically (no explicit call needed)
 #[cfg(all(crashdump, target_os = "linux"))]
 fn guest_crash_auto_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
-    let mut sandbox = SandboxBuilder::new().build_from_file(guest_path)?;
+    let mut sandbox = SandboxBuilder::from_file(guest_path).build()?;
 
     // Map a file as read-only into the guest at a known address.
     let mapping_file = create_mapping_file();
@@ -186,7 +186,7 @@ fn create_mapping_file() -> std::path::PathBuf {
 /// fault), the automatic crash dump code in the VM run loop is not reached.
 /// To get a crash dump in this case, call `generate_crashdump()` explicitly.
 fn guest_crash_with_on_demand_dump(guest_path: &Path) -> hyperlight_host::Result<()> {
-    let mut sandbox = SandboxBuilder::new().build_from_file(guest_path)?;
+    let mut sandbox = SandboxBuilder::from_file(guest_path).build()?;
 
     // This call triggers a ud2 instruction in the guest. The guest's IDT
     // catches the #UD exception and reports it back to the host as a
@@ -224,9 +224,9 @@ fn guest_crash_with_on_demand_dump(guest_path: &Path) -> hyperlight_host::Result
 fn guest_crash_with_dump_disabled(guest_path: &Path) -> hyperlight_host::Result<()> {
     println!("Core dump disabled for this sandbox.");
 
-    let mut sandbox = SandboxBuilder::new()
+    let mut sandbox = SandboxBuilder::from_file(guest_path)
         .guest_core_dump(false)
-        .build_from_file(guest_path)?;
+        .build()?;
 
     let mapping_file = create_mapping_file();
     let guest_base: u64 = 0x200000000;
@@ -360,7 +360,7 @@ mod tests {
 
         // Create sandbox with default config (crashdump enabled)
         let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
-        let mut sbox = SandboxBuilder::new().build_from_file(guest_path).unwrap();
+        let mut sbox = SandboxBuilder::from_file(guest_path).build().unwrap();
 
         // Map an additional test file into the guest at a known address.
         // The core dump already includes snapshot and scratch regions
@@ -429,16 +429,16 @@ mod tests {
     /// sandboxes resolve symbols the same way as directly-evolved ones.
     fn generate_crashdump_from_snapshot(dump_dir: &Path) -> PathBuf {
         let guest_path = hyperlight_testing::simple_guest_as_pathbuf();
-        let mut sbox = SandboxBuilder::new()
+        let mut sbox = SandboxBuilder::from_file(guest_path)
             .guest_core_dump(true)
-            .build_from_file(guest_path)
+            .build()
             .unwrap();
 
         let snapshot = sbox.snapshot().expect("snapshot");
 
-        let mut sbox2 = SandboxBuilder::new()
+        let mut sbox2 = SandboxBuilder::from_snapshot(snapshot)
             .guest_core_dump(true)
-            .build_from_snapshot(snapshot)
+            .build()
             .unwrap();
 
         let result = sbox2.call::<()>("TriggerException", ());

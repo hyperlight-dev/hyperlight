@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     let simple_guest_path = simple_guest_as_pathbuf();
 
     // Create a new sandbox.
-    let mut sbox = SandboxBuilder::new().build_from_file(simple_guest_path)?;
+    let mut sbox = SandboxBuilder::from_file(simple_guest_path).build()?;
 
     // do the function call
     let current_time = std::time::Instant::now();

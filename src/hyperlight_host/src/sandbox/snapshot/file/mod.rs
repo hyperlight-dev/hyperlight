@@ -327,7 +327,7 @@ impl Snapshot {
     /// # use hyperlight_host::SandboxBuilder;
     /// # use hyperlight_host::sandbox::snapshot::OciTag;
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox = SandboxBuilder::new().build_from_file("guest.bin")?;
+    /// let mut sandbox = SandboxBuilder::from_file("guest.bin").build()?;
     ///
     /// // Capture the initialized state and write it to an OCI layout on disk.
     /// let snapshot = sandbox.snapshot()?;
