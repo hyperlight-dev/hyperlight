@@ -95,9 +95,8 @@ impl SandboxBuilder {
     }
 
     /// Build a sandbox running the guest binary held in `buffer`.
-    pub fn build_from_bytes(self, buffer: impl AsRef<[u8]>) -> Result<Sandbox> {
-        let buffer = buffer.as_ref();
-        self.build_from_guest_binary(GuestBinary::Buffer(buffer))
+    pub fn build_from_bytes(self, buffer: impl Into<Vec<u8>>) -> Result<Sandbox> {
+        self.build_from_guest_binary(GuestBinary::Buffer(buffer.into()))
     }
 
     fn build_from_guest_binary(self, guest_binary: GuestBinary) -> Result<Sandbox> {

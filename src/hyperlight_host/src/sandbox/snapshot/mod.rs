@@ -286,8 +286,8 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
 impl Snapshot {
     /// Create a new snapshot from the guest binary identified by `env`. With the configuration
     /// specified in `cfg`.
-    pub(crate) fn from_env<'a, 'b>(
-        env: impl Into<GuestEnvironment<'a, 'b>>,
+    pub(crate) fn from_env<'b>(
+        env: impl Into<GuestEnvironment<'b>>,
         cfg: SandboxConfiguration,
     ) -> Result<Self> {
         let env = env.into();

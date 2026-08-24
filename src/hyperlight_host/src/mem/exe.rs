@@ -66,9 +66,9 @@ impl ExeInfo {
         let mut file = File::open(path)?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)?;
-        Self::from_buf(&contents)
+        Self::from_buf(contents)
     }
-    pub fn from_buf(buf: &[u8]) -> Result<Self> {
+    pub fn from_buf(buf: impl Into<Vec<u8>>) -> Result<Self> {
         ElfInfo::new(buf).map(ExeInfo::Elf)
     }
     pub fn entrypoint(&self) -> Offset {
@@ -187,7 +187,7 @@ mod tests {
     fn patched_version_reports_mismatch() {
         let bytes = simpleguest_with_patched_version();
 
-        let info = ExeInfo::from_buf(&bytes).expect("failed to load patched ELF");
+        let info = ExeInfo::from_buf(bytes).expect("failed to load patched ELF");
         assert_eq!(info.guest_bin_version(), Some("0.0.0"));
         assert_ne!(
             info.guest_bin_version().unwrap(),
@@ -217,7 +217,7 @@ mod tests {
         let bytes = simpleguest_with_patched_version();
 
         let result = crate::sandbox::snapshot::Snapshot::from_env(
-            crate::GuestBinary::Buffer(&bytes),
+            crate::GuestBinary::Buffer(bytes),
             crate::sandbox::SandboxConfiguration::default(),
         );
 

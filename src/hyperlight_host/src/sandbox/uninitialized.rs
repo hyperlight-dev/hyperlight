@@ -80,13 +80,13 @@ impl Debug for UninitializedSandbox {
 
 /// A `GuestBinary` is either a buffer or the file path to some data (e.g., a guest binary).
 #[derive(Debug)]
-pub enum GuestBinary<'a> {
+pub enum GuestBinary {
     /// A buffer containing the GuestBinary
-    Buffer(&'a [u8]),
+    Buffer(Vec<u8>),
     /// A path to the GuestBinary
     FilePath(PathBuf),
 }
-impl<'a> GuestBinary<'a> {
+impl GuestBinary {
     /// If the guest binary is identified by a file, canonicalise the path
     ///
     /// For [`GuestBinary::FilePath`], this resolves the path to its canonical
@@ -127,17 +127,19 @@ impl<'a> From<&'a [u8]> for GuestBlob<'a> {
 ///
 /// This struct combines a guest binary (either from a file or memory buffer) with
 /// optional data that will be available to the guest during execution.
+///
+/// The guest binary is owned. `'b` is the lifetime of the borrowed init data.
 #[derive(Debug)]
-pub struct GuestEnvironment<'a, 'b> {
+pub struct GuestEnvironment<'b> {
     /// The guest binary, which can be a file path or a buffer.
-    pub guest_binary: GuestBinary<'a>,
+    pub guest_binary: GuestBinary,
     /// An optional guest blob, which can be used to provide additional data to the guest.
     pub init_data: Option<GuestBlob<'b>>,
 }
 
-impl<'a, 'b> GuestEnvironment<'a, 'b> {
+impl<'b> GuestEnvironment<'b> {
     /// Creates a new `GuestEnvironment` with the given guest binary and an optional guest blob.
-    pub fn new(guest_binary: GuestBinary<'a>, init_data: Option<&'b [u8]>) -> Self {
+    pub fn new(guest_binary: GuestBinary, init_data: Option<&'b [u8]>) -> Self {
         GuestEnvironment {
             guest_binary,
             init_data: init_data.map(GuestBlob::from),
@@ -145,8 +147,8 @@ impl<'a, 'b> GuestEnvironment<'a, 'b> {
     }
 }
 
-impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
-    fn from(guest_binary: GuestBinary<'a>) -> Self {
+impl From<GuestBinary> for GuestEnvironment<'_> {
+    fn from(guest_binary: GuestBinary) -> Self {
         GuestEnvironment {
             guest_binary,
             init_data: None,
@@ -230,8 +232,8 @@ impl UninitializedSandbox {
         skip(env),
         parent = Span::current()
     )]
-    pub fn new<'a, 'b>(
-        env: impl Into<GuestEnvironment<'a, 'b>>,
+    pub fn new<'b>(
+        env: impl Into<GuestEnvironment<'b>>,
         cfg: Option<SandboxConfiguration>,
     ) -> Result<Self> {
         let cfg = cfg.unwrap_or_default();
@@ -479,7 +481,7 @@ mod tests {
 
         let binary_path = simple_guest_as_pathbuf();
         let sandbox =
-            UninitializedSandbox::new(GuestBinary::Buffer(&fs::read(binary_path).unwrap()), None);
+            UninitializedSandbox::new(GuestBinary::Buffer(fs::read(binary_path).unwrap()), None);
         assert!(sandbox.is_ok());
 
         // Test with a invalid guest binary buffer
@@ -487,7 +489,7 @@ mod tests {
         let binary_path = simple_guest_as_pathbuf();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
-        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
+        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None);
         assert!(sandbox.is_err());
     }
 
@@ -1275,7 +1277,7 @@ mod tests {
             let binary_bytes = fs::read(&binary_path).expect("Failed to read binary file");
 
             let snapshot = Arc::new(
-                Snapshot::from_env(GuestBinary::Buffer(&binary_bytes), Default::default())
+                Snapshot::from_env(GuestBinary::Buffer(binary_bytes), Default::default())
                     .expect("Failed to create snapshot from buffer"),
             );
 

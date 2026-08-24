@@ -97,8 +97,9 @@ impl framehop::ModuleSectionInfo<Vec<u8>> for &UnwindInfo {
 }
 
 impl ElfInfo {
-    pub(crate) fn new(bytes: &[u8]) -> Result<Self> {
-        let elf = Elf::parse(bytes)?;
+    pub(crate) fn new(bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        let bytes = bytes.into();
+        let mut elf = Elf::parse(&bytes)?;
         let relocs = elf.dynrels.iter().chain(elf.dynrelas.iter()).collect();
         if !elf
             .program_headers
@@ -110,25 +111,32 @@ impl ElfInfo {
 
         // Look for the hyperlight version note embedded by
         // hyperlight-guest-bin.
-        let guest_bin_version = Self::read_version_note(&elf, bytes);
+        let guest_bin_version = Self::read_version_note(&elf, &bytes);
+
+        let phdrs = std::mem::take(&mut elf.program_headers);
+        let entry = elf.entry;
+        #[cfg(feature = "mem_profile")]
+        let shdrs = elf
+            .section_headers
+            .iter()
+            .filter_map(|sh| {
+                Some(ResolvedSectionHeader {
+                    name: elf.shdr_strtab.get_at(sh.sh_name)?.to_string(),
+                    addr: sh.sh_addr,
+                    offset: sh.sh_offset,
+                    size: sh.sh_size,
+                })
+            })
+            .collect();
+
+        drop(elf);
 
         Ok(ElfInfo {
-            payload: bytes.to_vec(),
-            phdrs: elf.program_headers,
+            payload: bytes,
+            phdrs,
             #[cfg(feature = "mem_profile")]
-            shdrs: elf
-                .section_headers
-                .iter()
-                .filter_map(|sh| {
-                    Some(ResolvedSectionHeader {
-                        name: elf.shdr_strtab.get_at(sh.sh_name)?.to_string(),
-                        addr: sh.sh_addr,
-                        offset: sh.sh_offset,
-                        size: sh.sh_size,
-                    })
-                })
-                .collect(),
-            entry: elf.entry,
+            shdrs,
+            entry,
             relocs,
             guest_bin_version,
         })
