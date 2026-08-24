@@ -568,6 +568,30 @@ impl SandboxMemoryLayout {
         Ok(())
     }
 
+    /// Pick a random page-aligned virtual address for ASLR.
+    ///
+    /// The address is chosen within 47-bit canonical user space:
+    /// lower bound 16 MiB (above identity-mapped layout regions),
+    /// upper bound accounts for `loaded_size` so the mapping fits.
+    pub(crate) fn pick_aslr_address(loaded_size: u64) -> Result<u64> {
+        use rand::RngExt;
+        let code_size_pages = loaded_size.div_ceil(PAGE_SIZE as u64);
+        let min_page = 0x1000_u64; // 0x1000 * PAGE_SIZE = 0x1000000 (16 MiB)
+        let max_page = 0x7_FFFF_FFFF_u64
+            .checked_sub(code_size_pages)
+            .ok_or_else(|| {
+                new_error!(
+                    "PIE code region too large ({} pages) for ASLR randomization",
+                    code_size_pages
+                )
+            })?;
+        let mut rng = rand::rng();
+        let page_number = rng.random_range(min_page..max_page);
+        page_number
+            .checked_mul(PAGE_SIZE as u64)
+            .ok_or_else(|| new_error!("ASLR page number overflow"))
+    }
+
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_init_data(&self, out: &mut [u8], bytes: &[u8]) -> Result<()> {
         out[self.init_data_offset()..self.init_data_offset() + self.init_data_size]

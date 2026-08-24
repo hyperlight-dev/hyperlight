@@ -2766,9 +2766,12 @@ mod tests {
     /// `read_guest_memory_by_gva`, then assert both views are identical.
     #[cfg(feature = "trace_guest")]
     fn assert_gva_read_matches(sbox: &mut MultiUseSandbox, gva: u64, len: usize) {
-        // Guest reads via its own page tables
+        // Guest reads via its own page tables.
+        // do_map = false: the code region is already mapped (identity-mapped
+        // or ASLR-mapped), so we must not remap it with an identity mapping
+        // that would use the GVA as a physical address.
         let expected: Vec<u8> = sbox
-            .call("ReadMappedBuffer", (gva, len as u64, true))
+            .call("ReadMappedBuffer", (gva, len as u64, false))
             .unwrap();
         assert_eq!(expected.len(), len);
 

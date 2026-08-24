@@ -326,7 +326,14 @@ impl Snapshot {
         let entrypoint_va: u64 = exe_info.entrypoint().into();
         let is_pie = exe_info.is_pie();
 
-        let code_gva = if is_pie { load_addr } else { base_va };
+        let code_gva = if is_pie {
+            SandboxMemoryLayout::pick_aslr_address(exe_info.loaded_size() as u64)?
+        } else if base_va == load_addr {
+            // PIE binary at default load address (identity-mapped)
+            load_addr
+        } else {
+            base_va
+        };
         layout.set_code_gva(code_gva)?;
         let regions = layout.get_memory_regions()?;
 
