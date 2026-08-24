@@ -23,12 +23,34 @@ use crate::{
     GuestBinary, HostFunctions, MultiUseSandbox as Sandbox, Result, UninitializedSandbox, new_error,
 };
 
+/// What a [`SandboxBuilder`] builds the sandbox from.
+enum Source {
+    GuestBinary(GuestBinary),
+    Snapshot(Arc<Snapshot>),
+}
+
+impl Source {
+    fn file(path: impl AsRef<Path>) -> Self {
+        Self::GuestBinary(GuestBinary::FilePath(path.as_ref().to_path_buf()))
+    }
+
+    fn bytes(buffer: impl Into<Vec<u8>>) -> Self {
+        Self::GuestBinary(GuestBinary::Buffer(buffer.into()))
+    }
+}
+
 /// Builds a [`Sandbox`].
 ///
-/// Start from [`SandboxBuilder::new`], chain the settings you need, then call
-/// one of the `build_from_*` methods to create the sandbox from a guest binary
-/// on disk, a guest binary in memory, or a [`Snapshot`]. Every setting has a
-/// default, so a builder with no adjustments is valid.
+/// Start from [`SandboxBuilder::from_file`],
+/// [`SandboxBuilder::from_bytes`] or [`SandboxBuilder::from_snapshot`],
+/// chain the settings you need, then call [`SandboxBuilder::build`]. Every
+/// setting has a default, so a builder with no adjustments is valid.
+///
+/// [`SandboxBuilder::new`] starts a builder with no guest, for when the
+/// settings are gathered before the guest is known.
+///
+/// By default only the `HostPrint` host function is registered, which writes
+/// guest output to the host's stdout. Replace it with [`Self::host_print`].
 ///
 /// # Examples
 ///
@@ -37,10 +59,10 @@ use crate::{
 /// ```no_run
 /// # use hyperlight_host::{Result, SandboxBuilder};
 /// # fn example() -> Result<()> {
-/// let mut sandbox = SandboxBuilder::new()
+/// let mut sandbox = SandboxBuilder::from_file("guest.bin")
 ///     .heap_size(1024 * 1024)
 ///     .host_function("Add", |a: i32, b: i32| a + b)
-///     .build_from_file("guest.bin")?;
+///     .build()?;
 ///
 /// let result: String = sandbox.call("Echo", "hello".to_string())?;
 /// # Ok(())
@@ -54,21 +76,21 @@ use crate::{
 /// ```no_run
 /// # use hyperlight_host::{Result, SandboxBuilder};
 /// # fn example() -> Result<()> {
-/// let mut sandbox = SandboxBuilder::new()
+/// let mut sandbox = SandboxBuilder::from_file("guest.bin")
 ///     .host_function("Add", |a: i32, b: i32| a + b)
-///     .build_from_file("guest.bin")?;
+///     .build()?;
 /// let snapshot = sandbox.snapshot()?;
 ///
-/// let mut restored = SandboxBuilder::new()
+/// let mut restored = SandboxBuilder::from_snapshot(snapshot)
 ///     .host_function("Add", |a: i32, b: i32| a + b)
-///     .build_from_snapshot(snapshot)?;
+///     .build()?;
 ///
 /// let result: String = restored.call("Echo", "hello".to_string())?;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Default)]
 pub struct SandboxBuilder {
+    source: Source,
     cfg: SandboxConfiguration,
     host_funcs: HostFunctions,
     init_data: Option<(Vec<u8>, MemoryRegionFlags)>,
@@ -78,59 +100,128 @@ pub struct SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Create a builder with the default configuration and the default host
-    /// functions.
+    fn with_source(source: Source) -> Self {
+        Self {
+            source,
+            cfg: SandboxConfiguration::default(),
+            host_funcs: HostFunctions::default(),
+            init_data: None,
+            mapped_file_cow: Vec::new(),
+            mapped_memory_regions: Vec::new(),
+            guest_log_level: None,
+        }
+    }
+
+    /// Create a builder with an empty guest binary.
     ///
-    /// By default only the `HostPrint` host function is registered, which
-    /// writes guest output to the host's stdout. Replace it with
-    /// [`Self::host_print`].
+    /// Equivalent to `from_bytes([])`. Useful to gather settings before
+    /// the guest is known. Name the source with [`Self::build_from_file`],
+    /// [`Self::build_from_bytes`] or [`Self::build_from_snapshot`], otherwise
+    /// [`Self::build`] fails to parse the empty binary.
     pub fn new() -> Self {
-        Self::default()
+        Self::from_bytes([])
     }
 
-    /// Build a sandbox running the guest binary at `path`.
-    pub fn build_from_file(self, path: impl AsRef<Path>) -> Result<Sandbox> {
-        let path = path.as_ref().to_path_buf();
-        self.build_from_guest_binary(GuestBinary::FilePath(path))
+    /// Build a sandbox running the guest binary at `path`, an ELF file.
+    pub fn from_file(path: impl AsRef<Path>) -> Self {
+        Self::with_source(Source::file(path))
     }
 
-    /// Build a sandbox running the guest binary held in `buffer`.
-    pub fn build_from_bytes(self, buffer: impl Into<Vec<u8>>) -> Result<Sandbox> {
-        self.build_from_guest_binary(GuestBinary::Buffer(buffer.into()))
+    /// Build a sandbox running the guest binary held in `buffer`, the contents
+    /// of an ELF file.
+    pub fn from_bytes(buffer: impl Into<Vec<u8>>) -> Self {
+        Self::with_source(Source::bytes(buffer))
     }
 
-    fn build_from_guest_binary(self, guest_binary: GuestBinary) -> Result<Sandbox> {
-        let init_data = self.init_data.as_ref().map(|(data, flags)| GuestBlob {
-            data,
-            permissions: *flags,
-        });
+    /// Build a sandbox restoring the guest from `snapshot`.
+    pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
+        Self::with_source(Source::Snapshot(snapshot))
+    }
 
-        let env = GuestEnvironment {
+    /// Create the sandbox.
+    ///
+    /// # Errors
+    ///
+    /// When building from a snapshot, returns an error if [`Self::init_data`]
+    /// or [`Self::guest_log_level`] are set. The snapshot already carries
+    /// both, so they have no effect there.
+    pub fn build(self) -> Result<Sandbox> {
+        let Self {
+            source,
+            cfg,
+            host_funcs,
             init_data,
-            guest_binary,
+            mapped_file_cow,
+            mapped_memory_regions,
+            guest_log_level,
+        } = self;
+
+        let mut sandbox = match source {
+            Source::GuestBinary(guest_binary) => {
+                let env = GuestEnvironment {
+                    init_data: init_data.as_ref().map(|(data, flags)| GuestBlob {
+                        data,
+                        permissions: *flags,
+                    }),
+                    guest_binary,
+                };
+
+                let mut uninitialized_sandbox = UninitializedSandbox::new(env, Some(cfg))?;
+
+                uninitialized_sandbox.host_funcs = Arc::new(Mutex::new(host_funcs.into_inner()));
+
+                for (path, guest_base) in mapped_file_cow {
+                    uninitialized_sandbox.map_file_cow(&path, guest_base)?;
+                }
+
+                if let Some(log_level) = guest_log_level {
+                    uninitialized_sandbox.set_max_guest_log_level(log_level);
+                }
+
+                uninitialized_sandbox.evolve()?
+            }
+            Source::Snapshot(snapshot) => {
+                if init_data.is_some() {
+                    return Err(new_error!(
+                        "init_data has no effect when building from a snapshot, as the snapshot already contains it"
+                    ));
+                }
+
+                if guest_log_level.is_some() {
+                    return Err(new_error!(
+                        "guest_log_level has no effect when building from a snapshot, as the snapshot already contains it"
+                    ));
+                }
+
+                let mut sandbox = Sandbox::from_snapshot(snapshot, host_funcs, Some(cfg))?;
+
+                for (path, guest_base) in mapped_file_cow {
+                    sandbox.map_file_cow(&path, guest_base)?;
+                }
+
+                sandbox
+            }
         };
 
-        let mut uninitialized_sandbox = UninitializedSandbox::new(env, Some(self.cfg))?;
-
-        uninitialized_sandbox.host_funcs = Arc::new(Mutex::new(self.host_funcs.into_inner()));
-
-        for (path, guest_base) in self.mapped_file_cow {
-            uninitialized_sandbox.map_file_cow(&path, guest_base)?;
-        }
-
-        if let Some(log_level) = self.guest_log_level {
-            uninitialized_sandbox.set_max_guest_log_level(log_level);
-        }
-
-        let mut sandbox = uninitialized_sandbox.evolve()?;
-
-        for region in self.mapped_memory_regions {
+        for region in mapped_memory_regions {
             // SAFETY: the caller of `mapped_memory_region` guaranteed each region
             // stays valid and unmodified for the lifetime of this sandbox.
             unsafe { sandbox.map_region(&region)? };
         }
 
         Ok(sandbox)
+    }
+
+    /// Build a sandbox running the guest binary at `path`.
+    pub fn build_from_file(mut self, path: impl AsRef<Path>) -> Result<Sandbox> {
+        self.source = Source::file(path);
+        self.build()
+    }
+
+    /// Build a sandbox running the guest binary held in `buffer`.
+    pub fn build_from_bytes(mut self, buffer: impl Into<Vec<u8>>) -> Result<Sandbox> {
+        self.source = Source::bytes(buffer);
+        self.build()
     }
 
     /// Build a sandbox restored from `snapshot`.
@@ -139,32 +230,15 @@ impl SandboxBuilder {
     ///
     /// Returns an error if [`Self::init_data`] or [`Self::guest_log_level`]
     /// are set. The snapshot already carries both, so they have no effect here.
-    pub fn build_from_snapshot(self, snapshot: Arc<Snapshot>) -> Result<Sandbox> {
-        if self.init_data.is_some() {
-            return Err(new_error!(
-                "init_data has no effect when building from a snapshot, as the snapshot already contains it"
-            ));
-        }
+    pub fn build_from_snapshot(mut self, snapshot: Arc<Snapshot>) -> Result<Sandbox> {
+        self.source = Source::Snapshot(snapshot);
+        self.build()
+    }
+}
 
-        if self.guest_log_level.is_some() {
-            return Err(new_error!(
-                "guest_log_level has no effect when building from a snapshot, as the snapshot already contains it"
-            ));
-        }
-
-        let mut sandbox = Sandbox::from_snapshot(snapshot, self.host_funcs, Some(self.cfg))?;
-
-        for (path, guest_base) in self.mapped_file_cow {
-            sandbox.map_file_cow(&path, guest_base)?;
-        }
-
-        for region in self.mapped_memory_regions {
-            // SAFETY: the caller of `mapped_memory_region` guaranteed each region
-            // stays valid and unmodified for the lifetime of this sandbox.
-            unsafe { sandbox.map_region(&region)? };
-        }
-
-        Ok(sandbox)
+impl Default for SandboxBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -172,8 +246,8 @@ impl SandboxBuilder {
     /// Sets the sandbox `init_data` into the sandbox's memory when it is built, with `flags` as
     /// the guest's permissions on that region.
     ///
-    /// Note: [`Self::build_from_snapshot`] errors if this setting is set, as the snapshot already
-    /// contains the init data.
+    /// Note: [`Self::build`] errors if this setting is set and the builder's
+    /// source is a snapshot, as the snapshot already contains the init data.
     pub fn init_data(mut self, data: impl Into<Vec<u8>>, flags: MemoryRegionFlags) -> Self {
         self.init_data = Some((data.into(), flags));
         self
@@ -183,8 +257,8 @@ impl SandboxBuilder {
     /// copy-on-write.
     ///
     /// `guest_base` must be page-aligned and lie outside the sandbox's primary
-    /// shared memory region. Violations surface as an error from the
-    /// `build_from_*` call, not here. Call this once per file to map several.
+    /// shared memory region. Violations surface as an error from
+    /// [`Self::build`], not here. Call this once per file to map several.
     pub fn mapped_file_cow(mut self, path: impl AsRef<Path>, guest_base: u64) -> Self {
         self.mapped_file_cow
             .push((path.as_ref().to_path_buf(), guest_base));
@@ -211,8 +285,8 @@ impl SandboxBuilder {
     /// If not set, the log level is determined by the `RUST_LOG` environment variable,
     /// defaulting to [`LevelFilter::ERROR`] if unset.
     ///
-    /// Note: [`Self::build_from_snapshot`] errors if this setting is set, as the log level is
-    /// already captured in the snapshot.
+    /// Note: [`Self::build`] errors if this setting is set and the builder's
+    /// source is a snapshot, as the log level is already captured in the snapshot.
     pub fn guest_log_level(mut self, level: LevelFilter) -> Self {
         self.guest_log_level = Some(level);
         self
@@ -409,9 +483,9 @@ mod tests {
     #[test]
     fn build_from_file() {
         let path = simple_guest_as_string().unwrap();
-        let mut sandbox = SandboxBuilder::new()
+        let mut sandbox = SandboxBuilder::from_file(path)
             .input_data_size(0x8000)
-            .build_from_file(path)
+            .build()
             .unwrap();
 
         let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
@@ -421,7 +495,18 @@ mod tests {
     #[test]
     fn build_from_bytes() {
         let bytes = std::fs::read(simple_guest_as_string().unwrap()).unwrap();
-        let mut sandbox = SandboxBuilder::new().build_from_bytes(bytes).unwrap();
+        let mut sandbox = SandboxBuilder::from_bytes(bytes).build().unwrap();
+
+        let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn build_from_new_needs_a_guest() {
+        assert!(SandboxBuilder::new().build().is_err());
+
+        let path = simple_guest_as_string().unwrap();
+        let mut sandbox = SandboxBuilder::new().build_from_file(path).unwrap();
 
         let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
         assert_eq!(result, "hello");
@@ -430,10 +515,10 @@ mod tests {
     #[test]
     fn build_from_snapshot() {
         let path = simple_guest_as_string().unwrap();
-        let mut sandbox = SandboxBuilder::new().build_from_file(path).unwrap();
+        let mut sandbox = SandboxBuilder::from_file(path).build().unwrap();
         let snapshot = sandbox.snapshot().unwrap();
 
-        let mut restored = SandboxBuilder::new().build_from_snapshot(snapshot).unwrap();
+        let mut restored = SandboxBuilder::from_snapshot(snapshot).build().unwrap();
 
         let result = restored
             .call::<String>("Echo", "hello".to_string())
@@ -444,20 +529,20 @@ mod tests {
     #[test]
     fn build_from_snapshot_errors_on_ignored_settings() {
         let path = simple_guest_as_string().unwrap();
-        let mut sandbox = SandboxBuilder::new().build_from_file(path).unwrap();
+        let mut sandbox = SandboxBuilder::from_file(path).build().unwrap();
         let snapshot = sandbox.snapshot().unwrap();
 
         assert!(
-            SandboxBuilder::new()
+            SandboxBuilder::from_snapshot(snapshot.clone())
                 .init_data([0u8; 8], MemoryRegionFlags::READ)
-                .build_from_snapshot(snapshot.clone())
+                .build()
                 .is_err()
         );
 
         assert!(
-            SandboxBuilder::new()
+            SandboxBuilder::from_snapshot(snapshot)
                 .guest_log_level(LevelFilter::INFO)
-                .build_from_snapshot(snapshot)
+                .build()
                 .is_err()
         );
     }
