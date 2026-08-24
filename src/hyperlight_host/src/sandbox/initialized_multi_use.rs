@@ -153,6 +153,8 @@ impl MultiUseSandbox {
     /// Set a callback that discovers page table roots from guest memory.
     /// The callback receives (snapshot_mem, scratch_mem, cr3) and returns
     /// the list of root GPAs to walk during snapshot creation.
+    ///
+    /// The callback must support every guest restored into this sandbox.
     pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
         self.pt_root_finder = Some(finder);
     }
@@ -602,7 +604,6 @@ impl MultiUseSandbox {
 
         self.mem_mgr
             .request_libc_rng_reseed(rand::random::<u32>())?;
-        self.pt_root_finder = None;
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
@@ -2263,7 +2264,6 @@ mod tests {
 
         let snapshot = source.snapshot().unwrap();
         target.restore(snapshot).unwrap();
-        assert!(target.pt_root_finder.is_none());
         assert_eq!(target.call::<i32>("StackAllocate", 512i32).unwrap(), 512);
         assert!(matches!(
             target.call::<i32>("GetStatic", ()),
