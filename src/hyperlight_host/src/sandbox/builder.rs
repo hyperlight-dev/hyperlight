@@ -46,9 +46,6 @@ impl Source {
 /// chain the settings you need, then call [`SandboxBuilder::build`]. Every
 /// setting has a default, so a builder with no adjustments is valid.
 ///
-/// [`SandboxBuilder::new`] starts a builder with no guest, for when the
-/// settings are gathered before the guest is known.
-///
 /// By default only the `HostPrint` host function is registered, which writes
 /// guest output to the host's stdout. Replace it with [`Self::host_print`].
 ///
@@ -110,16 +107,6 @@ impl SandboxBuilder {
             mapped_memory_regions: Vec::new(),
             guest_log_level: None,
         }
-    }
-
-    /// Create a builder with an empty guest binary.
-    ///
-    /// Equivalent to `from_bytes([])`. Useful to gather settings before
-    /// the guest is known. Name the source with [`Self::build_from_file`],
-    /// [`Self::build_from_bytes`] or [`Self::build_from_snapshot`], otherwise
-    /// [`Self::build`] fails to parse the empty binary.
-    pub fn new() -> Self {
-        Self::from_bytes([])
     }
 
     /// Build a sandbox running the guest binary at `path`, an ELF file.
@@ -210,35 +197,6 @@ impl SandboxBuilder {
         }
 
         Ok(sandbox)
-    }
-
-    /// Build a sandbox running the guest binary at `path`.
-    pub fn build_from_file(mut self, path: impl AsRef<Path>) -> Result<Sandbox> {
-        self.source = Source::file(path);
-        self.build()
-    }
-
-    /// Build a sandbox running the guest binary held in `buffer`.
-    pub fn build_from_bytes(mut self, buffer: impl Into<Vec<u8>>) -> Result<Sandbox> {
-        self.source = Source::bytes(buffer);
-        self.build()
-    }
-
-    /// Build a sandbox restored from `snapshot`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if [`Self::init_data`] or [`Self::guest_log_level`]
-    /// are set. The snapshot already carries both, so they have no effect here.
-    pub fn build_from_snapshot(mut self, snapshot: Arc<Snapshot>) -> Result<Sandbox> {
-        self.source = Source::Snapshot(snapshot);
-        self.build()
-    }
-}
-
-impl Default for SandboxBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -496,17 +454,6 @@ mod tests {
     fn build_from_bytes() {
         let bytes = std::fs::read(simple_guest_as_string().unwrap()).unwrap();
         let mut sandbox = SandboxBuilder::from_bytes(bytes).build().unwrap();
-
-        let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn build_from_new_needs_a_guest() {
-        assert!(SandboxBuilder::new().build().is_err());
-
-        let path = simple_guest_as_string().unwrap();
-        let mut sandbox = SandboxBuilder::new().build_from_file(path).unwrap();
 
         let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
         assert_eq!(result, "hello");
