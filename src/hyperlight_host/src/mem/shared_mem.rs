@@ -590,31 +590,6 @@ pub trait SharedMemory {
     fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
         self.with_exclusivity(|m| f(m.as_slice()))
     }
-
-    /// Zero a shared memory region
-    fn zero(&mut self) -> Result<()> {
-        self.with_exclusivity(|e| {
-            #[allow(unused_mut)] // unused on some platforms, although not others
-            let mut do_copy = true;
-            // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
-            // TODO: Find a similar lazy zeroing approach that works on MSHV.
-            //       (See Note [Keeping mappings in sync between userspace and the guest])
-            #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
-            unsafe {
-                let ret = libc::madvise(
-                    e.region.ptr() as *mut libc::c_void,
-                    e.region.size(),
-                    libc::MADV_DONTNEED,
-                );
-                if ret == 0 {
-                    do_copy = false;
-                }
-            }
-            if do_copy {
-                e.as_mut_slice().fill(0);
-            }
-        })
-    }
 }
 
 fn mapping_at(
@@ -1500,6 +1475,58 @@ impl HostSharedMemory {
         self.fill(0, last_element_offset_abs, num_bytes_to_zero)?;
 
         Ok(to_return)
+    }
+}
+
+impl HostSharedMemory {
+    /// Reset this memory region to all-zeros, choosing the fastest
+    /// strategy for the current platform and hypervisor configuration.
+    ///
+    /// On Linux/KVM (without mshv3), uses `MADV_DONTNEED` for lazy
+    /// zeroing.  On Linux/mshv3, falls through to `fill(0)`.
+    ///
+    /// On Windows, zeroing via `fill(0)` is prohibitively expensive
+    /// for large regions (e.g. 448 MiB scratch).  Instead, the
+    /// mapping is replaced with a fresh demand-zero allocation.
+    /// Returns `Some(GuestSharedMemory)` when the mapping was
+    /// replaced (the caller must update the VM mapping), or `None`
+    /// when zeroed in place.
+    ///
+    // TODO: Find the break-even point between zero-in-place and
+    // replace for each hypervisor and use a size-based heuristic
+    // instead of a compile-time platform check.
+    pub(crate) fn zero_or_replace(&mut self) -> Result<Option<GuestSharedMemory>> {
+        #[cfg(target_os = "windows")]
+        {
+            let new_mem = ExclusiveSharedMemory::new(self.mem_size())?;
+            let (hscratch, gscratch) = new_mem.build();
+            *self = hscratch;
+            Ok(Some(gscratch))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.with_exclusivity(|e| {
+                #[allow(unused_mut)]
+                let mut do_copy = true;
+                // TODO: Find a similar lazy zeroing approach that works on MSHV.
+                //       (See Note [Keeping mappings in sync between userspace and the guest])
+                #[cfg(all(feature = "kvm", not(any(feature = "mshv3"))))]
+                unsafe {
+                    let ret = libc::madvise(
+                        e.region.ptr() as *mut libc::c_void,
+                        e.region.size(),
+                        libc::MADV_DONTNEED,
+                    );
+                    if ret == 0 {
+                        do_copy = false;
+                    }
+                }
+                if do_copy {
+                    e.as_mut_slice().fill(0);
+                }
+            })?;
+            Ok(None)
+        }
     }
 }
 

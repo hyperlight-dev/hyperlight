@@ -1747,7 +1747,12 @@ mod tests {
         sandbox.restore(snapshot).unwrap();
 
         assert_eq!(sandbox.status(), SandboxStatus::Ready);
-        assert_eq!(sandbox.vm.base_mapping_state(), mappings);
+        let new_mappings = sandbox.vm.base_mapping_state();
+        // Snapshot mapping must be identical (no remap).
+        assert_eq!(new_mappings.0, mappings.0);
+        // On Windows, scratch is freshly allocated each restore so the
+        // base address may change, but the size must stay the same.
+        assert_eq!(new_mappings.1.map(|m| m.1), mappings.1.map(|m| m.1));
         assert!(!fault_plan.is_consumed());
         assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
     }

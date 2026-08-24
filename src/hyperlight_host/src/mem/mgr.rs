@@ -490,8 +490,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         };
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
-            self.scratch_mem.zero()?;
-            None
+            // zero_or_replace picks the fastest zeroing strategy for
+            // the current platform (see SharedMemory::zero_or_replace).
+            self.scratch_mem.zero_or_replace()?
         } else {
             let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
             let (hscratch, gscratch) = new_scratch_mem.build();
@@ -501,7 +502,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             // mapping, so it won't actually be deallocated until it
             // has been unmapped from the VM.
             self.scratch_mem = hscratch;
-
             Some(gscratch)
         };
         self.layout = *snapshot.layout();
