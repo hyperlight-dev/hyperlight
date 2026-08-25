@@ -294,6 +294,7 @@ test-rust-gdb-debugging target=default-target features="":
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- sandbox::initialized_multi_use::tests::snapshot_restore_mapping_failure_is_unrecoverable --exact
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example crashdump {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }}
 
 # rust test for tracing
@@ -533,6 +534,7 @@ coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
 
     # crashdump tests + example
     cargo +nightly test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump
+    cargo +nightly test -p hyperlight-host --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- sandbox::initialized_multi_use::tests::snapshot_restore_mapping_failure_is_unrecoverable --exact
     cargo +nightly run --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example crashdump
 
     # tracing feature tests (host-side only; hyperlight-guest-tracing is no_std)

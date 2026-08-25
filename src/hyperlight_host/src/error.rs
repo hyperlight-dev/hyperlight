@@ -188,8 +188,16 @@ pub enum HyperlightError {
     #[error("The sandbox was poisoned")]
     PoisonedSandbox,
 
-    /// The sandbox cannot safely perform further operations and must be discarded.
-    #[error("The sandbox is unrecoverable and must be discarded")]
+    /// Recreation requires an unrecoverable sandbox.
+    #[error("Sandbox recreation requires Unrecoverable status, found {0:?}")]
+    SandboxRecreationWrongState(crate::SandboxStatus),
+
+    /// GDB builds do not support sandbox recreation.
+    #[error("Sandbox recreation is unsupported when GDB support is enabled")]
+    SandboxRecreationUnsupported,
+
+    /// The sandbox cannot safely perform further operations and must be recreated.
+    #[error("The sandbox is unrecoverable and must be recreated")]
     UnrecoverableSandbox,
 
     /// Raw pointer is less than base address
@@ -367,6 +375,8 @@ impl HyperlightError {
             | HyperlightError::RefCellBorrowFailed(_)
             | HyperlightError::RefCellMutBorrowFailed(_)
             | HyperlightError::ReturnValueConversionFailure(_, _)
+            | HyperlightError::SandboxRecreationUnsupported
+            | HyperlightError::SandboxRecreationWrongState(_)
             | HyperlightError::SnapshotLayoutMismatch
             | HyperlightError::SnapshotHostFunctionMismatch { .. }
             | HyperlightError::SystemTimeError(_)

@@ -85,7 +85,12 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     )
     .map_err(HyperlightVmError::Initialize)?;
 
-    Ok(MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm))
+    Ok(MultiUseSandbox::from_uninit(
+        u_sbox.host_funcs,
+        hshm,
+        vm,
+        u_sbox.config,
+    ))
 }
 
 pub(crate) fn set_up_hypervisor_partition(
