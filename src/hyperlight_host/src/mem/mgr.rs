@@ -482,21 +482,27 @@ impl SandboxMemoryManager<HostSharedMemory> {
             Some(gsnapshot)
         };
         let new_scratch_size = snapshot.layout().get_scratch_size();
-        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
-            self.scratch_mem.zero()?;
-            None
-        } else {
-            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
-            let (hscratch, gscratch) = new_scratch_mem.build();
-            // Even though this destroys the reference to the host
-            // side of the old scratch mapping, the VM should still
-            // own the reference to the guest side of the old scratch
-            // mapping, so it won't actually be deallocated until it
-            // has been unmapped from the VM.
-            self.scratch_mem = hscratch;
-
-            Some(gscratch)
-        };
+        // Always allocate a fresh scratch region instead of zeroing the
+        // old one.  The OS provides demand-zero pages (MAP_ANONYMOUS on
+        // Linux, page-file-backed on Windows), so physical memory is
+        // consumed only as the guest touches pages — not upfront.
+        //
+        // The previous code called `self.scratch_mem.zero()` when the
+        // size was unchanged.  On Linux/KVM-only builds that used
+        // MADV_DONTNEED (lazy), but with the default feature set
+        // (kvm + mshv3) the cfg guard compiled it out, falling through
+        // to `fill(0)` which memsets the entire region — ~448 MiB for a
+        // Node.js guest.  On Windows there was no lazy path at all.
+        // Replacing the whole mapping avoids both issues portably.
+        let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
+        let (hscratch, gscratch) = new_scratch_mem.build();
+        // Even though this destroys the reference to the host
+        // side of the old scratch mapping, the VM should still
+        // own the reference to the guest side of the old scratch
+        // mapping, so it won't actually be deallocated until it
+        // has been unmapped from the VM.
+        self.scratch_mem = hscratch;
+        let gscratch = Some(gscratch);
         self.layout = *snapshot.layout();
         // Inherit the snapshot's own generation number — the
         // guest-visible counter reflects "which snapshot is the
