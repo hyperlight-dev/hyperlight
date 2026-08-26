@@ -2,6 +2,10 @@
 
 This document details the process of releasing a new version of Hyperlight to [crates.io](https://crates.io). It's intended to be used as a checklist for the developer doing the release. The checklist is represented in the below sections.
 
+## Resolve any release blockers
+
+Before starting the release process, check for open issues labeled `release-blocker` in the [issue tracker](https://github.com/hyperlight-dev/hyperlight/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-blocker). All such issues must be resolved (closed) before proceeding — the ["Create a Release"](https://github.com/hyperlight-dev/hyperlight/actions/workflows/CreateRelease.yml) workflow runs a [release blocker check](https://github.com/hyperlight-dev/hyperlight/actions/workflows/ReleaseBlockerCheck.yml) as its first step, and all subsequent jobs depend on it, so the publish will fail if any `release-blocker` issues remain open.
+
 ## Update Cargo.toml Versions
 
 Currently, we need to manually update the workspace `Cargo.toml` version number to match to whatever release we are making. This will affect the version of all the crates in the workspace.
