@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 use core::fmt::Write;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::arch::exn::{DataFault, DataFaultKind, Exception, decode_syndrome};
 use hyperlight_common::vmem::{
@@ -10,9 +11,49 @@ use hyperlight_guest::error::ErrorCode;
 use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::layout::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
 
-use super::super::mrs;
+use super::super::{mrs, msr};
 use super::types::*;
 use crate::HyperlightAbortWriter;
+
+/// Callback for synchronous AArch64 exceptions not handled by Hyperlight.
+///
+/// The arguments are the decoded exception, raw ESR_EL1, FAR_EL1, mutable
+/// ELR_EL1, and saved x0 through x30. Return `true` to resume execution.
+/// Call [`crate::paging::barrier::first_valid_same_ctx`] after mapping a page
+/// for a translation fault.
+pub type ExceptionHandler = fn(Exception, u64, u64, &mut u64, &mut [u64; 31]) -> bool;
+
+static HANDLER: AtomicU64 = AtomicU64::new(0);
+
+/// Register the callback for synchronous AArch64 exceptions.
+///
+/// A new callback replaces any existing callback.
+pub fn register_exception_handler(handler: ExceptionHandler) {
+    HANDLER.store(handler as usize as u64, Ordering::Release);
+}
+
+/// Remove the registered AArch64 exception callback.
+pub fn unregister_exception_handler() {
+    HANDLER.store(0, Ordering::Release);
+}
+
+fn try_handle_registered_exception(
+    exn: Exception,
+    esr: u64,
+    far: u64,
+    elr: &mut u64,
+    registers: &mut [u64; 31],
+) -> bool {
+    let handler = HANDLER.load(Ordering::Acquire);
+    if handler == 0 {
+        return false;
+    }
+
+    // SAFETY: HANDLER contains only function pointers stored by
+    // register_exception_handler.
+    let handler = unsafe { core::mem::transmute::<u64, ExceptionHandler>(handler) };
+    handler(exn, esr, far, elr, registers)
+}
 
 fn handle_stack_fault(far: u64) {
     // TODO: perhaps we should have a sanity check that the
@@ -124,7 +165,7 @@ fn handle_internal_fault(exn: Exception, far: u64) -> bool {
 pub(super) extern "C" fn handle_exception(
     typ: ExceptionType,
     from: ExceptionFrom,
-    _regs: *mut ExceptionContext,
+    regs: *mut ExceptionContext,
 ) {
     let esr = unsafe { mrs!(ESR_EL1) };
     let far = unsafe { mrs!(FAR_EL1) };
@@ -132,6 +173,17 @@ pub(super) extern "C" fn handle_exception(
     if typ == ExceptionType::Synchronous && from == ExceptionFrom::CurrentSP0 {
         let exn = decode_syndrome(esr);
         if handle_internal_fault(exn, far) {
+            return;
+        }
+
+        let mut elr = unsafe { mrs!(ELR_EL1) };
+        // SAFETY: Exception entry passes its live, uniquely borrowed save area.
+        let registers = unsafe { &mut (*regs).x };
+        if try_handle_registered_exception(exn, esr, far, &mut elr, registers) {
+            // SAFETY: The callback supplies the resume address for eret.
+            unsafe {
+                msr!(ELR_EL1, elr);
+            }
             return;
         }
     }

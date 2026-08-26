@@ -39,7 +39,7 @@ pub mod dispatch {
     );
 }
 
-mod exception;
+pub(crate) mod exception;
 
 macro_rules! msr {
     ($sysreg:ident, $expr:expr) => {

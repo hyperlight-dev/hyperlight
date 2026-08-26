@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* AArch64 guests can register an exception callback to update ELR and saved
+  general-purpose registers before Hyperlight aborts.
 * `SandboxBuilder`, the entry point for creating a sandbox. It gathers machine
   configuration, host functions, init data and memory mappings, then builds a
   `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
