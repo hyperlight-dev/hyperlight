@@ -258,15 +258,13 @@ impl ElfInfo {
             );
         }
         for phdr in self.phdrs.iter().filter(|phdr| phdr.p_type == PT_LOAD) {
-            let start_va = usize::try_from(
-                phdr.p_vaddr.checked_sub(base_va).ok_or_else(|| {
-                    new_error!(
-                        "PT_LOAD p_vaddr ({:#x}) is below base_va ({:#x})",
-                        phdr.p_vaddr,
-                        base_va
-                    )
-                })?,
-            )
+            let start_va = usize::try_from(phdr.p_vaddr.checked_sub(base_va).ok_or_else(|| {
+                new_error!(
+                    "PT_LOAD p_vaddr ({:#x}) is below base_va ({:#x})",
+                    phdr.p_vaddr,
+                    base_va
+                )
+            })?)
             .map_err(|_| new_error!("segment offset exceeds addressable range"))?;
             let payload_offset =
                 usize::try_from(phdr.p_offset).map_err(|_| new_error!("p_offset too large"))?;
@@ -274,15 +272,15 @@ impl ElfInfo {
                 usize::try_from(phdr.p_filesz).map_err(|_| new_error!("p_filesz too large"))?;
             let memsz =
                 usize::try_from(phdr.p_memsz).map_err(|_| new_error!("p_memsz too large"))?;
-            let file_end = start_va.checked_add(payload_len).ok_or_else(|| {
-                new_error!("segment file region overflows")
-            })?;
-            let payload_src_end = payload_offset.checked_add(payload_len).ok_or_else(|| {
-                new_error!("payload source range overflows")
-            })?;
-            let seg_end = start_va.checked_add(memsz).ok_or_else(|| {
-                new_error!("segment memory region overflows")
-            })?;
+            let file_end = start_va
+                .checked_add(payload_len)
+                .ok_or_else(|| new_error!("segment file region overflows"))?;
+            let payload_src_end = payload_offset
+                .checked_add(payload_len)
+                .ok_or_else(|| new_error!("payload source range overflows"))?;
+            let seg_end = start_va
+                .checked_add(memsz)
+                .ok_or_else(|| new_error!("segment memory region overflows"))?;
             target
                 .get_mut(start_va..file_end)
                 .ok_or_else(|| new_error!("segment file region out of bounds"))?
