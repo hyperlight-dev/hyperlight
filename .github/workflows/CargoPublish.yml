@@ -51,56 +51,16 @@ jobs:
 
       - name: Determine which crates need publishing
         run: |
-          needs_publish() {
-            local crate=$1
-            local crate_env_var=$(echo "$crate" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-
-            if [ -z "$VERSION" ]; then
-              echo "No version set (dry run?), skipping crates.io existence checks."
-              echo "PUBLISH_${crate_env_var}=true" >> "$GITHUB_ENV"
-              return
-            fi
-
-            local response_file=$(mktemp)
-            local http_status
-            if ! http_status=$(curl -sS -A 'hyperlight-release-workflow (https://github.com/hyperlight-dev/hyperlight)' --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}' "https://crates.io/api/v1/crates/$crate/$VERSION"); then
-              echo "::error::Failed to query crates.io for $crate@$VERSION."
-              rm -f "$response_file"
-              return 1
-            fi
-
-            case "$http_status" in
-              200)
-                if ! jq -e --arg version "$VERSION" '.version.num == $version' "$response_file" > /dev/null; then
-                  echo "::error::crates.io returned malformed or mismatched version data for $crate@$VERSION."
-                  rm -f "$response_file"
-                  return 1
-                fi
-                echo "PUBLISH_${crate_env_var}=false" >> "$GITHUB_ENV"
-                echo "✅ $crate@$VERSION already exists."
-                ;;
-              404)
-                echo "PUBLISH_${crate_env_var}=true" >> "$GITHUB_ENV"
-                echo "🚀 $crate@$VERSION will be published."
-                ;;
-              *)
-                echo "::error::crates.io returned HTTP $http_status for $crate@$VERSION."
-                rm -f "$response_file"
-                return 1
-                ;;
-            esac
-            rm -f "$response_file"
-          }
-          
-          needs_publish hyperlight-libc
-          needs_publish hyperlight-common
-          needs_publish hyperlight-guest
-          needs_publish hyperlight-guest-macro
-          needs_publish hyperlight-guest-bin
-          needs_publish hyperlight-component-util
-          needs_publish hyperlight-component-macro
-          needs_publish hyperlight-host
-          needs_publish hyperlight-guest-tracing
+          ./scripts/crates-to-publish.sh "$VERSION" \
+            hyperlight-libc \
+            hyperlight-common \
+            hyperlight-guest \
+            hyperlight-guest-macro \
+            hyperlight-guest-bin \
+            hyperlight-component-util \
+            hyperlight-component-macro \
+            hyperlight-host \
+            hyperlight-guest-tracing >> "$GITHUB_ENV"
 
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
