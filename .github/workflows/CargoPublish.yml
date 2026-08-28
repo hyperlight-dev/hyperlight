@@ -51,7 +51,7 @@ jobs:
 
       - name: Determine which crates need publishing
         run: |
-          ./scripts/crates-to-publish.sh "$VERSION" \
+          ./dev/crates-to-publish.sh "$VERSION" \
             hyperlight-libc \
             hyperlight-common \
             hyperlight-guest \
