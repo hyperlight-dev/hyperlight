@@ -188,7 +188,7 @@ jobs:
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
             hyperlight-guest-c-api-linux.tar.gz \
-            include.tar.gz
+            include.tar.gz || echo "Release already exists, continuing..."
         env:
             GH_TOKEN: ${{ github.token }}
       
