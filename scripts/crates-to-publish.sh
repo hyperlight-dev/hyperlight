@@ -1,5 +1,5 @@
 #!/bin/bash
-set -Eeuo pipefail
+set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 VERSION CRATE..." >&2
@@ -13,7 +13,8 @@ response_file=$(mktemp)
 trap 'rm -f "$response_file"' EXIT
 
 for crate in "$@"; do
-    crate_env_var=$(echo "$crate" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+    crate_env_var=${crate^^}
+    crate_env_var=${crate_env_var//-/_}
 
     if [ -z "$VERSION" ]; then
         echo "No version set (dry run?), skipping crates.io existence checks." >&2
@@ -21,7 +22,17 @@ for crate in "$@"; do
         continue
     fi
 
-    if ! http_status=$(curl -sS -A 'hyperlight-release-workflow (https://github.com/hyperlight-dev/hyperlight)' --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}' "https://crates.io/api/v1/crates/$crate/$VERSION"); then
+    if ! http_status=$(
+        curl --silent --show-error \
+            --user-agent 'hyperlight-release-workflow (https://github.com/hyperlight-dev/hyperlight)' \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --output "$response_file" \
+            --write-out '%{http_code}' \
+            "https://crates.io/api/v1/crates/$crate/$VERSION"
+    ); then
         echo "Failed to query crates.io for $crate@$VERSION." >&2
         exit 1
     fi
