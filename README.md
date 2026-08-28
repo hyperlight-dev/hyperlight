@@ -109,7 +109,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Community
 
-- **Meetings**: Every other Monday 09:00 PST/PDT ([convert to your time](https://dateful.com/convert/pst-pdt-pacific-time?t=09)). Agenda and join info in the [Community Meeting Notes](https://hackmd.io/blCrncfOSEuqSbRVT9KYkg#Agenda).
+- **Meetings**: Monday's at 09:00 PST/PDT ([convert to your time](https://dateful.com/convert/pst-pdt-pacific-time?t=09)). Agenda and join info in the [Community Meeting Notes](https://hackmd.io/blCrncfOSEuqSbRVT9KYkg#Agenda). See the calendar at https://zoom-lfx.platform.linuxfoundation.org/meetings/hyperlight?view=week
 - **Slack**: [#hyperlight](https://cloud-native.slack.com/archives/hyperlight) on CNCF Slack ([join here](https://www.cncf.io/membership-faq/#how-do-i-join-cncfs-slack)).
 - **Docs**: [`docs/` directory](./docs/README.md)
 - **Code of Conduct**: [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md)
