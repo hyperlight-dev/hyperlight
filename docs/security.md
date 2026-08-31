@@ -19,3 +19,19 @@ All communication between the host and the guest is done through a shared memory
 Hyperlight provides a mechanism for the host to register functions that may be called from the guest. This mechanism is useful to allow developers to provide guests with strictly controlled access to functionality we don't make available by default inside the VM. This mechanism likely represents the largest attack surface area of this project.
 
 To mitigate the risk, only functions that have been explicitly exposed to the guest by the host application, are allowed to be called from the guest. Any attempt to call other host functions will result in an error.
+
+### Guest Binary Resource Consumption
+
+When a guest binary is loaded, its ELF program headers determine how much memory
+is allocated for the code region of the sandbox. Hyperlight validates these
+headers and rejects binaries whose virtual address span exceeds
+`SandboxMemoryLayout::MAX_MEMORY_SIZE` (~16 GiB), but a crafted binary can
+still request a legitimately large allocation (e.g. close to that limit) from a
+very small file. Since the code region is part of the shared memory buffer
+allocated in the host process before any VM is created, this allocation happens
+outside of hypervisor isolation.
+
+Embedders that load untrusted guest binaries should be aware of this and apply
+their own resource limits (e.g. file-size checks, cgroup memory limits, or
+per-sandbox budgets) to prevent a single binary from consuming excessive host
+memory.

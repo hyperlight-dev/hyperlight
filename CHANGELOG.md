@@ -5,36 +5,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
-* `SandboxBuilder`, the entry point for creating a sandbox. It gathers machine
-  configuration, host functions, init data and memory mappings, then builds a
-  `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a
-  snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
-* Add `MultiUseSandbox::status()`, which returns `SandboxStatus` for inspecting sandbox lifecycle state (poisoned, unrecoverable).
 
 ### Changed
-* **Breaking:** Guest MSR state is now saved and restored across snapshots.
-  `SandboxConfiguration::guest_msrs` declares the MSRs a guest depends on:
-  declared MSRs are captured in a snapshot and restored, while every other MSR
-  resets to a clean default. On KVM the guest may only read or write declared
-  MSRs, on MSHV and WHP this is not enforced. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
-* **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()`.
-* **Breaking:** `GuestBinary::Buffer` owns its bytes as a `Vec<u8>`, so `GuestBinary` no longer borrows and carries no lifetime parameter.
-* Deprecate `MultiUseSandbox::poisoned` in favor of `MultiUseSandbox::status().is_poisoned()`.
-* `MultiUseSandbox::restore` has been made more flexible and now accepts snapshots from any guest binary or memory layout when host functions are compatible.
-
-Certain fixed guest addresses were changed on AArch64 to more easily
-accommodate 16k pages without wasting memory. Snapshots taken from
-sandboxes using the old addresses will not be loadable by new
-hyperlight versions.
 
 ### Removed
 
 ### Fixed
-* Mark a sandbox unrecoverable in rare cases when snapshot restore fails while updating its VM mappings.
+
+## [v0.17.0] - 2026-08-27
+
+### Added
+* macOS/Apple Silicon support using Hypervisor.framework (single-address-space backend) by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1674
+* `SandboxBuilder`, the entry point for creating a sandbox. It gathers machine configuration, host functions, init data and memory mappings, then builds a `MultiUseSandbox` from a guest binary on disk, a guest binary in memory, or a snapshot by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1725
+* `MultiUseSandbox::status()`, which returns `SandboxStatus` for inspecting sandbox lifecycle state (poisoned, unrecoverable) by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1727
+* Support WIT source inputs directly in `host_bindgen!` / `guest_bindgen!` component bindgen macros by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1589
+
+### Changed
+* **Breaking:** Guest MSR state is now saved and restored across snapshots. `SandboxConfiguration::guest_msrs` declares the MSRs a guest depends on: declared MSRs are captured in a snapshot and restored, while every other MSR resets to a clean default. On KVM the guest may only read or write declared MSRs, on MSHV and WHP this is not enforced by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/991
+* **Breaking:** Filesystem paths are now represented using `PathBuf`. `GuestBinary::FilePath` now stores a `PathBuf` instead of a `String`, and `MultiUseSandbox::generate_crashdump_to_dir` accepts `Into<PathBuf>` instead of `Into<String>`. Callers passing a `String` to `GuestBinary::FilePath` must convert it using `.into()` by @midsterx in https://github.com/hyperlight-dev/hyperlight/pull/1652
+* **Breaking:** `GuestBinary::Buffer` owns its bytes as a `Vec<u8>`, so `GuestBinary` no longer borrows and carries no lifetime parameter by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1760
+* Deprecate `MultiUseSandbox::poisoned` in favor of `MultiUseSandbox::status().is_poisoned()` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1727
+* `MultiUseSandbox::restore` has been made more flexible and now accepts snapshots from any guest binary or memory layout when host functions are compatible by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1728
+* Certain fixed guest addresses were changed on AArch64 to more easily accommodate 16k pages without wasting memory. Snapshots taken from sandboxes using the old addresses will not be loadable by new hyperlight versions by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1674
+* Improvements to component bindgen: expose fallibility of host API calls, properly track positivity/negativity, disambiguate chains of associated types, support reading WAT text components by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1724, https://github.com/hyperlight-dev/hyperlight/pull/1723, https://github.com/hyperlight-dev/hyperlight/pull/1721, and https://github.com/hyperlight-dev/hyperlight/pull/1732
+
+### Removed
+
+### Fixed
+* Improved snapshot/OCI validation, rejecting malformed metadata and non-regular artifact files during load by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1668
+* Fix RSS peak on Windows by replacing scratch zeroing with a fresh allocation on restore by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1765
+* Mark a sandbox unrecoverable in rare cases when snapshot restore fails while updating its VM mappings by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1727
 * Fix symbol resolution in guest core dumps for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1618
-* Reject malformed OCI snapshot metadata and non-regular artifact files during load.
-* Reset XCR0 during x86 snapshot restore.
-* Reseed guest libc `rand()` and `random()` after restoring a snapshot to avoid multiple sandboxes sharing PRNG state.
+* Fix dynamic mapping ownership on unmap failure by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1675
+* Reset XCR0 during x86 snapshot restore by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1718
+* Reseed guest libc `rand()` and `random()` after restoring a snapshot to avoid multiple sandboxes sharing PRNG state by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1667
+* Validate ELF program headers in `ElfInfo::new()` to prevent host process abort from malformed guest binaries. PT_LOAD segments are now bounds-checked, `base_va`/`va_size` are stored as fields, and `load_at()` uses fully checked arithmetic by @danbugs
 
 ## [v0.16.0] - 2026-06-26
 
@@ -355,7 +360,8 @@ hyperlight versions.
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.17.0...HEAD>
+[v0.17.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...v0.17.0>
 [v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
 [v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>
 [v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
