@@ -27,6 +27,7 @@ use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
+use crate::sandbox::snapshot::SnapshotMemoryBacking;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// The lifecycle state of a [`MultiUseSandbox`].
@@ -88,22 +89,34 @@ pub struct MultiUseSandbox {
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
     /// Optional callback to discover page table roots from guest memory.
-    /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
+    /// Given (snapshot memory, scratch memory, CR3), returns root GPAs.
     /// If not set, only CR3 is used as the single root.
     pt_root_finder: Option<PtRootFinder>,
+}
+
+/// Read-only access to live snapshot memory by guest physical address.
+pub struct SnapshotMemoryReader<'a> {
+    memory: &'a SnapshotMemoryBacking<HostSharedMemory>,
+}
+
+impl SnapshotMemoryReader<'_> {
+    /// Copy live snapshot bytes at `gpa` into `destination`.
+    pub fn read(&self, gpa: u64, destination: &mut [u8]) -> Result<()> {
+        self.memory.read_snapshot_gpa(gpa, destination)
+    }
 }
 
 /// Callback for discovering page table roots from guest memory.
 ///
 /// Called during [`MultiUseSandbox::snapshot`] with:
-/// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
-/// - `scratch_mem` - the sandbox's scratch memory as a byte slice
-/// - `root_pt_gpa` - the root page table GPA of the currently-executing
-///   address space
+/// * `snapshot_mem`: live snapshot memory accessed by GPA.
+/// * `scratch_mem`: the sandbox's scratch memory.
+/// * `root_pt_gpa`: the active root page table GPA.
 ///
 /// Returns a list of root page table GPAs to walk. If the list is
-/// empty, only `root_pt_gpa` is used.
-pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
+/// empty, only `root_pt_gpa` is used. An error aborts the capture.
+pub type PtRootFinder =
+    Box<dyn Fn(&SnapshotMemoryReader<'_>, &[u8], u64) -> Result<Vec<u64>> + Send>;
 
 impl MultiUseSandbox {
     fn check_ready(&self) -> Result<()> {
@@ -142,8 +155,8 @@ impl MultiUseSandbox {
     }
 
     /// Set a callback that discovers page table roots from guest memory.
-    /// The callback receives (snapshot_mem, scratch_mem, cr3) and returns
-    /// the list of root GPAs to walk during snapshot creation.
+    /// The callback receives snapshot memory, scratch memory, and the active
+    /// root page table GPA. It returns the roots to walk during capture.
     ///
     /// The callback must support every guest restored into this sandbox.
     pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
@@ -375,11 +388,13 @@ impl MultiUseSandbox {
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         // Use the callback if set, otherwise just CR3
         let root_pt_gpas = if let Some(finder) = &self.pt_root_finder {
-            let roots = self.mem_mgr.shared_mem.with_contents(|snap| {
-                self.mem_mgr
-                    .scratch_mem
-                    .with_contents(|scratch| finder(snap, scratch, cr3))
-            })??;
+            let snapshot = SnapshotMemoryReader {
+                memory: &self.mem_mgr.shared_mem,
+            };
+            let roots = self
+                .mem_mgr
+                .scratch_mem
+                .with_contents(|scratch| finder(&snapshot, scratch, cr3))??;
             if roots.is_empty() { vec![cr3] } else { roots }
         } else {
             vec![cr3]
@@ -418,11 +433,9 @@ impl MultiUseSandbox {
 
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
         let (snapshot_mem, scratch_mem) = self.mem_mgr.restore_snapshot(snapshot)?;
-        if let Some(snapshot_mem) = snapshot_mem {
-            self.vm
-                .update_snapshot_mapping(snapshot_mem)
-                .map_err(HyperlightVmError::UpdateRegion)?;
-        }
+        self.vm
+            .update_snapshot_mappings(snapshot_mem)
+            .map_err(HyperlightVmError::UpdateRegion)?;
         if let Some(scratch_mem) = scratch_mem {
             self.vm
                 .update_scratch_mapping(scratch_mem)
@@ -812,7 +825,7 @@ impl MultiUseSandbox {
 
         // Validate that the full mapped range doesn't overlap the
         // sandbox's primary shared memory region.
-        let shared_size = self.mem_mgr.shared_mem.mem_size() as u64;
+        let shared_size = u64::try_from(self.mem_mgr.shared_mem.gpa_span_len())?;
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         let shared_end = base_addr.checked_add(shared_size).ok_or_else(|| {
             crate::HyperlightError::Error("shared memory end overflow".to_string())
@@ -1780,7 +1793,7 @@ mod tests {
         let error = target.restore(snapshot.clone()).unwrap_err();
         assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
         assert_eq!(target.status(), SandboxStatus::Unrecoverable);
-        assert_eq!(target.vm.base_mapping_state(), (None, mappings.1));
+        assert_eq!(target.vm.base_mapping_state(), (Vec::new(), mappings.1));
         assert!(fault_plan.is_consumed());
 
         assert!(matches!(
@@ -1964,18 +1977,14 @@ mod tests {
             assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
             assert!(target.status().is_poisoned());
             assert!(fault_plan.is_consumed());
+            let (snapshot_mappings, scratch_mapping) = target.vm.base_mapping_state();
+            assert!(!snapshot_mappings.is_empty());
             assert_eq!(
-                target.vm.base_mapping_state(),
-                (
-                    Some((
-                        target.mem_mgr.shared_mem.base_addr(),
-                        target.mem_mgr.shared_mem.mem_size(),
-                    )),
-                    Some((
-                        target.mem_mgr.scratch_mem.base_addr(),
-                        target.mem_mgr.scratch_mem.mem_size(),
-                    )),
-                )
+                scratch_mapping,
+                Some((
+                    target.mem_mgr.scratch_mem.base_addr(),
+                    target.mem_mgr.scratch_mem.mem_size(),
+                ))
             );
 
             target.restore(snapshot.clone()).unwrap();
@@ -2006,18 +2015,14 @@ mod tests {
         assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
         assert!(target.status().is_poisoned());
         assert!(fault_plan.is_consumed());
+        let (snapshot_mappings, scratch_mapping) = target.vm.base_mapping_state();
+        assert!(!snapshot_mappings.is_empty());
         assert_eq!(
-            target.vm.base_mapping_state(),
-            (
-                Some((
-                    target.mem_mgr.shared_mem.base_addr(),
-                    target.mem_mgr.shared_mem.mem_size(),
-                )),
-                Some((
-                    target.mem_mgr.scratch_mem.base_addr(),
-                    target.mem_mgr.scratch_mem.mem_size(),
-                )),
-            )
+            scratch_mapping,
+            Some((
+                target.mem_mgr.scratch_mem.base_addr(),
+                target.mem_mgr.scratch_mem.mem_size(),
+            ))
         );
 
         target.restore(snapshot).unwrap();
@@ -2250,7 +2255,7 @@ mod tests {
 
         assert_eq!(source.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
         assert_eq!(target.call::<i32>("AddToStatic", 17i32).unwrap(), 17);
-        target.set_pt_root_finder(Box::new(|_, _, root| vec![root]));
+        target.set_pt_root_finder(Box::new(|_, _, root| Ok(vec![root])));
         assert!(target.pt_root_finder.is_some());
 
         assert_ne!(
@@ -2511,11 +2516,13 @@ mod tests {
             .unwrap()
             .evolve()
             .unwrap();
-        assert!(snapshot.memory().mem_size() > target.mem_mgr.shared_mem.mem_size());
+        assert!(
+            snapshot.snapshot_memory().gpa_span_len() > target.mem_mgr.shared_mem.gpa_span_len()
+        );
 
         let map_mem = allocate_guest_memory();
         let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS
-            + target.mem_mgr.shared_mem.mem_size();
+            + target.mem_mgr.shared_mem.gpa_span_len();
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
         // SAFETY: `map_mem` is page-aligned and outlives every use of `target`.
         unsafe { target.map_region(&region).unwrap() };

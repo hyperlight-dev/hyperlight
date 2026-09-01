@@ -7,9 +7,6 @@ use fallible_iterator::FallibleIterator;
 use framehop::Unwinder;
 
 use crate::hypervisor::regs::CommonRegisters;
-#[cfg(not(unshared_snapshot_mem))]
-use crate::mem::layout::ReadableSharedMemory;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::outb::HandleOutbError;
@@ -83,16 +80,12 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
+        root_pt: u64,
     ) -> Result<Vec<u64>> {
+        let mut memory = mem_mgr.guest_virtual_memory_reader(root_pt);
         let mut read_stack = |addr| {
             let mut buf: [u8; 8] = [0u8; 8];
-            mem_mgr
-                .shared_mem
-                .copy_to_slice(
-                    &mut buf,
-                    (addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize,
-                )
-                .map_err(|_| ())?;
+            memory.read(addr, &mut buf).map_err(|_| ())?;
             Ok(u64::from_ne_bytes(buf))
         };
         let mut cache = self
@@ -141,9 +134,10 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
+        root_pt: u64,
         trace_identifier: TraceFrameType,
     ) -> std::result::Result<(), HandleOutbError> {
-        let Ok(stack) = self.unwind(regs, mem_mgr) else {
+        let Ok(stack) = self.unwind(regs, mem_mgr, root_pt) else {
             return Ok(());
         };
 
@@ -173,8 +167,9 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
+        root_pt: u64,
     ) -> std::result::Result<(), HandleOutbError> {
-        self.handle_trace(regs, mem_mgr, TraceFrameType::MemAlloc)
+        self.handle_trace(regs, mem_mgr, root_pt, TraceFrameType::MemAlloc)
     }
 
     #[inline(always)]
@@ -182,7 +177,8 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
+        root_pt: u64,
     ) -> std::result::Result<(), HandleOutbError> {
-        self.handle_trace(regs, mem_mgr, TraceFrameType::MemFree)
+        self.handle_trace(regs, mem_mgr, root_pt, TraceFrameType::MemFree)
     }
 }

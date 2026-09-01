@@ -11,6 +11,7 @@ mod media_types;
 pub(crate) mod reference;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::PAGE_SIZE;
@@ -29,7 +30,7 @@ pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
-use super::{NextAction, Snapshot};
+use super::{NextAction, Snapshot, SnapshotBlob};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
@@ -273,6 +274,15 @@ fn open_snapshot_blob(
 }
 
 impl Snapshot {
+    fn v1_blob(&self) -> crate::Result<&SnapshotBlob> {
+        let [layer] = self.memory.layers() else {
+            return Err(crate::new_error!(
+                "OCI v1 snapshots require exactly one memory layer"
+            ));
+        };
+        Ok(layer.blob())
+    }
+
     /// Save this snapshot into an OCI Image Layout directory on disk.
     /// The saved snapshot can be loaded later with
     /// [`Snapshot::load`].
@@ -484,7 +494,8 @@ impl Snapshot {
         cfg: &OciSnapshotConfig,
         cfg_bytes: &[u8],
     ) -> crate::Result<Descriptor> {
-        let memory_bytes = self.memory.as_slice();
+        let blob = self.v1_blob()?;
+        let memory_bytes = blob.memory().as_slice();
         let memory_size = memory_bytes.len();
         if memory_size == 0 || !memory_size.is_multiple_of(PAGE_SIZE) {
             return Err(crate::new_error!(
@@ -499,7 +510,7 @@ impl Snapshot {
         })?;
 
         // Snapshot blob: the raw memory bytes.
-        let snapshot_digest = Digest256::from_bytes(memory_bytes);
+        let snapshot_digest = Digest256::from_digest_array(blob.sha256());
         put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
 
         // Config blob.
@@ -609,10 +620,10 @@ impl Snapshot {
                 init_data_size: l.init_data_size(),
                 init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
-                snapshot_size: l.snapshot_size(),
-                pt_size: l.pt_size(),
+                snapshot_size: self.memory.gpa_span_len(),
+                pt_size: Some(self.memory.page_table_len()),
             },
-            memory_size: self.memory.mem_size() as u64,
+            memory_size: self.v1_blob()?.memory().mem_size() as u64,
             host_functions,
             snapshot_generation: self.snapshot_generation,
         })
@@ -809,17 +820,17 @@ impl Snapshot {
                 )
             })?),
         };
-        let mut layout = SandboxMemoryLayout::new(
+        let layout = SandboxMemoryLayout::new(
             sbox_cfg,
             cfg.layout.code_size,
             cfg.layout.init_data_size,
             init_data_perms,
         )?;
-        // `snapshot_size` and `pt_size` are independent fields.
-        if let Some(pt) = cfg.layout.pt_size {
-            layout.set_pt_size(pt)?;
-        }
-        layout.set_snapshot_size(cfg.layout.snapshot_size);
+        let page_table_len = cfg
+            .layout
+            .pt_size
+            .ok_or_else(|| crate::new_error!("snapshot pt_size is missing"))?;
+        layout.ensure_page_tables_fit(page_table_len)?;
 
         // `snapshot_size` is the guest-visible prefix mapped into the
         // snapshot region. It must cover at least the regions the
@@ -829,10 +840,10 @@ impl Snapshot {
         // does not bound `snapshot_size` from below, since a smaller
         // `snapshot_size` can be offset by a larger `pt_size`.
         let required_memory_size = layout.get_memory_size()? as u64;
-        if (layout.snapshot_size() as u64) < required_memory_size {
+        if (cfg.layout.snapshot_size as u64) < required_memory_size {
             return Err(crate::new_error!(
                 "snapshot snapshot_size ({}) is smaller than the layout size ({})",
-                layout.snapshot_size(),
+                cfg.layout.snapshot_size,
                 required_memory_size
             ));
         }
@@ -847,7 +858,7 @@ impl Snapshot {
         //    of the snapshot region avoids overlap with
         //    `map_file_cow` regions installed immediately after the
         //    snapshot in guest PA space.
-        let memory = ReadonlySharedMemory::from_file(&snap_file, layout.snapshot_size())?;
+        let memory = ReadonlySharedMemory::from_file(&snap_file)?;
 
         // The size validation in `open_snapshot_blob` stats the file
         // before mapping. Nothing prevents the file from being
@@ -862,6 +873,12 @@ impl Snapshot {
                 cfg.memory_size
             ));
         }
+        let memory = Arc::new(Self::flat_snapshot_memory(
+            memory,
+            &layout,
+            cfg.layout.snapshot_size,
+            page_table_len,
+        )?);
 
         // 8. Build the next action + sregs back from the config.
         let next_action = NextAction::Call(cfg.entrypoint_addr);

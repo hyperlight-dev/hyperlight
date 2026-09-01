@@ -18,7 +18,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
@@ -280,7 +280,7 @@ impl UninitializedSandbox {
     ) -> crate::Result<u64> {
         // Validate that guest_base is outside the sandbox's primary memory slot.
         // (Full range check happens after prepare_file_cow when we know the mapped size.)
-        let shared_size = self.mgr.shared_mem.mem_size() as u64;
+        let shared_size = self.mgr.shared_mem.gpa_span_len() as u64;
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
 
         let prepared = super::file_mapping::prepare_file_cow(file_path, guest_base)?;
@@ -329,12 +329,12 @@ impl UninitializedSandbox {
         Ok(size)
     }
 
-    /// Returns the total size of the sandbox shared memory region in bytes.
+    /// Returns the length of the GPA span reserved for snapshot memory.
     ///
-    /// This is useful for placing file mappings at guest physical addresses
-    /// that don't overlap the primary shared memory slot.
+    /// The span starts at `BASE_ADDRESS` and includes holes between sparse
+    /// snapshot layers. File mappings must not overlap it.
     pub fn shared_mem_size(&self) -> usize {
-        self.mgr.shared_mem.mem_size()
+        self.mgr.shared_mem.gpa_span_len()
     }
 
     /// Sets the maximum log level for guest code execution.

@@ -186,6 +186,7 @@ pub(crate) fn handle_outb(
     data: u32,
     #[cfg(feature = "mem_profile")] regs: &CommonRegisters,
     #[cfg(feature = "mem_profile")] trace_info: &mut MemTraceInfo,
+    #[cfg(feature = "mem_profile")] root_pt: Option<u64>,
 ) -> Result<(), HandleOutbError> {
     match port
         .try_into()
@@ -227,9 +228,13 @@ pub(crate) fn handle_outb(
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]
-        OutBAction::TraceMemoryAlloc => trace_info.handle_trace_mem_alloc(regs, mem_mgr),
+        OutBAction::TraceMemoryAlloc => root_pt.map_or(Ok(()), |root_pt| {
+            trace_info.handle_trace_mem_alloc(regs, mem_mgr, root_pt)
+        }),
         #[cfg(feature = "mem_profile")]
-        OutBAction::TraceMemoryFree => trace_info.handle_trace_mem_free(regs, mem_mgr),
+        OutBAction::TraceMemoryFree => root_pt.map_or(Ok(()), |root_pt| {
+            trace_info.handle_trace_mem_free(regs, mem_mgr, root_pt)
+        }),
     }
 }
 #[cfg(test)]

@@ -20,7 +20,7 @@ impl Digest256 {
         Self::from_digest_array(arr)
     }
 
-    fn from_digest_array(arr: [u8; 32]) -> Self {
+    pub(super) fn from_digest_array(arr: [u8; 32]) -> Self {
         Self {
             hex: hex::encode(arr),
         }

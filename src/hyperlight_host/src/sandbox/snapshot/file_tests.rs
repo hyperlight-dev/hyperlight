@@ -182,16 +182,19 @@ fn save_self_heals_same_length_wrong_content_snapshot_blob() {
 #[test]
 fn snapshot_and_pt_size_round_trip() {
     let snap = create_snapshot();
-    let original_snapshot_size = snap.layout().snapshot_size();
-    let original_pt_size = snap.layout().pt_size();
+    let original_snapshot_size = snap.snapshot_memory().gpa_span_len();
+    let original_pt_size = snap.snapshot_memory().page_table_len();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("running");
     snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
 
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
-    assert_eq!(loaded.layout().snapshot_size(), original_snapshot_size);
-    assert_eq!(loaded.layout().pt_size(), original_pt_size);
+    assert_eq!(
+        loaded.snapshot_memory().gpa_span_len(),
+        original_snapshot_size
+    );
+    assert_eq!(loaded.snapshot_memory().page_table_len(), original_pt_size);
 }
 
 #[test]
@@ -3126,7 +3129,11 @@ fn save_new_tag_into_loaded_layout_preserves_live_mapping() {
 
     // Record the full mapped image and every on-disk blob before the
     // second save, so any byte change is caught.
-    let mapping_before = loaded_a.memory.as_slice().to_vec();
+    let mapping_before = loaded_a.memory.layers()[0]
+        .blob()
+        .memory()
+        .as_slice()
+        .to_vec();
     let blobs_dir = path.join("blobs").join("sha256");
     let blobs_before = read_blob_dir(&blobs_dir);
 
@@ -3139,7 +3146,7 @@ fn save_new_tag_into_loaded_layout_preserves_live_mapping() {
 
     // The live mapping is unchanged, byte for byte.
     assert_eq!(
-        loaded_a.memory.as_slice(),
+        loaded_a.memory.layers()[0].blob().memory().as_slice(),
         mapping_before.as_slice(),
         "live snapshot mapping changed after a new tag was written"
     );

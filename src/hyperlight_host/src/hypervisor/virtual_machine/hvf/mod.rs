@@ -774,7 +774,7 @@ impl TlbiRegion {
             0x02, 0x00, 0x00, 0xd4, // hvc #0
         ]);
         Ok(Self {
-            insn_memory: ReadonlySharedMemory::from_bytes(&bytes, page_size::get())?,
+            insn_memory: ReadonlySharedMemory::from_bytes(&bytes)?,
         })
     }
 }

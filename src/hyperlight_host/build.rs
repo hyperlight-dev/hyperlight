@@ -160,20 +160,6 @@ fn main() -> Result<()> {
         // the gdb feature (only temporarily!) needs to use
         // writable/un-shared snapshot memories.
         unshared_snapshot_mem: { feature = "gdb" },
-        // The `ReadableSharedMemory` trait in `mem::layout` is only
-        // needed in two situations:
-        //   1. The `gdb` debug path reads guest memory through it
-        //      (`ResolvedGpa::copy_to_slice`), which only exists under
-        //      the `gdb` cfg (gdb feature + debug build).
-        //   2. The `mem_profile` stack unwinder reads guest memory
-        //      through it — but ONLY when snapshots are shared/read-only
-        //      (`not(unshared_snapshot_mem)`). When the gdb feature
-        //      forces un-shared snapshots, `mem_profile` instead reads
-        //      via the inherent `HostSharedMemory::copy_to_slice`, so
-        //      the trait is genuinely unused.
-        // Gating the trait (and its impls) on this exact condition means
-        // we never have to `#[allow(dead_code)]` it.
-        readable_shared_mem: { any(gdb, all(feature = "mem_profile", not(unshared_snapshot_mem))) },
     }
 
     #[cfg(feature = "build-metadata")]
