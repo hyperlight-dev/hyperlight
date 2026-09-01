@@ -18,14 +18,14 @@ A snapshot carries three independently evolvable version markers:
   `HyperlightPEB` size), and the calling convention for guest function
   entry. A change to any of these breaks older snapshots unless the
   loader adds a compat path.
-* **Snapshot blob encoding**, `MT_SNAPSHOT_V1`
-  (`application/vnd.hyperlight.snapshot.memory.v1`), aliased as
-  `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
+* **Snapshot blob encoding**, `MT_SNAPSHOT_V2`
+   (`application/vnd.hyperlight.snapshot.memory.v2`), aliased as
+   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of each snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
-* **Config schema**, `MT_CONFIG_V1`
-  (`application/vnd.hyperlight.snapshot.config.v1+json`), aliased as
-  `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
+* **Config schema**, `MT_CONFIG_V2`
+   (`application/vnd.hyperlight.snapshot.config.v2+json`), aliased as
+   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
   sizes, `abi_version`, `hyperlight_version`, etc.). Renaming a field,
@@ -37,17 +37,21 @@ spec at `1.0.0`.
 
 Each media-type axis is a `_VN` constant with a `_CURRENT` alias. The
 writer emits `_CURRENT`. The loader matches each `_VN` explicitly. To
-add a version, declare `MT_FOO_V2`, point `MT_FOO_CURRENT` at it, and
+add a version, declare `MT_FOO_V3`, point `MT_FOO_CURRENT` at it, and
 add a loader arm that translates the old version or rejects it.
 
 The config blob also records `hyperlight_version`, the `CARGO_PKG_VERSION`
 of the host crate at write time. This is informational only. The loader
 records it for diagnostics and does not gate loading on it.
 
-## Compatibility cleanup
+## Supported compatibility
 
-Record compatibility paths here when a future hard snapshot break can remove
-them.
+OCI v1 snapshots use config media type
+`application/vnd.hyperlight.snapshot.config.v1+json`, memory media type
+`application/vnd.hyperlight.snapshot.memory.v1`, and ABI 2. The loader validates
+the v1 schema and represents its flat memory blob as one current snapshot layer.
+The writer emits OCI v2 with ABI 3. Keep the v1 loader path and tripwires, and
+keep golden version `v2.0` in `COMPAT_VERSIONS`.
 
 ## Enforcement
 
@@ -58,8 +62,8 @@ out at build time rather than in production.
 
 Compile-time tripwires in
 [src/hyperlight_host/src/sandbox/snapshot/tripwires.rs](../src/hyperlight_host/src/sandbox/snapshot/tripwires.rs)
-hold a copy of every value that defines the format:
-`SNAPSHOT_ABI_VERSION`, the snapshot and config media-type strings, the
+hold a copy of every value that defines the current and supported formats:
+the snapshot ABI versions, the snapshot and config media-type strings, the
 OCI layout version, the `HyperlightPEB` size, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.
@@ -153,9 +157,7 @@ Steps:
 6. Record the break in `CHANGELOG.md`. Anyone holding old snapshots on
    disk has to regenerate them against the new build.
 
-The loader's single-version check enforces the rejection. An old
-snapshot loaded against the new build fails the
-`abi_version == SNAPSHOT_ABI_VERSION` test with a clear error.
+Unsupported snapshots return a media-type or ABI-version error.
 
 ## Regenerating goldens
 
@@ -195,10 +197,10 @@ for a given version is keyed by the full string, so `v1.0`, `v1.1`, and
   snapshots load through a compatibility path or not at all. The old
   tag set stays on GHCR untouched.
 * Bump **MINOR** when the set of golden checks changes but the ABI does
-  not (for example, a new check/test is added). The on-disk contract is
-  unchanged, so `SNAPSHOT_ABI_VERSION` stays put. The new tag set
-  contains every check, including the unchanged ones, regenerated
-  against the current source.
+   not (for example, a new check/test is added). The on-disk contract is
+   unchanged, so `SNAPSHOT_ABI_VERSION` stays put. The new tag set
+   contains every check, including the unchanged ones, regenerated
+   against the current source.
 
 `GOLDENS_VERSION` and `SNAPSHOT_ABI_VERSION` are two separate counters
 with different purposes. `SNAPSHOT_ABI_VERSION` is the integer stamped into

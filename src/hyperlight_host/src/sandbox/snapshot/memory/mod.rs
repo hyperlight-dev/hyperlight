@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
+//! Snapshot memory model:
+//!
+//! Snapshot
+//! `-- memory: Arc<SnapshotMemory>
+//!     |-- layers: Box<[SnapshotLayer]>
+//!     |   |-- SnapshotLayer
+//!     |   |   |-- blob: Arc<SnapshotBlob>
+//!     |   |   |   |-- memory: ReadonlySharedMemory
+//!     |   |   |   |-- data_gpa_range: Option<SnapshotDataRange>
+//!     |   |   |   `-- page_table_memory_range: Option<Range<usize>>
+//!     |   |   `-- live_data_ranges: Box<[Range<usize>]>
+//!     |   `-- ...
+//!     `-- restore_page_table_layer_index: usize
+
+#[cfg(test)]
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
@@ -374,22 +389,23 @@ impl SnapshotMemory {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn flat_image(&self) -> Result<Cow<'_, [u8]>> {
         let data_len = self.gpa_span_len();
-        let active = self.restore_page_table_layer();
-        let page_tables = active
+        let restore_layer = self.restore_page_table_layer();
+        let page_tables = restore_layer
             .blob
             .page_table_memory_range()
-            .ok_or_else(|| crate::new_error!("active snapshot layer has no page tables"))?;
+            .ok_or_else(|| crate::new_error!("restore page-table layer has no page tables"))?;
         if self.layers.len() == 1
-            && active.blob.data_gpa_range().is_some_and(|data| {
+            && restore_layer.blob.data_gpa_range().is_some_and(|data| {
                 data.gpa_start() == SandboxMemoryLayout::BASE_ADDRESS as u64
                     && data.len() == data_len
-                    && active.live_data_ranges.len() == 1
-                    && active.live_data_ranges[0] == (0..data_len)
+                    && restore_layer.live_data_ranges.len() == 1
+                    && restore_layer.live_data_ranges[0] == (0..data_len)
             })
         {
-            return Ok(Cow::Borrowed(active.blob.memory().as_slice()));
+            return Ok(Cow::Borrowed(restore_layer.blob.memory().as_slice()));
         }
 
         let image_len = self.flat_image_len()?;
@@ -422,7 +438,7 @@ impl SnapshotMemory {
                 destination.copy_from_slice(source);
             }
         }
-        let page_table_bytes = active
+        let page_table_bytes = restore_layer
             .blob
             .memory()
             .as_slice()
@@ -435,13 +451,14 @@ impl SnapshotMemory {
         Ok(Cow::Owned(image))
     }
 
+    #[cfg(test)]
     pub(crate) fn flat_image_len(&self) -> Result<usize> {
         let data_len = self.gpa_span_len();
         let page_tables = self
             .restore_page_table_layer()
             .blob
             .page_table_memory_range()
-            .ok_or_else(|| crate::new_error!("active snapshot layer has no page tables"))?;
+            .ok_or_else(|| crate::new_error!("restore page-table layer has no page tables"))?;
         let logical_len = data_len
             .checked_add(page_tables.len())
             .ok_or_else(|| crate::new_error!("flat snapshot image size overflows"))?;

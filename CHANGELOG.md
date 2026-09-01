@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* Related snapshots share immutable memory layers. This reduces capture time,
+  memory use, and storage. New snapshots use OCI v2. Existing OCI v1 snapshots
+  remain loadable.
 
 ### Removed
 

@@ -71,6 +71,62 @@ fn set_static() -> i32 {
     bigarray.len() as i32
 }
 
+#[guest_function("SetStaticAt")]
+fn set_static_at(index: u64, value: i32) -> i32 {
+    let Ok(index) = usize::try_from(index) else {
+        return -1;
+    };
+    if index >= 1024 * 1024 {
+        return -1;
+    }
+
+    // SAFETY: The index is in bounds and guest functions execute serially.
+    unsafe {
+        let value_ptr = core::ptr::addr_of_mut!(BIGARRAY).cast::<i32>().add(index);
+        value_ptr.write(value);
+        value_ptr.read()
+    }
+}
+
+#[guest_function("MaybeSetStaticAt")]
+fn maybe_set_static_at(index: u64, value: i32, write: bool) -> i32 {
+    let Ok(index) = usize::try_from(index) else {
+        return -1;
+    };
+    if index >= 1024 * 1024 {
+        return -1;
+    }
+
+    if write {
+        // SAFETY: The index is in bounds and guest functions execute serially.
+        unsafe {
+            core::ptr::addr_of_mut!(BIGARRAY)
+                .cast::<i32>()
+                .add(index)
+                .write(value);
+        }
+    }
+    value
+}
+
+#[guest_function("GetStaticAt")]
+fn get_static_at(index: u64) -> i32 {
+    let Ok(index) = usize::try_from(index) else {
+        return -1;
+    };
+    if index >= 1024 * 1024 {
+        return -1;
+    }
+
+    // SAFETY: The index is in bounds and guest functions execute serially.
+    unsafe {
+        core::ptr::addr_of!(BIGARRAY)
+            .cast::<i32>()
+            .add(index)
+            .read()
+    }
+}
+
 #[guest_function("EchoDouble")]
 fn echo_double(value: f64) -> f64 {
     value
