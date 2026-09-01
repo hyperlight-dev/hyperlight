@@ -10,6 +10,7 @@ mod fsutil;
 mod media_types;
 pub(crate) mod reference;
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -30,7 +31,7 @@ pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
-use super::{NextAction, Snapshot, SnapshotBlob};
+use super::{NextAction, Snapshot};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
@@ -274,15 +275,6 @@ fn open_snapshot_blob(
 }
 
 impl Snapshot {
-    fn v1_blob(&self) -> crate::Result<&SnapshotBlob> {
-        let [layer] = self.memory.layers() else {
-            return Err(crate::new_error!(
-                "OCI v1 snapshots require exactly one memory layer"
-            ));
-        };
-        Ok(layer.blob())
-    }
-
     /// Save this snapshot into an OCI Image Layout directory on disk.
     /// The saved snapshot can be loaded later with
     /// [`Snapshot::load`].
@@ -494,8 +486,8 @@ impl Snapshot {
         cfg: &OciSnapshotConfig,
         cfg_bytes: &[u8],
     ) -> crate::Result<Descriptor> {
-        let blob = self.v1_blob()?;
-        let memory_bytes = blob.memory().as_slice();
+        let memory = self.memory.flat_image()?;
+        let memory_bytes = memory.as_ref();
         let memory_size = memory_bytes.len();
         if memory_size == 0 || !memory_size.is_multiple_of(PAGE_SIZE) {
             return Err(crate::new_error!(
@@ -510,7 +502,10 @@ impl Snapshot {
         })?;
 
         // Snapshot blob: the raw memory bytes.
-        let snapshot_digest = Digest256::from_digest_array(blob.sha256());
+        let snapshot_digest = match (&memory, self.memory.layers()) {
+            (Cow::Borrowed(_), [layer]) => Digest256::from_digest_array(layer.blob().sha256()),
+            _ => Digest256::from_bytes(memory_bytes),
+        };
         put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
 
         // Config blob.
@@ -623,7 +618,7 @@ impl Snapshot {
                 snapshot_size: self.memory.gpa_span_len(),
                 pt_size: Some(self.memory.page_table_len()),
             },
-            memory_size: self.v1_blob()?.memory().mem_size() as u64,
+            memory_size: self.memory.flat_image_len()? as u64,
             host_functions,
             snapshot_generation: self.snapshot_generation,
         })

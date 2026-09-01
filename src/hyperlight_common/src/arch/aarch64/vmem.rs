@@ -513,7 +513,13 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
 ) -> Vec<(SpaceId, Vec<crate::vmem::SpaceAwareMapping>)> {
     unsafe {
         internal_walk_va_spaces(&op, roots.iter().cloned(), true, address, len)
-            .map(|(id, mappings)| (id, mappings.collect::<Vec<_>>()))
+            .map(|(id, mappings)| {
+                let mut collected = Vec::new();
+                for mapping in mappings {
+                    crate::vmem::push_space_mapping(&mut collected, mapping);
+                }
+                (id, collected)
+            })
             .collect::<Vec<_>>()
     }
 }

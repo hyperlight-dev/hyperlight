@@ -6,12 +6,9 @@ lot of context switches.  To help alleviate this, Hyperlight uses a
 design in which the guest is aware of a readonly snapshot from
 which it is being run, and manages its own copy-on-write.
 
-Because of this, there are two very fundamental regions of the guest
-physical address space, which are always populated: one, at the very
-bottom of memory, is a (hypervisor-enforced) readonly mapping of the
-base snapshot from which this guest is being evolved. Another, at the top of memory, is simply
-a large bag of blank pages: scratch memory into which this VM can
-write.
+Guest physical memory has two fundamental kinds. Read-only snapshot memory
+can contain pages from multiple immutable blobs. Writable scratch memory
+occupies the top of physical memory.
 
 For the detailed layout of each region, including field offsets, see
 the diagrams and comments in [`src/hyperlight_host/src/mem/layout.rs`](../src/hyperlight_host/src/mem/layout.rs)
@@ -114,12 +111,9 @@ the metadata at the top of the scratch region and grows downward.
 
 ## Taking a snapshot
 
-When the host takes a snapshot of a guest, it will traverse the guest
-page tables, collecting every (non-page-table) physical page that is
-mapped (outside of the scratch map) in the guest. It will write out a
-new compacted snapshot with precisely those pages in order, and a new
-set of page tables which produce precisely the same virtual memory
-layout, except for the scratch map.
+When the host takes a snapshot, it walks the guest page tables. Existing
+immutable pages stay shared. Other mapped pages are copied into a new
+immutable blob, and the host rebuilds the page tables.
 
 ### Pre-sizing the scratch region
 

@@ -504,6 +504,27 @@ pub enum SpaceAwareMapping {
     AnotherSpace(SpaceReferenceMapping),
 }
 
+/// Adds a mapping to a page-table walk result.
+///
+/// Combines `ThisSpace` mappings when their physical and virtual ranges are
+/// adjacent and their mapping kinds are equal. This reduces the result size.
+pub(crate) fn push_space_mapping(
+    mappings: &mut alloc::vec::Vec<SpaceAwareMapping>,
+    mapping: SpaceAwareMapping,
+) {
+    if let SpaceAwareMapping::ThisSpace(next) = &mapping
+        && let Some(SpaceAwareMapping::ThisSpace(previous)) = mappings.last_mut()
+        && previous.kind == next.kind
+        && previous.phys_base.checked_add(previous.len) == Some(next.phys_base)
+        && previous.virt_base.checked_add(previous.len) == Some(next.virt_base)
+        && let Some(len) = previous.len.checked_add(next.len)
+    {
+        previous.len = len;
+        return;
+    }
+    mappings.push(mapping);
+}
+
 /// Counterpart of [`walk_va_spaces`]'s `AnotherSpace` entries on the
 /// write side: installs a link in `op`'s root PT tree at `ref_map.our_va`
 /// that points at whatever intermediate table the owning space ended
@@ -537,3 +558,94 @@ pub use arch::space_aware_map;
 /// Same invariants as [`virt_to_phys`]. Callers must ensure the page
 /// tables are not being mutated concurrently.
 pub use arch::walk_va_spaces;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic_mapping(phys_base: u64, virt_base: u64, len: u64) -> SpaceAwareMapping {
+        SpaceAwareMapping::ThisSpace(Mapping {
+            phys_base,
+            virt_base,
+            len,
+            kind: MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: false,
+                executable: true,
+            }),
+        })
+    }
+
+    #[test]
+    fn push_space_mapping_coalesces_adjacent_mappings() {
+        let mut mappings = alloc::vec![basic_mapping(0x1000, 0x2000, PAGE_SIZE as u64)];
+
+        push_space_mapping(
+            &mut mappings,
+            basic_mapping(
+                0x1000 + PAGE_SIZE as u64,
+                0x2000 + PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+            ),
+        );
+
+        assert_eq!(mappings.len(), 1);
+        let SpaceAwareMapping::ThisSpace(mapping) = &mappings[0] else {
+            panic!("expected a local mapping");
+        };
+        assert_eq!(mapping.len, 2 * PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn push_space_mapping_preserves_non_adjacent_mappings() {
+        for next in [
+            basic_mapping(0x3000, 0x3000, PAGE_SIZE as u64),
+            basic_mapping(0x2000, 0x4000, PAGE_SIZE as u64),
+            SpaceAwareMapping::ThisSpace(Mapping {
+                phys_base: 0x2000,
+                virt_base: 0x3000,
+                len: PAGE_SIZE as u64,
+                kind: MappingKind::Cow(CowMapping {
+                    readable: true,
+                    executable: true,
+                }),
+            }),
+        ] {
+            let mut mappings = alloc::vec![basic_mapping(0x1000, 0x2000, PAGE_SIZE as u64)];
+            push_space_mapping(&mut mappings, next);
+            assert_eq!(mappings.len(), 2);
+        }
+    }
+
+    #[test]
+    fn push_space_mapping_preserves_space_reference_boundaries() {
+        let reference = SpaceAwareMapping::AnotherSpace(SpaceReferenceMapping {
+            depth: 1,
+            space: 0x1000,
+            our_va: 0x2000,
+            their_va: 0x2000,
+        });
+        let mut mappings = alloc::vec![basic_mapping(0x1000, 0x2000, PAGE_SIZE as u64)];
+
+        push_space_mapping(&mut mappings, reference);
+        push_space_mapping(
+            &mut mappings,
+            basic_mapping(
+                0x1000 + PAGE_SIZE as u64,
+                0x2000 + PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+            ),
+        );
+
+        assert_eq!(mappings.len(), 3);
+    }
+
+    #[test]
+    fn push_space_mapping_preserves_overflowing_mappings() {
+        let mut mappings = alloc::vec![basic_mapping(0, 0, u64::MAX)];
+
+        push_space_mapping(&mut mappings, basic_mapping(u64::MAX, u64::MAX, 1));
+
+        assert_eq!(mappings.len(), 2);
+    }
+}

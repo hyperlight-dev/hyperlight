@@ -361,12 +361,15 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
                     executable,
                 })
             };
-            mappings.push(crate::vmem::SpaceAwareMapping::ThisSpace(Mapping {
-                phys_base: phys_addr,
-                virt_base: virt_addr,
-                len: PAGE_SIZE as u64,
-                kind,
-            }));
+            crate::vmem::push_space_mapping(
+                &mut mappings,
+                crate::vmem::SpaceAwareMapping::ThisSpace(Mapping {
+                    phys_base: phys_addr,
+                    virt_base: virt_addr,
+                    len: PAGE_SIZE as u64,
+                    kind,
+                }),
+            );
         }
 
         out.push((root_id, mappings));

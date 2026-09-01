@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
@@ -331,6 +332,21 @@ impl SnapshotMemory {
             .map(|(offset, len)| (index, offset, len))
     }
 
+    #[cfg(test)]
+    pub(crate) fn read_gpa(&self, gpa: u64, destination: &mut [u8]) -> Result<()> {
+        let (layer_index, offset) = self
+            .resolve(gpa, destination.len())
+            .ok_or_else(|| crate::new_error!("snapshot GPA range is not live: {gpa:#x}"))?;
+        let source = self.layers[layer_index]
+            .blob
+            .memory()
+            .as_slice()
+            .get(offset..offset + destination.len())
+            .ok_or_else(|| crate::new_error!("snapshot GPA range is out of bounds"))?;
+        destination.copy_from_slice(source);
+        Ok(())
+    }
+
     pub(crate) fn read_page_tables(
         &self,
         pt_gpa_base: u64,
@@ -356,6 +372,82 @@ impl SnapshotMemory {
             &layer.blob.memory().as_slice()[page_tables.start + offset..page_tables.start + end],
         );
         Ok(())
+    }
+
+    pub(crate) fn flat_image(&self) -> Result<Cow<'_, [u8]>> {
+        let data_len = self.gpa_span_len();
+        let active = self.restore_page_table_layer();
+        let page_tables = active
+            .blob
+            .page_table_memory_range()
+            .ok_or_else(|| crate::new_error!("active snapshot layer has no page tables"))?;
+        if self.layers.len() == 1
+            && active.blob.data_gpa_range().is_some_and(|data| {
+                data.gpa_start() == SandboxMemoryLayout::BASE_ADDRESS as u64
+                    && data.len() == data_len
+                    && active.live_data_ranges.len() == 1
+                    && active.live_data_ranges[0] == (0..data_len)
+            })
+        {
+            return Ok(Cow::Borrowed(active.blob.memory().as_slice()));
+        }
+
+        let image_len = self.flat_image_len()?;
+        let mut image = vec![0u8; image_len];
+        for layer in &self.layers {
+            let Some(data) = layer.blob.data_gpa_range() else {
+                continue;
+            };
+            let target_base = usize::try_from(
+                data.gpa_start()
+                    .checked_sub(SandboxMemoryLayout::BASE_ADDRESS as u64)
+                    .ok_or_else(|| crate::new_error!("snapshot blob starts below base"))?,
+            )?;
+            for range in &layer.live_data_ranges {
+                let target_start = target_base
+                    .checked_add(range.start)
+                    .ok_or_else(|| crate::new_error!("flat snapshot offset overflows"))?;
+                let target_end = target_start
+                    .checked_add(range.len())
+                    .ok_or_else(|| crate::new_error!("flat snapshot range overflows"))?;
+                let destination = image
+                    .get_mut(target_start..target_end)
+                    .ok_or_else(|| crate::new_error!("flat snapshot range is out of bounds"))?;
+                let source = layer
+                    .blob
+                    .memory()
+                    .as_slice()
+                    .get(range.clone())
+                    .ok_or_else(|| crate::new_error!("snapshot source range is out of bounds"))?;
+                destination.copy_from_slice(source);
+            }
+        }
+        let page_table_bytes = active
+            .blob
+            .memory()
+            .as_slice()
+            .get(page_tables.clone())
+            .ok_or_else(|| crate::new_error!("snapshot page-table range is out of bounds"))?;
+        let page_table_end = data_len
+            .checked_add(page_table_bytes.len())
+            .ok_or_else(|| crate::new_error!("flat snapshot page-table range overflows"))?;
+        image[data_len..page_table_end].copy_from_slice(page_table_bytes);
+        Ok(Cow::Owned(image))
+    }
+
+    pub(crate) fn flat_image_len(&self) -> Result<usize> {
+        let data_len = self.gpa_span_len();
+        let page_tables = self
+            .restore_page_table_layer()
+            .blob
+            .page_table_memory_range()
+            .ok_or_else(|| crate::new_error!("active snapshot layer has no page tables"))?;
+        let logical_len = data_len
+            .checked_add(page_tables.len())
+            .ok_or_else(|| crate::new_error!("flat snapshot image size overflows"))?;
+        logical_len
+            .checked_next_multiple_of(page_size::get())
+            .ok_or_else(|| crate::new_error!("flat snapshot image padding overflows"))
     }
 }
 

@@ -762,6 +762,17 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
     }
 
+    /// Installs memory produced by a capture without restoring runtime state.
+    pub(crate) fn install_captured_snapshot(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
+        self.apply_snapshot_metadata(snapshot);
+        self.update_snapshot_scratch_bookkeeping()?;
+        Ok(gsnapshot)
+    }
+
     /// This function restores a memory snapshot from a given snapshot.
     pub(crate) fn restore_snapshot(
         &mut self,
