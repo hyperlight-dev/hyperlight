@@ -19,13 +19,13 @@ pub const ENUM_MIN_PARAMETER_VALUE: u8 = 0;
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
-pub const ENUM_MAX_PARAMETER_VALUE: u8 = 11;
+pub const ENUM_MAX_PARAMETER_VALUE: u8 = 10;
 #[deprecated(
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 12] = [
+pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 11] = [
     ParameterValue::NONE,
     ParameterValue::hlint,
     ParameterValue::hluint,
@@ -37,7 +37,6 @@ pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 12] = [
     ParameterValue::hlbool,
     ParameterValue::hlvecbytes,
     ParameterValue::hlexternalbytes,
-    ParameterValue::hlbytechunks,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -56,10 +55,9 @@ impl ParameterValue {
     pub const hlbool: Self = Self(8);
     pub const hlvecbytes: Self = Self(9);
     pub const hlexternalbytes: Self = Self(10);
-    pub const hlbytechunks: Self = Self(11);
 
     pub const ENUM_MIN: u8 = 0;
-    pub const ENUM_MAX: u8 = 11;
+    pub const ENUM_MAX: u8 = 10;
     pub const ENUM_VALUES: &'static [Self] = &[
         Self::NONE,
         Self::hlint,
@@ -72,7 +70,6 @@ impl ParameterValue {
         Self::hlbool,
         Self::hlvecbytes,
         Self::hlexternalbytes,
-        Self::hlbytechunks,
     ];
     /// Returns the variant's name or "" if unknown.
     pub fn variant_name(self) -> Option<&'static str> {
@@ -88,7 +85,6 @@ impl ParameterValue {
             Self::hlbool => Some("hlbool"),
             Self::hlvecbytes => Some("hlvecbytes"),
             Self::hlexternalbytes => Some("hlexternalbytes"),
-            Self::hlbytechunks => Some("hlbytechunks"),
             _ => None,
         }
     }

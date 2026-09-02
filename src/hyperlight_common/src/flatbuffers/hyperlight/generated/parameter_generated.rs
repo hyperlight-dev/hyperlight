@@ -212,20 +212,6 @@ impl<'a> Parameter<'a> {
             None
         }
     }
-
-    #[inline]
-    #[allow(non_snake_case)]
-    pub fn value_as_hlbytechunks(&self) -> Option<hlbytechunks<'a>> {
-        if self.value_type() == ParameterValue::hlbytechunks {
-            let u = self.value();
-            // Safety:
-            // Created from a valid Table for this object
-            // Which contains a valid union in this slot
-            Some(unsafe { hlbytechunks::init_from_table(u) })
-        } else {
-            None
-        }
-    }
 }
 
 impl flatbuffers::Verifiable for Parameter<'_> {
@@ -291,11 +277,6 @@ impl flatbuffers::Verifiable for Parameter<'_> {
                     ParameterValue::hlexternalbytes => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<hlexternalbytes>>(
                             "ParameterValue::hlexternalbytes",
-                            pos,
-                        ),
-                    ParameterValue::hlbytechunks => v
-                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlbytechunks>>(
-                            "ParameterValue::hlbytechunks",
                             pos,
                         ),
                     _ => Ok(()),
@@ -450,16 +431,6 @@ impl core::fmt::Debug for Parameter<'_> {
             }
             ParameterValue::hlexternalbytes => {
                 if let Some(x) = self.value_as_hlexternalbytes() {
-                    ds.field("value", &x)
-                } else {
-                    ds.field(
-                        "value",
-                        &"InvalidFlatbuffer: Union discriminant does not match value.",
-                    )
-                }
-            }
-            ParameterValue::hlbytechunks => {
-                if let Some(x) = self.value_as_hlbytechunks() {
                     ds.field("value", &x)
                 } else {
                     ds.field(
