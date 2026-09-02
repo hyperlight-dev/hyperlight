@@ -77,6 +77,7 @@ fn into_flatbuffer_result(value: ReturnValue) -> Vec<u8> {
         ReturnValue::Bool(b) => get_flatbuffer_result(b),
         ReturnValue::String(s) => get_flatbuffer_result(s.as_str()),
         ReturnValue::VecBytes(v) => get_flatbuffer_result(v.as_slice()),
+        ReturnValue::ByteChunks(v) => get_flatbuffer_result(v),
     }
 }
 

@@ -2,13 +2,27 @@ This is a c-api wrapper over the hyperlight-guest/hyperlight-guest-bin crate. Th
 
 For examples on how to use it, see the c [simpleguest](../tests/c_guests/c_simpleguest/).
 
+## Byte chunks
+
+`ByteChunks` parameters use an array of borrowed pointer and length spans:
+
+```c
+hl_ByteChunks value = call->parameters[0].value.ByteChunks;
+for (uintptr_t i = 0; i < value.count; i++) {
+  consume(value.chunks[i].data, value.chunks[i].len);
+}
+```
+
+The parameter view is valid until the guest function returns. A value from
+`hl_get_host_return_value_as_ByteChunks` remains valid until
+`hl_free_byte_chunks`. `hl_result_from_ByteChunks` copies the supplied spans.
+
 # Important
 
-All guest functions must return a `hl_Vec*` obtained by calling one of the `hl_flatbuffer_result_from_*` functions. These functions will return a flatbuffer encoded byte-buffer of given value, for example `hl_flatbuffer_result_from_int(int)` will return the flatbuffer representation of the given int.
+Guest function wrappers return an `hl_ReturnValue*` created by an
+`hl_result_from_*` function.
 
 ## NOTE
 
-**You may not construct and return your own `hl_Vec*`**, as the hyperlight api assumes that all returned `hl_Vec*` are constructed through calls to a `hl_flatbuffer_result_from_*` function. 
-
-Additionally, note that type `hl_Vec*` is used in two different contexts. First, `hl_Vec*` is used input-parameter-type for guest functions that take a buffer of bytes. This buffer of bytes can contain **arbitrary** bytes. Second, all guest functions return a `hl_Vec*` (it might be hidden away by c macros). These `hl_Vec*` are flatbuffer-encoded data, and are not arbitrary. 
-
+The `hl_result_from_*` constructors establish matching tags, union payloads,
+and ownership.
