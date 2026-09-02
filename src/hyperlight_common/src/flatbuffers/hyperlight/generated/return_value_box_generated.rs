@@ -226,20 +226,6 @@ impl<'a> ReturnValueBox<'a> {
             None
         }
     }
-
-    #[inline]
-    #[allow(non_snake_case)]
-    pub fn value_as_hlsizeprefixedbytechunks(&self) -> Option<hlsizeprefixedbytechunks<'a>> {
-        if self.value_type() == ReturnValue::hlsizeprefixedbytechunks {
-            let u = self.value();
-            // Safety:
-            // Created from a valid Table for this object
-            // Which contains a valid union in this slot
-            Some(unsafe { hlsizeprefixedbytechunks::init_from_table(u) })
-        } else {
-            None
-        }
-    }
 }
 
 impl flatbuffers::Verifiable for ReturnValueBox<'_> {
@@ -250,24 +236,72 @@ impl flatbuffers::Verifiable for ReturnValueBox<'_> {
     ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
-     .visit_union::<ReturnValue, _>("value_type", Self::VT_VALUE_TYPE, "value", Self::VT_VALUE, true, |key, v, pos| {
-        match key {
-          ReturnValue::hlint => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlint>>("ReturnValue::hlint", pos),
-          ReturnValue::hluint => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hluint>>("ReturnValue::hluint", pos),
-          ReturnValue::hllong => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hllong>>("ReturnValue::hllong", pos),
-          ReturnValue::hlulong => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlulong>>("ReturnValue::hlulong", pos),
-          ReturnValue::hlfloat => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlfloat>>("ReturnValue::hlfloat", pos),
-          ReturnValue::hldouble => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hldouble>>("ReturnValue::hldouble", pos),
-          ReturnValue::hlstring => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlstring>>("ReturnValue::hlstring", pos),
-          ReturnValue::hlbool => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlbool>>("ReturnValue::hlbool", pos),
-          ReturnValue::hlvoid => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlvoid>>("ReturnValue::hlvoid", pos),
-          ReturnValue::hlsizeprefixedbuffer => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlsizeprefixedbuffer>>("ReturnValue::hlsizeprefixedbuffer", pos),
-          ReturnValue::hlexternalbytes => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlexternalbytes>>("ReturnValue::hlexternalbytes", pos),
-          ReturnValue::hlsizeprefixedbytechunks => v.verify_union_variant::<flatbuffers::ForwardsUOffset<hlsizeprefixedbytechunks>>("ReturnValue::hlsizeprefixedbytechunks", pos),
-          _ => Ok(()),
-        }
-     })?
-     .finish();
+            .visit_union::<ReturnValue, _>(
+                "value_type",
+                Self::VT_VALUE_TYPE,
+                "value",
+                Self::VT_VALUE,
+                true,
+                |key, v, pos| match key {
+                    ReturnValue::hlint => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlint>>(
+                            "ReturnValue::hlint",
+                            pos,
+                        ),
+                    ReturnValue::hluint => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hluint>>(
+                            "ReturnValue::hluint",
+                            pos,
+                        ),
+                    ReturnValue::hllong => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hllong>>(
+                            "ReturnValue::hllong",
+                            pos,
+                        ),
+                    ReturnValue::hlulong => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlulong>>(
+                            "ReturnValue::hlulong",
+                            pos,
+                        ),
+                    ReturnValue::hlfloat => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlfloat>>(
+                            "ReturnValue::hlfloat",
+                            pos,
+                        ),
+                    ReturnValue::hldouble => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hldouble>>(
+                            "ReturnValue::hldouble",
+                            pos,
+                        ),
+                    ReturnValue::hlstring => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlstring>>(
+                            "ReturnValue::hlstring",
+                            pos,
+                        ),
+                    ReturnValue::hlbool => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlbool>>(
+                            "ReturnValue::hlbool",
+                            pos,
+                        ),
+                    ReturnValue::hlvoid => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlvoid>>(
+                            "ReturnValue::hlvoid",
+                            pos,
+                        ),
+                    ReturnValue::hlsizeprefixedbuffer => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlsizeprefixedbuffer>>(
+                            "ReturnValue::hlsizeprefixedbuffer",
+                            pos,
+                        ),
+                    ReturnValue::hlexternalbytes => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlexternalbytes>>(
+                            "ReturnValue::hlexternalbytes",
+                            pos,
+                        ),
+                    _ => Ok(()),
+                },
+            )?
+            .finish();
         Ok(())
     }
 }
@@ -428,16 +462,6 @@ impl core::fmt::Debug for ReturnValueBox<'_> {
             }
             ReturnValue::hlexternalbytes => {
                 if let Some(x) = self.value_as_hlexternalbytes() {
-                    ds.field("value", &x)
-                } else {
-                    ds.field(
-                        "value",
-                        &"InvalidFlatbuffer: Union discriminant does not match value.",
-                    )
-                }
-            }
-            ReturnValue::hlsizeprefixedbytechunks => {
-                if let Some(x) = self.value_as_hlsizeprefixedbytechunks() {
                     ds.field("value", &x)
                 } else {
                     ds.field(
