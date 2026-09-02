@@ -16,6 +16,13 @@ pub struct FfiVec {
 }
 
 impl FfiVec {
+    pub(crate) fn from_mut_slice(value: &mut [u8]) -> Self {
+        Self {
+            data: value.as_mut_ptr(),
+            len: value.len(),
+        }
+    }
+
     /// Creates a new `FfiVec` from the given Vec<u8> without copying memory.
     /// # Safety
     /// The caller must later reclaim memory by calling `into_vec`, otherwise memory will be leaked.
@@ -42,21 +49,15 @@ impl FfiVec {
         res
     }
 
-    /// Copies the contents of `self` to a new independent Vec<u8>.
+    /// Copies the contents of `self` to a new independent `Vec<u8>`.
     /// # Safety
-    /// Self must have been obtained using `from_vec`, and must be in its original state (i.e. not modified).
+    /// `data` must reference `len` readable bytes when `len` is nonzero.
     pub unsafe fn copy_to_vec(&self) -> Vec<u8> {
-        // deconstruct
-        let slice = unsafe { slice::from_raw_parts_mut(self.data, self.len) };
-        let boxed: Box<[u8]> = unsafe { Box::from_raw(slice) };
-        let original = boxed.into_vec();
-        // clone
-        let clone = original.clone();
-        // reverse deconstruct
-        let boxed = original.into_boxed_slice();
-        let leaked = Box::into_raw(boxed);
-        assert_eq!(self.data, leaked as *mut u8);
-        assert_eq!(self.len, leaked.len());
-        clone
+        if self.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: required by the caller.
+            unsafe { slice::from_raw_parts(self.data, self.len) }.to_vec()
+        }
     }
 }

@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* Expose C guest `ByteChunks` values as pointer and length arrays.
+* Return typed `hl_ReturnValue` objects from C guest functions through
+  `hl_result_from_*` constructors.
 
 ### Removed
 
