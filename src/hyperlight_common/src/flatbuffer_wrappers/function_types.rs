@@ -369,7 +369,7 @@ where
                 DecodedExternalBytes::ByteChunks(value) => Ok(ParameterValue::ByteChunks(value)),
             }
         }
-        FbParameterValue::hlvecbytes | FbParameterValue::hlbytechunks => {
+        FbParameterValue::hlvecbytes => {
             bail!("Embedded byte parameters are not supported")
         }
         _ => param.try_into(),
@@ -394,7 +394,7 @@ where
                 DecodedExternalBytes::ByteChunks(value) => Ok(ReturnValue::ByteChunks(value)),
             }
         }
-        FbReturnValue::hlsizeprefixedbuffer | FbReturnValue::hlsizeprefixedbytechunks => {
+        FbReturnValue::hlsizeprefixedbuffer => {
             bail!("Embedded byte returns are not supported")
         }
         _ => return_value.try_into(),
@@ -450,7 +450,7 @@ impl TryFrom<Parameter<'_>> for ParameterValue {
             FbParameterValue::hlstring => param.value_as_hlstring().map(|hlstring| {
                 ParameterValue::String(hlstring.value().unwrap_or_default().to_string())
             }),
-            FbParameterValue::hlvecbytes | FbParameterValue::hlbytechunks => {
+            FbParameterValue::hlvecbytes => {
                 bail!("Embedded byte parameters are not supported")
             }
             FbParameterValue::hlexternalbytes => {
@@ -870,7 +870,7 @@ impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
                 Ok(ReturnValue::String(hlstring.unwrap_or("".to_string())))
             }
             FbReturnValue::hlvoid => Ok(ReturnValue::Void(())),
-            FbReturnValue::hlsizeprefixedbuffer | FbReturnValue::hlsizeprefixedbytechunks => {
+            FbReturnValue::hlsizeprefixedbuffer => {
                 bail!("Embedded byte returns are not supported")
             }
             FbReturnValue::hlexternalbytes => {
