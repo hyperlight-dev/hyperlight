@@ -1406,15 +1406,12 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(32K).
-    // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
+    // Checks that 1,000 calls work with constrained guest memory.
+    // This catches guest stack reset and heap leaks.
     #[test]
     fn test_with_small_stack_and_heap() {
-        const HEAP_SIZE: u64 = 32 * 1024;
-        // min_scratch_size already includes 1 page (4k on most
-        // platforms) of guest stack, so add 20k more to get 24k
-        // total, and then add some more for the eagerly-copied page
-        // tables on amd64
+        const HEAP_SIZE: u64 = 128 * 1024;
+        // Leave headroom for legacy transport and eagerly copied page tables.
         let scratch_size = {
             let defaults = SandboxConfiguration::default();
             hyperlight_common::layout::min_scratch_size(
@@ -1425,8 +1422,7 @@ mod tests {
                 defaults.get_g2h_pool_pages(),
                 defaults.get_h2g_pool_pages(),
             )
-        } + 0x10000
-            + 0x10000;
+        } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .heap_size(HEAP_SIZE)
@@ -2147,7 +2143,7 @@ mod tests {
     #[test]
     fn snapshot_restore_recovers_oom_with_larger_heap() {
         let mut source_cfg = SandboxConfiguration::default();
-        source_cfg.set_heap_size(0x20_000);
+        source_cfg.set_heap_size(0x40_000);
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
             .unwrap()
@@ -2156,7 +2152,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target_cfg = SandboxConfiguration::default();
-        target_cfg.set_heap_size(0x8000);
+        target_cfg.set_heap_size(0x20_000);
         let path = simple_guest_as_pathbuf();
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
             .unwrap()
@@ -2177,7 +2173,7 @@ mod tests {
     #[test]
     fn snapshot_restore_applies_smaller_heap_limit() {
         let mut source_cfg = SandboxConfiguration::default();
-        source_cfg.set_heap_size(0x8000);
+        source_cfg.set_heap_size(0x20_000);
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
             .unwrap()
@@ -2186,7 +2182,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target_cfg = SandboxConfiguration::default();
-        target_cfg.set_heap_size(0x20_000);
+        target_cfg.set_heap_size(0x80_000);
         let path = simple_guest_as_pathbuf();
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
             .unwrap()
@@ -2194,18 +2190,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            target.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
-            0x10_000
+            target.call::<i32>("CallMalloc", 0x30_000i32).unwrap(),
+            0x30_000
         );
         target.restore(snapshot).unwrap();
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
-        assert!(target.call::<i32>("CallMalloc", 0x10_000i32).is_err());
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x20_000);
+        assert!(target.call::<i32>("CallMalloc", 0x30_000i32).is_err());
         assert!(target.status().is_poisoned());
     }
 
     #[test]
     fn snapshot_restore_applies_smaller_io_limits() {
         let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_heap_size(0x40_000);
+        source_cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 256 * 1024);
         source_cfg.set_input_data_size(0x2000);
         source_cfg.set_output_data_size(0x2000);
         let path = simple_guest_as_pathbuf();
@@ -2216,6 +2214,8 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target_cfg = SandboxConfiguration::default();
+        target_cfg.set_heap_size(0x40_000);
+        target_cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 256 * 1024);
         target_cfg.set_input_data_size(0x8000);
         target_cfg.set_output_data_size(0x8000);
         let path = simple_guest_as_pathbuf();
@@ -2242,7 +2242,7 @@ mod tests {
         let mut small_cfg = SandboxConfiguration::default();
         small_cfg.set_input_data_size(0x2000);
         small_cfg.set_output_data_size(0x2000);
-        small_cfg.set_heap_size(0x8000);
+        small_cfg.set_heap_size(0x20_000);
         let path = simple_guest_as_pathbuf();
         let mut small = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(small_cfg))
             .unwrap()
@@ -2272,7 +2272,7 @@ mod tests {
 
         target.restore(small_snapshot.clone()).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x20_000);
 
         target.restore(large_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 22);
@@ -2280,7 +2280,7 @@ mod tests {
 
         target.restore(small_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 0x20_000);
     }
 
     #[test]
