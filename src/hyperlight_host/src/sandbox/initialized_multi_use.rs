@@ -2279,7 +2279,7 @@ mod tests {
         let snapshot = source.snapshot().unwrap();
 
         let mut target_cfg = SandboxConfiguration::default();
-        target_cfg.set_heap_size(0x8000);
+        target_cfg.set_heap_size(40 * 1024);
         let path = simple_guest_as_pathbuf();
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
             .unwrap()
@@ -2300,7 +2300,7 @@ mod tests {
     #[test]
     fn snapshot_restore_applies_smaller_heap_limit() {
         let mut source_cfg = SandboxConfiguration::default();
-        source_cfg.set_heap_size(0x8000);
+        source_cfg.set_heap_size(40 * 1024);
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
             .unwrap()
@@ -2321,7 +2321,7 @@ mod tests {
             0x10_000
         );
         target.restore(snapshot).unwrap();
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
         assert!(target.call::<i32>("CallMalloc", 0x10_000i32).is_err());
         assert!(target.status().is_poisoned());
     }
@@ -2360,7 +2360,7 @@ mod tests {
     #[test]
     fn snapshot_restore_alternates_different_layouts() {
         let mut small_cfg = SandboxConfiguration::default();
-        small_cfg.set_heap_size(0x8000);
+        small_cfg.set_heap_size(40 * 1024);
         let path = simple_guest_as_pathbuf();
         let mut small = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(small_cfg))
             .unwrap()
@@ -2388,7 +2388,7 @@ mod tests {
 
         target.restore(small_snapshot.clone()).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
 
         target.restore(large_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 22);
@@ -2396,7 +2396,7 @@ mod tests {
 
         target.restore(small_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x8000);
+        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
     }
 
     #[test]
