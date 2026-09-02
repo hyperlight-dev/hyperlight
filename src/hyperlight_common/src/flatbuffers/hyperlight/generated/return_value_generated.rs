@@ -19,13 +19,13 @@ pub const ENUM_MIN_RETURN_VALUE: u8 = 0;
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
-pub const ENUM_MAX_RETURN_VALUE: u8 = 10;
+pub const ENUM_MAX_RETURN_VALUE: u8 = 12;
 #[deprecated(
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 11] = [
+pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 13] = [
     ReturnValue::NONE,
     ReturnValue::hlint,
     ReturnValue::hluint,
@@ -37,6 +37,8 @@ pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 11] = [
     ReturnValue::hlbool,
     ReturnValue::hlvoid,
     ReturnValue::hlsizeprefixedbuffer,
+    ReturnValue::hlexternalbytes,
+    ReturnValue::hlsizeprefixedbytechunks,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -55,9 +57,11 @@ impl ReturnValue {
     pub const hlbool: Self = Self(8);
     pub const hlvoid: Self = Self(9);
     pub const hlsizeprefixedbuffer: Self = Self(10);
+    pub const hlexternalbytes: Self = Self(11);
+    pub const hlsizeprefixedbytechunks: Self = Self(12);
 
     pub const ENUM_MIN: u8 = 0;
-    pub const ENUM_MAX: u8 = 10;
+    pub const ENUM_MAX: u8 = 12;
     pub const ENUM_VALUES: &'static [Self] = &[
         Self::NONE,
         Self::hlint,
@@ -70,6 +74,8 @@ impl ReturnValue {
         Self::hlbool,
         Self::hlvoid,
         Self::hlsizeprefixedbuffer,
+        Self::hlexternalbytes,
+        Self::hlsizeprefixedbytechunks,
     ];
     /// Returns the variant's name or "" if unknown.
     pub fn variant_name(self) -> Option<&'static str> {
@@ -85,6 +91,8 @@ impl ReturnValue {
             Self::hlbool => Some("hlbool"),
             Self::hlvoid => Some("hlvoid"),
             Self::hlsizeprefixedbuffer => Some("hlsizeprefixedbuffer"),
+            Self::hlexternalbytes => Some("hlexternalbytes"),
+            Self::hlsizeprefixedbytechunks => Some("hlsizeprefixedbytechunks"),
             _ => None,
         }
     }

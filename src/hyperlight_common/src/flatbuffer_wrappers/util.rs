@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
+use bytes::Bytes;
 use flatbuffers::FlatBufferBuilder;
 
 use crate::flatbuffer_wrappers::function_types::ParameterValue;
@@ -13,7 +15,9 @@ use crate::flatbuffers::hyperlight::generated::{
     hldouble as Fbhldouble, hldoubleArgs as FbhldoubleArgs, hlfloat as Fbhlfloat,
     hlfloatArgs as FbhlfloatArgs, hlint as Fbhlint, hlintArgs as FbhlintArgs, hllong as Fbhllong,
     hllongArgs as FbhllongArgs, hlsizeprefixedbuffer as Fbhlsizeprefixedbuffer,
-    hlsizeprefixedbufferArgs as FbhlsizeprefixedbufferArgs, hlstring as Fbhlstring,
+    hlsizeprefixedbufferArgs as FbhlsizeprefixedbufferArgs,
+    hlsizeprefixedbytechunks as Fbhlsizeprefixedbytechunks,
+    hlsizeprefixedbytechunksArgs as FbhlsizeprefixedbytechunksArgs, hlstring as Fbhlstring,
     hlstringArgs as FbhlstringArgs, hluint as Fbhluint, hluintArgs as FbhluintArgs,
     hlulong as Fbhlulong, hlulongArgs as FbhlulongArgs, hlvoid as Fbhlvoid,
     hlvoidArgs as FbhlvoidArgs,
@@ -90,6 +94,31 @@ impl FlatbufferSerializable for &[u8] {
             builder,
             &ReturnValueBoxArgs {
                 value_type: FbReturnValue::hlsizeprefixedbuffer,
+                value: Some(buf_off.as_union_value()),
+            },
+        );
+        FbFunctionCallResultArgs {
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
+        }
+    }
+}
+
+impl FlatbufferSerializable for Vec<Bytes> {
+    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let value = byte_chunks_to_bytes(self);
+        let vec_off = builder.create_vector(value.as_ref());
+        let buf_off = Fbhlsizeprefixedbytechunks::create(
+            builder,
+            &FbhlsizeprefixedbytechunksArgs {
+                size: value.len() as i32,
+                value: Some(vec_off),
+            },
+        );
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlsizeprefixedbytechunks,
                 value: Some(buf_off.as_union_value()),
             },
         );
@@ -247,6 +276,7 @@ pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]
         estimated_capacity += match arg {
             ParameterValue::String(s) => s.len() + 20,
             ParameterValue::VecBytes(v) => v.len() + 20,
+            ParameterValue::ByteChunks(v) => byte_chunks_len(v) + 20,
             ParameterValue::Int(_) | ParameterValue::UInt(_) => 16,
             ParameterValue::Long(_) | ParameterValue::ULong(_) => 20,
             ParameterValue::Float(_) => 16,
@@ -257,6 +287,61 @@ pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]
 
     // match how vec grows
     estimated_capacity.next_power_of_two()
+}
+
+/// Wrap contiguous bytes as one chunk without copying.
+pub fn byte_chunks_from_bytes(value: Bytes) -> Vec<Bytes> {
+    if value.is_empty() {
+        Vec::new()
+    } else {
+        vec![value]
+    }
+}
+
+/// Wrap a contiguous vector as one chunk without copying.
+pub fn byte_chunks_from_vec(value: Vec<u8>) -> Vec<Bytes> {
+    byte_chunks_from_bytes(Bytes::from(value))
+}
+
+/// Return the complete logical length of a chunked byte value.
+pub(crate) fn byte_chunks_len(value: &[Bytes]) -> usize {
+    value.iter().map(Bytes::len).sum()
+}
+
+/// Return the complete logical length, or `None` if the sum overflows.
+pub(crate) fn try_byte_chunks_len(value: &[Bytes]) -> Option<usize> {
+    value
+        .iter()
+        .try_fold(0usize, |length, chunk| length.checked_add(chunk.len()))
+}
+
+/// Materialize byte chunks as contiguous [`Bytes`].
+///
+/// This is O(1) for zero or one chunk and copies once for multiple chunks.
+pub fn byte_chunks_to_bytes(value: &[Bytes]) -> Bytes {
+    match value {
+        [] => Bytes::new(),
+        [chunk] => chunk.clone(),
+        chunks => Bytes::from(byte_chunks_to_vec(chunks)),
+    }
+}
+
+/// Materialize byte chunks as one contiguous vector.
+///
+/// This always allocates a new vector and copies the complete logical value.
+pub fn byte_chunks_to_vec(value: &[Bytes]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(byte_chunks_len(value));
+    for chunk in value {
+        output.extend_from_slice(chunk);
+    }
+    output
+}
+
+#[cfg(feature = "fuzzing")]
+pub(crate) fn arbitrary_byte_chunks(
+    input: &mut arbitrary::Unstructured<'_>,
+) -> arbitrary::Result<Vec<Bytes>> {
+    <Vec<u8> as arbitrary::Arbitrary>::arbitrary(input).map(byte_chunks_from_vec)
 }
 
 #[cfg(test)]

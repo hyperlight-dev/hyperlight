@@ -7,23 +7,43 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{
+    ParameterType, ReturnType, ReturnValue,
+};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
-use hyperlight_guest_bin::host_comm::call_host_function_without_returning_result;
+use hyperlight_guest_bin::host_comm::{
+    call_host_function_without_returning_result, get_host_return_value,
+};
 
-use crate::types::{FfiFunctionCall, FfiVec};
+use crate::types::{FfiFunctionCall, FfiReturnValue, OwnedFfiFunctionCall};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
     GuestFunctionRegister::new();
 
-type CGuestFunc = extern "C" fn(&FfiFunctionCall) -> Box<FfiVec>;
+type CGuestFunc = extern "C" fn(&FfiFunctionCall) -> *mut FfiReturnValue;
 
 unsafe extern "C" {
-    // NOTE *mut FfiVec must be a Box<FfiVec>. This will be the case as long as the guest
-    // returns a FfiVec that they created using the c-api hl_flatbuffer_result_from_* functions.
-    fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiVec;
+    // The guest must return a value created by an hl_result_from_* function.
+    fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiReturnValue;
+}
+
+fn encode_return_value(value: ReturnValue) -> Vec<u8> {
+    match value {
+        ReturnValue::Int(value) => get_flatbuffer_result(value),
+        ReturnValue::UInt(value) => get_flatbuffer_result(value),
+        ReturnValue::Long(value) => get_flatbuffer_result(value),
+        ReturnValue::ULong(value) => get_flatbuffer_result(value),
+        ReturnValue::Float(value) => get_flatbuffer_result(value),
+        ReturnValue::Double(value) => get_flatbuffer_result(value),
+        ReturnValue::Bool(value) => get_flatbuffer_result(value),
+        ReturnValue::String(value) => get_flatbuffer_result(value.as_str()),
+        ReturnValue::VecBytes(value) => get_flatbuffer_result(value.as_slice()),
+        ReturnValue::ByteChunks(value) => get_flatbuffer_result(value),
+        ReturnValue::Void(()) => get_flatbuffer_result(()),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -41,10 +61,22 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
             .collect();
         registered_func.verify_parameters(&function_call_parameter_types)?;
 
-        let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
-        let function_result = (registered_func.function_pointer)(&ffi_func_call);
+        let function_name = function_call.function_name.clone();
+        let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
+        let function_result = (registered_func.function_pointer)(ffi_func_call.as_ffi());
+        if function_result.is_null() {
+            return Err(HyperlightGuestError::new(
+                ErrorCode::GuestError,
+                alloc::format!("C guest function {function_name:?} returned null"),
+            ));
+        }
 
-        unsafe { Ok(FfiVec::into_vec(*function_result)) }
+        // SAFETY: the pointer is non-null and C functions return ownership.
+        let function_result = unsafe { Box::from_raw(function_result) };
+        // SAFETY: registered C functions return values created by hl_result_from_*.
+        let function_result = unsafe { (*function_result).into_return_value() };
+
+        Ok(encode_return_value(function_result))
     } else {
         // The given function is not registered. The guest should implement a function called c_guest_dispatch_function to handle this.
 
@@ -52,8 +84,8 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
         // to not do that.
         let function_name = function_call.function_name.clone();
-        let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
-        let function_result = unsafe { c_guest_dispatch_function(&ffi_func_call) };
+        let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
+        let function_result = unsafe { c_guest_dispatch_function(ffi_func_call.as_ffi()) };
         if function_result.is_null() {
             Err(HyperlightGuestError::new(
                 ErrorCode::GuestFunctionNotFound,
@@ -61,7 +93,10 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
             ))
         } else {
             let result = unsafe { Box::from_raw(function_result) };
-            Ok(unsafe { FfiVec::into_vec(*result) })
+            // SAFETY: non-null fallback results are created by hl_result_from_*.
+            let result = unsafe { (*result).into_return_value() };
+
+            Ok(encode_return_value(result))
         }
     }
 }
@@ -85,15 +120,19 @@ pub extern "C" fn hl_register_function_definition(
     unsafe { (&mut *(&raw mut REGISTERED_C_GUEST_FUNCTIONS)).register(func_def) };
 }
 
-/// The caller is responsible for freeing the memory associated with given `FfiFunctionCall`.
+/// Call a host function. The return value can be retrieved with
+/// `hl_get_host_return_value_as_*` immediately after.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let parameters = unsafe { function_call.copy_parameters() };
     let func_name = unsafe { function_call.copy_function_name() };
     let return_type = unsafe { function_call.copy_return_type() };
 
-    // Use the non-generic internal implementation
-    // The C API will then call specific getter functions to fetch the properly typed return value
-    let _ = call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
+    call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
         .expect("Failed to call host function");
+}
+
+/// Retrieve the return value from the last `hl_call_host_function`.
+pub(crate) fn take_last_host_return<T: TryFrom<ReturnValue>>() -> T {
+    get_host_return_value().expect("Unable to get host return value")
 }

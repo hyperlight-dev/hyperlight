@@ -29,13 +29,13 @@ int next_random(void) { return rand(); }
 
 long next_random_long(void) { return random(); }
 
-hl_Vec *set_byte_array_to_zero(const hl_FunctionCall* params) {
+hl_ReturnValue *set_byte_array_to_zero(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
   uint8_t *x = malloc(input.len);
   for (uintptr_t i = 0; i < input.len; i++) {
     x[i] = 0;
   }
-  return hl_flatbuffer_result_from_Bytes(x, input.len);
+  return hl_result_from_Bytes(x, input.len);
 }
 
 int print_output(const char *message) {
@@ -217,9 +217,9 @@ int set_static(void) {
   return length;
 }
 
-hl_Vec *get_size_prefixed_buffer(const hl_FunctionCall* params) {
+hl_ReturnValue *get_size_prefixed_buffer(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
-  return hl_flatbuffer_result_from_Bytes(input.data, input.len);
+  return hl_result_from_Bytes(input.data, input.len);
 }
 
 int guest_abort_with_code(int32_t code) {
@@ -243,10 +243,10 @@ int log_message(const char *message, int64_t level) {
   return -1;
 }
 
-hl_Vec *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
+hl_ReturnValue *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
   hl_Vec input = params->parameters[0].value.VecBytes;
   assert(input.len == 24 * 1024);
-  return hl_flatbuffer_result_from_Bytes(input.data, 8 * 1024);
+  return hl_result_from_Bytes(input.data, 8 * 1024);
 }
 
 int guest_function(const char *from_host) {
@@ -421,12 +421,12 @@ void hyperlight_main(void)
 
 // This dispatch function is only used when the host dispatches a guest function
 // call but there is no registered guest function with the given name.
-hl_Vec *c_guest_dispatch_function(const hl_FunctionCall *function_call) {
+hl_ReturnValue *c_guest_dispatch_function(const hl_FunctionCall *function_call) {
   const char *func_name = function_call->function_name;
   if (strcmp(func_name, "ThisIsNotARealFunctionButTheNameIsImportant") == 0) {
     // TODO DO A LOG HERE
-    // This is special case for test `iostack_is_working
-    return hl_flatbuffer_result_from_Int(99);
+    // This is a special case for test `custom_guest_dispatch_is_working`.
+    return hl_result_from_Int(99);
   }
 
   return NULL;

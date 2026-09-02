@@ -5,18 +5,24 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyhow::{Error, Result, anyhow, bail};
+pub use bytes::Bytes;
 use flatbuffers::size_prefixed_root;
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
+use super::codec::{ExternalValueSink, ExternalValueSource};
 use super::guest_error::GuestError;
+#[cfg(feature = "fuzzing")]
+use super::util::arbitrary_byte_chunks;
+use super::util::{byte_chunks_from_bytes, byte_chunks_to_bytes, try_byte_chunks_len};
 use crate::flatbuffers::hyperlight::generated::{
     FunctionCallResult as FbFunctionCallResult, FunctionCallResultArgs as FbFunctionCallResultArgs,
     FunctionCallResultType, Parameter, ParameterType as FbParameterType,
     ParameterValue as FbParameterValue, ReturnType as FbReturnType, ReturnValue as FbReturnValue,
-    ReturnValueBox, ReturnValueBoxArgs, hlbool, hlboolArgs, hldouble, hldoubleArgs, hlfloat,
-    hlfloatArgs, hlint, hlintArgs, hllong, hllongArgs, hlsizeprefixedbuffer,
-    hlsizeprefixedbufferArgs, hlstring, hlstringArgs, hluint, hluintArgs, hlulong, hlulongArgs,
+    ReturnValueBox, ReturnValueBoxArgs, hlbool, hlboolArgs, hldouble, hldoubleArgs,
+    hlexternalbytes, hlexternalbytesArgs, hlfloat, hlfloatArgs, hlint, hlintArgs, hllong,
+    hllongArgs, hlsizeprefixedbuffer, hlsizeprefixedbufferArgs, hlsizeprefixedbytechunks,
+    hlsizeprefixedbytechunksArgs, hlstring, hlstringArgs, hluint, hluintArgs, hlulong, hlulongArgs,
     hlvoid, hlvoidArgs,
 };
 
@@ -82,6 +88,21 @@ impl FunctionCallResult {
                             FbReturnValue::hlsizeprefixedbuffer,
                         )
                     }
+                    ReturnValue::ByteChunks(v) => {
+                        let value = byte_chunks_to_bytes(v);
+                        let val = builder.create_vector(value.as_ref());
+                        let off = hlsizeprefixedbytechunks::create(
+                            builder,
+                            &hlsizeprefixedbytechunksArgs {
+                                value: Some(val),
+                                size: value.len() as i32,
+                            },
+                        );
+                        (
+                            Some(off.as_union_value()),
+                            FbReturnValue::hlsizeprefixedbytechunks,
+                        )
+                    }
                     ReturnValue::Void(()) => {
                         let off = hlvoid::create(builder, &hlvoidArgs {});
                         (Some(off.as_union_value()), FbReturnValue::hlvoid)
@@ -122,12 +143,105 @@ impl FunctionCallResult {
             }
         }
     }
+
+    /// Encodes byte returns as external markers and sends their payload to
+    /// `external_values`.
+    ///
+    /// Non-byte returns and guest errors retain their existing embedded
+    /// encoding.
+    pub fn encode_external<'a, 'b, S>(
+        &'a self,
+        builder: &'b mut flatbuffers::FlatBufferBuilder,
+        external_values: &mut S,
+    ) -> Result<&'b [u8]>
+    where
+        S: ExternalValueSink<'a> + ?Sized,
+    {
+        let Ok(return_value) = &self.0 else {
+            return Ok(self.encode(builder));
+        };
+
+        let (length, chunked) = match return_value {
+            ReturnValue::VecBytes(value) => {
+                let length = u64::try_from(value.len())
+                    .map_err(|_| anyhow!("External VecBytes length does not fit in u64"))?;
+                external_values.push_bytes(value)?;
+                (length, false)
+            }
+            ReturnValue::ByteChunks(value) => {
+                let length = try_byte_chunks_len(value)
+                    .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?;
+                let length = u64::try_from(length)
+                    .map_err(|_| anyhow!("External ByteChunks length does not fit in u64"))?;
+                external_values.push_chunks(value)?;
+                (length, true)
+            }
+            _ => return Ok(self.encode(builder)),
+        };
+
+        let value = hlexternalbytes::create(builder, &hlexternalbytesArgs { length, chunked });
+        let return_value = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value: Some(value.as_union_value()),
+                value_type: FbReturnValue::hlexternalbytes,
+            },
+        );
+        let result = FbFunctionCallResult::create(
+            builder,
+            &FbFunctionCallResultArgs {
+                result: Some(return_value.as_union_value()),
+                result_type: FunctionCallResultType::ReturnValueBox,
+            },
+        );
+        builder.finish_size_prefixed(result, None);
+        Ok(builder.finished_data())
+    }
+
     pub fn new(value: core::result::Result<ReturnValue, GuestError>) -> Self {
         FunctionCallResult(value)
     }
 
     pub fn into_inner(self) -> core::result::Result<ReturnValue, GuestError> {
         self.0
+    }
+
+    /// Decodes a function-call result using `external_values` for external byte
+    /// markers.
+    pub fn decode_external<S>(value: &[u8], external_values: &mut S) -> Result<Self>
+    where
+        S: ExternalValueSource + ?Sized,
+    {
+        let function_call_result_fb = size_prefixed_root::<FbFunctionCallResult>(value)
+            .map_err(|e| anyhow!("Failed to get FunctionCallResult from bytes: {:?}", e))?;
+
+        let result = match function_call_result_fb.result_type() {
+            FunctionCallResultType::ReturnValueBox => {
+                let boxed = function_call_result_fb
+                    .result_as_return_value_box()
+                    .ok_or_else(|| {
+                        anyhow!("Failed to get ReturnValueBox from function call result")
+                    })?;
+                Ok(decode_external_return_value(boxed, external_values)?)
+            }
+            FunctionCallResultType::GuestError => {
+                let guest_error_table = function_call_result_fb
+                    .result_as_guest_error()
+                    .ok_or_else(|| anyhow!("Failed to get GuestError from function call result"))?;
+                let code = guest_error_table.code();
+                let message = guest_error_table
+                    .message()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                Err(GuestError::new(code.into(), message))
+            }
+            other => {
+                bail!("Unexpected function call result type: {:?}", other)
+            }
+        };
+
+        external_values.finish()?;
+        Ok(FunctionCallResult(result))
     }
 }
 
@@ -191,6 +305,13 @@ pub enum ParameterValue {
     Bool(bool),
     /// `Vec<u8>`
     VecBytes(Vec<u8>),
+    /// One complete chunk-preserving byte value.
+    ///
+    /// Chunk boundaries are not framing and are not guaranteed to survive
+    /// transport.
+    ByteChunks(
+        #[cfg_attr(feature = "fuzzing", arbitrary(with = arbitrary_byte_chunks))] Vec<Bytes>,
+    ),
 }
 
 /// Supported parameter types for function calling.
@@ -215,6 +336,8 @@ pub enum ParameterType {
     Bool,
     /// `Vec<u8>`
     VecBytes,
+    /// One complete chunk-preserving byte value.
+    ByteChunks,
 }
 
 /// Supported return types with values from function calling.
@@ -240,6 +363,11 @@ pub enum ReturnValue {
     Void(()),
     /// `Vec<u8>`
     VecBytes(Vec<u8>),
+    /// One complete chunk-preserving byte value.
+    ///
+    /// Chunk boundaries are not framing and are not guaranteed to survive
+    /// transport.
+    ByteChunks(Vec<Bytes>),
 }
 
 /// Supported return types from function calling.
@@ -268,6 +396,100 @@ pub enum ReturnType {
     Void,
     /// `Vec<u8>`
     VecBytes,
+    /// One complete chunk-preserving byte value.
+    ByteChunks,
+}
+
+pub(crate) fn decode_external_parameter_value<S>(
+    parameter: Parameter<'_>,
+    external_values: &mut S,
+) -> Result<ParameterValue>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    if parameter.value_type() != FbParameterValue::hlexternalbytes {
+        return parameter.try_into();
+    }
+
+    let marker = parameter
+        .value_as_hlexternalbytes()
+        .ok_or_else(|| anyhow!("Failed to get external byte parameter marker"))?;
+    let length = usize::try_from(marker.length()).map_err(|_| {
+        anyhow!(
+            "External byte parameter length {} does not fit in usize",
+            marker.length()
+        )
+    })?;
+
+    if marker.chunked() {
+        let value = external_values.take_chunks(length)?;
+        let actual_length = try_byte_chunks_len(&value)
+            .ok_or_else(|| anyhow!("External ByteChunks parameter length overflow"))?;
+        if actual_length != length {
+            bail!(
+                "External ByteChunks parameter length mismatch: declared {}, received {}",
+                length,
+                actual_length
+            );
+        }
+        Ok(ParameterValue::ByteChunks(value))
+    } else {
+        let value = external_values.take_bytes(length)?;
+        if value.len() != length {
+            bail!(
+                "External VecBytes parameter length mismatch: declared {}, received {}",
+                length,
+                value.len()
+            );
+        }
+        Ok(ParameterValue::VecBytes(value))
+    }
+}
+
+fn decode_external_return_value<S>(
+    return_value: ReturnValueBox<'_>,
+    external_values: &mut S,
+) -> Result<ReturnValue>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    if return_value.value_type() != FbReturnValue::hlexternalbytes {
+        return return_value.try_into();
+    }
+
+    let marker = return_value
+        .value_as_hlexternalbytes()
+        .ok_or_else(|| anyhow!("Failed to get external byte return marker"))?;
+    let length = usize::try_from(marker.length()).map_err(|_| {
+        anyhow!(
+            "External byte return length {} does not fit in usize",
+            marker.length()
+        )
+    })?;
+
+    if marker.chunked() {
+        let value = external_values.take_chunks(length)?;
+        let actual_length = try_byte_chunks_len(&value)
+            .ok_or_else(|| anyhow!("External ByteChunks return length overflow"))?;
+        if actual_length != length {
+            bail!(
+                "External ByteChunks return length mismatch: declared {}, received {}",
+                length,
+                actual_length
+            );
+        }
+        Ok(ReturnValue::ByteChunks(value))
+    } else {
+        let value = external_values.take_bytes(length)?;
+        if value.len() != length {
+            bail!(
+                "External VecBytes return length mismatch: declared {}, received {}",
+                length,
+                value.len()
+            );
+        }
+        Ok(ReturnValue::VecBytes(value))
+    }
 }
 
 impl From<&ParameterValue> for ParameterType {
@@ -283,6 +505,7 @@ impl From<&ParameterValue> for ParameterType {
             ParameterValue::String(_) => ParameterType::String,
             ParameterValue::Bool(_) => ParameterType::Bool,
             ParameterValue::VecBytes(_) => ParameterType::VecBytes,
+            ParameterValue::ByteChunks(_) => ParameterType::ByteChunks,
         }
     }
 }
@@ -321,6 +544,14 @@ impl TryFrom<Parameter<'_>> for ParameterValue {
             FbParameterValue::hlvecbytes => param.value_as_hlvecbytes().map(|hlvecbytes| {
                 ParameterValue::VecBytes(hlvecbytes.value().unwrap_or_default().bytes().to_vec())
             }),
+            FbParameterValue::hlbytechunks => param.value_as_hlbytechunks().map(|hlbytechunks| {
+                ParameterValue::ByteChunks(byte_chunks_from_bytes(Bytes::copy_from_slice(
+                    hlbytechunks.value().unwrap_or_default().bytes(),
+                )))
+            }),
+            FbParameterValue::hlexternalbytes => {
+                bail!("External byte parameter requires an external value source")
+            }
             other => {
                 bail!("Unexpected flatbuffer parameter value type: {:?}", other);
             }
@@ -342,6 +573,7 @@ impl From<ParameterType> for FbParameterType {
             ParameterType::String => FbParameterType::hlstring,
             ParameterType::Bool => FbParameterType::hlbool,
             ParameterType::VecBytes => FbParameterType::hlvecbytes,
+            ParameterType::ByteChunks => FbParameterType::hlbytechunks,
         }
     }
 }
@@ -360,6 +592,7 @@ impl From<ReturnType> for FbReturnType {
             ReturnType::Bool => FbReturnType::hlbool,
             ReturnType::Void => FbReturnType::hlvoid,
             ReturnType::VecBytes => FbReturnType::hlsizeprefixedbuffer,
+            ReturnType::ByteChunks => FbReturnType::hlbytechunks,
         }
     }
 }
@@ -378,6 +611,7 @@ impl TryFrom<FbParameterType> for ParameterType {
             FbParameterType::hlstring => Ok(ParameterType::String),
             FbParameterType::hlbool => Ok(ParameterType::Bool),
             FbParameterType::hlvecbytes => Ok(ParameterType::VecBytes),
+            FbParameterType::hlbytechunks => Ok(ParameterType::ByteChunks),
             _ => {
                 bail!("Unexpected flatbuffer parameter type: {:?}", value)
             }
@@ -400,6 +634,7 @@ impl TryFrom<FbReturnType> for ReturnType {
             FbReturnType::hlbool => Ok(ReturnType::Bool),
             FbReturnType::hlvoid => Ok(ReturnType::Void),
             FbReturnType::hlsizeprefixedbuffer => Ok(ReturnType::VecBytes),
+            FbReturnType::hlbytechunks => Ok(ReturnType::ByteChunks),
             _ => {
                 bail!("Unexpected flatbuffer return type: {:?}", value)
             }
@@ -524,6 +759,17 @@ impl TryFrom<ParameterValue> for Vec<u8> {
     }
 }
 
+impl TryFrom<ParameterValue> for Vec<Bytes> {
+    type Error = Error;
+
+    fn try_from(value: ParameterValue) -> Result<Self> {
+        match value {
+            ParameterValue::ByteChunks(v) => Ok(v),
+            _ => bail!("Unexpected parameter value type: {:?}", value),
+        }
+    }
+}
+
 impl TryFrom<ReturnValue> for i32 {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
@@ -641,6 +887,17 @@ impl TryFrom<ReturnValue> for Vec<u8> {
     }
 }
 
+impl TryFrom<ReturnValue> for Vec<Bytes> {
+    type Error = Error;
+
+    fn try_from(value: ReturnValue) -> Result<Self> {
+        match value {
+            ReturnValue::ByteChunks(v) => Ok(v),
+            _ => bail!("Unexpected return value type: {:?}", value),
+        }
+    }
+}
+
 impl TryFrom<ReturnValue> for () {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
@@ -717,6 +974,17 @@ impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
                     None => None,
                 };
                 Ok(ReturnValue::VecBytes(hlvecbytes.unwrap_or(Vec::new())))
+            }
+            FbReturnValue::hlsizeprefixedbytechunks => {
+                let value = return_value_box
+                    .value_as_hlsizeprefixedbytechunks()
+                    .and_then(|value| value.value())
+                    .map(|value| byte_chunks_from_bytes(Bytes::copy_from_slice(value.bytes())))
+                    .unwrap_or_default();
+                Ok(ReturnValue::ByteChunks(value))
+            }
+            FbReturnValue::hlexternalbytes => {
+                bail!("External byte return requires an external value source")
             }
             other => {
                 bail!("Unexpected flatbuffer return value type: {:?}", other)
@@ -914,6 +1182,35 @@ impl TryFrom<&ReturnValue> for Vec<u8> {
                 builder.finish_size_prefixed(fcr, None);
                 builder.finished_data().to_vec()
             }
+            ReturnValue::ByteChunks(v) => {
+                let off = {
+                    let value = byte_chunks_to_bytes(v);
+                    let val = builder.create_vector(value.as_ref());
+                    hlsizeprefixedbytechunks::create(
+                        &mut builder,
+                        &hlsizeprefixedbytechunksArgs {
+                            value: Some(val),
+                            size: value.len() as i32,
+                        },
+                    )
+                };
+                let rv_box = ReturnValueBox::create(
+                    &mut builder,
+                    &ReturnValueBoxArgs {
+                        value: Some(off.as_union_value()),
+                        value_type: FbReturnValue::hlsizeprefixedbytechunks,
+                    },
+                );
+                let fcr = FbFunctionCallResult::create(
+                    &mut builder,
+                    &FbFunctionCallResultArgs {
+                        result: Some(rv_box.as_union_value()),
+                        result_type: FunctionCallResultType::ReturnValueBox,
+                    },
+                );
+                builder.finish_size_prefixed(fcr, None);
+                builder.finished_data().to_vec()
+            }
             ReturnValue::Void(()) => {
                 let off = hlvoid::create(&mut builder, &hlvoidArgs {});
                 let rv_box = ReturnValueBox::create(
@@ -941,10 +1238,78 @@ impl TryFrom<&ReturnValue> for Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::VecDeque;
+    use alloc::vec;
+
     use flatbuffers::FlatBufferBuilder;
 
     use super::super::guest_error::ErrorCode;
+    use super::super::util::{byte_chunks_to_vec, get_flatbuffer_result};
     use super::*;
+    use crate::flatbuffers::hyperlight::generated::{hlexternalbytes, hlexternalbytesArgs};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestExternalValue {
+        VecBytes(Vec<u8>),
+        ByteChunks(Vec<Bytes>),
+    }
+
+    #[derive(Default)]
+    struct TestExternalValues {
+        values: VecDeque<TestExternalValue>,
+    }
+
+    impl TestExternalValues {
+        fn from_values(values: impl IntoIterator<Item = TestExternalValue>) -> Self {
+            Self {
+                values: values.into_iter().collect(),
+            }
+        }
+    }
+
+    impl<'a> ExternalValueSink<'a> for TestExternalValues {
+        fn push_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+            self.values
+                .push_back(TestExternalValue::VecBytes(value.to_vec()));
+            Ok(())
+        }
+
+        fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()> {
+            self.values
+                .push_back(TestExternalValue::ByteChunks(value.to_vec()));
+            Ok(())
+        }
+    }
+
+    impl ExternalValueSource for TestExternalValues {
+        fn take_bytes(&mut self, _length: usize) -> Result<Vec<u8>> {
+            match self.values.pop_front() {
+                Some(TestExternalValue::VecBytes(value)) => Ok(value),
+                Some(TestExternalValue::ByteChunks(_)) => {
+                    anyhow::bail!("Expected external VecBytes value")
+                }
+                None => anyhow::bail!("Missing external VecBytes value"),
+            }
+        }
+
+        fn take_chunks(&mut self, _length: usize) -> Result<Vec<Bytes>> {
+            match self.values.pop_front() {
+                Some(TestExternalValue::ByteChunks(value)) => Ok(value),
+                Some(TestExternalValue::VecBytes(_)) => {
+                    anyhow::bail!("Expected external ByteChunks value")
+                }
+                None => anyhow::bail!("Missing external ByteChunks value"),
+            }
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            if self.values.is_empty() {
+                Ok(())
+            } else {
+                anyhow::bail!("Unused external values")
+            }
+        }
+    }
 
     #[test]
     fn encode_success_result() {
@@ -969,5 +1334,143 @@ mod tests {
         let error = function_call_result.into_inner().unwrap_err();
         assert_eq!(error.code, test_error.code);
         assert_eq!(error.message, test_error.message);
+    }
+
+    #[test]
+    fn embedded_byte_chunks_return_round_trips() {
+        let mut builder = FlatBufferBuilder::new();
+        let expected = vec![Bytes::from_static(b"hello"), Bytes::from_static(b" world")];
+        let encoded =
+            FunctionCallResult::new(Ok(ReturnValue::ByteChunks(expected))).encode(&mut builder);
+
+        let decoded = FunctionCallResult::try_from(encoded)
+            .unwrap()
+            .into_inner()
+            .unwrap();
+        let ReturnValue::ByteChunks(decoded) = decoded else {
+            panic!("expected byte chunks return value");
+        };
+        assert_eq!(byte_chunks_to_vec(&decoded), b"hello world");
+    }
+
+    #[test]
+    fn direct_byte_chunks_return_encoding_preserves_logical_type() {
+        let encoded = get_flatbuffer_result(vec![
+            Bytes::from_static(b"hello"),
+            Bytes::from_static(b" world"),
+        ]);
+
+        let decoded = FunctionCallResult::try_from(encoded.as_slice())
+            .unwrap()
+            .into_inner()
+            .unwrap();
+        assert!(matches!(decoded, ReturnValue::ByteChunks(_)));
+    }
+
+    #[test]
+    fn external_bytes_marks_chunked_values_only() {
+        fn round_trip(chunked: bool) -> bool {
+            let mut builder = FlatBufferBuilder::new();
+            let value = hlexternalbytes::create(
+                &mut builder,
+                &hlexternalbytesArgs {
+                    length: 42,
+                    chunked,
+                },
+            );
+            builder.finish(value, None);
+            let value = flatbuffers::root::<hlexternalbytes>(builder.finished_data()).unwrap();
+
+            assert_eq!(value.length(), 42);
+            value.chunked()
+        }
+
+        assert!(!round_trip(false));
+        assert!(round_trip(true));
+    }
+
+    #[test]
+    fn external_byte_returns_round_trip_without_embedding_payloads() {
+        for expected in [
+            ReturnValue::VecBytes(vec![0xa5; 4096]),
+            ReturnValue::ByteChunks(vec![
+                Bytes::from_static(b"chunk one"),
+                Bytes::from_static(b" and two"),
+            ]),
+            ReturnValue::VecBytes(Vec::new()),
+            ReturnValue::ByteChunks(Vec::new()),
+        ] {
+            let mut builder = FlatBufferBuilder::new();
+            let mut external_values = TestExternalValues::default();
+            let encoded = FunctionCallResult::new(Ok(expected.clone()))
+                .encode_external(&mut builder, &mut external_values)
+                .unwrap();
+
+            assert!(encoded.len() < 4096);
+            let encoded_result = size_prefixed_root::<FbFunctionCallResult>(encoded).unwrap();
+            let return_value = encoded_result.result_as_return_value_box().unwrap();
+            assert_eq!(return_value.value_type(), FbReturnValue::hlexternalbytes);
+            let marker = return_value.value_as_hlexternalbytes().unwrap();
+            let (length, chunked) = match &expected {
+                ReturnValue::VecBytes(value) => (value.len(), false),
+                ReturnValue::ByteChunks(value) => (try_byte_chunks_len(value).unwrap(), true),
+                _ => unreachable!(),
+            };
+            assert_eq!(marker.length(), length as u64);
+            assert_eq!(marker.chunked(), chunked);
+
+            assert!(FunctionCallResult::try_from(encoded).is_err());
+            let decoded = FunctionCallResult::decode_external(encoded, &mut external_values)
+                .unwrap()
+                .into_inner()
+                .unwrap();
+            assert_eq!(decoded, expected);
+            assert!(external_values.values.is_empty());
+        }
+    }
+
+    #[test]
+    fn external_return_decoder_rejects_invalid_values() {
+        let mut builder = FlatBufferBuilder::new();
+        let mut encoded_values = TestExternalValues::default();
+        let encoded =
+            FunctionCallResult::new(Ok(ReturnValue::ByteChunks(vec![Bytes::from_static(
+                b"123",
+            )])))
+            .encode_external(&mut builder, &mut encoded_values)
+            .unwrap();
+
+        let mut missing = TestExternalValues::default();
+        assert!(FunctionCallResult::decode_external(encoded, &mut missing).is_err());
+
+        let mut wrong_type =
+            TestExternalValues::from_values([TestExternalValue::VecBytes(vec![1, 2, 3])]);
+        assert!(FunctionCallResult::decode_external(encoded, &mut wrong_type).is_err());
+
+        let mut wrong_length =
+            TestExternalValues::from_values([TestExternalValue::ByteChunks(vec![
+                Bytes::from_static(b"12"),
+            ])]);
+        assert!(FunctionCallResult::decode_external(encoded, &mut wrong_length).is_err());
+    }
+
+    #[test]
+    fn external_result_decoder_rejects_unused_values() {
+        let result = FunctionCallResult::new(Ok(ReturnValue::Int(42)));
+        let mut embedded_builder = FlatBufferBuilder::new();
+        let embedded = result.encode(&mut embedded_builder).to_vec();
+
+        let mut external_builder = FlatBufferBuilder::new();
+        let mut external_values = TestExternalValues::default();
+        let external = result
+            .encode_external(&mut external_builder, &mut external_values)
+            .unwrap();
+        assert_eq!(external, embedded);
+        assert!(external_values.values.is_empty());
+
+        external_values
+            .values
+            .push_back(TestExternalValue::VecBytes(Vec::new()));
+        assert!(FunctionCallResult::decode_external(external, &mut external_values).is_err());
     }
 }

@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identical and its digest is unchanged, so this is transparent to readers and
   to previously saved snapshots. Filesystems that do not support sparse files
   store the blob as before.
+* Expose C guest `ByteChunks` values as pointer and length arrays.
+* Return typed `hl_ReturnValue` objects from C guest functions through
+  `hl_result_from_*` constructors.
 
 ### Removed
 
