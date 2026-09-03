@@ -356,14 +356,6 @@ impl ElfInfo {
                 .ok_or_else(|| new_error!("{} missing addend", name))
         };
         for r in self.relocs.iter() {
-            let r_off = usize::try_from(r.r_offset)
-                .map_err(|_| new_error!("relocation offset too large"))?;
-            let r_end = r_off
-                .checked_add(8)
-                .ok_or_else(|| new_error!("relocation range overflows"))?;
-            let dest = target
-                .get_mut(r_off..r_end)
-                .ok_or_else(|| new_error!("relocation target out of bounds"))?;
             #[cfg(target_arch = "aarch64")]
             match r.r_type {
                 R_AARCH64_RELATIVE => {
