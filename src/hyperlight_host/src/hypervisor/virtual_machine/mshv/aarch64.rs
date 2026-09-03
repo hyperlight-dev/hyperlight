@@ -278,7 +278,7 @@ impl VirtualMachine for MshvVm {
         })
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let mut mshv_regs = Vec::with_capacity(34);
         for (index, value) in regs.x[..29].iter().enumerate() {
             mshv_regs.push(hv_register_assoc {
@@ -350,7 +350,7 @@ impl VirtualMachine for MshvVm {
         Ok(CommonFpu { v, fpsr, fpcr })
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let mut regs: Vec<_> = fpu
             .v
             .iter()
@@ -399,7 +399,10 @@ impl VirtualMachine for MshvVm {
         })
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
+    fn set_sregs(
+        &mut self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         self.set_reg64(
             hv_register_name_HV_ARM64_REGISTER_TTBR0_EL1,
             sregs.ttbr0_el1,
