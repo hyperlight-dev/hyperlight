@@ -14,6 +14,7 @@ consts="consts"
 # ist is an acronym for Interrupt Stack Table, not a missspelling of its
 ist="ist"
 finitel="finitel"
+readables="readables"
 # writables as number of writable buffers
 writables="writables"
 # itme is an acronym used in HVF support for "Into TiMoutable Error"
