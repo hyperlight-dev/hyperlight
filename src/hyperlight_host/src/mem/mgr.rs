@@ -513,7 +513,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // Carry the guest ELF entry point across restore so crashdumps
         // report the restored image's entry.
         self.original_entrypoint = snapshot.original_entrypoint();
-
         self.update_scratch_bookkeeping()?;
         Ok((gsnapshot, gscratch))
     }

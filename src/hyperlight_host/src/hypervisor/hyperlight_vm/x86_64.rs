@@ -874,7 +874,7 @@ mod tests {
     use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT};
     use crate::hypervisor::virtual_machine::VirtualMachine;
     use crate::mem::layout::SandboxMemoryLayout;
-    use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
+    use crate::mem::memory_region::MemoryRegionFlags;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
     use crate::mem::ptr::RawPtr;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
@@ -1436,16 +1436,12 @@ mod tests {
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
 
-        for rgn in layout
-            .get_memory_regions_::<GuestMemoryRegion>(())
-            .unwrap()
-            .iter()
-        {
+        for rgn in layout.get_memory_regions().unwrap().iter() {
             let readable = rgn.flags.contains(MemoryRegionFlags::READ);
             let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
             let mapping = Mapping {
-                phys_base: rgn.guest_region.start as u64,
+                phys_base: rgn.host_region.start as u64,
                 virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
                 kind: MappingKind::Basic(BasicMapping {
@@ -1491,7 +1487,7 @@ mod tests {
             layout,
             ro_mem.to_mgr_snapshot_mem().unwrap(),
             scratch_mem,
-            NextAction::Initialise(layout.get_guest_code_address() as u64),
+            NextAction::Initialise(layout.get_guest_code_gva() as u64),
         );
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
@@ -2199,7 +2195,7 @@ mod tests {
             a.fxsave(ptr(rax)).unwrap();
 
             // Return dispatch ptr
-            a.mov(rax, layout.get_guest_code_address() as u64).unwrap();
+            a.mov(rax, layout.get_guest_code_gva() as u64).unwrap();
 
             a.hlt().unwrap();
 
