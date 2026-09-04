@@ -18,7 +18,21 @@ All communication between the host and the guest is done through a shared memory
 
 Hyperlight provides a mechanism for the host to register functions that may be called from the guest. This mechanism is useful to allow developers to provide guests with strictly controlled access to functionality we don't make available by default inside the VM. This mechanism likely represents the largest attack surface area of this project.
 
-To mitigate the risk, only functions that have been explicitly exposed to the guest by the host application, are allowed to be called from the guest. Any attempt to call other host functions will result in an error.
+To mitigate the risk, only functions that have been explicitly registered with 
+the sandbox by the host application (via `sandbox.register()`) are allowed to 
+be called from the guest. Any attempt to call a function that has not been 
+registered will result in an error.
+
+> **Important:** All functions registered with `sandbox.register()` are callable 
+> by **any** guest running in that sandbox, regardless of whether the guest 
+> declares them using the `#[host_function]` macro. The `#[host_function]` macro 
+> is a compile-time convenience wrapper that generates typed Rust bindings it 
+> does not enforce access control at runtime.
+>
+> Embedders running untrusted guests should ensure that each sandbox only 
+> registers the host functions appropriate for the trust level of that guest. 
+> For multi-tenant scenarios, use separate sandbox instances with distinct 
+> host function sets per trust boundary.
 
 ### Guest Binary Resource Consumption
 
