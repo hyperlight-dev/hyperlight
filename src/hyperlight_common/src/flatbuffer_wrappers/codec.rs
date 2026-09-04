@@ -15,11 +15,14 @@ pub trait ExternalValueSink<'a> {
     /// Receive one contiguous byte value.
     fn push_bytes(&mut self, value: &'a [u8]) -> Result<()>;
 
-    /// Receive one chunk-preserving byte value.
+    /// Receive one logical byte sequence represented as chunks.
     fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()>;
 }
 
 /// Supplies complete external byte values while a FlatBuffer is decoded.
+///
+/// Implementations must validate `length` against available input and the
+/// resource budget before allocating.
 pub trait ExternalValueSource {
     /// Take the next external value as contiguous bytes.
     fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>>;

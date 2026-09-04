@@ -305,10 +305,10 @@ pub enum ParameterValue {
     Bool(bool),
     /// `Vec<u8>`
     VecBytes(Vec<u8>),
-    /// One complete chunk-preserving byte value.
+    /// One logical byte sequence represented as chunks.
     ///
-    /// Chunk boundaries are not framing and are not guaranteed to survive
-    /// transport.
+    /// Chunk boundaries are a storage detail and may change during transport.
+    /// They do not delimit messages or values.
     ByteChunks(
         #[cfg_attr(feature = "fuzzing", arbitrary(with = arbitrary_byte_chunks))] Vec<Bytes>,
     ),
@@ -336,7 +336,7 @@ pub enum ParameterType {
     Bool,
     /// `Vec<u8>`
     VecBytes,
-    /// One complete chunk-preserving byte value.
+    /// One logical byte sequence represented as chunks.
     ByteChunks,
 }
 
@@ -363,10 +363,10 @@ pub enum ReturnValue {
     Void(()),
     /// `Vec<u8>`
     VecBytes(Vec<u8>),
-    /// One complete chunk-preserving byte value.
+    /// One logical byte sequence represented as chunks.
     ///
-    /// Chunk boundaries are not framing and are not guaranteed to survive
-    /// transport.
+    /// Chunk boundaries are a storage detail and may change during transport.
+    /// They do not delimit messages or values.
     ByteChunks(Vec<Bytes>),
 }
 
@@ -396,7 +396,7 @@ pub enum ReturnType {
     Void,
     /// `Vec<u8>`
     VecBytes,
-    /// One complete chunk-preserving byte value.
+    /// One logical byte sequence represented as chunks.
     ByteChunks,
 }
 

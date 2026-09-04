@@ -97,20 +97,12 @@ impl OwnedFfiParameter {
                     FfiParameterOwner::String { _value: value },
                 )
             }
-            ParameterValue::VecBytes(v) => {
-    ParameterValue::VecBytes(mut v) => {
-        let view = FfiVec::from_mut_slice(&mut v);
-        (
-            ParameterType::VecBytes,
-            FfiParameterValue { VecBytes: view },
-            FfiParameterOwner::VecBytes { _value: v },
-        )
-    }
-                let view = FfiVec::from_mut_slice(&mut value);
+            ParameterValue::VecBytes(mut v) => {
+                let view = FfiVec::from_mut_slice(&mut v);
                 (
                     ParameterType::VecBytes,
                     FfiParameterValue { VecBytes: view },
-                    FfiParameterOwner::VecBytes { _value: value },
+                    FfiParameterOwner::VecBytes { _value: v },
                 )
             }
             ParameterValue::ByteChunks(v) => {

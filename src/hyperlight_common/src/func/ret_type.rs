@@ -9,9 +9,11 @@ use crate::flatbuffer_wrappers::function_types::{ReturnType, ReturnValue};
 
 /// This is a marker trait that is used to indicate that a type is a valid Hyperlight return type.
 ///
-/// `Vec<u8>` and `Vec<Bytes>` are distinct logical return types. `Vec<u8>`
-/// carries contiguous bytes, while `Vec<Bytes>` preserves local chunk
-/// ownership. Chunk boundaries are not application framing.
+/// `Vec<u8>` and `Vec<Bytes>` both represent one logical byte sequence.
+/// `Vec<u8>` stores it contiguously. `Vec<Bytes>` represents it as chunks and
+/// may avoid flattening them into one allocation. Chunk boundaries are a
+/// storage detail and may change during transport. They do not delimit messages
+/// or values.
 pub trait SupportedReturnType: Sized + Clone + Send + Sync + 'static {
     /// The return type of the supported return value
     const TYPE: ReturnType;
