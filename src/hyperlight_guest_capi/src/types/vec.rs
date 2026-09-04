@@ -16,6 +16,10 @@ pub struct FfiVec {
 }
 
 impl FfiVec {
+    /// Creates a non-owning FFI view over `value` without copying.
+    ///
+    /// The caller must keep `value` alive and at a stable address while the
+    /// view is used. The view must not be passed to [`Self::into_vec`].
     pub(crate) fn from_mut_slice(value: &mut [u8]) -> Self {
         Self {
             data: value.as_mut_ptr(),

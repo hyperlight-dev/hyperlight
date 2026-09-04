@@ -57,15 +57,16 @@ table hlvecbytes {
     value:[ubyte];
 }
 
-// hlbytechunks is the embedded compatibility representation of a chunked byte
-// value. Embedded transport does not preserve chunk boundaries.
+// hlbytechunks is the embedded compatibility representation of one logical
+// byte sequence. It stores the bytes contiguously, so original chunk boundaries
+// are not preserved.
 
 table hlbytechunks {
     value:[ubyte];
 }
 
 // hlexternalbytes declares a logical byte value stored outside the FlatBuffer.
-// chunked distinguishes ByteChunks from the default VecBytes logical type.
+// chunked requests the ByteChunks representation rather than VecBytes.
 
 table hlexternalbytes {
     length:ulong;
