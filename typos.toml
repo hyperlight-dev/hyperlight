@@ -18,3 +18,7 @@ finitel="finitel"
 writables="writables"
 # itme is an acronym used in HVF support for "Into TiMoutable Error"
 itme="itme"
+
+[default.extend-identifiers]
+# This spelling is part of the mshv-bindings API.
+hv_partition_property_code_HV_PARTITION_PROPERTY_GITS_TRANSLATER_BASE_ADDRESS="hv_partition_property_code_HV_PARTITION_PROPERTY_GITS_TRANSLATER_BASE_ADDRESS"
