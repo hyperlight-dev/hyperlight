@@ -2,12 +2,12 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_call::{
-    FunctionCall, validate_guest_function_call_buffer,
-};
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
-use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MsgKind};
+use hyperlight_common::virtq::ReplyChain;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -23,7 +23,7 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::sandbox::snapshot::{NextAction, Snapshot};
-use crate::{Result, new_error};
+use crate::{HyperlightError, Result, new_error};
 
 #[cfg(crashdump)]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
@@ -147,6 +147,8 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) g2h_consumer: Option<G2hConsumer>,
     /// H2G consumer bound to the current scratch mapping.
     pub(crate) h2g_consumer: Option<H2gConsumer>,
+    /// Correlation ID assigned to the next guest-function call.
+    next_guest_cid: u32,
 }
 
 impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
@@ -161,6 +163,7 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            next_guest_cid: self.next_guest_cid,
         }
     }
 }
@@ -300,6 +303,7 @@ where
             snapshot_count: 0,
             g2h_consumer: None,
             h2g_consumer: None,
+            next_guest_cid: 1,
         }
     }
 
@@ -353,6 +357,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            next_guest_cid: self.next_guest_cid,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -364,8 +369,14 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            next_guest_cid: self.next_guest_cid,
         };
         host_mgr.update_scratch_bookkeeping()?;
+
+        if matches!(host_mgr.next_action, NextAction::Initialise(_)) {
+            host_mgr.create_virtq_consumers()?;
+        }
+
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -409,33 +420,23 @@ impl SandboxMemoryManager<HostSharedMemory> {
         )
     }
 
-    /// Attach host consumers to a guest-produced initial transport image.
+    /// Create host consumers before the guest initializes the transport.
     ///
-    /// Before guest initialization, the host publishes queue dimensions and the
-    /// transport arena GPA. The guest derives and initializes every fixed region
-    /// without consuming dynamic scratch.
-    ///
-    /// This method runs after the initialization VM exit. It checks the
-    /// published arena against the host layout, derives bounded GVA views,
-    /// and validates each directional ring before exposing either consumer.
-    /// Fresh sandboxes and pre-initialization restores use this path.
-    pub(crate) fn attach_virtq(&mut self) -> Result<()> {
+    /// The consumers begin at cursor zero and observe descriptors published
+    /// during the first guest entry.
+    fn create_virtq_consumers(&mut self) -> Result<()> {
         if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
-            return Err(new_error!("virtqueue consumers are already attached"));
+            return Err(new_error!("virtqueue consumers already exist"));
         }
 
-        let (g2h, h2g) = virtq::attach(&self.layout, &self.scratch_mem)?;
+        let (g2h, h2g) = virtq::create_consumers(&self.layout, &self.scratch_mem)?;
         self.g2h_consumer = Some(g2h);
         self.h2g_consumer = Some(h2g);
         Ok(())
     }
 
     /// Restore a captured canonical transport image against this scratch mapping.
-    pub(crate) fn restore_virtq(&mut self, snapshot: Option<&virtq::VirtqSnapshot>) -> Result<()> {
-        let Some(snapshot) = snapshot else {
-            return Ok(());
-        };
-
+    pub(crate) fn restore_virtq(&mut self, snapshot: &virtq::VirtqSnapshot) -> Result<()> {
         if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
             return Err(new_error!("virtqueue consumers are already attached"));
         }
@@ -446,95 +447,237 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Reads a host function call from memory
+    /// Write a guest function call into the H2G virtqueue.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.scratch_mem
-            .try_pop_buffer_into::<FunctionCall>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            )
-            .map_err(From::from)
+    pub(crate) fn write_guest_function_call(&mut self, call: &FunctionCall) -> Result<u32> {
+        let cid = self.next_guest_cid;
+        let params = call.parameters.as_deref().unwrap_or_default();
+        let cap = estimate_flatbuffer_capacity(&call.function_name, params);
+
+        let mut builder = FlatBufferBuilder::with_capacity(cap);
+        let mut externals = ExternalValues::new();
+
+        let control = call.encode(&mut builder, &mut externals)?;
+
+        let Some(msg) = EncodedMessage::new(MsgKind::Request, cid, control, externals) else {
+            return Err(new_error!("H2G request exceeds the wire payload limit"));
+        };
+
+        self.write_h2g_message(&msg)?;
+
+        self.next_guest_cid = cid.wrapping_add(1);
+        if self.next_guest_cid == 0 {
+            self.next_guest_cid = 1;
+        }
+
+        Ok(cid)
     }
 
-    /// Writes a host function call result to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_response_from_host_function_call(
-        &mut self,
-        res: &FunctionCallResult,
-    ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
+    fn write_h2g_message(&mut self, message: &EncodedMessage<'_>) -> Result<()> {
+        let Some(consumer) = self.h2g_consumer.as_mut() else {
+            return Err(new_error!("H2G consumer is not attached"));
+        };
 
-        self.scratch_mem
-            .push_buffer(
-                self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.input_data_size(),
-                data,
-            )
-            .map_err(From::from)
-    }
+        let buffer_size = self.layout.get_h2g_buffer_size();
+        let buffer_count = message.total_len().div_ceil(buffer_size);
 
-    /// Writes a guest function call to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
-        validate_guest_function_call_buffer(buffer).map_err(|e| {
-            new_error!(
-                "Guest function call buffer validation failed: {}",
-                e.to_string()
-            )
-        })?;
+        // External bytes may become owner-backed ByteChunks retained across
+        // calls. If they consume every posted H2G buffer, no buffer remains
+        // for a control call that releases them. External payloads therefore
+        // require one extra chain. poll_exact_with_spare checks the chain and
+        // leaves it available for the next call.
+        let spare_buffers = match message.header().msg_kind() {
+            Ok(MsgKind::SnapshotCheckpoint) => 0,
+            Ok(_) => usize::from(message.external_len() != 0),
+            Err(_) => unreachable!("validated upstream"),
+        };
 
-        self.scratch_mem.push_buffer(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.input_data_size(),
-            buffer,
-        )?;
+        // H2G receive buffers are writable-only, so any readable payload is malformed.
+        let maybe_buffers = consumer
+            .poll_exact_with_spare(buffer_count, spare_buffers, 0)
+            .map_err(|err| HyperlightError::TransportError(format!("H2G poll failed: {err}")))?;
+
+        let Some(buffers) = maybe_buffers else {
+            return Err(new_error!(
+                "H2G capacity cannot provide {buffer_count} buffers with {spare_buffers} spare"
+            ));
+        };
+
+        // The message is a contiguous sequence of bytes, but the buffers are a chain of possibly
+        // non contiguous slices. Write the message into the buffers in order, advancing the message
+        // cursor as we go.
+        let mut message = message.as_buf();
+
+        for (recv, reply) in buffers {
+            let ReplyChain::Writable(mut buffer) = reply else {
+                return Err(HyperlightError::TransportError(
+                    "H2G receive buffer is not writable".into(),
+                ));
+            };
+
+            if buffer.desc_count() != 1 || buffer.capacity() != buffer_size {
+                return Err(HyperlightError::TransportError(
+                    "H2G receive buffer has an invalid shape".into(),
+                ));
+            }
+
+            while message.has_remaining() && buffer.remaining() != 0 {
+                let written = buffer.write(message.chunk()).map_err(|err| {
+                    HyperlightError::TransportError(format!("H2G write failed: {err}"))
+                })?;
+
+                message.advance(written);
+            }
+
+            consumer.complete(recv, buffer).map_err(|err| {
+                HyperlightError::TransportError(format!("H2G completion failed: {err}"))
+            })?;
+        }
+
+        debug_assert!(!message.has_remaining());
         Ok(())
     }
 
-    /// Reads a function call result from memory.
-    /// A function call result can be either an error or a successful return value.
+    /// Read a guest function result from the G2H virtqueue.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
-        self.scratch_mem
-            .try_pop_buffer_into::<FunctionCallResult>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            )
-            .map_err(From::from)
+    pub(crate) fn read_h2g_result_from_g2h(&mut self, cid: u32) -> Result<FunctionCallResult> {
+        let max_recv_len = self.layout.get_g2h_queue_dims().pool_len();
+
+        let Some(consumer) = self.g2h_consumer.as_mut() else {
+            return Err(HyperlightError::TransportError(
+                "G2H consumer is not attached".into(),
+            ));
+        };
+
+        loop {
+            let maybe_next = consumer.poll(max_recv_len).map_err(|err| {
+                HyperlightError::TransportError(format!("G2H poll failed: {err}"))
+            })?;
+
+            let Some((mut recv, reply)) = maybe_next else {
+                return Err(HyperlightError::TransportError(
+                    "G2H has no guest function result after halt".into(),
+                ));
+            };
+
+            let header = virtq::read_message_header(&mut recv).map_err(|err| {
+                HyperlightError::TransportError(format!("Failed to read G2H result header: {err}"))
+            })?;
+
+            if !matches!(&reply, ReplyChain::Ack(_)) {
+                return Err(HyperlightError::TransportError(
+                    "G2H result entry has writable buffers".into(),
+                ));
+            }
+
+            match header.msg_kind() {
+                Ok(MsgKind::Log) => {
+                    if header.cid != 0 {
+                        return Err(HyperlightError::TransportError(
+                            "G2H log has a correlation ID".into(),
+                        ));
+                    }
+
+                    let log = virtq::read_guest_log_data(&mut recv).map_err(|err| {
+                        HyperlightError::TransportError(format!("Failed to read G2H log: {err}"))
+                    })?;
+
+                    consumer.complete(recv, reply).map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to complete G2H log: {err}"
+                        ))
+                    })?;
+
+                    crate::sandbox::outb::emit_guest_log(&log);
+                }
+                Ok(MsgKind::Response) => {
+                    if header.cid != cid {
+                        return Err(HyperlightError::TransportError(
+                            "G2H guest function result correlation ID mismatch".into(),
+                        ));
+                    }
+
+                    let result = virtq::read_guest_function_call_result(&mut recv);
+                    consumer.complete(recv, reply).map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to complete G2H guest function result: {err}"
+                        ))
+                    })?;
+
+                    return result.map_err(|err| {
+                        HyperlightError::TransportError(format!(
+                            "Failed to decode G2H guest function result: {err}"
+                        ))
+                    });
+                }
+                Ok(kind) => {
+                    return Err(HyperlightError::TransportError(format!(
+                        "Expected G2H guest function result, got {kind:?}"
+                    )));
+                }
+                Err(kind) => {
+                    return Err(HyperlightError::TransportError(format!(
+                        "Unknown G2H message kind {kind:#x}"
+                    )));
+                }
+            }
+        }
     }
 
-    /// Read guest log data from the `SharedMemory` contained within `self`
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.scratch_mem
-            .try_pop_buffer_into::<GuestLogData>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            )
-            .map_err(From::from)
+    /// Publish an internal request for guest-side snapshot canonicalization.
+    ///
+    /// The pending marker distinguishes a completed checkpoint with no retained
+    /// buffers from a guest that halted without publishing mailbox status.
+    pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
+        let offset = self.snapshot_mbx_offset()?;
+        self.scratch_mem.write(offset, u64::MAX.to_le_bytes())?;
+
+        let message = EncodedMessage::new_snapshot_cp();
+        self.write_h2g_message(&message)
     }
 
-    pub(crate) fn clear_io_buffers(&mut self) {
-        // Clear the output data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.output_data_size(),
-            ) else {
-                break;
-            };
+    /// Reset host consumers and read the guest-side snapshot status.
+    ///
+    /// Consumer reset completes the canonical queue before the status is interpreted.
+    /// A retained-buffer rejection therefore leaves both queues usable. The current
+    /// status is only a retained slot count.
+    ///
+    /// TODO: This will change to allow the guest to publish a more detailed snapshot
+    /// status about what buffer ranges were retained so we can include them in the
+    /// snapshot. For now we simply error if the guest has retained any buffers.
+    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<u64> {
+        let Some(g2h) = self.g2h_consumer.as_mut() else {
+            return Err(new_error!("G2H consumer is not attached"));
+        };
+
+        let Some(h2g) = self.h2g_consumer.as_mut() else {
+            return Err(new_error!("H2G consumer is not attached"));
+        };
+
+        g2h.reset()?;
+        h2g.reset()?;
+
+        let offset = self.snapshot_mbx_offset()?;
+        let guest_owned = u64::from_le_bytes(self.scratch_mem.read(offset)?);
+
+        if guest_owned == u64::MAX {
+            return Err(HyperlightError::TransportError(
+                "Guest did not publish snapshot checkpoint status".to_string(),
+            ));
         }
-        // Clear the input data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.input_data_size(),
-            ) else {
-                break;
-            };
-        }
+
+        Ok(guest_owned)
+    }
+
+    /// Get the offset of the snapshot mailbox in scratch memory.
+    fn snapshot_mbx_offset(&self) -> Result<usize> {
+        let arena = self.layout.get_transport_arena();
+        Ok(usize::try_from(
+            arena
+                .mbx_addr()
+                .checked_sub(arena.base_addr())
+                .ok_or_else(|| new_error!("Snapshot mailbox precedes transport arena"))?,
+        )?)
     }
 
     /// This function restores a memory snapshot from a given snapshot.
@@ -545,8 +688,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Option<SnapshotSharedMemory<GuestSharedMemory>>,
         Option<GuestSharedMemory>,
     )> {
-        if let Some(virtq) = snapshot.virtq() {
+        let virtq = snapshot.virtq();
+        if let Some(virtq) = virtq {
             virtq.preflight(snapshot.layout())?;
+        } else if matches!(snapshot.next_action(), NextAction::Call(_)) {
+            return Err(new_error!(
+                "running snapshot has no canonical transport state"
+            ));
         }
 
         self.g2h_consumer = None;
@@ -594,7 +742,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
 
         self.update_scratch_bookkeeping()?;
-        self.restore_virtq(snapshot.virtq())?;
+        if let Some(virtq) = virtq {
+            self.restore_virtq(virtq)?;
+        } else if matches!(snapshot.next_action(), NextAction::Initialise(_)) {
+            self.create_virtq_consumers()?;
+        }
         Ok((gsnapshot, gscratch))
     }
 
@@ -640,7 +792,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
         )?;
-
         // Record the G2H and H2G queue sizes, pool page counts, and buffer sizes.
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET,
@@ -671,17 +822,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET,
             transport_arena.base_addr(),
-        )?;
-
-        // Initialise the guest input and output data buffers in
-        // scratch memory. TODO: remove the need for this.
-        self.scratch_mem.write::<u64>(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
-        )?;
-        self.scratch_mem.write::<u64>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
         )?;
 
         // Copy page tables from `shared_mem` into scratch. PT bytes
@@ -882,17 +1022,211 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-#[cfg(target_arch = "x86_64")]
 mod tests {
+    use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
+    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+    use hyperlight_common::transport::{
+        MsgHeader, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
+    };
+    use hyperlight_common::virtq::DescFlags;
+    #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::simple_guest_as_pathbuf;
 
+    use super::*;
+    #[cfg(target_arch = "x86_64")]
     use crate::GuestBinary;
+    use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, TestVirtq, memory_layout};
+    #[cfg(target_arch = "x86_64")]
     use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::snapshot::Snapshot;
 
-    /// Build a Snapshot for the given configuration and verify the
+    fn manager(queue: &TestVirtq) -> SandboxMemoryManager<HostSharedMemory> {
+        #[cfg(not(unshared_snapshot_mem))]
+        let shared_mem =
+            ReadonlySharedMemory::from_bytes(&vec![0; vmem::PAGE_SIZE], vmem::PAGE_SIZE).unwrap();
+
+        #[cfg(unshared_snapshot_mem)]
+        let shared_mem = ExclusiveSharedMemory::new(vmem::PAGE_SIZE)
+            .unwrap()
+            .build()
+            .0;
+
+        let mut mgr = SandboxMemoryManager::new(
+            memory_layout(),
+            shared_mem,
+            queue.scratch.clone(),
+            NextAction::None,
+        );
+
+        mgr.h2g_consumer = Some(queue.h2g_consumer());
+        mgr
+    }
+
+    fn h2g_call(bytes: usize) -> FunctionCall {
+        let params = (bytes != 0).then(|| vec![ParameterValue::VecBytes(vec![0xa5; bytes])]);
+        FunctionCall::new(
+            "call".to_string(),
+            params,
+            FunctionCallType::Guest,
+            ReturnType::Void,
+        )
+    }
+
+    #[test]
+    fn rejects_invalid_h2g_descriptors() {
+        for (len, expected) in [
+            (H2G_BUFFER_SIZE as u32, "Payload data too large"),
+            (0, "not writable"),
+        ] {
+            let queue = TestVirtq::new();
+            let mut mgr = manager(&queue);
+            let mut desc = queue.h2g_desc(0);
+
+            desc.flags &= !DescFlags::WRITE.bits();
+            desc.len = len;
+            queue.set_h2g_desc(0, desc);
+
+            let error = mgr.write_guest_function_call(&h2g_call(0)).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert!(error.is_poison_error());
+            assert!(matches!(error, HyperlightError::TransportError(_)));
+        }
+    }
+
+    #[test]
+    fn partial_h2g_write_is_fatal() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let mut desc = queue.h2g_desc(1);
+
+        desc.addr = queue.h2g_pool.end;
+        queue.set_h2g_desc(1, desc);
+
+        let error = mgr
+            .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE + 1024))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Memory write"), "{error:#}");
+        assert!(error.is_poison_error());
+        assert!(matches!(error, HyperlightError::TransportError(_)));
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().used_cursor().head(), 1);
+    }
+
+    #[test]
+    fn insufficient_h2g_capacity_rolls_back() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
+
+        let error = mgr
+            .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE * 4))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("H2G capacity"), "{error:#}");
+        assert!(!error.is_poison_error());
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn missing_g2h_result_is_fatal() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.g2h_consumer = Some(queue.g2h_consumer());
+
+        let Err(error) = mgr.read_h2g_result_from_g2h(1) else {
+            panic!("expected missing G2H result");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("G2H has no guest function result")
+        );
+        assert!(error.is_poison_error());
+        assert!(matches!(error, HyperlightError::TransportError(_)));
+    }
+
+    #[test]
+    fn writes_dense_h2g_request_and_reserves_control_buffer() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let external_len = H2G_BUFFER_SIZE * 2;
+        let buffers: Vec<_> = (0..4).map(|index| queue.h2g_desc(index).addr).collect();
+
+        let cid = mgr
+            .write_guest_function_call(&h2g_call(external_len))
+            .unwrap();
+
+        let used = mgr.h2g_consumer.as_ref().unwrap().avail_cursor().head();
+        let wire: Vec<u8> = (0..used)
+            .flat_map(|index| queue.h2g_buffer(index, buffers[index as usize]))
+            .collect();
+
+        let header = MsgHeader::from_bytes(&wire[..MsgHeader::SIZE]).unwrap();
+        assert_eq!(header.msg_kind(), Ok(MsgKind::Request));
+        assert_eq!(header.cid, cid);
+        assert_eq!(header.payload_len as usize, wire.len() - MsgHeader::SIZE);
+
+        let control =
+            size_prefix_payload_len(&wire[MsgHeader::SIZE..MsgHeader::SIZE + SIZE_PREFIX_LEN])
+                .unwrap();
+
+        let control_len = size_prefixed_len(control).unwrap();
+        let external = &wire[MsgHeader::SIZE + control_len..];
+        assert_eq!(external, vec![0xa5; external_len]);
+
+        let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
+        let error = mgr.write_guest_function_call(&h2g_call(1)).unwrap_err();
+
+        assert!(error.to_string().contains("H2G capacity"), "{error:#}");
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn writes_header_only_snapshot_checkpoint() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        let buffer = queue.h2g_desc(0).addr;
+
+        mgr.begin_snapshot_checkpoint().unwrap();
+
+        let wire = queue.h2g_buffer(0, buffer);
+        let header = MsgHeader::from_bytes(&wire).unwrap();
+
+        assert_eq!(wire.len(), MsgHeader::SIZE);
+        assert_eq!(header.msg_kind(), Ok(MsgKind::SnapshotCheckpoint));
+        assert_eq!(header.cid, 0);
+        assert_eq!(header.payload_len, 0);
+        assert_eq!(mgr.next_guest_cid, 1);
+
+        let mbx = mgr.snapshot_mbx_offset().unwrap();
+
+        assert_eq!(
+            mgr.scratch_mem.read::<[u8; 8]>(mbx).unwrap(),
+            u64::MAX.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn guest_cid_wraps_without_zero() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.next_guest_cid = u32::MAX;
+
+        assert_eq!(
+            mgr.write_guest_function_call(&h2g_call(0)).unwrap(),
+            u32::MAX
+        );
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+    }
+
+    /// Build a snapshot for the given configuration and verify the
     /// NULL page is not mapped in its page tables.
+    #[cfg(target_arch = "x86_64")]
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
         let path = simple_guest_as_pathbuf();
         let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
@@ -909,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn test_page_tables_for_various_configurations() {
         let test_cases: [(&str, SandboxConfiguration); 4] = [
             ("default", { SandboxConfiguration::default() }),
@@ -933,5 +1268,20 @@ mod tests {
         for (name, config) in test_cases {
             verify_page_tables(name, config);
         }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn build_creates_virtq_consumers_before_initialization() {
+        let path = simple_guest_as_pathbuf();
+        let snapshot =
+            Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                .unwrap();
+
+        let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
+        let (mgr, _) = mgr.build().unwrap();
+
+        assert!(mgr.g2h_consumer.is_some());
+        assert!(mgr.h2g_consumer.is_some());
     }
 }

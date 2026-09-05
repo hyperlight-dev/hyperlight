@@ -267,6 +267,9 @@ pub(crate) extern "C" fn generic_init(
         OS_PAGE_SIZE = ops as u32;
     }
 
+    // Prepare transport before logging or guest initialization code can use it.
+    transport::initialize();
+
     // set up the logger
     let guest_log_level_filter =
         GuestLogFilter::try_from(max_log_level).expect("Invalid log level");
@@ -291,9 +294,6 @@ pub(crate) extern "C" fn generic_init(
     for registration in __private::GUEST_FUNCTION_INIT {
         registration();
     }
-
-    // Prepare transport before guest code starts.
-    transport::initialize();
 
     unsafe {
         hyperlight_main();
@@ -323,6 +323,7 @@ pub mod __private {
     pub use alloc::vec::Vec;
 
     pub use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+    pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
     pub use hyperlight_common::func::ResultType;
     pub use hyperlight_guest::error::HyperlightGuestError;
     pub use linkme;

@@ -307,30 +307,6 @@ impl SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Set the size of the memory buffer made available for input to the guest.
-    /// Values below [`SandboxConfiguration::MIN_INPUT_SIZE`] are clamped up.
-    pub fn input_data_size(mut self, size: usize) -> Self {
-        self.cfg.set_input_data_size(size);
-        self
-    }
-
-    /// The size of the memory buffer made available for input to the guest.
-    pub fn get_input_data_size(&self) -> usize {
-        self.cfg.get_input_data_size()
-    }
-
-    /// Set the size of the memory buffer made available for output from the guest.
-    /// Values below [`SandboxConfiguration::MIN_OUTPUT_SIZE`] are clamped up.
-    pub fn output_data_size(mut self, size: usize) -> Self {
-        self.cfg.set_output_data_size(size);
-        self
-    }
-
-    /// The size of the memory buffer made available for output from the guest.
-    pub fn get_output_data_size(&self) -> usize {
-        self.cfg.get_output_data_size()
-    }
-
     /// Set the guest heap size. A size of 0 selects
     /// [`SandboxConfiguration::DEFAULT_HEAP_SIZE`].
     pub fn heap_size(mut self, size: u64) -> Self {
@@ -441,10 +417,7 @@ mod tests {
     #[test]
     fn build_from_file() {
         let path = simple_guest_as_string().unwrap();
-        let mut sandbox = SandboxBuilder::from_file(path)
-            .input_data_size(0x8000)
-            .build()
-            .unwrap();
+        let mut sandbox = SandboxBuilder::from_file(path).build().unwrap();
 
         let result = sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
         assert_eq!(result, "hello");

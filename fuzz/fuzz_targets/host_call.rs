@@ -7,7 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_host::func::{ParameterValue, ReturnType};
-use hyperlight_host::{HyperlightError, MultiUseSandbox, SandboxBuilder};
+use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_pathbuf;
 use libfuzzer_sys::fuzz_target;
 
@@ -17,12 +18,17 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 // For fuzzing efficiency, we create one Sandbox and reuse it for all fuzzing iterations.
 fuzz_target!(
     init: {
-        let mu_sbox = SandboxBuilder::from_file(simple_guest_for_fuzzing_as_pathbuf())
-            .output_data_size(64 * 1024) // 64 KB output buffer
-            .input_data_size(64 * 1024) // 64 KB input buffer
-            .scratch_size(512 * 1024) // large scratch region to contain those buffers, any data copies, etc.
-            .build()
-            .unwrap();
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_heap_size(512 * 1024);
+        cfg.set_g2h_pool_pages(16);
+        cfg.set_h2g_pool_pages(16);
+        cfg.set_scratch_size(512 * 1024);
+        let u_sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_for_fuzzing_as_pathbuf()),
+            Some(cfg)
+        )
+        .unwrap();
+        let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 
@@ -37,6 +43,7 @@ fuzz_target!(
                 // to call with.
                 HyperlightError::HostFunctionNotFound(_) => {}
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg == format!("HostFunction {} was not found", host_func_name) => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg == "Host response exceeds virtqueue capacity" => {}
                 HyperlightError::UnexpectedNoOfArguments(_, _) => {},
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The number of arguments to the function is wrong") => {}
                 HyperlightError::ParameterValueConversionFailure(_, _) => {},

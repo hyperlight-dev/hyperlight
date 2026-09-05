@@ -6,7 +6,9 @@ use std::thread;
 use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::func::Bytes;
 use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, SandboxBuilder};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
@@ -15,7 +17,7 @@ use tracing_core::LevelFilter;
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
     build_rust_sandbox, new_rust_sandbox, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
-    with_rust_sandbox, with_rust_sandbox_from,
+    with_rust_sandbox, with_rust_sandbox_from, with_rust_uninit_sandbox_cfg,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
@@ -523,8 +525,8 @@ fn guest_malloc_abort() {
     });
 
     // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 128 * 1024;
-    let size_to_allocate = 256 * 1024;
+    let heap_size = 40 * 1024;
+    let size_to_allocate = 0x10000;
     assert!(
         size_to_allocate > heap_size,
         "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
@@ -566,42 +568,8 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn corrupt_output_size_prefix_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputSizePrefix", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts size prefix, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("SharedMemory(Stack(CorruptPrefix(4294967295, 8)))"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
-fn corrupt_output_back_pointer_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputBackPointer", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts back-pointer, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("SharedMemory(Stack(CorruptBackPointer(57005, 8)))"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
 fn guest_panic_no_alloc() {
-    let heap_size = 128 * 1024;
+    let heap_size = 40 * 1024;
 
     let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
     with_rust_sandbox_from(configure, |mut sbox| {
@@ -612,15 +580,10 @@ fn guest_panic_no_alloc() {
             )
             .unwrap_err();
 
-        // Legacy transport may report its own allocation failure.
         assert!(
             matches!(
                 &res,
-                HyperlightError::GuestAborted(code, msg)
-                    if (*code == ErrorCode::UnknownError as u8
-                        && msg.contains("memory allocation of ")
-                        && msg.contains("bytes failed"))
-                        || *code == ErrorCode::MallocFailed as u8
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
             ),
             "unexpected error: {res:?}"
         );
@@ -733,19 +696,9 @@ fn recursive_stack_allocate_overflow() {
 #[test]
 #[ignore]
 fn log_message() {
-    // The magic numbers below represent the number of fixed log messages that are emitted as
-    // follows:
-    //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
-    //    - 4 from evolve call (generic_init + hyperlight_main)
-    //    - 8 from guest call
-    // and are multiplied because we make 6 calls to `log_test_messages`
-    // NOTE: These numbers need to be updated if log messages or spans are added/removed
-    let num_fixed_trace_log = 12 * 6;
-
-    // Calculate fixed info logs
-    // - 4 logs per iteration from infrastructure at Info level (internal_dispatch_function)
-    //   (dispatch x 1 + call_guest x 1) * 2 logs (Enter/Exit) = 4 logs
-    // - 6 iterations
+    // Each of the six sandboxes emits eight fixed records at trace level.
+    // Dispatch and call spans emit four fixed records at info level.
+    let num_fixed_trace_log = 8 * 6;
     let num_fixed_info_log = 4 * 6;
 
     let tests = vec![
@@ -823,6 +776,31 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
     }
 }
 
+#[test]
+#[ignore]
+fn virtq_repeated_log_delivery_small_ring() {
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_size(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(LevelFilter::INFO);
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let count = (0..LOGGER.num_log_calls())
+            .filter_map(|index| LOGGER.get_log_call(index))
+            .filter(|call| call.target == "hyperlight_guest" && call.args.contains("log entry"))
+            .count();
+        assert_eq!(count, 20);
+        LOGGER.clear_log_calls();
+    });
+}
+
 /// Tests whether host is able to return Bool as return type
 /// or not
 #[test]
@@ -891,6 +869,38 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
             res,
             "Guest Function, string added by Host Function".to_string()
         );
+    });
+}
+
+#[test]
+fn c_guest_accesses_byte_chunks() {
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+    };
+    with_c_sandbox_from(configure, |mut sandbox| {
+        let expected = (0..10 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+
+        for _ in 0..2 {
+            let output: Vec<Bytes> = sandbox
+                .call("RoundTripHostByteChunks", input.clone())
+                .unwrap();
+
+            assert_eq!(
+                output
+                    .iter()
+                    .flat_map(|chunk| chunk.iter().copied())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     });
 }
 
@@ -1669,8 +1679,6 @@ fn fill_heap_and_cause_exception() {
 
         let err = result.unwrap_err();
         match &err {
-            // Legacy transport may report its own allocation failure.
-            HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8 => {}
             HyperlightError::GuestAborted(code, message) => {
                 assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
 

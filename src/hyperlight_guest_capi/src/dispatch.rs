@@ -11,13 +11,11 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterType, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::transport;
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
-use hyperlight_guest_bin::host_comm::{
-    call_host_function_without_returning_result, get_host_return_value,
-};
+use hyperlight_guest_bin::host_comm::call_host_function;
 
 use crate::types::{FfiFunctionCall, FfiReturnValue, OwnedFfiFunctionCall};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
@@ -30,24 +28,11 @@ unsafe extern "C" {
     fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiReturnValue;
 }
 
-fn encode_return_value(value: ReturnValue) -> Vec<u8> {
-    match value {
-        ReturnValue::Int(value) => get_flatbuffer_result(value),
-        ReturnValue::UInt(value) => get_flatbuffer_result(value),
-        ReturnValue::Long(value) => get_flatbuffer_result(value),
-        ReturnValue::ULong(value) => get_flatbuffer_result(value),
-        ReturnValue::Float(value) => get_flatbuffer_result(value),
-        ReturnValue::Double(value) => get_flatbuffer_result(value),
-        ReturnValue::Bool(value) => get_flatbuffer_result(value),
-        ReturnValue::String(value) => get_flatbuffer_result(value.as_str()),
-        ReturnValue::VecBytes(value) => get_flatbuffer_result(value.as_slice()),
-        ReturnValue::ByteChunks(value) => get_flatbuffer_result(value),
-        ReturnValue::Void(()) => get_flatbuffer_result(()),
-    }
-}
-
 #[unsafe(no_mangle)]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValue> {
+    // Discard an error left by guest code outside the current dispatch.
+    let _ = transport::with_ctx(|ctx| ctx.take_guest_error());
+
     // Use &raw const to get an immutable reference to the static HashMap
     // this is to avoid the clippy warning "shared reference to mutable static"
     if let Some(registered_func) =
@@ -65,6 +50,9 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
         let function_result = (registered_func.function_pointer)(ffi_func_call.as_ffi());
         if function_result.is_null() {
+            if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
+                return Err(HyperlightGuestError::new(error.code, error.message));
+            }
             return Err(HyperlightGuestError::new(
                 ErrorCode::GuestError,
                 alloc::format!("C guest function {function_name:?} returned null"),
@@ -76,7 +64,11 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         // SAFETY: registered C functions return values created by hl_result_from_*.
         let function_result = unsafe { (*function_result).into_return_value() };
 
-        Ok(encode_return_value(function_result))
+        if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
+            return Err(HyperlightGuestError::new(error.code, error.message));
+        }
+
+        Ok(function_result)
     } else {
         // The given function is not registered. The guest should implement a function called c_guest_dispatch_function to handle this.
 
@@ -87,6 +79,9 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
         let function_result = unsafe { c_guest_dispatch_function(ffi_func_call.as_ffi()) };
         if function_result.is_null() {
+            if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
+                return Err(HyperlightGuestError::new(error.code, error.message));
+            }
             Err(HyperlightGuestError::new(
                 ErrorCode::GuestFunctionNotFound,
                 function_name,
@@ -96,7 +91,11 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
             // SAFETY: non-null fallback results are created by hl_result_from_*.
             let result = unsafe { (*result).into_return_value() };
 
-            Ok(encode_return_value(result))
+            if let Some(error) = transport::with_ctx(|ctx| ctx.take_guest_error()) {
+                return Err(HyperlightGuestError::new(error.code, error.message));
+            }
+
+            Ok(result)
         }
     }
 }
@@ -128,11 +127,11 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let func_name = unsafe { function_call.copy_function_name() };
     let return_type = unsafe { function_call.copy_return_type() };
 
-    call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
-        .expect("Failed to call host function");
+    let result = call_host_function::<ReturnValue>(&func_name, Some(parameters), return_type);
+    transport::with_ctx(|ctx| ctx.stash_host_result(result));
 }
 
-/// Retrieve the return value from the last `hl_call_host_function`.
+/// Retrieve the return value stashed by the last `hl_call_host_function`.
 pub(crate) fn take_last_host_return<T: TryFrom<ReturnValue>>() -> T {
-    get_host_return_value().expect("Unable to get host return value")
+    transport::with_ctx(|ctx| ctx.take_host_return::<T>())
 }

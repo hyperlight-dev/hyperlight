@@ -152,7 +152,6 @@ mod buffer;
 mod consumer;
 mod desc;
 mod event;
-pub mod msg;
 mod pool;
 mod producer;
 mod ring;
@@ -950,6 +949,7 @@ mod tests {
         send_readonly(&mut producer, b"b");
         send_readonly(&mut producer, b"c");
         send_readonly(&mut producer, b"d");
+        assert_eq!(producer.num_inflight(), 4);
 
         // Ring is now full - next submit should fail with Backpressure
         let mut se = producer.chain().readable(1).build().unwrap();
@@ -969,6 +969,7 @@ mod tests {
         // Reclaim should free ring slots without losing data
         let count = producer.reclaim().unwrap();
         assert_eq!(count, 4, "expected 4 reclaimed entries");
+        assert_eq!(producer.num_inflight(), 0);
 
         // Ring should have space now
         send_readonly(&mut producer, b"e");

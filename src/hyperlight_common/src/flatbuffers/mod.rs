@@ -40,14 +40,10 @@ pub mod hyperlight {
         pub use self::hlbool_generated::*;
         mod hlvecbytes_generated;
         pub use self::hlvecbytes_generated::*;
-        mod hlbytechunks_generated;
-        pub use self::hlbytechunks_generated::*;
         mod hlexternalbytes_generated;
         pub use self::hlexternalbytes_generated::*;
         mod hlsizeprefixedbuffer_generated;
         pub use self::hlsizeprefixedbuffer_generated::*;
-        mod hlsizeprefixedbytechunks_generated;
-        pub use self::hlsizeprefixedbytechunks_generated::*;
         mod hlvoid_generated;
         pub use self::hlvoid_generated::*;
         mod guest_error_generated;
