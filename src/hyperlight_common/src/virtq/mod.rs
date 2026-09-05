@@ -43,27 +43,28 @@
 //! }
 //!
 //! // Consumer (device) side - receive a chain and reply/ack it
-//! if let Some((chain, reply)) = consumer.poll(max_recv_len)? {
-//!     let request = chain.to_bytes();
+//! if let Some((recv, reply)) = consumer.poll(max_recv_len)? {
+//!     let request = recv.to_bytes()?;
 //!     match reply {
 //!         ReplyChain::Writable(mut wc) => {
 //!             let response = handle(request);
 //!             wc.write_all(&response)?;
-//!             consumer.complete(wc)?;
+//!             consumer.complete(recv, wc)?;
 //!         }
 //!         ReplyChain::Ack(ack) => {
-//!             consumer.complete(ack)?;
+//!             consumer.complete(recv, ack)?;
 //!         }
 //!     }
 //! }
 //!
 //! // Multiple pending completions (no borrow on consumer)
 //! let mut pending = Vec::new();
-//! while let Some((chain, reply)) = consumer.poll(max_recv_len)? {
-//!     pending.push((process(chain), reply));
+//! while let Some((recv, reply)) = consumer.poll(max_recv_len)? {
+//!     let result = process(&recv);
+//!     pending.push((result, recv, reply));
 //! }
-//! for (result, reply) in pending {
-//!     consumer.complete(reply)?;
+//! for (result, recv, reply) in pending {
+//!     consumer.complete(recv, reply)?;
 //! }
 //! ```
 //!
@@ -171,6 +172,13 @@ pub use producer::*;
 pub use ring::*;
 use thiserror::Error;
 
+/// Capacity of each fixed G2H lower-tier slot.
+pub const G2H_LOWER_SLOT_SIZE: usize = 256;
+/// Number of G2H lower-tier slots occupying the first pool page.
+pub const G2H_LOWER_SLOT_COUNT: usize = crate::vmem::PAGE_SIZE / G2H_LOWER_SLOT_SIZE;
+
+const _: () = assert!(G2H_LOWER_SLOT_COUNT * G2H_LOWER_SLOT_SIZE == crate::vmem::PAGE_SIZE);
+
 /// A trait for notifying the consumer about virtqueue events.
 pub trait Notifier {
     fn notify(&self, stats: QueueStats);
@@ -187,10 +195,14 @@ pub enum VirtqError {
     Backpressure,
     #[error("Allocation exceeds pool capacity")]
     OutOfMemory,
+    #[error("Failed to allocate virtqueue bookkeeping")]
+    BookkeepingAllocation,
     #[error("Invalid chain received")]
     BadChain,
     #[error("Payload data too large: received {recv} bytes, limit {limit} bytes")]
     PayloadTooLarge { recv: usize, limit: usize },
+    #[error("Receive data too short: requested {requested} bytes, only {remaining} bytes remain")]
+    ReceiveTooShort { requested: usize, remaining: usize },
     #[error("Reply data too large for allocated buffer")]
     ReplyTooLarge,
     #[error("Internal state error")]
@@ -257,6 +269,11 @@ pub struct Layout {
 #[inline]
 const fn align_up(val: usize, align: usize) -> usize {
     val.next_multiple_of(align)
+}
+
+#[inline]
+const fn align_up_checked(val: usize, align: usize) -> Option<usize> {
+    val.checked_next_multiple_of(align)
 }
 
 impl Layout {
@@ -335,6 +352,18 @@ impl Layout {
 
         dev_evt_offset + event_size
     }
+
+    /// Calculate the ring size, returning `None` on arithmetic overflow.
+    pub fn checked_query_size(num_descs: usize) -> Option<usize> {
+        let desc_size = num_descs.checked_mul(Descriptor::SIZE)?;
+        let event_size = EventSuppression::SIZE;
+        let align = EventSuppression::ALIGN;
+
+        let drv_evt_offset = align_up_checked(desc_size, align)?;
+        let dev_evt_offset = align_up_checked(drv_evt_offset.checked_add(event_size)?, align)?;
+
+        dev_evt_offset.checked_add(event_size)
+    }
 }
 
 /// Statistics about the current virtqueue state.
@@ -379,7 +408,7 @@ impl From<BufferElement> for Allocation {
     fn from(value: BufferElement) -> Self {
         Allocation {
             addr: value.addr,
-            len: value.len as usize,
+            len: value.len,
         }
     }
 }
@@ -480,7 +509,6 @@ pub(crate) mod test_utils {
         base: u64,
         next: Arc<AtomicU64>,
         size: usize,
-        max_alloc_len: usize,
         allocations: Arc<Mutex<BTreeMap<u64, usize>>>,
     }
 
@@ -490,33 +518,23 @@ pub(crate) mod test_utils {
                 base,
                 next: Arc::new(AtomicU64::new(base)),
                 size,
-                max_alloc_len: usize::MAX,
-                allocations: Arc::new(Mutex::new(BTreeMap::new())),
-            }
-        }
-
-        pub(crate) fn new_with_max_alloc_len(base: u64, size: usize, max_alloc_len: usize) -> Self {
-            Self {
-                base,
-                next: Arc::new(AtomicU64::new(base)),
-                size,
-                max_alloc_len,
                 allocations: Arc::new(Mutex::new(BTreeMap::new())),
             }
         }
     }
 
     impl BufferProvider for TestPool {
-        fn max_alloc_len(&self) -> usize {
-            self.max_alloc_len
+        fn preferred_segment_len(&self) -> usize {
+            u32::MAX as usize
         }
 
         fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
             if len == 0 {
                 return Err(AllocError::InvalidArg);
             }
+            let len = u32::try_from(len).map_err(|_| AllocError::OutOfMemory)?;
 
-            let addr = self.next.fetch_add(len as u64, Ordering::Relaxed);
+            let addr = self.next.fetch_add(u64::from(len), Ordering::Relaxed);
             let end = addr + len as u64;
             if end > self.base + self.size as u64 {
                 return Err(AllocError::NoSpace);
@@ -524,8 +542,28 @@ pub(crate) mod test_utils {
             self.allocations
                 .lock()
                 .expect("poisoned mutex")
-                .insert(addr, len);
+                .insert(addr, len as usize);
+
             Ok(Allocation { addr, len })
+        }
+
+        fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
+        where
+            I: IntoIterator<Item = usize>,
+        {
+            let mut regions = Regions::new();
+            for len in lengths {
+                match self.alloc(len) {
+                    Ok(alloc) => regions.push(Allocations::from_iter([alloc])),
+                    Err(error) => return Err(error),
+                }
+            }
+
+            if regions.is_empty() {
+                return Err(AllocError::InvalidArg);
+            }
+
+            Ok(regions)
         }
 
         fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
@@ -588,7 +626,7 @@ mod tests {
 
     fn poll_received(
         consumer: &mut VirtqConsumer<TestMem, TestNotifier>,
-    ) -> (RecvChain, ReplyChain<TestMem>) {
+    ) -> (RecvChain<TestMem>, ReplyChain<TestMem>) {
         consumer.poll(1024).unwrap().unwrap()
     }
 
@@ -617,8 +655,8 @@ mod tests {
 
         // Consumer sees all requests
         for _ in 0..3 {
-            let (_recv, reply) = poll_received(&mut consumer);
-            consumer.complete(reply).unwrap();
+            let (recv, reply) = poll_received(&mut consumer);
+            consumer.complete(recv, reply).unwrap();
         }
 
         // All completions available
@@ -650,12 +688,12 @@ mod tests {
 
         // Consumer processes requests
         for _ in 0..3 {
-            let (_recv, reply) = poll_received(&mut consumer);
+            let (recv, reply) = poll_received(&mut consumer);
             let ReplyChain::Writable(mut wc) = reply else {
                 panic!("expected writable reply");
             };
             wc.write_all(b"used-data").unwrap();
-            consumer.complete(wc).unwrap();
+            consumer.complete(recv, wc).unwrap();
         }
 
         // Producer can drain all responses
@@ -736,19 +774,19 @@ mod tests {
 
         // Consumer sees all three entries
         let (recv1, reply1) = poll_received(&mut consumer);
-        assert_eq!(recv1.to_bytes().as_ref(), b"first-ent");
-        consumer.complete(reply1).unwrap();
+        assert_eq!(recv1.to_bytes().unwrap().as_ref(), b"first-ent");
+        consumer.complete(recv1, reply1).unwrap();
 
         let (recv2, reply2) = poll_received(&mut consumer);
-        assert_eq!(recv2.to_bytes().as_ref(), b"copy-ent");
-        consumer.complete(reply2).unwrap();
+        assert_eq!(recv2.to_bytes().unwrap().as_ref(), b"copy-ent");
+        consumer.complete(recv2, reply2).unwrap();
 
-        let (_recv3, reply3) = poll_received(&mut consumer);
+        let (recv3, reply3) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply3 else {
             panic!("expected writable reply");
         };
         wc.write_all(b"resp").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv3, wc).unwrap();
 
         // Drain completions
         let _ = producer.poll().unwrap().unwrap();
@@ -771,14 +809,14 @@ mod tests {
         // Consumer sees the data
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"hello");
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
 
         // Write response
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
         wc.write_all(b"world").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
         let used = producer.poll().unwrap().unwrap();
         assert_eq!(used.to_bytes().unwrap().as_ref(), b"world");
     }
@@ -794,14 +832,14 @@ mod tests {
         // Consumer receives and responds
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"round-trip-recv");
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"round-trip-recv");
 
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
         assert!(wc.capacity() >= 128);
         wc.write_all(b"round-trip-rsp").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         // Producer gets the reply
         let used = producer.poll().unwrap().unwrap();
@@ -816,8 +854,8 @@ mod tests {
 
         let token = send_readwrite(&mut producer, b"recv-data", 64);
 
-        let (_recv, reply) = poll_received(&mut consumer);
-        consumer.complete(reply).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         assert_eq!(used.token(), token);
@@ -835,13 +873,13 @@ mod tests {
         // Poll and hold the reply
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        assert_eq!(recv.to_bytes().as_ref(), b"deferred");
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"deferred");
 
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable reply");
         };
         wc.write_all(b"deferred-used").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         let used = producer.poll().unwrap().unwrap();
         assert_eq!(used.token(), token);
@@ -859,24 +897,24 @@ mod tests {
         // Poll both
         let (recv1, reply1) = poll_received(&mut consumer);
         assert_eq!(recv1.token(), tok1);
-        assert_eq!(recv1.to_bytes().as_ref(), b"first");
+        assert_eq!(recv1.to_bytes().unwrap().as_ref(), b"first");
 
         let (recv2, reply2) = poll_received(&mut consumer);
         assert_eq!(recv2.token(), tok2);
-        assert_eq!(recv2.to_bytes().as_ref(), b"second");
+        assert_eq!(recv2.to_bytes().unwrap().as_ref(), b"second");
 
         // Complete second first (out of order)
         let ReplyChain::Writable(mut wc2) = reply2 else {
             panic!("expected writable");
         };
         wc2.write_all(b"resp2").unwrap();
-        consumer.complete(wc2).unwrap();
+        consumer.complete(recv2, wc2).unwrap();
 
         let ReplyChain::Writable(mut wc1) = reply1 else {
             panic!("expected writable");
         };
         wc1.write_all(b"resp1").unwrap();
-        consumer.complete(wc1).unwrap();
+        consumer.complete(recv1, wc1).unwrap();
 
         let used1 = producer.poll().unwrap().unwrap();
         let used2 = producer.poll().unwrap().unwrap();
@@ -924,8 +962,8 @@ mod tests {
 
         // Consumer acks all entries
         while let Some(result) = consumer.poll(1024).unwrap() {
-            let (_, reply) = result;
-            consumer.complete(reply).unwrap();
+            let (recv, reply) = result;
+            consumer.complete(recv, reply).unwrap();
         }
 
         // Reclaim should free ring slots without losing data
@@ -945,12 +983,12 @@ mod tests {
         let tok = send_readwrite(&mut producer, b"request", 64);
 
         // Consumer processes and writes response
-        let (_, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable");
         };
         wc.write_all(b"response-data").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         // Reclaim buffers the reply (doesn't discard it)
         let count = producer.reclaim().unwrap();
@@ -973,18 +1011,18 @@ mod tests {
         let _tok_ro2 = send_readonly(&mut producer, b"log2");
 
         // Consumer processes all 3
-        let (_, reply1) = poll_received(&mut consumer);
-        consumer.complete(reply1).unwrap(); // ack RO
+        let (recv1, reply1) = poll_received(&mut consumer);
+        consumer.complete(recv1, reply1).unwrap(); // ack RO
 
-        let (_, reply2) = poll_received(&mut consumer);
+        let (recv2, reply2) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply2 else {
             panic!("expected writable");
         };
         wc.write_all(b"result").unwrap();
-        consumer.complete(wc).unwrap(); // complete RW
+        consumer.complete(recv2, wc).unwrap(); // complete RW
 
-        let (_, reply3) = poll_received(&mut consumer);
-        consumer.complete(reply3).unwrap(); // ack RO
+        let (recv3, reply3) = poll_received(&mut consumer);
+        consumer.complete(recv3, reply3).unwrap(); // ack RO
 
         // Reclaim all 3 - RO completions are discarded, only RW is buffered
         let count = producer.reclaim().unwrap();
@@ -1008,15 +1046,15 @@ mod tests {
         send_readonly(&mut producer, b"x");
         let tok_rw = send_readwrite(&mut producer, b"y", 64);
 
-        let (_, reply1) = poll_received(&mut consumer);
-        consumer.complete(reply1).unwrap();
+        let (recv1, reply1) = poll_received(&mut consumer);
+        consumer.complete(recv1, reply1).unwrap();
 
-        let (_, reply2) = poll_received(&mut consumer);
+        let (recv2, reply2) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply2 else {
             panic!("expected writable");
         };
         wc.write_all(b"reply").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv2, wc).unwrap();
 
         // poll() consumes first recv directly from ring
         let used1 = producer.poll().unwrap().unwrap();
@@ -1041,8 +1079,8 @@ mod tests {
         // Submit and complete a ReadOnly recv
         let tok_old = send_readonly(&mut producer, b"log");
 
-        let (_, reply) = poll_received(&mut consumer);
-        consumer.complete(reply).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
 
         let count = producer.reclaim().unwrap();
         assert_eq!(count, 1);
@@ -1057,12 +1095,12 @@ mod tests {
         );
 
         // Complete the ReadWrite recv
-        let (_, reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         let ReplyChain::Writable(mut wc) = reply else {
             panic!("expected writable");
         };
         wc.write_all(b"result").unwrap();
-        consumer.complete(wc).unwrap();
+        consumer.complete(recv, wc).unwrap();
 
         // Poll returns only the RW reply (RO was discarded by reclaim)
         let used = producer.poll().unwrap().unwrap();
@@ -1087,8 +1125,8 @@ mod tests {
 
             // Consumer acks all
             while let Some(result) = consumer.poll(1024).unwrap() {
-                let (_, reply) = result;
-                consumer.complete(reply).unwrap();
+                let (recv, reply) = result;
+                consumer.complete(recv, reply).unwrap();
             }
 
             // Reclaim frees ring slots; empty completions are discarded

@@ -61,6 +61,8 @@
 //! - **DESC**: Notify only when a specific descriptor index is reached
 //! ```
 
+pub mod canonical;
+
 use core::fmt;
 use core::marker::PhantomData;
 use core::sync::atomic::{Ordering, fence};
@@ -86,6 +88,26 @@ pub struct BufferElement {
     pub len: u32,
     /// Whether this buffer is writable by the device
     pub writable: bool,
+}
+
+impl BufferElement {
+    /// Create a readable buffer element
+    pub fn readable(addr: u64) -> Self {
+        Self {
+            addr,
+            len: 0,
+            writable: false,
+        }
+    }
+
+    /// Create a writable buffer element
+    pub fn writable(addr: u64, len: u32) -> Self {
+        Self {
+            addr,
+            len,
+            writable: true,
+        }
+    }
 }
 
 /// A buffer returned from the ring after being used by the device.
@@ -154,6 +176,10 @@ pub enum RingError {
     InvalidState,
     #[error("Invalid memory layout")]
     InvalidLayout,
+    /// A backend memory operation failed.
+    ///
+    /// A failed write may have partially modified shared memory. After a write
+    /// error, retry reset or discard the endpoint before reuse.
     #[error("Backend memory error while {op} at address 0x{addr:x}, len {len}")]
     MemError {
         /// Memory operation that failed.
@@ -892,45 +918,38 @@ impl<M: MemOps> RingProducer<M> {
         should_notify_evt(&self.mem, self.dev_evt_addr, self.len() as u16, old, new)
     }
 
-    /// Reset to initial state matching a freshly zeroed ring.
-    pub fn reset(&mut self) {
+    /// Reset producer state and its shared ring image to the canonical empty state.
+    ///
+    /// The peer must not access the ring during this operation. This clears
+    /// every descriptor and sets the driver event to `ENABLE`. The consumer
+    /// separately owns the device event. This low-level operation does not
+    /// reclaim payload allocations or reconcile higher-level in-flight tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RingError::MemError`] if descriptor or event normalization
+    /// cannot be written to shared memory. Local bookkeeping remains unchanged
+    /// on error.
+    pub fn reset(&mut self) -> Result<(), RingError> {
+        let table_addr = self.desc_table.base_addr();
         let size = self.desc_table.len();
+
+        self.desc_table
+            .clear(&self.mem)
+            .map_err(|_| RingError::mem_err(MemOp::WriteDesc, table_addr))?;
+
+        EventSuppression::clear(&self.mem, self.drv_evt_addr)
+            .map_err(|_| RingError::mem_err(MemOp::WriteEvent, self.drv_evt_addr))?;
+
         self.avail_cursor.reset();
         self.used_cursor.reset();
+
         self.num_free = size;
         self.id_free.clear();
         self.id_free.extend(0..size as u16);
         self.id_num.iter_mut().for_each(|n| *n = 0);
         self.event_flags_shadow = EventFlags::ENABLE;
-    }
-
-    /// Reset the ring to the "N slots submitted, none completed" state.
-    ///
-    /// `ids` contains the descriptor IDs that are in-flight.
-    /// Sets cursors, counters, and `id_num` accordingly. The chain lengths are all set to 1.
-    pub fn reset_prefilled(&mut self, ids: &[u16]) {
-        let size = self.desc_table.len();
-        let count = ids.len();
-        assert!(count <= size);
-
-        let wrapped = count >= size;
-        self.avail_cursor.head = if wrapped { 0 } else { count as u16 };
-        self.avail_cursor.wrap = !wrapped;
-
-        self.used_cursor.head = 0;
-        self.used_cursor.wrap = true;
-
-        self.id_num.iter_mut().for_each(|n| *n = 0);
-        for &id in ids {
-            assert!((id as usize) < size);
-            assert_eq!(self.id_num[id as usize], 0);
-            self.id_num[id as usize] = 1;
-        }
-
-        self.num_free = size - count;
-        self.id_free.clear();
-        self.id_free
-            .extend((0..size as u16).filter(|id| self.id_num[*id as usize] == 0));
+        Ok(())
     }
 }
 
@@ -1309,14 +1328,27 @@ impl<M: MemOps> RingConsumer<M> {
         should_notify_evt(&self.mem, self.drv_evt_addr, self.len() as u16, old, new)
     }
 
-    /// Reset to initial state matching a freshly zeroed ring.
-    /// Does not reallocate internal buffers.
-    pub fn reset(&mut self) {
+    /// Reset consumer state and normalize its event-suppression structure.
+    ///
+    /// The peer must not access the ring during this operation. Descriptor
+    /// contents remain producer-owned. This lets a fresh consumer adopt a
+    /// canonical prefill. A higher-level caller must first rule out outstanding
+    /// descriptor views.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RingError::MemError`] if the device event cannot be normalized
+    /// in shared memory. Local bookkeeping remains unchanged on error.
+    pub fn reset(&mut self) -> Result<(), RingError> {
+        EventSuppression::clear(&self.mem, self.dev_evt_addr)
+            .map_err(|_| RingError::mem_err(MemOp::WriteEvent, self.dev_evt_addr))?;
+
         self.avail_cursor.reset();
         self.used_cursor.reset();
         self.id_num.iter_mut().for_each(|n| *n = 0);
         self.num_inflight = 0;
         self.event_flags_shadow = EventFlags::ENABLE;
+        Ok(())
     }
 }
 
@@ -1389,10 +1421,11 @@ impl From<&Descriptor> for BufferElement {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloc::sync::Arc;
+    use alloc::vec::Vec;
     use core::cell::UnsafeCell;
     use core::num::NonZeroU16;
     use core::ptr;
-    use core::sync::atomic::{AtomicU16, Ordering};
+    use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
     use bytemuck::{Pod, Zeroable};
 
@@ -1499,6 +1532,77 @@ pub(crate) mod tests {
         unsafe fn as_mut_slice(&self, addr: u64, len: usize) -> Result<&mut [u8], Self::Error> {
             let ptr = self.ptr_for_addr(addr);
             Ok(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingWriteMem {
+        inner: TestMem,
+        fail_at: Arc<AtomicUsize>,
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl FailingWriteMem {
+        fn new(inner: TestMem) -> Self {
+            Self {
+                inner,
+                fail_at: Arc::new(AtomicUsize::new(usize::MAX)),
+                writes: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn fail_at(&self, write: usize) {
+            self.writes.store(0, Ordering::Relaxed);
+            self.fail_at.store(write, Ordering::Relaxed);
+        }
+
+        fn allow_writes(&self) {
+            self.writes.store(0, Ordering::Relaxed);
+            self.fail_at.store(usize::MAX, Ordering::Relaxed);
+        }
+
+        fn check_write(&self) -> Result<(), ()> {
+            let write = self.writes.fetch_add(1, Ordering::Relaxed);
+            if write == self.fail_at.load(Ordering::Relaxed) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // SAFETY: FailingWriteMem delegates to TestMem and only injects errors
+    // before writes.
+    unsafe impl MemOps for FailingWriteMem {
+        type Error = ();
+
+        fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
+            self.inner.read(addr, dst).unwrap();
+            Ok(())
+        }
+
+        fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
+            self.check_write()?;
+            self.inner.write(addr, src).unwrap();
+            Ok(())
+        }
+
+        fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
+            Ok(self.inner.load_acquire(addr).unwrap())
+        }
+
+        fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
+            self.check_write()?;
+            self.inner.store_release(addr, val).unwrap();
+            Ok(())
+        }
+
+        unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8], Self::Error> {
+            Ok(unsafe { self.inner.as_slice(addr, len) }.unwrap())
+        }
+
+        unsafe fn as_mut_slice(&self, addr: u64, len: usize) -> Result<&mut [u8], Self::Error> {
+            Ok(unsafe { self.inner.as_mut_slice(addr, len) }.unwrap())
         }
     }
 
@@ -3214,7 +3318,7 @@ pub(crate) mod tests {
         used.submit_one(0x1000, 64, false).unwrap();
         used.submit_one(0x2000, 128, true).unwrap();
 
-        used.reset();
+        used.reset().unwrap();
 
         assert_eq!(used.avail_cursor, fresh.avail_cursor);
         assert_eq!(used.used_cursor, fresh.used_cursor);
@@ -3235,7 +3339,7 @@ pub(crate) mod tests {
         }
         assert_eq!(producer.num_free, 4);
 
-        producer.reset();
+        producer.reset().unwrap();
 
         assert_eq!(producer.num_free, 8);
         assert_eq!(producer.id_free.len(), 8);
@@ -3243,6 +3347,50 @@ pub(crate) mod tests {
         for id in 0..8u16 {
             assert!(producer.id_free.contains(&id));
         }
+    }
+
+    #[test]
+    fn test_ring_producer_failed_reset_preserves_local_state() {
+        let ring = make_ring(4);
+        let mem = FailingWriteMem::new(ring.mem());
+        let mut producer = RingProducer::new(ring.layout(), mem.clone());
+
+        producer.submit_one(0x1000, 64, false).unwrap();
+        producer.submit_one(0x2000, 128, true).unwrap();
+
+        let avail_cursor = producer.avail_cursor;
+        let used_cursor = producer.used_cursor;
+        let num_free = producer.num_free;
+        let id_free = producer.id_free.clone();
+        let id_num = producer.id_num.clone();
+        let event_flags_shadow = producer.event_flags_shadow;
+
+        mem.fail_at(1);
+        assert!(matches!(
+            producer.reset(),
+            Err(RingError::MemError {
+                op: MemOp::WriteDesc,
+                ..
+            })
+        ));
+
+        assert_eq!(producer.avail_cursor, avail_cursor);
+        assert_eq!(producer.used_cursor, used_cursor);
+        assert_eq!(producer.num_free, num_free);
+        assert_eq!(producer.id_free, id_free);
+        assert_eq!(producer.id_num, id_num);
+        assert_eq!(producer.event_flags_shadow, event_flags_shadow);
+
+        mem.allow_writes();
+        producer.reset().unwrap();
+
+        let fresh = RingProducer::new(ring.layout(), mem);
+        assert_eq!(producer.avail_cursor, fresh.avail_cursor);
+        assert_eq!(producer.used_cursor, fresh.used_cursor);
+        assert_eq!(producer.num_free, fresh.num_free);
+        assert_eq!(producer.id_free, fresh.id_free);
+        assert_eq!(producer.id_num, fresh.id_num);
+        assert_eq!(producer.event_flags_shadow, fresh.event_flags_shadow);
     }
 
     #[test]
@@ -3260,7 +3408,7 @@ pub(crate) mod tests {
         let (id, _chain) = used.poll_available().unwrap();
         used.submit_used(id, 64).unwrap();
 
-        used.reset();
+        used.reset().unwrap();
 
         assert_eq!(used.avail_cursor, fresh.avail_cursor);
         assert_eq!(used.used_cursor, fresh.used_cursor);
@@ -3282,99 +3430,8 @@ pub(crate) mod tests {
         let _ = consumer.poll_available().unwrap();
         assert_eq!(consumer.num_inflight, 2);
 
-        consumer.reset();
+        consumer.reset().unwrap();
         assert_eq!(consumer.num_inflight, 0);
-    }
-
-    #[test]
-    fn test_reset_prefilled_sets_cursors() {
-        let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        let ids: Vec<u16> = (0..8).collect();
-        producer.reset_prefilled(&ids);
-
-        // avail wrapped once (all 8 slots submitted)
-        assert_eq!(producer.avail_cursor.head(), 0);
-        assert!(!producer.avail_cursor.wrap());
-        // used cursor at initial position
-        assert_eq!(producer.used_cursor.head(), 0);
-        assert!(producer.used_cursor.wrap());
-    }
-
-    #[test]
-    fn test_reset_prefilled_all_ids_inflight() {
-        let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        let ids: Vec<u16> = (0..8).collect();
-        producer.reset_prefilled(&ids);
-
-        assert_eq!(producer.num_free, 0);
-        assert!(producer.id_free.is_empty());
-        assert!(producer.id_num.iter().all(|&n| n == 1));
-    }
-
-    #[test]
-    fn test_reset_prefilled_partial() {
-        let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        producer.reset_prefilled(&[5, 6, 7, 3]);
-
-        // avail cursor at position 4, no wrap
-        assert_eq!(producer.avail_cursor.head(), 4);
-        assert!(producer.avail_cursor.wrap());
-        // used cursor at initial position
-        assert_eq!(producer.used_cursor.head(), 0);
-        assert!(producer.used_cursor.wrap());
-
-        assert_eq!(producer.num_free, 4);
-        assert_eq!(producer.id_free.len(), 4);
-        for &id in &[0, 1, 2, 4] {
-            assert!(producer.id_free.contains(&id));
-        }
-        // Only the specified IDs are in-flight
-        for &id in &[5, 6, 7, 3] {
-            assert_eq!(producer.id_num[id as usize], 1);
-        }
-        for &id in &[0, 1, 2, 4] {
-            assert_eq!(producer.id_num[id as usize], 0);
-        }
-    }
-
-    #[test]
-    fn test_reset_prefilled_partial_then_submit() {
-        let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        producer.reset_prefilled(&[4, 5, 6, 7]);
-
-        let id = producer.submit_one(0x8000, 128, false).unwrap();
-
-        assert!([0, 1, 2, 3].contains(&id));
-        assert_eq!(producer.num_free, 3);
-        assert_eq!(producer.id_num[id as usize], 1);
-    }
-
-    #[test]
-    fn test_reset_prefilled_then_poll_used() {
-        let ring = make_ring(4);
-        let mut producer = make_producer(&ring);
-
-        // Simulate host prefill: LIFO assigns IDs 3, 2, 1, 0
-        for i in 0..4u64 {
-            producer.submit_one(0x1000 + i * 4096, 4096, true).unwrap();
-        }
-
-        // Consumer marks one as used
-        let mut consumer = make_consumer(&ring);
-        let (id, _chain) = consumer.poll_available().unwrap();
-        consumer.submit_used(id, 64).unwrap();
-
-        // Fresh producer restores via reset_prefilled with all IDs
-        let mut restored = make_producer(&ring);
-        restored.reset_prefilled(&[0, 1, 2, 3]);
-
-        // poll_used should discover the consumed descriptor
-        let used = restored.poll_used().unwrap();
-        assert_eq!(used.id, id);
     }
 
     #[test]
@@ -4210,193 +4267,4 @@ mod virtio_villain {
 }
 
 #[cfg(test)]
-mod fuzz {
-    use quickcheck::{Arbitrary, Gen, QuickCheck};
-
-    use super::tests::{OwnedRing, make_consumer, make_producer};
-    use super::*;
-
-    const MAX_RING: usize = 64;
-    const MAX_OPS: usize = 128;
-    const MAX_CHAIN_LEN: usize = 8;
-
-    #[allow(clippy::large_enum_variant)]
-    #[derive(Clone, Debug)]
-    enum Op {
-        /// submit one chain
-        Submit(BufferChain),
-        /// poll up to N chains
-        PollAvail(u8),
-        /// driver reclaims up to N completions
-        PollUsed(u8),
-        /// complete one previously polled chain
-        CompleteOne,
-    }
-
-    impl Arbitrary for Op {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let choice = u8::arbitrary(g) % 4;
-            match choice {
-                0 => Op::Submit(BufferChain::arbitrary(g)),
-                1 => Op::PollAvail(u8::arbitrary(g) % 8 + 1),
-                2 => Op::PollUsed(u8::arbitrary(g) % 8 + 1),
-                3 => Op::CompleteOne,
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    struct Scenario {
-        table_size: usize,
-        ops: Vec<Op>,
-    }
-
-    impl Arbitrary for Scenario {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let table_size = (usize::arbitrary(g) % MAX_RING + 1).next_power_of_two();
-            let num_ops = usize::arbitrary(g) % MAX_OPS + 1;
-
-            let ops = (0..num_ops).map(|_| Op::arbitrary(g)).collect();
-            Scenario { table_size, ops }
-        }
-    }
-
-    impl Arbitrary for BufferElement {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let addr = u64::arbitrary(g);
-            let len = u32::arbitrary(g);
-            let writable = bool::arbitrary(g);
-
-            BufferElement {
-                addr,
-                len,
-                writable,
-            }
-        }
-    }
-
-    impl Arbitrary for BufferChain {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let chain_len = usize::arbitrary(g) % MAX_CHAIN_LEN + 1;
-
-            let mut elems = vec![BufferElement::zeroed(); chain_len];
-            let mut readables = 0;
-            let mut writables = 0;
-
-            for _ in 0..chain_len {
-                let elem = BufferElement::arbitrary(g);
-                if elem.writable {
-                    elems[chain_len - 1 - writables] = elem;
-                    writables += 1;
-                } else {
-                    elems[readables] = elem;
-                    readables += 1;
-                }
-            }
-
-            BufferChain {
-                elems: elems.into(),
-                split: readables,
-            }
-        }
-    }
-
-    fn run_scenario(s: Scenario) -> bool {
-        let ring = OwnedRing::new(s.table_size);
-        let mut producer = make_producer(&ring);
-        let mut consumer = make_consumer(&ring);
-
-        // Order logs
-        let mut dev_order: Vec<u16> = Vec::new();
-        let mut drv_order: Vec<u16> = Vec::new();
-
-        // Device-tracked polled-but-not-completed IDs
-        let mut dev_ready: Vec<(u16, u32)> = Vec::new();
-
-        for op in &s.ops {
-            match op {
-                Op::Submit(chain) => {
-                    // Submit only if space; otherwise skip
-                    let _ = producer.submit_available(chain);
-                }
-                Op::PollAvail(n) => {
-                    for _ in 0..*n {
-                        if let Ok((id, chain)) = consumer.poll_available() {
-                            dev_ready.push((id, chain.len() as u32));
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                Op::PollUsed(n) => {
-                    for _ in 0..*n {
-                        match producer.poll_used() {
-                            Ok(u) => {
-                                drv_order.push(u.id);
-                                if producer.id_num[u.id as usize] != 0 {
-                                    return false;
-                                }
-                                if !producer.id_free.contains(&u.id) {
-                                    return false;
-                                }
-                            }
-                            Err(RingError::WouldBlock) => break,
-                            Err(_) => return false,
-                        }
-                    }
-                }
-                Op::CompleteOne => {
-                    if let Some((id, len)) = dev_ready.pop() {
-                        if consumer.submit_used(id, len).is_err() {
-                            return false;
-                        }
-
-                        dev_order.push(id);
-                    }
-                }
-            }
-
-            // assert invariants after each op
-            let outstanding: u16 = producer.id_num.iter().copied().sum();
-            if outstanding as usize + producer.num_free != ring.len() {
-                return false;
-            }
-
-            for id in producer.id_free.iter() {
-                if producer.id_num[*id as usize] != 0 {
-                    return false;
-                }
-            }
-        }
-
-        // Drain remaining completions and reclaims
-        while let Some((id, len)) = dev_ready.pop() {
-            if consumer.submit_used(id, len).is_err() {
-                return false;
-            }
-        }
-
-        loop {
-            match producer.poll_used() {
-                Ok(u) => drv_order.push(u.id),
-                Err(RingError::WouldBlock) => break,
-                Err(_) => return false,
-            }
-        }
-
-        true
-    }
-
-    #[test]
-    fn prop_interleaved_with_order_verification() {
-        #[cfg(miri)]
-        let tests = 1;
-        #[cfg(not(miri))]
-        let tests = 100;
-
-        QuickCheck::new()
-            .tests(tests)
-            .quickcheck(run_scenario as fn(Scenario) -> bool);
-    }
-}
+mod fuzz;

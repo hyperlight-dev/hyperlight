@@ -153,7 +153,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v1+json`.
+/// `application/vnd.hyperlight.snapshot.config.v2+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -214,6 +214,12 @@ pub(super) struct MemoryLayout {
     /// Memory region flag bits. `None` means default permissions.
     pub(super) init_data_permissions: Option<u32>,
     pub(super) scratch_size: usize,
+    pub(super) g2h_queue_size: usize,
+    pub(super) h2g_queue_size: usize,
+    pub(super) g2h_buffer_size: usize,
+    pub(super) h2g_buffer_size: usize,
+    pub(super) g2h_pool_pages: usize,
+    pub(super) h2g_pool_pages: usize,
     pub(super) snapshot_size: usize,
     pub(super) pt_size: Option<usize>,
 }
@@ -471,6 +477,10 @@ impl OciSnapshotConfig {
             ("code_size", self.layout.code_size),
             ("init_data_size", self.layout.init_data_size),
             ("scratch_size", self.layout.scratch_size),
+            ("g2h_buffer_size", self.layout.g2h_buffer_size),
+            ("h2g_buffer_size", self.layout.h2g_buffer_size),
+            ("g2h_pool_pages", self.layout.g2h_pool_pages),
+            ("h2g_pool_pages", self.layout.h2g_pool_pages),
         ] {
             if value > max_region {
                 return Err(crate::new_error!(
@@ -478,6 +488,55 @@ impl OciSnapshotConfig {
                     name,
                     value,
                     max_region
+                ));
+            }
+        }
+
+        let mut transport = crate::sandbox::SandboxConfiguration::default();
+        transport.set_g2h_queue_size(self.layout.g2h_queue_size);
+        transport.set_h2g_queue_size(self.layout.h2g_queue_size);
+        transport.set_g2h_buffer_size(self.layout.g2h_buffer_size);
+        transport.set_h2g_buffer_size(self.layout.h2g_buffer_size);
+        transport.set_g2h_pool_pages(self.layout.g2h_pool_pages);
+        transport.set_h2g_pool_pages(self.layout.h2g_pool_pages);
+
+        for (name, saved, normalized) in [
+            (
+                "g2h_queue_size",
+                self.layout.g2h_queue_size,
+                transport.get_g2h_queue_size(),
+            ),
+            (
+                "h2g_queue_size",
+                self.layout.h2g_queue_size,
+                transport.get_h2g_queue_size(),
+            ),
+            (
+                "g2h_buffer_size",
+                self.layout.g2h_buffer_size,
+                transport.get_g2h_buffer_size(),
+            ),
+            (
+                "h2g_buffer_size",
+                self.layout.h2g_buffer_size,
+                transport.get_h2g_buffer_size(),
+            ),
+            (
+                "g2h_pool_pages",
+                self.layout.g2h_pool_pages,
+                transport.get_g2h_pool_pages(),
+            ),
+            (
+                "h2g_pool_pages",
+                self.layout.h2g_pool_pages,
+                transport.get_h2g_pool_pages(),
+            ),
+        ] {
+            if saved != normalized {
+                return Err(crate::new_error!(
+                    "snapshot layout field {} ({}) is not a valid transport value",
+                    name,
+                    saved
                 ));
             }
         }
@@ -782,6 +841,12 @@ mod tests {
                 init_data_size: 0,
                 init_data_permissions: None,
                 scratch_size: 0,
+                g2h_queue_size: 64,
+                h2g_queue_size: 32,
+                g2h_buffer_size: PAGE_SIZE,
+                h2g_buffer_size: PAGE_SIZE,
+                g2h_pool_pages: 8,
+                h2g_pool_pages: 4,
                 snapshot_size: PAGE_SIZE,
                 pt_size: None,
             },
@@ -848,7 +913,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 1,
+  "abi_version": 3,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
@@ -1014,6 +1079,12 @@ mod schema_pin {
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
+    "g2h_buffer_size": 4096,
+    "h2g_buffer_size": 4096,
+    "g2h_pool_pages": 8,
+    "h2g_pool_pages": 4,
     "snapshot_size": 9,
     "pt_size": null
   },
@@ -1034,7 +1105,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 1,
+  "abi_version": 3,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
@@ -1056,6 +1127,12 @@ mod schema_pin {
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
+    "g2h_queue_size": 64,
+    "h2g_queue_size": 32,
+    "g2h_buffer_size": 4096,
+    "h2g_buffer_size": 4096,
+    "g2h_pool_pages": 8,
+    "h2g_pool_pages": 4,
     "snapshot_size": 9,
     "pt_size": null
   },
@@ -1094,7 +1171,7 @@ mod schema_pin {
         assert_eq!(
             actual_value, pinned_value,
             "Snapshot config JSON schema changed. If the change can break \
-             existing snapshots on disk, bump `MT_CONFIG_V1` in \
+             existing snapshots on disk, bump `MT_CONFIG_CURRENT` in \
              `super::media_types` and follow `docs/snapshot-versioning.md`. \
              Either way, paste the actual output below into the matching \
              `PINNED_*`.\n\nactual:\n{actual}"

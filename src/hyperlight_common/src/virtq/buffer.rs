@@ -1,131 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Buffer allocation traits and shared types for virtqueue buffer management.
+//! Owned and segmented virtqueue buffer representations.
 
-use alloc::rc::Rc;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use bytes::{Buf, Bytes};
 use smallvec::{SmallVec, smallvec};
-use thiserror::Error;
 
 use super::access::MemOps;
-
-#[derive(Debug, Error, Copy, Clone)]
-pub enum AllocError {
-    #[error("Invalid region addr {0}")]
-    InvalidAlign(u64),
-    #[error("Invalid free addr {0} and size {1}")]
-    InvalidFree(u64, usize),
-    #[error("Invalid argument")]
-    InvalidArg,
-    #[error("Empty region")]
-    EmptyRegion,
-    #[error("No space available")]
-    NoSpace,
-    #[error("Requested size exceeds pool capacity")]
-    OutOfMemory,
-    #[error("Overflow")]
-    Overflow,
-}
-
-/// Allocation result
-#[derive(Debug, Clone, Copy)]
-pub struct Allocation {
-    /// Starting address of the allocation
-    pub addr: u64,
-    /// Capacity of the allocation in bytes, rounded up to the allocator's slot size.
-    pub len: usize,
-}
-
-/// Trait for buffer providers.
-pub trait BufferProvider {
-    /// Preferred maximum size of one allocation segment.
-    fn max_alloc_len(&self) -> usize {
-        usize::MAX
-    }
-
-    /// Allocate one buffer that can hold at least `len` bytes.
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError>;
-
-    /// Free a previously allocated segment by start address.
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError>;
-
-    /// Reset the pool to initial state.
-    fn reset(&self) {}
-
-    /// Allocate scatter/gather segments for a logical payload of `total_len` bytes.
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        if total_len == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let seg_cap = self.max_alloc_len();
-        if seg_cap == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-
-        let mut rem = total_len;
-        let mut sgs = SmallVec::<[Allocation; 4]>::new();
-
-        while rem > 0 {
-            let len = rem.min(seg_cap);
-            match self.alloc(len) {
-                Ok(alloc) => {
-                    sgs.push(alloc);
-                    rem -= len;
-                }
-                Err(err) => {
-                    for sg in sgs {
-                        let _res = self.dealloc(sg.addr);
-                        debug_assert!(_res.is_ok(), "dealloc failed: {_res:?}");
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(sgs)
-    }
-}
-
-impl<T: BufferProvider> BufferProvider for Rc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
-    }
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-        (**self).dealloc(addr)
-    }
-    fn reset(&self) {
-        (**self).reset()
-    }
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
-    }
-}
-
-impl<T: BufferProvider> BufferProvider for Arc<T> {
-    fn max_alloc_len(&self) -> usize {
-        (**self).max_alloc_len()
-    }
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-        (**self).dealloc(addr)
-    }
-    fn reset(&self) {
-        (**self).reset()
-    }
-    fn alloc_sg(&self, total_len: usize) -> Result<SmallVec<[Allocation; 4]>, AllocError> {
-        (**self).alloc_sg(total_len)
-    }
-}
+use super::pool::{AllocError, Allocation, BufferProvider};
 
 /// Ordered byte segments that make up one virtqueue payload.
 ///
@@ -172,6 +56,34 @@ impl Segments {
     /// Iterate over segments.
     pub fn iter(&self) -> impl Iterator<Item = &Bytes> {
         self.0.iter()
+    }
+
+    /// Split off an owned byte prefix without copying payload data.
+    ///
+    /// Returns `None` and leaves `self` unchanged when `len` exceeds the
+    /// remaining payload length. A split within a segment creates shared
+    /// [`Bytes`] slices backed by the same owner.
+    pub fn split_to(&mut self, len: usize) -> Option<Self> {
+        if len > self.len() {
+            return None;
+        }
+
+        let mut prefix = SmallVec::<[Bytes; 4]>::new();
+        let mut remaining = len;
+
+        while remaining != 0 {
+            let mut segment = self.0.remove(0);
+            if segment.len() <= remaining {
+                remaining -= segment.len();
+                prefix.push(segment);
+            } else {
+                prefix.push(segment.split_to(remaining));
+                self.0.insert(0, segment);
+                remaining = 0;
+            }
+        }
+
+        Some(Self(prefix))
     }
 
     /// Borrow this payload as a [`Buf`] cursor.
@@ -295,7 +207,7 @@ pub struct BufferOwner<P: BufferProvider, M: MemOps> {
 impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
     fn as_ref(&self) -> &[u8] {
         let alloc = self.alloc.allocation();
-        let len = self.written.min(alloc.len);
+        let len = self.written.min(alloc.len as usize);
         // Safety: BufferOwner keeps both the pool allocation and the M alive,
         // so the memory region is valid.
         match unsafe { self.mem.as_slice(alloc.addr, len) } {
@@ -309,16 +221,8 @@ impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
 }
 
 /// Pool-owned allocation that is returned to the pool on drop.
-///
-/// Use [`into_raw`](Self::into_raw) to transfer ownership to a descriptor
-/// state that will deallocate the raw [`Allocation`] through another path.
 #[derive(Debug)]
 pub struct OwnedAlloc<P: BufferProvider> {
-    inner: Option<Inner<P>>,
-}
-
-#[derive(Debug)]
-struct Inner<P: BufferProvider> {
     pool: P,
     alloc: Allocation,
 }
@@ -326,9 +230,7 @@ struct Inner<P: BufferProvider> {
 impl<P: BufferProvider> OwnedAlloc<P> {
     /// Wrap an existing allocation with its owning pool.
     pub fn new(pool: P, alloc: Allocation) -> Self {
-        Self {
-            inner: Some(Inner { pool, alloc }),
-        }
+        Self { pool, alloc }
     }
 
     /// Allocate from `pool` and return an owning guard.
@@ -338,35 +240,15 @@ impl<P: BufferProvider> OwnedAlloc<P> {
     }
 
     /// The raw allocation currently owned by this guard.
-    // `inner` is `Some` for the whole lifetime of a live guard: it is only
-    // taken by `into_raw` which consumes `self` or on drop, so this access
-    // cannot fail.
-    #[allow(clippy::expect_used)]
     pub fn allocation(&self) -> Allocation {
-        self.inner
-            .as_ref()
-            .map(|inner| inner.alloc)
-            .expect("OwnedAlloc::allocation called after ownership transfer")
-    }
-
-    /// Release ownership and return the raw allocation.
-    // `inner` is `Some` until ownership is released, and `into_raw` consumes
-    // `self`, so it can only ever observe `Some` here.
-    #[allow(clippy::expect_used)]
-    pub fn into_raw(mut self) -> Allocation {
-        self.inner
-            .take()
-            .map(|inner| inner.alloc)
-            .expect("OwnedAlloc::into_raw called after ownership transfer")
+        self.alloc
     }
 }
 
 impl<P: BufferProvider> Drop for OwnedAlloc<P> {
     fn drop(&mut self) {
-        if let Some(Inner { pool, alloc }) = self.inner.take() {
-            let result = pool.dealloc(alloc.addr);
-            debug_assert!(result.is_ok(), "OwnedAlloc drop dealloc failed: {result:?}");
-        }
+        let result = self.pool.dealloc(self.alloc.addr);
+        debug_assert!(result.is_ok(), "OwnedAlloc drop dealloc failed: {result:?}");
     }
 }
 
@@ -457,6 +339,32 @@ mod tests {
         assert_eq!(prefix.as_ref(), b"hello ");
         assert_eq!(cursor.remaining(), 5);
         assert_eq!(cursor.chunk(), b"world");
+    }
+
+    #[test]
+    fn segments_split_to_shares_boundary_segment() {
+        let boundary = Bytes::from(vec![b'd', b'e', b'f']);
+        let boundary_ptr = boundary.as_ptr();
+        let mut segments = Segments::new([
+            Bytes::from_static(b"abc"),
+            boundary,
+            Bytes::from_static(b"ghi"),
+        ]);
+
+        let prefix = segments.split_to(5).unwrap();
+
+        assert_eq!(prefix.segment_count(), 2);
+        assert_eq!(prefix.to_bytes().as_ref(), b"abcde");
+        assert_eq!(prefix.as_slice()[1].as_ptr(), boundary_ptr);
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.to_bytes().as_ref(), b"fghi");
+        assert_eq!(
+            segments.as_slice()[0].as_ptr(),
+            boundary_ptr.wrapping_add(2)
+        );
+
+        assert!(segments.split_to(5).is_none());
+        assert_eq!(segments.to_bytes().as_ref(), b"fghi");
     }
 
     #[test]

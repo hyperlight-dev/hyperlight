@@ -1831,6 +1831,20 @@ fn unknown_config_media_type_rejected() {
 }
 
 #[test]
+fn config_v1_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |m| {
+        m["config"]["mediaType"] =
+            Value::from("application/vnd.hyperlight.snapshot.config.v1+json");
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "incompatible with snapshot ABI 3");
+}
+
+#[test]
 fn empty_layers_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_manifest(&path, |m| {
@@ -2296,7 +2310,7 @@ fn manifest_uses_correct_config_and_layer_media_types() {
         serde_json::from_slice(&std::fs::read(manifest_path(&path)).unwrap()).unwrap();
     assert_eq!(
         manifest["config"]["mediaType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v1+json"
+        "application/vnd.hyperlight.snapshot.config.v2+json"
     );
     assert_eq!(manifest["layers"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -2308,7 +2322,7 @@ fn manifest_uses_correct_config_and_layer_media_types() {
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v1+json"
+        "application/vnd.hyperlight.snapshot.config.v2+json"
     );
 }
 
@@ -2767,7 +2781,9 @@ fn round_trip_preserves_stack_top_gva() {
 
 #[test]
 fn round_trip_preserves_non_default_scratch_size() {
-    let custom_scratch: usize = 256 * 1024;
+    use crate::sandbox::SandboxConfiguration;
+
+    let custom_scratch = SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024;
     let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
         .scratch_size(custom_scratch)
         .build()
@@ -2825,6 +2841,44 @@ fn persisted_non_default_layout_loads_and_runs() {
         restored.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
         0x10_000
     );
+}
+
+#[test]
+fn round_trip_preserves_transport_layout() {
+    use crate::sandbox::SandboxConfiguration;
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_scratch_size(512 * 1024);
+    cfg.set_heap_size(512 * 1024);
+    cfg.set_g2h_queue_size(128);
+    cfg.set_h2g_queue_size(16);
+    cfg.set_g2h_buffer_size(8192);
+    cfg.set_h2g_buffer_size(2048);
+    cfg.set_g2h_pool_pages(16);
+    cfg.set_h2g_pool_pages(6);
+
+    let mut sbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+    let snapshot = sbox.snapshot().unwrap();
+    let expected = snapshot.layout().get_transport_arena();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+    let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+
+    assert_eq!(loaded.layout().get_g2h_queue_size(), 128);
+    assert_eq!(loaded.layout().get_h2g_queue_size(), 16);
+    assert_eq!(loaded.layout().get_g2h_buffer_size(), 8192);
+    assert_eq!(loaded.layout().get_h2g_buffer_size(), 2048);
+    assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
+    assert_eq!(loaded.layout().get_h2g_pool_pages(), 6);
+    assert_eq!(loaded.layout().get_transport_arena(), expected);
 }
 
 #[test]
