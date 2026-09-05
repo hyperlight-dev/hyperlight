@@ -12,8 +12,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::func::Registerable;
-use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::shared_mem::SharedMemory as _;
+use crate::mem::shared_mem::SharedMemory;
 use crate::sandbox::snapshot::{OciDigest, OciReference, OciTag, Snapshot};
 use crate::{GuestBinary, HostFunctions, MultiUseSandbox, SandboxBuilder, UninitializedSandbox};
 
@@ -2047,11 +2046,11 @@ fn original_entrypoint_addr_zero_rejected() {
 fn entrypoint_addr_outside_code_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
+        let code_virt_base = cfg["layout"]["code_virt_base"].as_u64().unwrap();
         let code_size = cfg["layout"]["code_size"].as_u64().unwrap();
         let page_size = hyperlight_common::vmem::PAGE_SIZE as u64;
-        let peb_addr =
-            SandboxMemoryLayout::BASE_ADDRESS as u64 + code_size.next_multiple_of(page_size);
-        cfg["entrypoint_addr"] = Value::from(peb_addr);
+        let beyond_code = code_virt_base + code_size.next_multiple_of(page_size);
+        cfg["entrypoint_addr"] = Value::from(beyond_code);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
@@ -3000,6 +2999,22 @@ fn save_returns_manifest_digest_that_loads() {
 
     let loaded = Snapshot::checked_load(&path, digest).unwrap();
     assert_eq!(loaded.snapshot_generation(), expected_gen);
+}
+
+/// The code GVA must survive a save/load round-trip so GDB and
+/// tracing can resolve symbols for non-PIE (or ASLR) guests after
+/// restoring from a file snapshot.
+#[test]
+fn round_trip_preserves_code_gva() {
+    let snap = create_snapshot();
+    let original = snap.layout().get_guest_code_gva();
+    assert_ne!(original, 0, "fixture must have a non-zero code GVA");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout");
+    snap.save(&path, &OciTag::new("latest").unwrap()).unwrap();
+    let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
+    assert_eq!(loaded.layout().get_guest_code_gva(), original);
 }
 
 /// The returned digest is the sha256 of the manifest blob, matching the

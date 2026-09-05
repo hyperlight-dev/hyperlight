@@ -2792,7 +2792,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_single_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.layout.get_guest_code_gva() as u64;
         assert_gva_read_matches(&mut sbox, code_gva, 128);
     }
 
@@ -2802,7 +2802,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_full_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.layout.get_guest_code_gva() as u64;
         assert_gva_read_matches(&mut sbox, code_gva, 4096);
     }
 
@@ -2812,7 +2812,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_unaligned_cross_page() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.layout.get_guest_code_gva() as u64;
         // Start 1 byte before the second page boundary and read 4097 bytes
         // (spans 2 full page boundaries).
         let start = code_gva + 4096 - 1;
@@ -2828,7 +2828,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_two_full_pages() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.layout.get_guest_code_gva() as u64;
         assert_gva_read_matches(&mut sbox, code_gva, 4096 * 2);
     }
 
@@ -2839,7 +2839,7 @@ mod tests {
     #[cfg(feature = "trace_guest")]
     fn read_guest_memory_by_gva_cross_page_boundary() {
         let mut sbox = sandbox_for_gva_tests();
-        let code_gva = sbox.mem_mgr.layout.get_guest_code_address() as u64;
+        let code_gva = sbox.mem_mgr.layout.get_guest_code_gva() as u64;
         // Start 100 bytes before the first page boundary, read across it.
         let start = code_gva + 4096 - 100;
         assert_gva_read_matches(&mut sbox, start, 200);
