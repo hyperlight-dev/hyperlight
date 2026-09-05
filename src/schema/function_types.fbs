@@ -57,9 +57,33 @@ table hlvecbytes {
     value:[ubyte];
 }
 
+// hlbytechunks is the embedded compatibility representation of one logical
+// byte sequence. It stores the bytes contiguously, so original chunk boundaries
+// are not preserved.
+
+table hlbytechunks {
+    value:[ubyte];
+}
+
+// hlexternalbytes declares a logical byte value stored outside the FlatBuffer.
+// chunked requests the ByteChunks representation rather than VecBytes.
+
+table hlexternalbytes {
+    length:ulong;
+    chunked:bool;
+}
+
 // hlsizeprefixedbuffer is a vector of bytes prefixed with a 32 bit integer
 
 table hlsizeprefixedbuffer {
+    size:int;
+    value:[ubyte];
+}
+
+// hlsizeprefixedbytechunks is the embedded compatibility representation of a
+// chunked return byte value. Embedded transport does not preserve boundaries.
+
+table hlsizeprefixedbytechunks {
     size:int;
     value:[ubyte];
 }
@@ -81,6 +105,8 @@ union ParameterValue {
     hlstring,
     hlbool,
     hlvecbytes,
+    hlexternalbytes,
+    hlbytechunks,
 }
 
 // This represents a parameter type in a function definition
@@ -95,6 +121,7 @@ enum ParameterType : ubyte {
     hlstring,
     hlbool,
     hlvecbytes,
+    hlbytechunks,
 }
 
 enum ReturnType : ubyte {
@@ -108,6 +135,7 @@ enum ReturnType : ubyte {
     hlbool,
     hlvoid,
     hlsizeprefixedbuffer,
+    hlbytechunks,
 }
 
 union ReturnValue {
@@ -121,4 +149,6 @@ union ReturnValue {
     hlbool,
     hlvoid,
     hlsizeprefixedbuffer,
+    hlexternalbytes,
+    hlsizeprefixedbytechunks,
 }
