@@ -73,7 +73,13 @@ windows = { version = "0.62", features = [
     "Win32_System_JobObjects",
     "Win32_System_SystemServices",
 ] }
-windows-sys = { version = "0.61", features = ["Win32"] }
+windows-sys = { version = "0.61", features = [
+    "Win32",
+    # FSCTL_SET_SPARSE and DeviceIoControl, used to mark the snapshot
+    # blob sparse. Not implied by "Win32".
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
 windows-result = "0.4"
 rust-embed = { version = "8.11.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 windows-version = "0.1"
