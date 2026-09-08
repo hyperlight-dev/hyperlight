@@ -152,7 +152,6 @@ mod buffer;
 mod consumer;
 mod desc;
 mod event;
-pub mod msg;
 mod pool;
 mod producer;
 mod ring;
@@ -196,7 +195,7 @@ pub enum VirtqError {
     #[error("Allocation exceeds pool capacity")]
     OutOfMemory,
     #[error("Failed to allocate virtqueue bookkeeping")]
-    BookkeepingAllocation,
+    Bookkeeping,
     #[error("Invalid chain received")]
     BadChain,
     #[error("Payload data too large: received {recv} bytes, limit {limit} bytes")]
@@ -237,6 +236,7 @@ impl From<AllocError> for VirtqError {
         match e {
             AllocError::NoSpace => Self::Backpressure,
             AllocError::OutOfMemory => Self::OutOfMemory,
+            AllocError::Bookkeeping => Self::Bookkeeping,
             other => Self::Alloc(other),
         }
     }
@@ -471,10 +471,8 @@ const _: () = {
 /// Shared test utilities for virtqueue tests.
 #[cfg(test)]
 pub(crate) mod test_utils {
-    use alloc::collections::BTreeMap;
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::virtq::ring::tests::{OwnedRing, TestMem};
@@ -503,80 +501,7 @@ pub(crate) mod test_utils {
         }
     }
 
-    /// Simple test buffer pool that allocates from a range.
-    #[derive(Clone)]
-    pub(crate) struct TestPool {
-        base: u64,
-        next: Arc<AtomicU64>,
-        size: usize,
-        allocations: Arc<Mutex<BTreeMap<u64, usize>>>,
-    }
-
-    impl TestPool {
-        pub(crate) fn new(base: u64, size: usize) -> Self {
-            Self {
-                base,
-                next: Arc::new(AtomicU64::new(base)),
-                size,
-                allocations: Arc::new(Mutex::new(BTreeMap::new())),
-            }
-        }
-    }
-
-    impl BufferProvider for TestPool {
-        fn preferred_segment_len(&self) -> usize {
-            u32::MAX as usize
-        }
-
-        fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-            if len == 0 {
-                return Err(AllocError::InvalidArg);
-            }
-            let len = u32::try_from(len).map_err(|_| AllocError::OutOfMemory)?;
-
-            let addr = self.next.fetch_add(u64::from(len), Ordering::Relaxed);
-            let end = addr + len as u64;
-            if end > self.base + self.size as u64 {
-                return Err(AllocError::NoSpace);
-            }
-            self.allocations
-                .lock()
-                .expect("poisoned mutex")
-                .insert(addr, len as usize);
-
-            Ok(Allocation { addr, len })
-        }
-
-        fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
-        where
-            I: IntoIterator<Item = usize>,
-        {
-            let mut regions = Regions::new();
-            for len in lengths {
-                match self.alloc(len) {
-                    Ok(alloc) => regions.push(Allocations::from_iter([alloc])),
-                    Err(error) => return Err(error),
-                }
-            }
-
-            if regions.is_empty() {
-                return Err(AllocError::InvalidArg);
-            }
-
-            Ok(regions)
-        }
-
-        fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-            self.allocations
-                .lock()
-                .expect("poisoned mutex")
-                .remove(&addr)
-                .map(|_| ())
-                .ok_or(AllocError::InvalidFree(addr, 0))
-        }
-    }
-
-    type TestProducer = VirtqProducer<TestMem, TestNotifier, TestPool>;
+    type TestProducer = VirtqProducer<TestMem, TestNotifier>;
     type TestConsumer = VirtqConsumer<TestMem, TestNotifier>;
 
     /// Create test infrastructure: a producer, consumer, and notifier backed
@@ -584,12 +509,20 @@ pub(crate) mod test_utils {
     pub(crate) fn make_test_producer(
         ring: &OwnedRing,
     ) -> (TestProducer, TestConsumer, TestNotifier) {
+        make_test_producer_with_slot_size(ring, 128)
+    }
+
+    pub(crate) fn make_test_producer_with_slot_size(
+        ring: &OwnedRing,
+        slot_size: usize,
+    ) -> (TestProducer, TestConsumer, TestNotifier) {
         let layout = ring.layout();
         let mem = ring.mem();
 
         // Pool needs to be in memory accessible via mem - use memory after ring layout
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new(pool_base, 0x8000);
+        let pool =
+            SlotPool::new(SlotLayout::new(pool_base, slot_size, 0x8000 / slot_size)).unwrap();
         let notifier = TestNotifier::new();
 
         let producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
@@ -610,7 +543,7 @@ mod tests {
 
     /// Helper: build and submit a readable+writable chain using the chain() builder.
     fn send_readwrite(
-        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
+        producer: &mut VirtqProducer<TestMem, TestNotifier>,
         entry_data: &[u8],
         used_cap: usize,
     ) -> Token {
@@ -642,6 +575,7 @@ mod tests {
 
         let (recv, _reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -732,7 +666,7 @@ mod tests {
         let layout = ring.layout();
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = TestPool::new(pool_base, 0x8000);
+        let pool = SlotPool::new(SlotLayout::new(pool_base, 128, 0x8000 / 128)).unwrap();
         let notifier = CtxNotifier {
             last_num_free: Arc::new(AtomicUsize::new(0)),
             last_num_inflight: Arc::new(AtomicUsize::new(0)),
@@ -746,6 +680,7 @@ mod tests {
         producer.submit(se).unwrap();
         assert_eq!(notifier.count.load(Ordering::Relaxed), 1);
         assert!(notifier.last_num_inflight.load(Ordering::Relaxed) > 0);
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -932,7 +867,7 @@ mod tests {
 
     /// Helper: submit a read-only chain (readable data, no writable reply).
     fn send_readonly(
-        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
+        producer: &mut VirtqProducer<TestMem, TestNotifier>,
         entry_data: &[u8],
     ) -> Token {
         let mut se = producer.chain().readable(entry_data.len()).build().unwrap();
@@ -950,11 +885,9 @@ mod tests {
         send_readonly(&mut producer, b"b");
         send_readonly(&mut producer, b"c");
         send_readonly(&mut producer, b"d");
+        assert_eq!(producer.num_inflight(), 4);
 
-        // Ring is now full - next submit should fail with Backpressure
-        let mut se = producer.chain().readable(1).build().unwrap();
-        se.write_all(b"e").unwrap();
-        let res = producer.submit(se);
+        let res = producer.chain().readable(1).build();
         assert!(
             matches!(res, Err(VirtqError::Backpressure)),
             "expected Backpressure from full ring"
@@ -969,9 +902,11 @@ mod tests {
         // Reclaim should free ring slots without losing data
         let count = producer.reclaim().unwrap();
         assert_eq!(count, 4, "expected 4 reclaimed entries");
+        assert_eq!(producer.num_inflight(), 0);
 
         // Ring should have space now
         send_readonly(&mut producer, b"e");
+        producer.reset().unwrap();
     }
 
     #[test]

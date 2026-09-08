@@ -9,38 +9,12 @@ use hyperlight_common::virtq::UsedChain;
 mod common;
 use common::*;
 
-fn bench_readonly_strategies(c: &mut Criterion) {
-    let mut group = c.benchmark_group("virtq_readonly_allocator_strategy");
+fn bench_readonly(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtq_readonly");
 
     for size in [8 * 1024usize, 64 * 1024, 256 * 1024] {
         let payload = vec![0xA5u8; size];
         group.throughput(Throughput::Bytes(size as u64));
-
-        group.bench_with_input(
-            BenchmarkId::new("run_pool", size),
-            &payload,
-            |b, payload| {
-                let mut pair = make_pair(128, run_pool);
-                b.iter(|| {
-                    let used = readonly_roundtrip(&mut pair, black_box(payload));
-                    debug_assert!(matches!(used, UsedChain::Ack(_)));
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("run_pool_fragmented", size),
-            &payload,
-            |b, payload| {
-                let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_run_pool(base, pool_size, payload.len())
-                });
-                b.iter(|| {
-                    let used = readonly_roundtrip(&mut pair, black_box(payload));
-                    debug_assert!(matches!(used, UsedChain::Ack(_)));
-                });
-            },
-        );
 
         group.bench_with_input(
             BenchmarkId::new("slot_pool_segmented", size),
@@ -72,47 +46,13 @@ fn bench_readonly_strategies(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_readwrite_strategies(c: &mut Criterion) {
-    let mut group = c.benchmark_group("virtq_readwrite_allocator_strategy");
+fn bench_readwrite(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtq_readwrite");
 
     for size in [8 * 1024usize, 64 * 1024, 256 * 1024] {
         let request = vec![0x11u8; size];
         let response = vec![0x22u8; size];
         group.throughput(Throughput::Bytes((request.len() + response.len()) as u64));
-
-        group.bench_with_input(
-            BenchmarkId::new("run_pool", size),
-            &(request.clone(), response.clone()),
-            |b, (request, response)| {
-                let mut pair = make_pair(128, run_pool);
-                b.iter(|| {
-                    let used = readwrite_roundtrip(
-                        &mut pair,
-                        black_box(request.as_slice()),
-                        black_box(response.as_slice()),
-                    );
-                    black_box(used.segments().unwrap().segment_count());
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("run_pool_fragmented", size),
-            &(request.clone(), response.clone()),
-            |b, (request, response)| {
-                let mut pair = make_pair(128, |base, pool_size| {
-                    fragmented_run_pool(base, pool_size, request.len())
-                });
-                b.iter(|| {
-                    let used = readwrite_roundtrip(
-                        &mut pair,
-                        black_box(request.as_slice()),
-                        black_box(response.as_slice()),
-                    );
-                    black_box(used.segments().unwrap().segment_count());
-                });
-            },
-        );
 
         group.bench_with_input(
             BenchmarkId::new("slot_pool_segmented", size),
@@ -152,10 +92,6 @@ fn bench_readwrite_strategies(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_readonly_strategies,
-    bench_readwrite_strategies,
-);
+criterion_group!(benches, bench_readonly, bench_readwrite,);
 
 criterion_main!(benches);
