@@ -214,13 +214,19 @@ pub struct Writable;
 /// Upholds invariants: at least one buffer must be present in the chain,
 /// and readable buffers must be added before writable buffers.
 ///
-/// The builder stores up to 16 buffer elements inline to avoid allocation for
+/// The builder stores up to four buffer elements inline to avoid allocation for
 /// common small chains. Larger chains are still supported and spill to the heap.
 #[derive(Debug, Default)]
 pub struct BufferChainBuilder<T> {
-    elems: SmallVec<[BufferElement; 16]>,
+    elems: SmallVec<[BufferElement; 4]>,
     split: usize,
     marker: PhantomData<T>,
+}
+
+impl<T> BufferChainBuilder<T> {
+    pub(super) fn reserve_exact(&mut self, additional: usize) {
+        self.elems.reserve_exact(additional);
+    }
 }
 
 impl BufferChainBuilder<Readable> {
@@ -357,7 +363,7 @@ impl BufferChainBuilder<Writable> {
 #[derive(Debug, Clone)]
 pub struct BufferChain {
     /// All buffer elements (readable followed by writable)
-    elems: SmallVec<[BufferElement; 16]>,
+    elems: SmallVec<[BufferElement; 4]>,
     /// Split index between readable and writable buffers
     split: usize,
 }
@@ -371,11 +377,6 @@ impl BufferChain {
     /// Get readable buffers in chain
     pub fn readables(&self) -> &[BufferElement] {
         &self.elems[..self.split]
-    }
-
-    /// Get mutable readable buffers in chain.
-    pub(crate) fn readables_mut(&mut self) -> &mut [BufferElement] {
-        &mut self.elems[..self.split]
     }
 
     /// Get writable buffers in chain
@@ -763,6 +764,15 @@ impl<M: MemOps> RingProducer<M> {
         Ok(UsedBuffer { id, len: desc.len })
     }
 
+    /// Get the next available descriptor ID without consuming it.
+    pub fn next_id(&self) -> Result<u16, RingError> {
+        let id = *self.id_free.last().ok_or(RingError::OutOfMemory)?;
+        if self.id_num[id as usize] != 0 {
+            return Err(RingError::InvalidState);
+        }
+        Ok(id)
+    }
+
     /// Get number of free descriptors in the ring.
     #[inline]
     pub fn num_free(&self) -> usize {
@@ -1050,7 +1060,7 @@ impl<M: MemOps> RingConsumer<M> {
         }
 
         // Build chain (head + tails), tracking readable/writable split inline.
-        let mut elements = SmallVec::<[BufferElement; 16]>::new();
+        let mut elements = SmallVec::<[BufferElement; 4]>::new();
         let mut pos = self.avail_cursor;
         let mut chain_len: u16 = 1;
 
@@ -1424,14 +1434,15 @@ pub(crate) mod tests {
     use alloc::vec::Vec;
     use core::cell::UnsafeCell;
     use core::num::NonZeroU16;
-    use core::ptr;
-    use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+    use core::ptr::{self, NonNull};
+    use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 
     use bytemuck::{Pod, Zeroable};
 
     use super::super::align_up;
     use super::*;
     use crate::virtq::event::EventSuppression;
+    use crate::virtq::{BufferLease, BufferMap};
 
     /// Test MemOps implementation that maintains pointer provenance.
     ///
@@ -1478,6 +1489,72 @@ pub(crate) mod tests {
 
         pub fn base_addr(&self) -> u64 {
             self.inner.base_addr
+        }
+    }
+
+    pub struct TestMapping {
+        creator: std::thread::ThreadId,
+        owner: core::mem::ManuallyDrop<TestBufferOwner>,
+    }
+
+    struct TestBufferOwner {
+        data: NonNull<[u8]>,
+        _mem: TestMem,
+        _lease: BufferLease,
+    }
+
+    // SAFETY: The view is immutable. Drop checks the creator thread before
+    // destroying the owner containing the Rc-backed lease.
+    unsafe impl Send for TestMapping {}
+
+    impl AsRef<[u8]> for TestMapping {
+        fn as_ref(&self) -> &[u8] {
+            // SAFETY: The mapping owns the backing and its initialized immutable prefix.
+            unsafe { self.owner.data.as_ref() }
+        }
+    }
+
+    impl Drop for TestMapping {
+        fn drop(&mut self) {
+            assert_eq!(
+                self.creator,
+                std::thread::current().id(),
+                "mapping dropped on another thread"
+            );
+            // SAFETY: The creator thread releases the mapping before its lease.
+            unsafe { core::mem::ManuallyDrop::drop(&mut self.owner) };
+        }
+    }
+
+    impl BufferMap for TestMem {
+        type Mapping = TestMapping;
+
+        unsafe fn map_buffer(
+            &self,
+            lease: BufferLease,
+            written: usize,
+        ) -> Result<Self::Mapping, Self::Error> {
+            let alloc = lease.allocation();
+            assert!(written <= alloc.len as usize);
+
+            let offset = alloc.addr.checked_sub(self.base_addr()).unwrap() as usize;
+
+            // SAFETY: Test storage is never resized.
+            let size = unsafe { &*self.inner.storage.get() }.len();
+            assert!(offset.checked_add(alloc.len as usize).unwrap() <= size);
+
+            // SAFETY: The caller owns the allocation and excludes writes. The
+            // cloned TestMem retains its stable backing after this borrow.
+            let data = NonNull::from(unsafe { self.as_slice(alloc.addr, written)? });
+
+            Ok(TestMapping {
+                creator: std::thread::current().id(),
+                owner: core::mem::ManuallyDrop::new(TestBufferOwner {
+                    data,
+                    _mem: self.clone(),
+                    _lease: lease,
+                }),
+            })
         }
     }
 
@@ -1535,35 +1612,56 @@ pub(crate) mod tests {
         }
     }
 
+    /// Shared fault injection over real test memory and buffer owners.
     #[derive(Clone)]
-    struct FailingWriteMem {
-        inner: TestMem,
-        fail_at: Arc<AtomicUsize>,
-        writes: Arc<AtomicUsize>,
+    pub(crate) struct FaultMem(pub Arc<FaultState>);
+
+    pub(crate) struct FaultState {
+        pub mem: TestMem,
+        pub writes: AtomicUsize,
+        pub fail_write_at: AtomicUsize,
+        pub fail_mapping_at: AtomicUsize,
+        pub map_calls: AtomicUsize,
+        pub deny_views: AtomicBool,
     }
 
-    impl FailingWriteMem {
-        fn new(inner: TestMem) -> Self {
-            Self {
-                inner,
-                fail_at: Arc::new(AtomicUsize::new(usize::MAX)),
-                writes: Arc::new(AtomicUsize::new(0)),
-            }
+    impl FaultMem {
+        pub(crate) fn new(mem: TestMem) -> Self {
+            Self(Arc::new(FaultState {
+                mem,
+                fail_write_at: AtomicUsize::new(usize::MAX),
+                writes: AtomicUsize::new(0),
+                fail_mapping_at: AtomicUsize::new(usize::MAX),
+                map_calls: AtomicUsize::new(0),
+                deny_views: AtomicBool::new(false),
+            }))
         }
 
-        fn fail_at(&self, write: usize) {
-            self.writes.store(0, Ordering::Relaxed);
-            self.fail_at.store(write, Ordering::Relaxed);
+        /// Reset the write count and fail at this zero-based index.
+        /// Byte writes and release stores share the count.
+        pub(crate) fn fail_write_at(&self, write: usize) {
+            self.0.writes.store(0, Ordering::Relaxed);
+            self.0.fail_write_at.store(write, Ordering::Relaxed);
         }
 
-        fn allow_writes(&self) {
-            self.writes.store(0, Ordering::Relaxed);
-            self.fail_at.store(usize::MAX, Ordering::Relaxed);
+        pub(crate) fn allow_writes(&self) {
+            self.fail_write_at(usize::MAX);
+        }
+
+        /// Fail the zero-based mapping attempt after resetting its counter.
+        pub(crate) fn fail_mapping_at(&self, mapping: usize) {
+            self.0.map_calls.store(0, Ordering::Relaxed);
+            self.0.fail_mapping_at.store(mapping, Ordering::Relaxed);
+        }
+
+        /// Reject borrowed slices and owned mappings.
+        pub(crate) fn deny_views(&self) {
+            self.0.deny_views.store(true, Ordering::Relaxed);
         }
 
         fn check_write(&self) -> Result<(), ()> {
-            let write = self.writes.fetch_add(1, Ordering::Relaxed);
-            if write == self.fail_at.load(Ordering::Relaxed) {
+            let write = self.0.writes.fetch_add(1, Ordering::Relaxed);
+            if write == self.0.fail_write_at.load(Ordering::Relaxed) {
                 Err(())
             } else {
                 Ok(())
@@ -1571,38 +1669,85 @@ pub(crate) mod tests {
         }
     }
 
-    // SAFETY: FailingWriteMem delegates to TestMem and only injects errors
-    // before writes.
-    unsafe impl MemOps for FailingWriteMem {
+    // SAFETY: Successful operations delegate to TestMem with the same address
+    // and ownership preconditions. Injected failures perform no memory access.
+    unsafe impl MemOps for FaultMem {
         type Error = ();
 
         fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
-            self.inner.read(addr, dst).unwrap();
-            Ok(())
+            self.0.mem.read(addr, dst).map_err(|never| match never {})
         }
 
         fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
             self.check_write()?;
-            self.inner.write(addr, src).unwrap();
-            Ok(())
+            self.0.mem.write(addr, src).map_err(|never| match never {})
         }
 
         fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
-            Ok(self.inner.load_acquire(addr).unwrap())
+            self.0
+                .mem
+                .load_acquire(addr)
+                .map_err(|never| match never {})
         }
 
         fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
             self.check_write()?;
-            self.inner.store_release(addr, val).unwrap();
-            Ok(())
+            self.0
+                .mem
+                .store_release(addr, val)
+                .map_err(|never| match never {})
         }
 
         unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8], Self::Error> {
-            Ok(unsafe { self.inner.as_slice(addr, len) }.unwrap())
+            if self.0.deny_views.load(Ordering::Relaxed) {
+                return Err(());
+            }
+            // SAFETY: The caller supplies TestMem's immutable slice preconditions.
+            unsafe { self.0.mem.as_slice(addr, len) }.map_err(|never| match never {})
         }
 
         unsafe fn as_mut_slice(&self, addr: u64, len: usize) -> Result<&mut [u8], Self::Error> {
-            Ok(unsafe { self.inner.as_mut_slice(addr, len) }.unwrap())
+            if self.0.deny_views.load(Ordering::Relaxed) {
+                return Err(());
+            }
+            // SAFETY: The caller supplies exclusive access to this range.
+            unsafe { self.0.mem.as_mut_slice(addr, len) }.map_err(|never| match never {})
+        }
+    }
+
+    /// Retains the backend generation for lifetime assertions.
+    pub(crate) struct TrackedMapping {
+        data: TestMapping,
+        _mem: FaultMem,
+    }
+
+    impl AsRef<[u8]> for TrackedMapping {
+        fn as_ref(&self) -> &[u8] {
+            self.data.as_ref()
+        }
+    }
+
+    impl BufferMap for FaultMem {
+        type Mapping = TrackedMapping;
+
+        unsafe fn map_buffer(
+            &self,
+            lease: BufferLease,
+            written: usize,
+        ) -> Result<Self::Mapping, Self::Error> {
+            let call = self.0.map_calls.fetch_add(1, Ordering::Relaxed);
+            if self.0.deny_views.load(Ordering::Relaxed)
+                || call == self.0.fail_mapping_at.load(Ordering::Relaxed)
+            {
+                return Err(());
+            }
+            // SAFETY: The caller supplies TestMem's mapping preconditions.
+            let data = unsafe { BufferMap::map_buffer(&self.0.mem, lease, written) }
+                .map_err(|never| match never {})?;
+            Ok(TrackedMapping {
+                data,
+                _mem: self.clone(),
+            })
         }
     }
 
@@ -3352,7 +3497,7 @@ pub(crate) mod tests {
     #[test]
     fn test_ring_producer_failed_reset_preserves_local_state() {
         let ring = make_ring(4);
-        let mem = FailingWriteMem::new(ring.mem());
+        let mem = FaultMem::new(ring.mem());
         let mut producer = RingProducer::new(ring.layout(), mem.clone());
 
         producer.submit_one(0x1000, 64, false).unwrap();
@@ -3365,7 +3510,7 @@ pub(crate) mod tests {
         let id_num = producer.id_num.clone();
         let event_flags_shadow = producer.event_flags_shadow;
 
-        mem.fail_at(1);
+        mem.fail_write_at(1);
         assert!(matches!(
             producer.reset(),
             Err(RingError::MemError {

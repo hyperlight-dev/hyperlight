@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 * Add per-direction virtqueue configuration and account its allocations in
   scratch sizing.
+* Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.
+* Producer batch completion without notification and segmented payload
+  extraction without flattening.
 
 ### Changed
 * Support overriding the guest log level when building or restoring initialized
@@ -27,8 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   allocated.
 * Place virtqueue rings and pools in host-owned scratch before page tables.
   Snapshot ABI 4 rejects snapshots created with earlier layouts.
+* Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
+  ownership. `BufferMap` supplies complete owners exposing initialized bytes.
+* `ChainBuilder::build()` allocates readable and writable requests.
+  `writable_avail()` reserves available upper-tier slots within the descriptor
+  budget. It may add zero slots to a nonempty chain.
 
 ### Removed
+* `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
 
 ### Fixed
 

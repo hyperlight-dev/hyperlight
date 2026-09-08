@@ -3,11 +3,6 @@
 
 use super::*;
 
-fn make_run_pool<const L: usize, const U: usize>(size: usize) -> RunPool<L, U> {
-    let base = align_up(0x10000, L.max(U)).unwrap() as u64;
-    RunPool::<L, U>::new(base, size).unwrap()
-}
-
 fn make_slot_pool(slot_count: usize, slot_size: usize) -> SlotPool {
     let layout = SlotLayout::new(0x80000, slot_size, slot_count);
     SlotPool::new(layout).unwrap()
@@ -17,156 +12,6 @@ fn make_tiered_slot_pool(lower_count: usize, upper_count: usize) -> SlotPool {
     let lower = SlotLayout::new(0x80000, 256, lower_count);
     let upper = SlotLayout::new(0x90000, 4096, upper_count);
     SlotPool::new_tiered(lower, upper).unwrap()
-}
-
-fn alloc_exact_regions(
-    pool: &impl BufferProvider,
-    lengths: impl IntoIterator<Item = usize>,
-) -> Result<Regions, AllocError> {
-    pool.alloc_regions(lengths)
-}
-
-#[test]
-fn test_run_pool_new_success() {
-    let pool = RunPool::<256, 4096>::new(0x10000, 1024 * 1024).unwrap();
-    assert!(pool.inner.borrow().lower.capacity() > 0);
-    assert!(pool.inner.borrow().upper.capacity() > 0);
-}
-
-#[test]
-fn test_run_pool_alloc_small_to_lower() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let alloc = pool.alloc(128).unwrap();
-
-    // Should come from the lower tier.
-    assert!(pool.inner.borrow().lower.contains(alloc.addr));
-    assert_eq!(alloc.len, 256);
-}
-
-#[test]
-fn test_run_pool_alloc_large_to_upper() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let alloc = pool.alloc(1500).unwrap();
-
-    // Should come from the upper tier.
-    assert!(pool.inner.borrow().upper.contains(alloc.addr));
-    assert_eq!(alloc.len, 4096);
-}
-
-#[test]
-fn test_run_pool_alloc_fallback_to_upper() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-
-    // Fill the lower tier completely.
-    let mut allocations = Vec::new();
-    while pool.inner.borrow().lower.free_bytes() > 0 {
-        allocations.push(pool.inner.borrow_mut().lower.alloc(256).unwrap());
-    }
-
-    // Small allocation should fall back to the upper tier.
-    let alloc = pool.alloc(128).unwrap();
-    assert!(pool.inner.borrow().upper.contains(alloc.addr));
-}
-
-#[test]
-fn test_run_pool_free_from_lower() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let alloc = pool.alloc(128).unwrap();
-
-    let free_before = pool.inner.borrow().lower.free_bytes();
-    pool.dealloc(alloc.addr).unwrap();
-    assert_eq!(
-        pool.inner.borrow().lower.free_bytes(),
-        free_before + alloc.len as usize
-    );
-}
-
-#[test]
-fn test_run_pool_free_from_upper() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let alloc = pool.alloc(1500).unwrap();
-
-    let free_before = pool.inner.borrow().upper.free_bytes();
-    pool.dealloc(alloc.addr).unwrap();
-    assert_eq!(
-        pool.inner.borrow().upper.free_bytes(),
-        free_before + alloc.len as usize
-    );
-}
-
-#[test]
-fn test_run_pool_stress_many_allocations() {
-    let pool = make_run_pool::<256, 4096>(4 * 1024 * 1024);
-    let mut allocations = Vec::new();
-
-    // Allocate many buffers
-    for i in 0..100 {
-        let size = if i % 2 == 0 { 128 } else { 1500 };
-        allocations.push(pool.alloc(size).unwrap());
-    }
-
-    // Free half of them
-    for i in (0..100).step_by(2) {
-        pool.dealloc(allocations[i].addr).unwrap();
-    }
-
-    // Should be able to allocate again
-    for i in 0..50 {
-        let size = if i % 2 == 0 { 128 } else { 1500 };
-        let _alloc = pool.alloc(size).unwrap();
-    }
-}
-
-#[test]
-fn test_run_pool_mixed_workload() {
-    let pool = make_run_pool::<256, 4096>(2 * 1024 * 1024);
-
-    // Simulate virtio-net workload
-    let desc_buf = pool.alloc(64).unwrap(); // Control message
-    let rx_buf1 = pool.alloc(1500).unwrap(); // MTU packet
-    let rx_buf2 = pool.alloc(1500).unwrap(); // MTU packet
-    let tx_buf = pool.alloc(4096).unwrap(); // Large buffer
-
-    // Free and reallocate
-    pool.dealloc(rx_buf1.addr).unwrap();
-    let rx_buf3 = pool.alloc(1500).unwrap();
-
-    // Should reuse freed buffer (LIFO)
-    assert_eq!(rx_buf3.addr, rx_buf1.addr);
-
-    pool.dealloc(desc_buf.addr).unwrap();
-    pool.dealloc(rx_buf2.addr).unwrap();
-    pool.dealloc(rx_buf3.addr).unwrap();
-    pool.dealloc(tx_buf.addr).unwrap();
-}
-
-#[test]
-fn test_run_pool_zero_allocation_error() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let result = pool.alloc(0);
-    assert!(matches!(result, Err(AllocError::InvalidArg)));
-}
-
-#[test]
-fn test_run_pool_too_large_allocation() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-    let result = pool.alloc(2 * 1024 * 1024); // Larger than pool
-    assert!(matches!(result, Err(AllocError::OutOfMemory)));
-}
-
-#[test]
-fn test_align_up_helper() {
-    assert_eq!(align_up(0, 256).unwrap(), 0);
-    assert_eq!(align_up(1, 256).unwrap(), 256);
-    assert_eq!(align_up(256, 256).unwrap(), 256);
-    assert_eq!(align_up(257, 256).unwrap(), 512);
-    assert_eq!(align_up(511, 256).unwrap(), 512);
-    assert_eq!(align_up(512, 256).unwrap(), 512);
-    assert!(matches!(align_up(1, 0), Err(AllocError::InvalidArg)));
-    assert!(matches!(
-        align_up(usize::MAX, 256),
-        Err(AllocError::Overflow)
-    ));
 }
 
 #[test]
@@ -293,103 +138,6 @@ fn test_tiered_slot_pool_reports_free_tier_counts() {
 }
 
 #[test]
-fn test_tiered_slot_pool_region_uses_both_tiers() {
-    let pool = make_tiered_slot_pool(1, 2);
-    let regions = alloc_exact_regions(&pool, [4096 + 128]).unwrap();
-    let allocations = &regions[0];
-
-    assert_eq!(regions.len(), 1);
-    assert_eq!(allocations.len(), 2);
-    assert_eq!(allocations[0].len, 4096);
-    assert_eq!(allocations[1].len, 256);
-    assert!((0x90000..0x92000).contains(&allocations[0].addr));
-    assert!((0x80000..0x80100).contains(&allocations[1].addr));
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-    assert_eq!(pool.num_free(), 3);
-}
-
-#[test]
-fn test_tiered_slot_pool_allocates_regions_in_order() {
-    let pool = make_tiered_slot_pool(1, 2);
-    let regions = alloc_exact_regions(&pool, [128, 128]).unwrap();
-
-    assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].len(), 1);
-    assert_eq!(regions[1].len(), 1);
-    assert!((0x80000..0x80100).contains(&regions[0][0].addr));
-    assert!((0x90000..0x92000).contains(&regions[1][0].addr));
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-}
-
-#[test]
-fn test_slot_pool_max_alloc_reserves_regions_and_honors_limit() {
-    let pool = make_tiered_slot_pool(2, 3);
-
-    let max = pool.max_alloc([128], 3).unwrap();
-    assert_eq!(max, 2 * 4096);
-    assert_eq!(pool.num_free(), 5);
-
-    let regions = pool.alloc_regions([128, max]).unwrap();
-    assert_eq!(regions.iter().map(Allocations::len).sum::<usize>(), 3);
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-}
-
-#[test]
-fn test_slot_pool_max_alloc_requires_one_remaining_allocation() {
-    let pool = make_tiered_slot_pool(1, 1);
-
-    assert!(matches!(pool.max_alloc([128], 1), Err(AllocError::NoSpace)));
-    assert_eq!(pool.num_free(), 2);
-}
-
-#[test]
-fn test_slot_pool_max_alloc_ignores_remaining_lower_slot() {
-    let pool = make_tiered_slot_pool(1, 1);
-
-    assert!(matches!(
-        pool.max_alloc([4096], 2),
-        Err(AllocError::NoSpace)
-    ));
-    assert_eq!(pool.num_free(), 2);
-}
-
-#[test]
-fn test_slot_pool_rejects_invalid_or_unavailable_regions() {
-    let pool = make_tiered_slot_pool(1, 1);
-
-    assert!(matches!(
-        pool.alloc_regions([0]),
-        Err(AllocError::InvalidArg)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([]),
-        Err(AllocError::InvalidArg)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([128, 0]),
-        Err(AllocError::InvalidArg)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([4096 + 257]),
-        Err(AllocError::NoSpace)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([128, 4096, 1]),
-        Err(AllocError::NoSpace)
-    ));
-    assert_eq!(pool.num_free(), 2);
-}
-
-#[test]
 fn test_tiered_slot_pool_dealloc_routes_by_region() {
     let pool = make_tiered_slot_pool(1, 1);
     let lower = pool.alloc(128).unwrap();
@@ -408,80 +156,6 @@ fn test_tiered_slot_pool_dealloc_routes_by_region() {
     ));
 }
 
-// Edge case: allocation exactly at boundary
-#[test]
-fn test_run_pool_boundary_allocation() {
-    let pool = make_run_pool::<256, 4096>(1024 * 1024);
-
-    // Allocate exactly at boundary
-    let alloc = pool.alloc(256).unwrap();
-    assert!(pool.inner.borrow().lower.contains(alloc.addr));
-
-    // Allocate just over boundary
-    let alloc2 = pool.alloc(257).unwrap();
-    assert!(pool.inner.borrow().upper.contains(alloc2.addr));
-}
-
-#[test]
-fn test_run_pool_dealloc_addr_routes_to_correct_tier() {
-    let pool = make_run_pool::<256, 4096>(0x20000);
-    let lower = pool.alloc(128).unwrap();
-    let upper = pool.alloc(1024).unwrap();
-
-    assert_eq!(pool.allocation_len(lower.addr).unwrap(), 256);
-    assert_eq!(pool.allocation_len(upper.addr).unwrap(), 4096);
-
-    pool.dealloc_addr(lower.addr).unwrap();
-    pool.dealloc_addr(upper.addr).unwrap();
-}
-
-#[test]
-fn test_run_pool_region_uses_one_contiguous_run() {
-    let pool = make_run_pool::<256, 4096>(0x20000);
-    let regions = alloc_exact_regions(&pool, [4096 * 2 + 1]).unwrap();
-
-    assert_eq!(regions.len(), 1);
-    assert_eq!(regions[0].len(), 1);
-    assert_eq!(regions[0][0].len, 4096 * 3);
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-}
-
-#[test]
-fn test_run_pool_allocates_each_region_as_one_run() {
-    let pool = make_run_pool::<256, 4096>(0x20000);
-    let regions = alloc_exact_regions(&pool, [8192, 128]).unwrap();
-
-    assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].len(), 1);
-    assert_eq!(regions[1].len(), 1);
-    assert_eq!(regions[0][0].len, 8192);
-    assert_eq!(regions[1][0].len, 256);
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-}
-
-#[test]
-fn test_slot_pool_region_splits() {
-    let pool = make_slot_pool(8, 4096);
-    let regions = alloc_exact_regions(&pool, [4096 * 2 + 1]).unwrap();
-    let allocations = &regions[0];
-
-    assert_eq!(regions.len(), 1);
-    assert_eq!(allocations.len(), 3);
-    assert_eq!(allocations[0].len, 4096);
-    assert_eq!(allocations[1].len, 4096);
-    assert_eq!(allocations[2].len, 4096);
-
-    for allocation in regions.into_iter().flatten() {
-        pool.dealloc(allocation.addr).unwrap();
-    }
-}
-
 #[test]
 fn test_tiered_slot_pool_live_addrs_are_deterministic() {
     let pool = make_tiered_slot_pool(2, 2);
@@ -495,6 +169,34 @@ fn test_tiered_slot_pool_live_addrs_are_deterministic() {
     assert_eq!(
         pool.live_addrs(),
         vec![lower_low.addr, lower_high.addr, upper_high.addr]
+    );
+}
+
+#[test]
+fn free_slots_include_full_capacities_and_preserve_allocation_order() {
+    let pool = make_tiered_slot_pool(2, 2);
+    let lower = pool.alloc(128).unwrap();
+    let upper = pool.alloc(1024).unwrap();
+    let mut free = Vec::new();
+    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
+    assert_eq!(free, [(0x80000, 256), (0x90000, 4096)]);
+    assert_eq!(pool.live_addrs(), [lower.addr, upper.addr]);
+
+    pool.dealloc(lower.addr).unwrap();
+    let repeated = pool.alloc(128).unwrap();
+    assert_eq!(repeated.addr, lower.addr);
+    pool.dealloc(repeated.addr).unwrap();
+    pool.dealloc(upper.addr).unwrap();
+    free.clear();
+    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
+    assert_eq!(
+        free,
+        [
+            (0x80000, 256),
+            (0x80100, 256),
+            (0x90000, 4096),
+            (0x91000, 4096)
+        ]
     );
 }
 
@@ -534,35 +236,12 @@ fn test_slot_pool_dealloc_double_free() {
 }
 
 #[test]
-fn test_slot_pool_alloc_regions_preflights_sequence() {
-    let pool = make_slot_pool(2, 4096);
-
-    assert!(matches!(
-        pool.alloc_regions([]),
-        Err(AllocError::InvalidArg)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([4096, 0]),
-        Err(AllocError::InvalidArg)
-    ));
-    assert!(matches!(
-        pool.alloc_regions([4096, 4096, 1]),
-        Err(AllocError::NoSpace)
-    ));
-    assert_eq!(pool.num_free(), 2);
-
-    let alloc = pool.alloc(4096).unwrap();
-    assert_eq!(pool.num_free(), 1);
-    pool.dealloc(alloc.addr).unwrap();
-}
-
-#[test]
 fn test_slot_pool_dealloc_addr_and_allocation_len() {
     let pool = make_slot_pool(4, 4096);
     let alloc = pool.alloc(4096).unwrap();
 
     assert_eq!(pool.allocation_len(alloc.addr).unwrap(), 4096);
-    pool.dealloc_addr(alloc.addr).unwrap();
+    pool.dealloc(alloc.addr).unwrap();
     assert!(matches!(
         pool.allocation_len(alloc.addr),
         Err(AllocError::InvalidFree(_, 0))

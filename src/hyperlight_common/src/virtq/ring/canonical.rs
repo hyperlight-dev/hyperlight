@@ -207,7 +207,7 @@ where
 
         seen_ids.insert(id_idx);
 
-        let mut elems = SmallVec::<[BufferElement; 16]>::new();
+        let mut elems = SmallVec::<[BufferElement; 4]>::new();
         let mut split = 0usize;
 
         loop {

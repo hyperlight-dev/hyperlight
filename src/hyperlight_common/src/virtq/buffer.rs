@@ -8,8 +8,7 @@ use alloc::vec::Vec;
 use bytes::{Buf, Bytes};
 use smallvec::{SmallVec, smallvec};
 
-use super::access::MemOps;
-use super::pool::{AllocError, Allocation, BufferProvider};
+use super::{Allocation, SlotPool};
 
 /// Ordered byte segments that make up one virtqueue payload.
 ///
@@ -115,6 +114,11 @@ impl Segments {
         }
     }
 
+    /// Consume this payload without flattening its segments.
+    pub fn into_chunks(self) -> Vec<Bytes> {
+        self.0.into_vec()
+    }
+
     fn collect(&self, sgs: &[Bytes], len: usize) -> Bytes {
         let mut out = Vec::with_capacity(len);
         out.extend(sgs.iter().flat_map(|seg| seg.iter().copied()));
@@ -189,66 +193,32 @@ impl Buf for SegmentsBuf<'_> {
     }
 }
 
-/// The owner of a mapped buffer, ensuring its lifetime.
-///
-/// Holds an [`OwnedAlloc`] and provides direct access to the underlying
-/// shared memory via [`MemOps::as_slice`]. Implements `AsRef<[u8]>` so it
-/// can be used with [`Bytes::from_owner`](bytes::Bytes::from_owner) for
-/// zero-copy `Bytes` backed by shared memory.
-///
-/// When dropped, the allocation is returned to the pool.
-#[derive(Debug)]
-pub struct BufferOwner<P: BufferProvider, M: MemOps> {
-    pub(crate) mem: M,
-    pub(crate) alloc: OwnedAlloc<P>,
-    pub(crate) written: usize,
+/// An exclusively owned buffer allocation returned to its pool on drop.
+pub struct BufferLease {
+    /// The pool that allocated the buffer.
+    pool: SlotPool,
+    /// The buffer's start address and full allocation capacity.
+    allocation: Allocation,
 }
 
-impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
-    fn as_ref(&self) -> &[u8] {
-        let alloc = self.alloc.allocation();
-        let len = self.written.min(alloc.len as usize);
-        // Safety: BufferOwner keeps both the pool allocation and the M alive,
-        // so the memory region is valid.
-        match unsafe { self.mem.as_slice(alloc.addr, len) } {
-            Ok(slice) => slice,
-            Err(_) => {
-                debug_assert!(false, "BufferOwner direct slice failed");
-                &[]
-            }
-        }
-    }
-}
-
-/// Pool-owned allocation that is returned to the pool on drop.
-#[derive(Debug)]
-pub struct OwnedAlloc<P: BufferProvider> {
-    pool: P,
-    alloc: Allocation,
-}
-
-impl<P: BufferProvider> OwnedAlloc<P> {
-    /// Wrap an existing allocation with its owning pool.
-    pub fn new(pool: P, alloc: Allocation) -> Self {
-        Self { pool, alloc }
+impl BufferLease {
+    /// Create a new buffer lease from a pool and allocation.
+    pub fn new(pool: SlotPool, allocation: Allocation) -> Self {
+        Self { pool, allocation }
     }
 
-    /// Allocate from `pool` and return an owning guard.
-    pub fn allocate(pool: P, len: usize) -> Result<Self, AllocError> {
-        let alloc = pool.alloc(len)?;
-        Ok(Self::new(pool, alloc))
-    }
-
-    /// The raw allocation currently owned by this guard.
+    /// The buffer's start address and full allocation capacity.
     pub fn allocation(&self) -> Allocation {
-        self.alloc
+        self.allocation
     }
 }
 
-impl<P: BufferProvider> Drop for OwnedAlloc<P> {
+impl Drop for BufferLease {
     fn drop(&mut self) {
-        let result = self.pool.dealloc(self.alloc.addr);
-        debug_assert!(result.is_ok(), "OwnedAlloc drop dealloc failed: {result:?}");
+        if let Err(error) = self.pool.dealloc(self.allocation.addr) {
+            log::error!("Failed to release a virtqueue buffer: {error}");
+            debug_assert!(false, "BufferLease deallocation failed: {error}");
+        }
     }
 }
 
@@ -257,6 +227,25 @@ mod tests {
     use bytes::Buf;
 
     use super::*;
+    use crate::virtq::{SlotLayout, SlotPool};
+
+    #[test]
+    fn lease_returns_slot_on_drop() {
+        let pool = SlotPool::new(SlotLayout::new(0, 4, 1)).unwrap();
+        let allocation = pool.alloc(4).unwrap();
+        let lease = BufferLease::new(pool.clone(), allocation);
+
+        assert_eq!(lease.allocation().addr, allocation.addr);
+        assert_eq!(lease.allocation().len, 4);
+        assert_eq!(pool.num_free(), 0);
+
+        drop(lease);
+        assert_eq!(pool.num_free(), 1);
+
+        let reused = pool.alloc(4).unwrap();
+        assert_eq!(reused.addr, allocation.addr);
+        pool.dealloc(reused.addr).unwrap();
+    }
 
     #[test]
     fn segments_cursor_advances_across_segments() {
@@ -376,5 +365,19 @@ mod tests {
 
         assert_eq!(collected.as_ptr(), ptr);
         assert_eq!(collected.as_ref(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn segments_into_chunks_preserves_segment_storage() {
+        let first = Bytes::from(vec![1, 2]);
+        let second = Bytes::from(vec![3, 4]);
+        let first_ptr = first.as_ptr();
+        let second_ptr = second.as_ptr();
+
+        let chunks = Segments::new([first, second]).into_chunks();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].as_ptr(), first_ptr);
+        assert_eq!(chunks[1].as_ptr(), second_ptr);
     }
 }

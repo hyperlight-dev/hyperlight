@@ -8,10 +8,8 @@
 //! allocation bitmap. Eligible requests try the lower tier first and fall back
 //! to the upper tier only when the lower tier has no free slot.
 //!
-//! Slots need not be contiguous, so scatter/gather allocation splits a logical
-//! buffer at the upper-tier slot size and may place an eligible final segment
-//! in the lower tier. [`SlotPool::live_addrs`] reports ownership in deterministic
-//! lower-then-upper index order without mutating pool state.
+//! Each allocation occupies one slot. [`SlotPool::live_addrs`] reports ownership
+//! in deterministic index order.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -20,7 +18,7 @@ use core::cell::RefCell;
 use fixedbitset::FixedBitSet;
 use smallvec::SmallVec;
 
-use super::{AllocError, Allocation, Allocations, BufferProvider, Regions, SendWrap};
+use super::{AllocError, Allocation};
 
 /// Exact memory layout for one [`SlotPool`] tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,10 +74,6 @@ struct Tier {
     /// One bit per slot index; set means the slot is currently handed out.
     allocated: FixedBitSet,
 }
-
-// SAFETY: only sound for single-threaded (guest-side) access; see the
-// type-level invariant on `SendWrap`.
-unsafe impl Send for SendWrap<Rc<RefCell<Inner>>> {}
 
 impl Tier {
     fn from_layout(layout: SlotLayout) -> Result<Self, AllocError> {
@@ -187,6 +181,15 @@ impl Tier {
         );
     }
 
+    fn for_each_free(&self, f: &mut impl FnMut(Allocation)) {
+        for slot in self.allocated.zeroes() {
+            f(Allocation {
+                addr: self.base_addr + slot as u64 * u64::from(self.slot_size),
+                len: self.slot_size,
+            });
+        }
+    }
+
     fn layout(&self) -> SlotLayout {
         SlotLayout::new(self.base_addr, self.slot_size as usize, self.count)
     }
@@ -250,101 +253,6 @@ impl Inner {
         }
 
         self.upper.alloc(len)
-    }
-
-    fn alloc_counts(
-        &self,
-        lengths: impl IntoIterator<Item = usize>,
-    ) -> Result<(usize, usize), AllocError> {
-        let lower_size = self.lower.as_ref().map(|lower| lower.slot_size as usize);
-        let upper_size = self.upper.slot_size as usize;
-        let free_lower = self.lower.as_ref().map_or(0, Tier::num_free);
-        let free_upper = self.upper.num_free();
-
-        let mut alloc_count = 0usize;
-        let mut lower_count = 0usize;
-
-        for len in lengths {
-            if len == 0 {
-                return Err(AllocError::InvalidArg);
-            }
-
-            alloc_count = alloc_count
-                .checked_add(len.div_ceil(upper_size))
-                .ok_or(AllocError::Overflow)?;
-
-            let tail_len = len % upper_size;
-            if tail_len != 0
-                && lower_size.is_some_and(|size| tail_len <= size)
-                && lower_count < free_lower
-            {
-                lower_count += 1;
-            }
-
-            if alloc_count - lower_count > free_upper {
-                return Err(AllocError::NoSpace);
-            }
-        }
-
-        Ok((alloc_count, alloc_count - lower_count))
-    }
-
-    fn max_alloc(
-        &self,
-        lengths: impl IntoIterator<Item = usize>,
-        alloc_limit: usize,
-    ) -> Result<usize, AllocError> {
-        let (used, upper_used) = self.alloc_counts(lengths)?;
-        let remaining = alloc_limit.checked_sub(used).ok_or(AllocError::NoSpace)?;
-        if remaining == 0 {
-            return Err(AllocError::NoSpace);
-        }
-
-        let free_upper = self.upper.num_free() - upper_used;
-        let upper_count = remaining.min(free_upper);
-
-        let len = upper_count
-            .checked_mul(self.upper.slot_size as usize)
-            .ok_or(AllocError::Overflow)?;
-
-        if len == 0 {
-            return Err(AllocError::NoSpace);
-        }
-
-        Ok(len)
-    }
-
-    fn alloc_regions<I>(&mut self, lengths: I) -> Result<Regions, AllocError>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        let lengths = SmallVec::<[usize; 4]>::from_iter(lengths);
-        self.alloc_counts(lengths.iter().copied())?;
-
-        let mut regions = Regions::with_capacity(lengths.len());
-        let slot_size = self.max_alloc_len();
-
-        for total_len in lengths {
-            let mut allocs = Allocations::new();
-            let mut remaining = total_len;
-
-            while remaining > 0 {
-                let len = remaining.min(slot_size);
-
-                // `alloc_counts` preflights the complete request.
-                #[allow(clippy::expect_used)]
-                allocs.push(self.alloc(len).expect("plan validated upstream"));
-
-                remaining -= len;
-            }
-            regions.push(allocs);
-        }
-
-        if regions.is_empty() {
-            return Err(AllocError::InvalidArg);
-        }
-
-        Ok(regions)
     }
 
     fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
@@ -411,11 +319,10 @@ impl Inner {
 ///
 /// Allocation and deallocation are O(1) per slot. Eligible allocations first
 /// try the optional lower tier and fall back to the required upper tier when
-/// the lower tier is full. [`alloc_regions`](BufferProvider::alloc_regions)
-/// splits logical payloads into bounded descriptor segments.
+/// the lower tier is full.
 #[derive(Clone)]
 pub struct SlotPool {
-    inner: SendWrap<Rc<RefCell<Inner>>>,
+    inner: Rc<RefCell<Inner>>,
 }
 
 impl SlotPool {
@@ -436,13 +343,24 @@ impl SlotPool {
     fn from_layouts(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
         let inner = Inner::new(lower, upper)?;
         Ok(Self {
-            inner: SendWrap(Rc::new(RefCell::new(inner))),
+            inner: Rc::new(RefCell::new(inner)),
         })
     }
 
     /// Return every live slot address in deterministic tier and index order.
     pub fn live_addrs(&self) -> Vec<u64> {
         self.inner.borrow().live_addrs()
+    }
+
+    /// Visit every free slot in lower-then-upper index order.
+    ///
+    /// The callback must not allocate or free slots in this pool.
+    pub fn for_each_free(&self, mut f: impl FnMut(Allocation)) {
+        let inner = self.inner.borrow();
+        if let Some(lower) = &inner.lower {
+            lower.for_each_free(&mut f);
+        }
+        inner.upper.for_each_free(&mut f);
     }
 
     /// Return the lower and upper tier layouts.
@@ -478,7 +396,7 @@ impl SlotPool {
     }
 
     /// Free a previously allocated slot by address.
-    pub fn dealloc_addr(&self, addr: u64) -> Result<(), AllocError> {
+    pub fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
         self.inner.borrow_mut().dealloc_addr(addr)
     }
 
@@ -516,41 +434,13 @@ impl SlotPool {
         self.inner.borrow().count()
     }
 
-    /// Maximum upper-tier region length after reserving `lengths`.
-    ///
-    /// The returned region uses only upper-tier slots. It and the reserved
-    /// regions use at most `alloc_limit` allocations in total. This query does
-    /// not mutate the pool.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a reserved region is invalid or unavailable, no
-    /// additional allocation fits, or capacity arithmetic overflows.
-    pub fn max_alloc<I>(&self, lengths: I, alloc_limit: usize) -> Result<usize, AllocError>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        self.inner.borrow().max_alloc(lengths, alloc_limit)
-    }
-}
-
-impl BufferProvider for SlotPool {
-    fn preferred_segment_len(&self) -> usize {
-        self.inner.borrow().max_alloc_len()
-    }
-
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
+    /// Allocate one slot holding at least `len` bytes.
+    pub fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         self.inner.borrow_mut().alloc(len)
     }
 
-    fn alloc_regions<I>(&self, lengths: I) -> Result<Regions, AllocError>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        self.inner.borrow_mut().alloc_regions(lengths)
-    }
-
-    fn dealloc(&self, addr: u64) -> Result<(), AllocError> {
-        self.inner.borrow_mut().dealloc_addr(addr)
+    #[cfg(test)]
+    pub(crate) fn strong_count(&self) -> usize {
+        Rc::strong_count(&self.inner)
     }
 }
