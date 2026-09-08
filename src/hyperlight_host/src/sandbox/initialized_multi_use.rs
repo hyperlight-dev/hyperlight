@@ -1446,6 +1446,7 @@ mod tests {
                 defaults.get_g2h_pool_pages(),
                 defaults.get_h2g_pool_pages(),
             )
+            .next_multiple_of(page_size::get())
         } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())

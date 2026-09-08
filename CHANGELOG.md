@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
 
 ### Fixed
+* Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
 
 ## [v0.17.0] - 2026-08-27
 
