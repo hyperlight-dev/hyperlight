@@ -5,7 +5,6 @@ use alloc::vec;
 use core::fmt;
 
 use bytes::Bytes;
-use fixedbitset::FixedBitSet;
 use smallvec::SmallVec;
 
 use super::*;
@@ -394,7 +393,6 @@ pub struct VirtqConsumer<M, N> {
     inner: RingConsumer<M>,
     mem: M,
     notifier: N,
-    inflight: FixedBitSet,
     next_token: u32,
 }
 
@@ -413,13 +411,11 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// Create a consumer with separate ring and buffer memory accessors.
     pub fn new_split(layout: Layout, ring_mem: M, buf_mem: M, notifier: N) -> Self {
         let inner = RingConsumer::new(layout, ring_mem);
-        let inflight = FixedBitSet::with_capacity(inner.len());
 
         Self {
             inner,
             mem: buf_mem,
             notifier,
-            inflight,
             next_token: 0,
         }
     }
@@ -443,7 +439,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// # Errors
     ///
     /// - [`VirtqError::BadChain`] - Descriptor chain format not recognized
-    /// - [`VirtqError::InvalidState`] - Descriptor ID collision (driver bug)
+    /// - [`VirtqError::RingError`] - Invalid ring state or memory access failure
     #[allow(clippy::type_complexity)]
     pub fn poll(
         &mut self,
@@ -465,17 +461,6 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
             .iter()
             .fold(0usize, |acc, elem| acc.saturating_add(elem.len as usize));
 
-        // Reserve the inflight slot
-        let id_idx = id as usize;
-        if id_idx >= self.inflight.len() {
-            return Err(VirtqError::InvalidState);
-        }
-
-        if self.inflight.contains(id_idx) {
-            return Err(VirtqError::InvalidState);
-        }
-
-        self.inflight.insert(id_idx);
         let token = Token {
             seq: self.next_token,
             id,
@@ -538,14 +523,6 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         let id = reply.token().id;
         let written = u32::try_from(reply.written()).map_err(|_| VirtqError::ReplyTooLarge)?;
 
-        let id_idx = id as usize;
-        let slot_set = id_idx < self.inflight.len() && self.inflight.contains(id_idx);
-        if !slot_set {
-            return Err(VirtqError::InvalidState);
-        }
-
-        self.inflight.set(id_idx, false);
-
         if self.inner.submit_used_with_notify(id, written)? {
             self.notifier.notify(QueueStats {
                 num_free: self.inner.num_free(),
@@ -561,11 +538,6 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// The ring's `poll_available` removes the descriptor from the available
     /// ring before [`poll`](Self::poll) validates the chain.
     fn abort_chain(&mut self, id: u16, err: VirtqError) -> VirtqError {
-        let id_idx = id as usize;
-        if id_idx < self.inflight.len() {
-            self.inflight.set(id_idx, false);
-        }
-
         // Best effort: failing to return the descriptor means the ring is
         // already in an unrecoverable state, so surface the original error.
         if let Ok(true) = self.inner.submit_used_with_notify(id, 0) {
@@ -635,12 +607,11 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// - [`VirtqError::InvalidState`] - one or more chains are still in flight
     /// - [`VirtqError::RingError`] - device-event normalization failed
     pub fn reset(&mut self) -> Result<(), VirtqError> {
-        if self.inflight.ones().next().is_some() {
+        if self.inner.num_inflight() != 0 {
             return Err(VirtqError::InvalidState);
         }
 
         self.inner.reset()?;
-        self.inflight.clear();
         Ok(())
     }
 }
@@ -817,6 +788,7 @@ mod tests {
             wc.write_all(b"response").unwrap();
             consumer.complete(recv, wc).unwrap();
         }
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -833,12 +805,13 @@ mod tests {
         assert!(matches!(reply, ReplyChain::Ack(_)));
 
         consumer.complete(recv, reply).unwrap();
+        producer.reset().unwrap();
     }
 
     #[test]
     fn test_readwrite_round_trip() {
         let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer_with_slot_size(&ring, 64);
 
         let mut se = producer.chain().readable(32).writable(64).build().unwrap();
         se.write_all(b"hello world").unwrap();
@@ -858,6 +831,7 @@ mod tests {
         } else {
             panic!("expected Writable reply for recv+reply chain");
         }
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -898,6 +872,7 @@ mod tests {
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"abcdefgh");
 
         consumer.complete(recv, reply).unwrap();
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -936,7 +911,7 @@ mod tests {
     #[test]
     fn test_writable_partial_write() {
         let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer_with_slot_size(&ring, 8);
 
         let se = producer.chain().writable(8).build().unwrap();
         producer.submit(se).unwrap();
@@ -951,12 +926,13 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
+        producer.reset().unwrap();
     }
 
     #[test]
     fn test_writable_write_all_too_large() {
         let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer_with_slot_size(&ring, 4);
 
         let se = producer.chain().writable(4).build().unwrap();
         producer.submit(se).unwrap();
@@ -968,6 +944,7 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -983,6 +960,7 @@ mod tests {
             consumer.poll(4),
             Err(VirtqError::PayloadTooLarge { recv: 8, limit: 4 })
         ));
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1027,7 +1005,6 @@ mod tests {
             consumer.poll(1024),
             Err(VirtqError::RingError(RingError::BadChain))
         ));
-        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
     }
 
@@ -1049,7 +1026,6 @@ mod tests {
             consumer.poll(1024),
             Err(VirtqError::RingError(RingError::BadChain))
         ));
-        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
     }
 
@@ -1075,7 +1051,7 @@ mod tests {
     #[test]
     fn test_writable_rewind() {
         let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer_with_slot_size(&ring, 16);
 
         let se = producer.chain().writable(16).build().unwrap();
         producer.submit(se).unwrap();
@@ -1094,6 +1070,7 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1187,6 +1164,7 @@ mod tests {
         // Complete in reverse order
         consumer.complete(e2, c2).unwrap();
         consumer.complete(e1, c1).unwrap();
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1209,11 +1187,12 @@ mod tests {
             consumer.complete(recv1, reply2),
             Err(VirtqError::InvalidState)
         ));
-        assert_eq!(consumer.inflight.count_ones(..), 2);
+        assert_eq!(consumer.inner.num_inflight(), 2);
         assert!(producer.poll().unwrap().is_none());
         assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
 
         drop((recv2, reply1));
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1233,6 +1212,7 @@ mod tests {
         assert_eq!(data.as_ref(), b"abc");
         assert_eq!(recv.consumed(), 1);
         consumer.complete(recv, reply).unwrap();
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1245,7 +1225,7 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (recv, reply) = poll_data(&mut consumer);
-        assert!(consumer.inflight.count_ones(..) > 0);
+        assert!(consumer.inner.num_inflight() > 0);
         assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
 
         // Complete first so we do not leak
@@ -1253,8 +1233,8 @@ mod tests {
 
         consumer.reset().unwrap();
 
-        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
+        producer.reset().unwrap();
     }
 
     #[test]
@@ -1276,7 +1256,30 @@ mod tests {
 
         consumer.reset().unwrap();
 
-        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
+        producer.reset().unwrap();
+    }
+
+    #[test]
+    fn failed_completion_keeps_reset_blocked() {
+        use crate::virtq::ring::tests::FaultMem;
+
+        let ring = make_ring(4);
+        let (mut producer, _, _) = make_test_producer(&ring);
+        let mem = FaultMem::new(ring.mem());
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem.clone(), TestNotifier::new());
+        let chain = producer.chain().writable(8).build().unwrap();
+        producer.submit(chain).unwrap();
+        let (recv, reply) = consumer.poll(0).unwrap().unwrap();
+
+        mem.fail_write_at(0);
+        assert!(matches!(
+            consumer.complete(recv, reply),
+            Err(VirtqError::RingError(RingError::MemError { .. }))
+        ));
+        mem.allow_writes();
+        assert_eq!(consumer.inner.num_inflight(), 1);
+        assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
+        producer.reset().unwrap();
     }
 }

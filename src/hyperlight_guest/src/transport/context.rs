@@ -22,10 +22,10 @@ impl Notifier for GuestNotifier {
 }
 
 /// Type alias for the guest-side G2H producer.
-pub type G2hProducer = VirtqProducer<GuestMemOps, GuestNotifier, SlotPool>;
+pub type G2hProducer = VirtqProducer<GuestMemOps, GuestNotifier>;
 
 /// Type alias for the guest-side H2G producer.
-pub type H2gProducer = VirtqProducer<GuestMemOps, GuestNotifier, SlotPool>;
+pub type H2gProducer = VirtqProducer<GuestMemOps, GuestNotifier>;
 
 /// Configuration for one queue passed to [`GuestContext::new`].
 pub struct QueueConfig {
@@ -109,9 +109,11 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
 
 /// Build the uniform H2G pool.
 ///
-/// Every preposted receive buffer has the configured size so the host sees one
-/// predictable capacity for guest calls.
+/// Each slot becomes one independent preposted receive buffer.
 fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotPool, AllocError> {
+    if buffer_size == 0 {
+        return Err(AllocError::InvalidArg);
+    }
     let count = pool_len(pages)? / buffer_size;
     SlotPool::new(SlotLayout::new(base, buffer_size, count))
 }
@@ -122,6 +124,9 @@ fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotP
 /// consuming configured-size slots. Complete slots in the remaining pages form
 /// the upper tier.
 fn g2h_pool(base: u64, pages: usize, upper_size: usize) -> result::Result<SlotPool, AllocError> {
+    if upper_size == 0 {
+        return Err(AllocError::InvalidArg);
+    }
     let pool_len = pool_len(pages)?;
     let lower_len = G2H_LOWER_SLOT_COUNT
         .checked_mul(G2H_LOWER_SLOT_SIZE)

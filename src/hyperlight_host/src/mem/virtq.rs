@@ -316,48 +316,40 @@ impl<'a> Validator<'a> {
         Ok(regions)
     }
 
+    fn scratch_gva(&self, gpa: u64) -> Result<u64> {
+        let resolved = self
+            .layout
+            .resolve_gpa(gpa, &[])
+            .ok_or_else(|| new_error!("GPA {gpa:#x} is outside scratch"))?;
+
+        if !matches!(resolved.base, BaseGpaRegion::Scratch(())) {
+            return Err(new_error!("GPA {gpa:#x} is outside scratch"));
+        }
+
+        hyperlight_common::layout::scratch_base_gva(self.layout.get_scratch_size())
+            .checked_add(u64::try_from(resolved.offset)?)
+            .ok_or_else(|| new_error!("GPA {gpa:#x} to GVA translation overflow"))
+    }
+
     /// Translate validated transport GPAs into the GVA ranges used by descriptors.
     fn resolve_gva_regions(&self) -> Result<GvaRegions> {
-        let to_gva = |gpa| {
-            let resolved = self
-                .layout
-                .resolve_gpa(gpa, &[])
-                .ok_or_else(|| new_error!("GPA {gpa:#x} is outside scratch"))?;
-
-            if !matches!(resolved.base, BaseGpaRegion::Scratch(())) {
-                return Err(new_error!("GPA {gpa:#x} is outside scratch"));
-            }
-
-            hyperlight_common::layout::scratch_base_gva(self.layout.get_scratch_size())
-                .checked_add(u64::try_from(resolved.offset)?)
-                .ok_or_else(|| new_error!("GPA {gpa:#x} to GVA translation overflow"))
-        };
-
-        let (
-            g2h_ring_addr,
-            h2g_ring_addr,
-            g2h_pool_addr,
-            h2g_pool_addr,
-            g2h_ring_len,
-            h2g_ring_len,
-            g2h_pool_len,
-            h2g_pool_len,
-        ) = (
-            self.config.arena.g2h_ring_addr(),
-            self.config.arena.h2g_ring_addr(),
-            self.config.arena.g2h_pool_addr(),
-            self.config.arena.h2g_pool_addr(),
-            self.config.g2h.ring_len,
-            self.config.h2g.ring_len,
-            self.config.g2h.pool_len,
-            self.config.h2g.pool_len,
-        );
-
         Ok(GvaRegions {
-            g2h_ring: checked_region(to_gva(g2h_ring_addr)?, g2h_ring_len, "G2H ring")?,
-            h2g_ring: checked_region(to_gva(h2g_ring_addr)?, h2g_ring_len, "H2G ring")?,
-            g2h_pool: checked_region(to_gva(g2h_pool_addr)?, g2h_pool_len, "G2H pool")?,
-            h2g_pool: checked_region(to_gva(h2g_pool_addr)?, h2g_pool_len, "H2G pool")?,
+            g2h_ring: checked_region(
+                self.scratch_gva(self.config.arena.g2h_ring_addr())?,
+                self.config.g2h.ring_len,
+            )?,
+            h2g_ring: checked_region(
+                self.scratch_gva(self.config.arena.h2g_ring_addr())?,
+                self.config.h2g.ring_len,
+            )?,
+            g2h_pool: checked_region(
+                self.scratch_gva(self.config.arena.g2h_pool_addr())?,
+                self.config.g2h.pool_len,
+            )?,
+            h2g_pool: checked_region(
+                self.scratch_gva(self.config.arena.h2g_pool_addr())?,
+                self.config.h2g.pool_len,
+            )?,
         })
     }
 }
@@ -403,10 +395,10 @@ fn validate_ring_len(direction: &str, bytes: &[u8], expected: usize) -> Result<(
     Ok(())
 }
 
-fn checked_region(start: u64, len: usize, tag: &str) -> Result<Range<u64>> {
+fn checked_region(start: u64, len: usize) -> Result<Range<u64>> {
     let end = start
         .checked_add(u64::try_from(len)?)
-        .ok_or_else(|| new_error!("{tag} GVA range overflow"))?;
+        .ok_or_else(|| new_error!("GVA range overflow"))?;
 
     Ok(start..end)
 }

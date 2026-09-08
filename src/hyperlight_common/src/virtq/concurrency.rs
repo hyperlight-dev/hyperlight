@@ -41,6 +41,7 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
+use core::mem::ManuallyDrop;
 use core::num::NonZeroU16;
 
 use bytemuck::Zeroable;
@@ -49,7 +50,6 @@ use loom::thread;
 
 use super::*;
 use crate::virtq::desc::Descriptor;
-use crate::virtq::pool::RunPoolSync;
 
 #[derive(Debug)]
 pub struct MemErr;
@@ -289,6 +289,76 @@ unsafe impl MemOps for LoomMem {
     }
 }
 
+pub struct LoomMapping {
+    creator: thread::ThreadId,
+    owner: ManuallyDrop<LoomBufferOwner>,
+}
+
+struct LoomBufferOwner {
+    view: loom::cell::ConstPtr<Vec<u8>>,
+    offset: usize,
+    written: usize,
+    _mem: Arc<LoomMem>,
+    _lease: BufferLease,
+}
+
+// SAFETY: The view is immutable. Drop checks the creator thread before
+// destroying the owner containing the Rc-backed lease.
+unsafe impl Send for LoomMapping {}
+
+impl AsRef<[u8]> for LoomMapping {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: Construction checks this initialized range. The owned read
+        // guard excludes writes while the backing is borrowed.
+        self.owner.view.with(|buf| unsafe {
+            &(&*buf)[self.owner.offset..self.owner.offset + self.owner.written]
+        })
+    }
+}
+
+impl Drop for LoomMapping {
+    fn drop(&mut self) {
+        assert_eq!(
+            self.creator,
+            thread::current().id(),
+            "mapping dropped on another thread"
+        );
+        // SAFETY: The creator thread releases the read guard before its lease.
+        unsafe { ManuallyDrop::drop(&mut self.owner) };
+    }
+}
+
+impl BufferMap for Arc<LoomMem> {
+    type Mapping = LoomMapping;
+
+    unsafe fn map_buffer(
+        &self,
+        lease: BufferLease,
+        written: usize,
+    ) -> Result<Self::Mapping, Self::Error> {
+        let allocation = lease.allocation();
+        let (info, offset) = self.region(allocation.addr).ok_or(MemErr)?;
+
+        if !matches!(info.kind, RegionKind::Pool)
+            || written > allocation.len as usize
+            || offset.checked_add(allocation.len as usize).ok_or(MemErr)? > info.size
+        {
+            return Err(MemErr);
+        }
+
+        Ok(LoomMapping {
+            creator: thread::current().id(),
+            owner: ManuallyDrop::new(LoomBufferOwner {
+                view: self.pool.get(),
+                offset,
+                written,
+                _mem: self.clone(),
+                _lease: lease,
+            }),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct Notify {
     kicks: AtomicUsize,
@@ -316,13 +386,13 @@ fn virtq_ping_pong() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 8, pool_base, pool_size));
-        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
-        let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
         let t_prod = thread::spawn(move || {
+            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).writable(32).build().unwrap();
             se.write_all(b"ping").unwrap();
             let tok = prod.submit(se).unwrap();
@@ -364,13 +434,13 @@ fn virtq_ack_only() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 4, pool_base, pool_size));
-        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
-        let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
         let t_prod = thread::spawn(move || {
+            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).build().unwrap();
             se.write_all(b"ping").unwrap();
             let tok = prod.submit(se).unwrap();
@@ -408,44 +478,48 @@ fn virtq_out_of_order_completions() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 8, pool_base, pool_size));
-        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
-        let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
         let submitted = Arc::new(AtomicUsize::new(0));
         let submitted_for_consumer = submitted.clone();
 
-        let t_prod = thread::spawn(move || {
-            let mut first = prod.chain().readable(5).writable(8).build().unwrap();
-            first.write_all(b"first").unwrap();
-            let tok1 = prod.submit(first).unwrap();
+        // Pool construction exceeds Loom's small default stack in this test.
+        let t_prod = thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+                let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
+                let mut first = prod.chain().readable(5).writable(8).build().unwrap();
+                first.write_all(b"first").unwrap();
+                let tok1 = prod.submit(first).unwrap();
 
-            let mut second = prod.chain().readable(6).writable(8).build().unwrap();
-            second.write_all(b"second").unwrap();
-            let tok2 = prod.submit(second).unwrap();
-            submitted.store(1, Ordering::Release);
+                let mut second = prod.chain().readable(6).writable(8).build().unwrap();
+                second.write_all(b"second").unwrap();
+                let tok2 = prod.submit(second).unwrap();
+                submitted.store(1, Ordering::Release);
 
-            let mut got_first = false;
-            let mut got_second = false;
-            while !(got_first && got_second) {
-                if let Some(r) = prod.poll().unwrap() {
-                    let token = r.token();
-                    let bytes = r.to_bytes().unwrap();
-                    if token == tok1 {
-                        assert!(bytes.is_empty());
-                        got_first = true;
-                    } else if token == tok2 {
-                        assert!(bytes.is_empty());
-                        got_second = true;
+                let mut got_first = false;
+                let mut got_second = false;
+                while !(got_first && got_second) {
+                    if let Some(r) = prod.poll().unwrap() {
+                        let token = r.token();
+                        let bytes = r.to_bytes().unwrap();
+                        if token == tok1 {
+                            assert!(bytes.is_empty());
+                            got_first = true;
+                        } else if token == tok2 {
+                            assert!(bytes.is_empty());
+                            got_second = true;
+                        } else {
+                            panic!("unexpected token");
+                        }
                     } else {
-                        panic!("unexpected token");
+                        thread::yield_now();
                     }
-                } else {
-                    thread::yield_now();
                 }
-            }
-        });
+            })
+            .unwrap();
 
         let t_cons = thread::spawn(move || {
             while submitted_for_consumer.load(Ordering::Acquire) == 0 {
@@ -500,10 +574,8 @@ fn virtq_event_suppression_reconfig() {
         let pool_size = 0x10000;
 
         let mem = Arc::new(LoomMem::new(ring_base, 4, pool_base, pool_size));
-        let pool = RunPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
         let notify = Arc::new(Notify::new());
 
-        let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
         // Descriptor-mode suppression writes the `off_wrap` field that the
@@ -516,12 +588,15 @@ fn virtq_event_suppression_reconfig() {
         });
 
         let t_prod = thread::spawn(move || {
+            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).build().unwrap();
             se.write_all(b"ping").unwrap();
             prod.submit(se).unwrap();
+            t_cons.join().unwrap();
+            prod.reset().unwrap();
         });
 
-        t_cons.join().unwrap();
         t_prod.join().unwrap();
     });
 }
