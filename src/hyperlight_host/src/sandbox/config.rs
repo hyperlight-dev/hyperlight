@@ -119,8 +119,8 @@ impl SandboxConfiguration {
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// The default size of the scratch region
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x55000;
+    /// The default scratch size, aligned to 16 KiB for macOS hosts.
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x58000;
     /// The default G2H virtqueue descriptor count.
     pub const DEFAULT_G2H_QUEUE_SIZE: usize = 64;
     /// The default H2G virtqueue descriptor count.
@@ -530,6 +530,12 @@ mod tests {
             cfg.set_max_guest_log_level(level);
             assert_eq!(cfg.get_max_guest_log_level(), Some(level));
         }
+    }
+
+    #[test]
+    fn default_scratch_size_supports_16k_pages() {
+        let cfg = SandboxConfiguration::default();
+        assert!(cfg.get_scratch_size().is_multiple_of(16 * 1024));
     }
 
     #[test]
