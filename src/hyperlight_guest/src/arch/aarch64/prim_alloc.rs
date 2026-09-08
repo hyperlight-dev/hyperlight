@@ -23,7 +23,7 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
         );
     }
     let limit = layout::scratch_allocator_limit_gpa();
-    if super::allocation_exceeds_limit(prev_base, nbytes, limit) {
+    if prev_base.checked_add(nbytes).is_none_or(|end| end > limit) {
         unsafe {
             crate::exit::abort_with_code_and_message(
                 &[ErrorCode::MallocFailed as u8],
