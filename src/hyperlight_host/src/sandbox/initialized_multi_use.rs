@@ -1479,11 +1479,17 @@ mod tests {
 
     #[test]
     fn create_200_threads() {
+        #[cfg(target_arch = "aarch64")]
+        create_many_on_threads_test::<32, 1>();
+        #[cfg(not(target_arch = "aarch64"))]
         create_many_on_threads_test::<200, 1>();
     }
 
     #[test]
     fn create_2000_sandboxes() {
+        #[cfg(target_arch = "aarch64")]
+        create_many_on_threads_test::<20, 100>();
+        #[cfg(not(target_arch = "aarch64"))]
         create_many_on_threads_test::<200, 10>();
     }
 

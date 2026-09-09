@@ -32,6 +32,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(kvm, mshv3, hvf))]
 use std::time::Duration;
 
+#[cfg(target_arch = "aarch64")]
+use self::virtual_machine::{ResetVcpuError, VirtualMachine};
+
 #[derive(Debug)]
 pub(crate) struct InterruptHandleStateMachine(AtomicU8);
 impl InterruptHandleStateMachine {
@@ -129,6 +132,12 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
     /// Mark the handle as dropped
     fn set_dropped(&self);
+
+    /// Reset the vCPU while honoring platform lifecycle synchronization.
+    #[cfg(target_arch = "aarch64")]
+    fn reset_vcpu(&self, vm: &mut dyn VirtualMachine) -> Result<(), ResetVcpuError> {
+        vm.reset_vcpu()
+    }
 }
 
 pub(crate) trait InterruptHandleInternal {
@@ -361,6 +370,20 @@ impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptH
                 tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn reset_vcpu(&self, vm: &mut dyn VirtualMachine) -> Result<(), ResetVcpuError> {
+        let guard = self
+            .dropped_state
+            .write()
+            .map_err(|e| ResetVcpuError::Unknown(e.to_string()))?;
+        if guard.0 {
+            return Err(ResetVcpuError::Unknown(
+                "cannot reset a dropped partition".to_string(),
+            ));
+        }
+        vm.reset_vcpu()
     }
 }
 

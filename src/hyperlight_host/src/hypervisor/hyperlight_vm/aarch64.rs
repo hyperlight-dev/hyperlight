@@ -12,8 +12,10 @@ use super::{
 #[cfg(hvf)]
 use crate::hypervisor::HvfInterruptHandle;
 use crate::hypervisor::InterruptHandleImpl;
-#[cfg(any(kvm, mshv3))]
+#[cfg(target_os = "linux")]
 use crate::hypervisor::LinuxInterruptHandle;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
@@ -22,6 +24,8 @@ use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters
 use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::virtual_machine::whp::WhpVm;
 use crate::hypervisor::virtual_machine::{
     HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
     get_available_hypervisor,
@@ -46,7 +50,7 @@ impl HyperlightVm {
         next_action: NextAction,
         rsp_gva: u64,
         page_size: usize,
-        config: &SandboxConfiguration,
+        #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] _gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] _rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
@@ -59,13 +63,14 @@ impl HyperlightVm {
         let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
-            // TODO: mshv support
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
             #[cfg(hvf)]
             Some(HypervisorType::Hvf) => {
                 Box::new(HvfVm::new(interrupt_handle.clone()).map_err(VmError::CreateVm)?)
             }
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
         vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
@@ -73,6 +78,10 @@ impl HyperlightVm {
         #[cfg(any(kvm, mshv3))]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
             Arc::new(LinuxInterruptHandle::new(config));
+
+        #[cfg(target_os = "windows")]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> =
+            Arc::new(WindowsInterruptHandle::new(vm.partition_handle()));
 
         let snapshot_slot = 0u32;
         let scratch_slot = 1u32;
@@ -193,7 +202,7 @@ impl HyperlightVm {
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
-        self.vm.reset_vcpu()?;
+        self.interrupt_handle.reset_vcpu(self.vm.as_mut())?;
         self.apply_sregs(cr3, sregs)?;
         Ok(())
     }
