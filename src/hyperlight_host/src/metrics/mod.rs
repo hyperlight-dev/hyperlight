@@ -173,21 +173,23 @@ mod tests {
                     "Histogram metric does not match expected value"
                 );
 
-                let histogram_key = CompositeKey::new(
-                    metrics_util::MetricKind::Histogram,
-                    Key::from_parts(
-                        METRIC_HOST_FUNC_DURATION,
-                        vec![Label::new("function_name", "CancelGuest")],
-                    ),
-                );
-                let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
-                assert!(
-                    matches!(
-                        histogram_value,
-                        metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
-                    ),
-                    "Histogram metric does not match expected value"
-                );
+                for function_name in ["HostPrint", "CancelGuest"] {
+                    let histogram_key = CompositeKey::new(
+                        metrics_util::MetricKind::Histogram,
+                        Key::from_parts(
+                            METRIC_HOST_FUNC_DURATION,
+                            vec![Label::new("function_name", function_name)],
+                        ),
+                    );
+                    let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+                    assert!(
+                        matches!(
+                            histogram_value,
+                            metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
+                        ),
+                        "Histogram metric does not match expected value for {function_name}"
+                    );
+                }
             } else {
                 // Verify that the counter metrics are recorded correctly
                 assert_eq!(snapshot.len(), 1);
