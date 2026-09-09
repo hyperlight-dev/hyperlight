@@ -2165,7 +2165,7 @@ mod tests {
 
     #[test]
     fn test_chain_readable_splits_logical_capacity() {
-        let expected_lenghts = [4, 4, 4];
+        let expected_lengths = [4, 4, 4];
         let ring = make_ring(16);
         let (mut producer, mut consumer, _) = make_test_producer_with_slot_size(&ring, 4);
 
@@ -2182,7 +2182,7 @@ mod tests {
             .iter()
             .map(|buf| producer.pool.allocation_len(buf.addr).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(lengths, expected_lenghts);
+        assert_eq!(lengths, expected_lengths);
 
         se.write_all(b"abcdefghij").unwrap();
         assert_eq!(se.written(), 10);
