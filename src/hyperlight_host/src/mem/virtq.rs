@@ -9,7 +9,6 @@
 
 use core::ops::Range;
 
-use hyperlight_common::layout::{QueueDims, TransportArena};
 use hyperlight_common::virtq::canonical::validate_canon_image;
 use hyperlight_common::virtq::{
     Layout as VirtqLayout, MemOps, Notifier, QueueStats, VirtqConsumer,
@@ -41,7 +40,7 @@ pub(crate) fn attach(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
 ) -> Result<(G2hConsumer, H2gConsumer)> {
-    let validator = Validator::new(layout)?;
+    let validator = Validator { layout };
     let arena_gpa = read_published_arena_gpa(scratch_mem)?;
     let regions = validator.validate_published_arena(arena_gpa)?;
 
@@ -64,7 +63,7 @@ pub(crate) fn snapshot(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
 ) -> Result<VirtqSnapshot> {
-    let validator = Validator::new(layout)?;
+    let validator = Validator { layout };
 
     let arena_gpa = read_published_arena_gpa(scratch_mem)?;
     let regions = validator.validate_published_arena(arena_gpa)?;
@@ -90,7 +89,7 @@ pub(crate) fn restore(
     scratch_mem: &HostSharedMemory,
     snapshot: &VirtqSnapshot,
 ) -> Result<(G2hConsumer, H2gConsumer)> {
-    let regions = Validator::new(layout)?.validate_snapshot(snapshot)?;
+    let regions = Validator { layout }.validate_snapshot(snapshot)?;
 
     write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
     write_ring(scratch_mem, regions.g2h_ring, &snapshot.g2h_ring)?;
@@ -106,73 +105,6 @@ struct GvaRegions {
     h2g_pool: Range<u64>,
 }
 
-#[derive(Clone, Copy)]
-struct QueueConfig {
-    /// Address-independent queue dimensions.
-    dims: QueueDims,
-    /// Size of the ring image in bytes including event suppressions.
-    ring_len: usize,
-    /// Size of the buffer pool in bytes.
-    pool_len: usize,
-    /// Size of each buffer in the pool in bytes.
-    buffer_size: usize,
-}
-
-impl QueueConfig {
-    fn new(dims: QueueDims, buffer_size: usize) -> Result<Self> {
-        let ring_len = dims
-            .checked_ring_len()
-            .ok_or_else(|| new_error!("ring size overflow"))?;
-        let pool_len = dims
-            .checked_pool_len()
-            .ok_or_else(|| new_error!("pool size overflow"))?;
-
-        if buffer_size == 0 {
-            return Err(new_error!("buffer size is zero"));
-        }
-
-        Ok(Self {
-            dims,
-            ring_len,
-            pool_len,
-            buffer_size,
-        })
-    }
-}
-
-/// Host-owned transport dimensions.
-#[derive(Clone, Copy)]
-struct Config {
-    /// Host-requested G2H configuration.
-    g2h: QueueConfig,
-    /// Host-requested H2G configuration.
-    h2g: QueueConfig,
-    /// Fixed host-assigned transport arena.
-    arena: TransportArena,
-    /// Number of one-descriptor chains posted before the H2G ring or pool fills.
-    h2g_prefill_chains: usize,
-}
-
-impl Config {
-    /// Compute the host transport configuration from the memory layout.
-    fn from_layout(layout: &SandboxMemoryLayout) -> Result<Self> {
-        let g2h = QueueConfig::new(layout.get_g2h_queue_dims(), layout.get_g2h_buffer_size())?;
-
-        let h2g = QueueConfig::new(layout.get_h2g_queue_dims(), layout.get_h2g_buffer_size())?;
-
-        let h2g_prefill_chains =
-            usize::from(h2g.dims.size().get()).min(h2g.pool_len / h2g.buffer_size);
-        let arena = layout.get_transport_arena();
-
-        Ok(Self {
-            g2h,
-            h2g,
-            arena,
-            h2g_prefill_chains,
-        })
-    }
-}
-
 /// Canonical in-memory transport state excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
@@ -184,29 +116,23 @@ pub(crate) struct VirtqSnapshot {
 impl VirtqSnapshot {
     /// Validate every captured field before mutating restored scratch.
     pub(crate) fn preflight(&self, layout: &SandboxMemoryLayout) -> Result<()> {
-        Validator::new(layout)?.validate_snapshot(self).map(|_| ())
+        Validator { layout }.validate_snapshot(self).map(|_| ())
     }
 }
 
 /// Validates live and captured transport images against one host layout.
 struct Validator<'a> {
-    config: Config,
     layout: &'a SandboxMemoryLayout,
 }
 
-impl<'a> Validator<'a> {
-    fn new(layout: &'a SandboxMemoryLayout) -> Result<Self> {
-        Ok(Self {
-            config: Config::from_layout(layout)?,
-            layout,
-        })
-    }
-
+impl Validator<'_> {
     /// Validate the initial G2H queue and return its layout.
     fn validate_g2h<M: MemOps>(&self, mem: &M, ring: Range<u64>) -> Result<VirtqLayout> {
+        let dims = self.layout.get_g2h_queue_dims();
+
         // SAFETY: `ring` spans the configured image and `mem` keeps that image
         // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.g2h.dims.size()) }
+        let layout = unsafe { VirtqLayout::from_base(ring.start, dims.size()) }
             .map_err(|error| new_error!("invalid G2H ring layout: {error}"))?;
 
         validate_canon_image(mem, layout, 0, |_, _| false)
@@ -225,13 +151,16 @@ impl<'a> Validator<'a> {
         ring: Range<u64>,
         pool: Range<u64>,
     ) -> Result<VirtqLayout> {
+        let dims = self.layout.get_h2g_queue_dims();
+
         // SAFETY: `ring` spans the configured image and `mem` keeps that image
         // valid for the duration of validation.
-        let layout = unsafe { VirtqLayout::from_base(ring.start, self.config.h2g.dims.size()) }
+        let layout = unsafe { VirtqLayout::from_base(ring.start, dims.size()) }
             .map_err(|error| new_error!("invalid H2G ring layout: {error}"))?;
 
-        let bufsz = self.config.h2g.buffer_size;
-        let prefill = self.config.h2g_prefill_chains;
+        // SandboxConfiguration guarantees a nonzero buffer size.
+        let bufsz = self.layout.get_h2g_buffer_size();
+        let prefill = usize::from(dims.size().get()).min(dims.pool_len() / bufsz);
 
         if prefill == 0 {
             return Err(new_error!("H2G pool has no complete buffers"));
@@ -287,7 +216,7 @@ impl<'a> Validator<'a> {
 
     /// Validate the published arena and return its GVA regions.
     fn validate_published_arena(&self, arena_gpa: u64) -> Result<GvaRegions> {
-        if arena_gpa != self.config.arena.base_addr() {
+        if arena_gpa != self.layout.get_transport_arena().base_addr() {
             return Err(new_error!("published transport arena is invalid"));
         }
 
@@ -304,8 +233,16 @@ impl<'a> Validator<'a> {
         }
 
         let regions = self.resolve_gva_regions()?;
-        validate_ring_len("G2H", &snapshot.g2h_ring, self.config.g2h.ring_len)?;
-        validate_ring_len("H2G", &snapshot.h2g_ring, self.config.h2g.ring_len)?;
+        validate_ring_len(
+            "G2H",
+            &snapshot.g2h_ring,
+            self.layout.get_g2h_queue_dims().ring_len(),
+        )?;
+        validate_ring_len(
+            "H2G",
+            &snapshot.h2g_ring,
+            self.layout.get_h2g_queue_dims().ring_len(),
+        )?;
 
         let g2h_mem = ImageMem::new(regions.g2h_ring.start, &snapshot.g2h_ring);
         self.validate_g2h(&g2h_mem, regions.g2h_ring.clone())?;
@@ -333,23 +270,15 @@ impl<'a> Validator<'a> {
 
     /// Translate validated transport GPAs into the GVA ranges used by descriptors.
     fn resolve_gva_regions(&self) -> Result<GvaRegions> {
+        let arena = self.layout.get_transport_arena();
+        let g2h = self.layout.get_g2h_queue_dims();
+        let h2g = self.layout.get_h2g_queue_dims();
+
         Ok(GvaRegions {
-            g2h_ring: checked_region(
-                self.scratch_gva(self.config.arena.g2h_ring_addr())?,
-                self.config.g2h.ring_len,
-            )?,
-            h2g_ring: checked_region(
-                self.scratch_gva(self.config.arena.h2g_ring_addr())?,
-                self.config.h2g.ring_len,
-            )?,
-            g2h_pool: checked_region(
-                self.scratch_gva(self.config.arena.g2h_pool_addr())?,
-                self.config.g2h.pool_len,
-            )?,
-            h2g_pool: checked_region(
-                self.scratch_gva(self.config.arena.h2g_pool_addr())?,
-                self.config.h2g.pool_len,
-            )?,
+            g2h_ring: checked_region(self.scratch_gva(arena.g2h_ring_addr())?, g2h.ring_len())?,
+            h2g_ring: checked_region(self.scratch_gva(arena.h2g_ring_addr())?, h2g.ring_len())?,
+            g2h_pool: checked_region(self.scratch_gva(arena.g2h_pool_addr())?, g2h.pool_len())?,
+            h2g_pool: checked_region(self.scratch_gva(arena.h2g_pool_addr())?, h2g.pool_len())?,
         })
     }
 }
@@ -434,22 +363,9 @@ mod tests {
         SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
     }
 
-    fn attach_config() -> Config {
-        Config::from_layout(&memory_layout()).unwrap()
-    }
-
     fn host_scratch() -> HostSharedMemory {
         let scratch = ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap();
         scratch.build().0
-    }
-
-    fn validate_published(arena_gpa: u64, config: Config) -> Result<GvaRegions> {
-        let layout = memory_layout();
-        Validator {
-            config,
-            layout: &layout,
-        }
-        .validate_published_arena(arena_gpa)
     }
 
     struct PreparedVirtq {
@@ -469,16 +385,16 @@ mod tests {
         let (scratch, _) = scratch.build();
 
         let layout = memory_layout();
-        let config = Config::from_layout(&layout).unwrap();
+        let arena = layout.get_transport_arena();
         let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE);
         let scratch_base_gva = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE);
         let to_gva = |gpa| scratch_base_gva + (gpa - scratch_base_gpa);
 
-        let ring_base = to_gva(config.arena.g2h_ring_addr());
-        let h2g_base = to_gva(config.arena.h2g_ring_addr());
-        let g2h_pool_base = to_gva(config.arena.g2h_pool_addr());
+        let ring_base = to_gva(arena.g2h_ring_addr());
+        let h2g_base = to_gva(arena.h2g_ring_addr());
+        let g2h_pool_base = to_gva(arena.g2h_pool_addr());
         let g2h_pool_end = g2h_pool_base + (G2H_POOL_PAGES * vmem::PAGE_SIZE) as u64;
-        let h2g_pool_base = to_gva(config.arena.h2g_pool_addr());
+        let h2g_pool_base = to_gva(arena.h2g_pool_addr());
         let h2g_pool_end = h2g_pool_base + (H2G_POOL_PAGES * vmem::PAGE_SIZE) as u64;
 
         // SAFETY: The scratch mapping covers both ring layouts.
@@ -509,7 +425,7 @@ mod tests {
         }
 
         batch.finish().unwrap();
-        write_published_arena_gpa(&scratch, config.arena.base_addr()).unwrap();
+        write_published_arena_gpa(&scratch, arena.base_addr()).unwrap();
 
         let g2h_ring = ring_base..ring_base + VirtqLayout::query_size(G2H_DEPTH as usize) as u64;
         let h2g_ring = h2g_base..h2g_base + VirtqLayout::query_size(H2G_DEPTH as usize) as u64;
@@ -533,7 +449,7 @@ mod tests {
 
     fn validate(prepared: &PreparedVirtq) -> Result<()> {
         let layout = memory_layout();
-        let validator = Validator::new(&layout)?;
+        let validator = Validator { layout: &layout };
 
         validator.validate_g2h(&prepared.g2h_mem, prepared.g2h_ring.clone())?;
         validator.validate_h2g(
@@ -559,50 +475,56 @@ mod tests {
 
     #[test]
     fn validates_host_placed_regions() {
-        let config = attach_config();
-        let regions = validate_published(config.arena.base_addr(), config).unwrap();
+        let layout = memory_layout();
+        let validator = Validator { layout: &layout };
+        let regions = validator
+            .validate_published_arena(layout.get_transport_arena().base_addr())
+            .unwrap();
 
         assert_eq!(
             regions.g2h_ring.end - regions.g2h_ring.start,
-            config.g2h.ring_len as u64
+            layout.get_g2h_queue_dims().ring_len() as u64
         );
         assert_eq!(
             regions.h2g_ring.end - regions.h2g_ring.start,
-            config.h2g.ring_len as u64
+            layout.get_h2g_queue_dims().ring_len() as u64
         );
         assert_eq!(
             regions.g2h_pool.end - regions.g2h_pool.start,
-            config.g2h.pool_len as u64
+            layout.get_g2h_queue_dims().pool_len() as u64
         );
         assert_eq!(
             regions.h2g_pool.end - regions.h2g_pool.start,
-            config.h2g.pool_len as u64
+            layout.get_h2g_queue_dims().pool_len() as u64
         );
     }
 
     #[test]
     fn rejects_invalid_published_regions() {
-        let config = attach_config();
-        let arena_gpa = config.arena.base_addr() + 1;
-        assert!(validate_published(arena_gpa, config).is_err());
+        let layout = memory_layout();
+        let validator = Validator { layout: &layout };
+        let arena_gpa = layout.get_transport_arena().base_addr() + 1;
+        assert!(validator.validate_published_arena(arena_gpa).is_err());
     }
 
     #[test]
     fn rejects_published_region_overflow() {
-        let config = attach_config();
-        assert!(validate_published(u64::MAX, config).is_err());
+        let layout = memory_layout();
+        let validator = Validator { layout: &layout };
+        assert!(validator.validate_published_arena(u64::MAX).is_err());
     }
 
     #[test]
     fn rejects_untranslatable_or_overflowing_gva_regions() {
-        let config = attach_config();
-        let arena_gpa = config.arena.base_addr();
+        let layout = memory_layout();
+        let validator = Validator { layout: &layout };
         let invalid = hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE) - 1;
-        assert!(validate_published(invalid, config).is_err());
+        assert!(validator.scratch_gva(invalid).is_err());
 
-        let mut config = config;
-        config.g2h.ring_len = usize::MAX;
-        assert!(validate_published(arena_gpa, config).is_err());
+        let arena_gva = validator
+            .scratch_gva(layout.get_transport_arena().base_addr())
+            .unwrap();
+        assert!(checked_region(arena_gva, usize::MAX).is_err());
     }
 
     #[test]

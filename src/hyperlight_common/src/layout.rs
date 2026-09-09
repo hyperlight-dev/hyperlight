@@ -111,25 +111,16 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 
 /// Compute the minimum scratch region size needed for a sandbox.
 ///
-/// The fixed transport prefix contains one page-backed ring arena and both
-/// page-backed buffer pools. The result saturates at [`usize::MAX`].
+/// `transport_len` includes both rings and buffer pools.
+/// The result saturates at [`usize::MAX`].
 pub fn min_scratch_size(
     input_data_size: usize,
     output_data_size: usize,
-    g2h_queue_size: usize,
-    h2g_queue_size: usize,
-    g2h_pool_pages: usize,
-    h2g_pool_pages: usize,
+    transport_len: usize,
 ) -> usize {
-    let size = arch::min_scratch_size(input_data_size, output_data_size).and_then(|fixed| {
-        let g2h = QueueDims::new(g2h_queue_size, g2h_pool_pages)?;
-        let h2g = QueueDims::new(h2g_queue_size, h2g_pool_pages)?;
-
-        let transport_len = TransportArena::checked_query_size(g2h, h2g)?;
-        fixed.checked_add(transport_len)
-    });
-
-    size.unwrap_or(usize::MAX)
+    arch::min_scratch_size(input_data_size, output_data_size)
+        .and_then(|fixed| fixed.checked_add(transport_len))
+        .unwrap_or(usize::MAX)
 }
 
 /// Validated address independent dimensions for one transport queue.
@@ -140,7 +131,7 @@ pub struct QueueDims {
 }
 
 impl QueueDims {
-    /// Validate one queue descriptor count and pool page count.
+    /// Validate queue dimensions and their byte lengths.
     pub fn new(size: usize, pool_pages: usize) -> Option<Self> {
         let size = u16::try_from(size).ok()?;
         let size = NonZeroU16::new(size)?;
@@ -150,6 +141,7 @@ impl QueueDims {
         }
 
         let pool_pages = NonZeroUsize::new(pool_pages)?;
+        pool_pages.get().checked_mul(crate::vmem::PAGE_SIZE)?;
         Some(Self { size, pool_pages })
     }
 
@@ -163,14 +155,14 @@ impl QueueDims {
         self.pool_pages
     }
 
-    /// Compute the ring length, returning `None` on arithmetic overflow.
-    pub fn checked_ring_len(&self) -> Option<usize> {
-        virtq::Layout::checked_query_size(usize::from(self.size.get()))
+    /// Ring length in bytes, including event suppressions.
+    pub fn ring_len(&self) -> usize {
+        virtq::Layout::query_size(usize::from(self.size.get()))
     }
 
-    /// Compute the pool length, returning `None` on arithmetic overflow.
-    pub fn checked_pool_len(&self) -> Option<usize> {
-        self.pool_pages.get().checked_mul(crate::vmem::PAGE_SIZE)
+    /// Pool length in bytes.
+    pub fn pool_len(&self) -> usize {
+        self.pool_pages.get() * crate::vmem::PAGE_SIZE
     }
 }
 
@@ -208,17 +200,17 @@ impl TransportArena {
         }
 
         let h2g_ring_offset = g2h
-            .checked_ring_len()?
+            .ring_len()
             .checked_next_multiple_of(virtq::Descriptor::ALIGN)?;
 
         let g2h_pool_offset = h2g_ring_offset
-            .checked_add(h2g.checked_ring_len()?)?
+            .checked_add(h2g.ring_len())?
             .checked_next_multiple_of(crate::vmem::PAGE_SIZE)?;
 
-        let g2h_pool_len = g2h.checked_pool_len()?;
+        let g2h_pool_len = g2h.pool_len();
         let h2g_pool_offset = g2h_pool_offset.checked_add(g2h_pool_len)?;
 
-        let h2g_pool_len = h2g.checked_pool_len()?;
+        let h2g_pool_len = h2g.pool_len();
         let len = h2g_pool_offset.checked_add(h2g_pool_len)?;
 
         let addr = |offset: usize| base_addr.checked_add(u64::try_from(offset).ok()?);
@@ -232,11 +224,6 @@ impl TransportArena {
             ring_span_len: g2h_pool_offset,
             len,
         })
-    }
-
-    /// Compute the total arena size without assigning an address.
-    pub fn checked_query_size(g2h: QueueDims, h2g: QueueDims) -> Option<usize> {
-        Some(Self::new(0, g2h, h2g)?.len)
     }
 
     /// Base address of the arena.
@@ -298,6 +285,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queue_dims_validate_byte_lengths() {
+        let max_pages = usize::MAX / crate::vmem::PAGE_SIZE;
+        let dims = QueueDims::new(32768, max_pages).unwrap();
+
+        assert_eq!(dims.ring_len(), 0x80008);
+        assert_eq!(dims.pool_len(), max_pages * crate::vmem::PAGE_SIZE);
+
+        for (size, pages) in [
+            (0, 1),
+            (3, 1),
+            (usize::MAX, 1),
+            (64, 0),
+            (64, max_pages + 1),
+        ] {
+            assert_eq!(QueueDims::new(size, pages), None);
+        }
+    }
+
+    #[test]
     fn transport_arena_derives_aligned_regions() {
         let base = 0x1_0000;
         let g2h = QueueDims::new(64, 8).unwrap();
@@ -331,15 +337,9 @@ mod tests {
         );
         assert_eq!(arena.ring_span_len(), crate::vmem::PAGE_SIZE);
         assert_eq!(arena.size(), 13 * crate::vmem::PAGE_SIZE);
-        assert_eq!(
-            TransportArena::checked_query_size(g2h, h2g),
-            Some(arena.size())
-        );
         assert_eq!(TransportArena::new(base + 1, g2h, h2g), None);
-        assert_eq!(QueueDims::new(3, 8), None);
-        assert_eq!(QueueDims::new(64, 0), None);
-        assert_eq!(QueueDims::new(usize::MAX, 8), None);
-        let oversized = QueueDims::new(64, usize::MAX).unwrap();
+
+        let oversized = QueueDims::new(64, usize::MAX / crate::vmem::PAGE_SIZE).unwrap();
         assert_eq!(TransportArena::new(base, oversized, h2g), None);
         assert_eq!(
             TransportArena::new(u64::MAX - crate::vmem::PAGE_SIZE as u64 + 1, g2h, h2g,),
@@ -350,17 +350,14 @@ mod tests {
     #[test]
     fn minimum_scratch_includes_ring_arena_and_pools() {
         let fixed = arch::min_scratch_size(0, 0).unwrap();
-        let transport_pages = 1 + 8 + 4;
+        let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
 
-        assert_eq!(
-            fixed + transport_pages * crate::vmem::PAGE_SIZE,
-            min_scratch_size(0, 0, 64, 32, 8, 4)
-        );
+        assert_eq!(fixed + transport_len, min_scratch_size(0, 0, transport_len));
     }
 
     #[test]
     fn minimum_scratch_saturates_on_overflow() {
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, 64, 32, usize::MAX, 4));
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, usize::MAX, 32, 8, 4));
+        assert_eq!(usize::MAX, min_scratch_size(0, 0, usize::MAX));
+        assert_eq!(usize::MAX, min_scratch_size(usize::MAX, 1, 0));
     }
 }

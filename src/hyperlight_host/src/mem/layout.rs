@@ -366,26 +366,28 @@ impl SandboxMemoryLayout {
         let h2g_buffer_size = cfg.get_h2g_buffer_size();
         let g2h_pool_pages = cfg.get_g2h_pool_pages();
         let h2g_pool_pages = cfg.get_h2g_pool_pages();
+
+        let g2h_dims = QueueDims::new(g2h_queue_size, g2h_pool_pages)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let h2g_dims = QueueDims::new(h2g_queue_size, h2g_pool_pages)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let io_len = input_data_size
+            .checked_add(output_data_size)
+            .and_then(|len| len.checked_next_multiple_of(PAGE_SIZE))
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let arena_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size)
+            .checked_add(io_len as u64)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let transport_arena = TransportArena::new(arena_base_gpa, g2h_dims, h2g_dims)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
         let min_scratch_size = hyperlight_common::layout::min_scratch_size(
             input_data_size,
             output_data_size,
-            g2h_queue_size,
-            h2g_queue_size,
-            g2h_pool_pages,
-            h2g_pool_pages,
+            transport_arena.size(),
         );
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
-
-        let g2h_dims = QueueDims::new(g2h_queue_size, g2h_pool_pages)
-            .ok_or_else(|| new_error!("invalid G2H queue dimensions"))?;
-        let h2g_dims = QueueDims::new(h2g_queue_size, h2g_pool_pages)
-            .ok_or_else(|| new_error!("invalid H2G queue dimensions"))?;
-        let arena_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size)
-            + (input_data_size + output_data_size).next_multiple_of(PAGE_SIZE) as u64;
-        let transport_arena = TransportArena::new(arena_base_gpa, g2h_dims, h2g_dims)
-            .ok_or_else(|| new_error!("invalid virtqueue arena dimensions"))?;
 
         let mut ret = Self {
             input_data_size,
@@ -498,10 +500,7 @@ impl SandboxMemoryLayout {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.input_data_size,
             self.output_data_size,
-            self.get_g2h_queue_size(),
-            self.get_h2g_queue_size(),
-            self.get_g2h_pool_pages(),
-            self.get_h2g_pool_pages(),
+            self.transport_arena.size(),
         );
         let min_scratch = min_fixed_scratch.saturating_add(size);
         if self.scratch_size < min_scratch {
@@ -862,13 +861,11 @@ mod tests {
     #[test]
     fn transport_memory_is_part_of_minimum_scratch_size() {
         let mut cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
         let minimum = hyperlight_common::layout::min_scratch_size(
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
-            cfg.get_g2h_queue_size(),
-            cfg.get_h2g_queue_size(),
-            cfg.get_g2h_pool_pages(),
-            cfg.get_h2g_pool_pages(),
+            layout.get_transport_arena().size(),
         );
         cfg.set_scratch_size(minimum);
         let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
@@ -881,10 +878,30 @@ mod tests {
 
     #[test]
     fn transport_minimum_rejects_capacity_overflow() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_g2h_pool_pages(usize::MAX);
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None);
-        assert!(matches!(layout, Err(MemoryRequestTooSmall(_, usize::MAX))));
+        for (g2h_pages, h2g_pages) in [
+            (usize::MAX, 4),
+            (8, usize::MAX),
+            (usize::MAX / PAGE_SIZE, 1),
+        ] {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_g2h_pool_pages(g2h_pages);
+            cfg.set_h2g_pool_pages(h2g_pages);
+
+            let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None);
+            assert!(matches!(layout, Err(MemoryRequestTooSmall(_, usize::MAX))));
+        }
+    }
+
+    #[test]
+    fn transport_minimum_rejects_io_overflow() {
+        for input_size in [usize::MAX, usize::MAX - 0x2000, usize::MAX - 0x5000 + 1] {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_input_data_size(input_size);
+            cfg.set_output_data_size(0x2000);
+
+            let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None);
+            assert!(matches!(layout, Err(MemoryRequestTooSmall(_, usize::MAX))));
+        }
     }
 
     #[test]
