@@ -119,6 +119,7 @@ impl SandboxConfiguration {
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
+    // TODO: Reassess scratch sizing when virtqueues replace the input/output regions.
     /// The default scratch size, aligned to 16 KiB for macOS hosts.
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x58000;
     /// The default G2H virtqueue descriptor count.
