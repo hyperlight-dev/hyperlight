@@ -1438,13 +1438,12 @@ mod tests {
         // Leave headroom for legacy transport and eagerly copied page tables.
         let scratch_size = {
             let defaults = SandboxConfiguration::default();
+            let layout =
+                crate::mem::layout::SandboxMemoryLayout::new(defaults, 0, 0, None).unwrap();
             hyperlight_common::layout::min_scratch_size(
                 defaults.get_input_data_size(),
                 defaults.get_output_data_size(),
-                defaults.get_g2h_queue_size(),
-                defaults.get_h2g_queue_size(),
-                defaults.get_g2h_pool_pages(),
-                defaults.get_h2g_pool_pages(),
+                layout.get_transport_arena().size(),
             )
             .next_multiple_of(page_size::get())
         } + 0x40000;
