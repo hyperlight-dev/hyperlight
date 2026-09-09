@@ -16,6 +16,9 @@ updates:
       - "kind/dependencies"
     open-pull-requests-limit: 20
     groups:
+      mshv:
+        patterns:
+          - "mshv-*"
       wasm-tools:
         patterns:
           - "wasmparser"
