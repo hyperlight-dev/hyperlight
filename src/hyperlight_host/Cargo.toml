@@ -88,7 +88,7 @@ lazy_static = "1.4.0"
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true }
 kvm-ioctls = { version = "0.25", optional = true }
-mshv-bindings = { version = "0.6", optional = true }
+mshv-bindings = { version = "0.7", optional = true }
 mshv-ioctls = { version = "0.6", optional = true}
 
 [dev-dependencies]
