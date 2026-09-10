@@ -11,10 +11,11 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::transport;
+use hyperlight_guest::{bail, transport};
 
 use crate::GUEST_HANDLE;
 
+/// Call a host function and convert its response outside the transport borrow.
 pub fn call_host_function<T>(
     function_name: &str,
     parameters: Option<Vec<ParameterValue>>,
@@ -23,7 +24,14 @@ pub fn call_host_function<T>(
 where
     T: TryFrom<ReturnValue>,
 {
-    transport::with_ctx(|ctx| ctx.call_host_function(function_name, parameters, return_type))
+    let val =
+        transport::with_ctx(|ctx| ctx.call_host_function(function_name, parameters, return_type))?;
+
+    let Ok(val) = T::try_from(val) else {
+        bail!("G2H: host return value type mismatch");
+    };
+
+    Ok(val)
 }
 
 pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>

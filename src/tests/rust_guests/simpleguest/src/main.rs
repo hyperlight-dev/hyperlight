@@ -509,6 +509,28 @@ fn round_trip_host_i32(v: i32) -> Result<i32> {
     host_echo_i32(v)
 }
 
+#[guest_function("ConvertHostReturnWithHostCall")]
+fn convert_host_return_with_host_call(value: i32) -> Result<i32> {
+    struct Converted(i32);
+
+    impl TryFrom<ReturnValue> for Converted {
+        type Error = HyperlightGuestError;
+
+        fn try_from(value: ReturnValue) -> Result<Self> {
+            let value = i32::try_from(value)?;
+            host_noop()?;
+            Ok(Self(value))
+        }
+    }
+
+    let value: Converted = call_host_function(
+        "HostEchoI32",
+        Some(vec![ParameterValue::Int(value)]),
+        ReturnType::Int,
+    )?;
+    Ok(value.0)
+}
+
 #[guest_function("RoundTripHostU32")]
 fn round_trip_host_u32(v: u32) -> Result<u32> {
     host_echo_u32(v)

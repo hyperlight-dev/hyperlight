@@ -121,6 +121,8 @@ impl SandboxBuilder {
     }
 
     /// Build a sandbox restoring the guest from `snapshot`.
+    ///
+    /// The snapshot's layout overrides heap, scratch, and transport settings.
     pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
         Self::with_source(Source::Snapshot(snapshot))
     }
@@ -331,6 +333,56 @@ impl SandboxBuilder {
         self.cfg.get_scratch_size()
     }
 
+    /// Set the G2H virtqueue descriptor count.
+    ///
+    /// See [`SandboxConfiguration::set_g2h_queue_size`] for normalization.
+    pub fn g2h_queue_size(mut self, size: usize) -> Self {
+        self.cfg.set_g2h_queue_size(size);
+        self
+    }
+
+    /// Set the H2G virtqueue descriptor count.
+    ///
+    /// See [`SandboxConfiguration::set_h2g_queue_size`] for normalization.
+    pub fn h2g_queue_size(mut self, size: usize) -> Self {
+        self.cfg.set_h2g_queue_size(size);
+        self
+    }
+
+    /// Set the G2H upper-tier buffer capacity in bytes.
+    ///
+    /// Clamps the size via [`SandboxConfiguration::set_g2h_buffer_size`]
+    /// and grows the pool if needed.
+    pub fn g2h_buffer_size(mut self, size: usize) -> Self {
+        self.cfg.set_g2h_buffer_size(size);
+        self
+    }
+
+    /// Set the H2G buffer capacity in bytes.
+    ///
+    /// Clamps the size via [`SandboxConfiguration::set_h2g_buffer_size`]
+    /// and grows the pool if needed.
+    pub fn h2g_buffer_size(mut self, size: usize) -> Self {
+        self.cfg.set_h2g_buffer_size(size);
+        self
+    }
+
+    /// Set the G2H pool size in guest pages.
+    ///
+    /// See [`SandboxConfiguration::set_g2h_pool_pages`] for the minimum capacity.
+    pub fn g2h_pool_pages(mut self, pages: usize) -> Self {
+        self.cfg.set_g2h_pool_pages(pages);
+        self
+    }
+
+    /// Set the H2G pool size in guest pages.
+    ///
+    /// See [`SandboxConfiguration::set_h2g_pool_pages`] for the minimum capacity.
+    pub fn h2g_pool_pages(mut self, pages: usize) -> Self {
+        self.cfg.set_h2g_pool_pages(pages);
+        self
+    }
+
     /// Declare MSRs the guest owns, saved and restored with the rest of the
     /// sandbox state. Adds to the declared set, so repeated calls accumulate.
     ///
@@ -408,11 +460,44 @@ impl SandboxBuilder {
 
 #[cfg(test)]
 mod tests {
+    use hyperlight_common::vmem::PAGE_SIZE;
     use hyperlight_testing::simple_guest_as_string;
     use tracing_core::LevelFilter;
 
     use super::SandboxBuilder;
     use crate::mem::memory_region::MemoryRegionFlags;
+
+    #[test]
+    fn transport_settings_are_normalized() {
+        let builder = SandboxBuilder::from_bytes([])
+            .g2h_queue_size(3)
+            .h2g_queue_size(usize::MAX)
+            .g2h_buffer_size(0)
+            .h2g_buffer_size(2 * PAGE_SIZE + 1)
+            .g2h_pool_pages(0)
+            .h2g_pool_pages(0);
+
+        assert_eq!(builder.cfg.get_g2h_queue_size(), 4);
+        assert_eq!(builder.cfg.get_h2g_queue_size(), 32_768);
+        assert_eq!(builder.cfg.get_g2h_buffer_size(), 256);
+        assert_eq!(builder.cfg.get_h2g_buffer_size(), 2 * PAGE_SIZE + 1);
+        assert_eq!(builder.cfg.get_g2h_pool_pages(), 2);
+        assert_eq!(builder.cfg.get_h2g_pool_pages(), 3);
+    }
+
+    #[test]
+    fn transport_buffer_growth_raises_pool_minima() {
+        let builder = SandboxBuilder::from_bytes([])
+            .g2h_pool_pages(0)
+            .h2g_pool_pages(0)
+            .g2h_buffer_size(PAGE_SIZE + 1)
+            .h2g_buffer_size(3 * PAGE_SIZE + 1);
+
+        assert_eq!(builder.cfg.get_g2h_buffer_size(), PAGE_SIZE + 1);
+        assert_eq!(builder.cfg.get_h2g_buffer_size(), 3 * PAGE_SIZE + 1);
+        assert_eq!(builder.cfg.get_g2h_pool_pages(), 3);
+        assert_eq!(builder.cfg.get_h2g_pool_pages(), 4);
+    }
 
     #[test]
     fn build_from_file() {

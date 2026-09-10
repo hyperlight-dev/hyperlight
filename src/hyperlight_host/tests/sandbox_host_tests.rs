@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 use core::f64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, Result, SandboxBuilder, new_error};
@@ -11,7 +13,8 @@ use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
-    with_all_guests, with_all_sandboxes, with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
+    with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
+    with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
 };
 
 #[test]
@@ -27,6 +30,19 @@ fn pass_byte_array() {
         sandbox
             .call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
             .unwrap_err(); // missing length param
+    });
+}
+
+#[test]
+fn fragmented_control_round_trip_releases_buffers() {
+    // The control body exceeds the four inline segment slots.
+    let input = "x".repeat(5 * SandboxConfiguration::DEFAULT_H2G_BUFFER_SIZE);
+    with_all_sandboxes(|mut sbox| {
+        let output: String = sbox.call("Echo", input.clone()).unwrap();
+        assert_eq!(output, input);
+
+        // Snapshot preparation rejects retained transport buffers.
+        sbox.snapshot().unwrap();
     });
 }
 
@@ -220,6 +236,173 @@ fn custom_guest_dispatch_is_working() {
             .unwrap();
         assert_eq!(res, 99);
     });
+}
+
+#[test]
+fn host_return_conversion_can_call_host() {
+    // The guest's TryFrom implementation calls HostNoOp while converting an integer.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = calls.clone();
+    let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+        .host_function("HostEchoI32", |value: i32| value)
+        .host_function("HostNoOp", move || {
+            callback_calls.fetch_add(1, Ordering::Relaxed);
+        })
+        .build()
+        .unwrap();
+
+    let value: i32 = sbox.call("ConvertHostReturnWithHostCall", 42).unwrap();
+    assert_eq!(value, 42);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    // Both calls release their transport state for the next guest entry.
+    sbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn c_registered_null_returns_guest_error() {
+    with_c_sandbox(|mut sbox| {
+        // A registered callback has no implicit "function not found" fallback.
+        let error = sbox.call::<()>("ReturnNull", ()).unwrap_err();
+        assert!(matches!(
+            error,
+            HyperlightError::GuestError(ErrorCode::GuestError, message)
+                if message == "C guest function \"ReturnNull\" returned null"
+        ));
+
+        // A callback error leaves the sandbox usable.
+        let value: String = sbox.call("Echo", "ready".to_string()).unwrap();
+        assert_eq!(value, "ready");
+    });
+}
+
+#[test]
+fn c_registered_error_overrides_null() {
+    with_c_sandbox(|mut sbox| {
+        // The explicit error takes precedence over the registered-null diagnostic.
+        let error = sbox.call::<()>("ReturnNullWithError", ()).unwrap_err();
+        assert!(matches!(
+            error,
+            HyperlightError::GuestError(ErrorCode::GuestError, message)
+                if message == "C registered error"
+        ));
+
+        // The next dispatch must not inherit the consumed error.
+        let value: String = sbox.call("Echo", "ready".to_string()).unwrap();
+        assert_eq!(value, "ready");
+    });
+}
+
+#[test]
+fn c_fallback_error_overrides_null() {
+    with_c_sandbox(|mut sbox| {
+        // The fallback's explicit error takes precedence over function-not-found.
+        let error = sbox.call::<()>("FallbackNullWithError", ()).unwrap_err();
+        assert!(matches!(
+            error,
+            HyperlightError::GuestError(ErrorCode::GuestError, message)
+                if message == "C fallback error"
+        ));
+
+        // The next dispatch must not inherit the consumed error.
+        let value: String = sbox.call("Echo", "ready".to_string()).unwrap();
+        assert_eq!(value, "ready");
+    });
+}
+
+#[test]
+fn c_registered_error_drops_returned_value() {
+    with_c_sandbox_from(
+        |builder| builder.heap_size(64 * 1024),
+        |mut sbox| {
+            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
+            for _ in 0..8 {
+                let error = sbox
+                    .call::<Vec<u8>>("ReturnValueWithError", ())
+                    .unwrap_err();
+                assert!(matches!(
+                    error,
+                    HyperlightError::GuestError(ErrorCode::GuestError, message)
+                        if message == "C registered error"
+                ));
+            }
+
+            // The final error must also leave the next dispatch usable.
+            let value: String = sbox.call("Echo", "ready".to_string()).unwrap();
+            assert_eq!(value, "ready");
+        },
+    );
+}
+
+#[test]
+fn c_fallback_error_drops_returned_value() {
+    with_c_sandbox_from(
+        |builder| builder.heap_size(64 * 1024),
+        |mut sbox| {
+            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
+            for _ in 0..8 {
+                let error = sbox
+                    .call::<Vec<u8>>("FallbackValueWithError", ())
+                    .unwrap_err();
+                assert!(matches!(
+                    error,
+                    HyperlightError::GuestError(ErrorCode::GuestError, message)
+                        if message == "C fallback error"
+                ));
+            }
+
+            // The final error must also leave the next dispatch usable.
+            let value: String = sbox.call("Echo", "ready".to_string()).unwrap();
+            assert_eq!(value, "ready");
+        },
+    );
+}
+
+#[test]
+fn c_guest_error_preserves_saved_host_return() {
+    with_c_sandbox_from(
+        |builder| builder.host_function("HostInt", || 42),
+        |mut sbox| {
+            // Leave a host result unread while reporting a separate dispatch error.
+            let error = sbox.call::<()>("StashHostReturnAndError", ()).unwrap_err();
+            assert!(matches!(
+                error,
+                HyperlightError::GuestError(ErrorCode::GuestError, message)
+                    if message == "C dispatch error"
+            ));
+
+            // Starting another dispatch clears errors, not the saved host result.
+            let value: i32 = sbox.call("ReadStashedHostReturn", ()).unwrap();
+            assert_eq!(value, 42);
+        },
+    );
+}
+
+#[test]
+fn c_saved_host_return_survives_restore() {
+    with_c_sandbox_from(
+        |builder| builder.host_function("HostInt", || 42),
+        |mut sbox| {
+            // Capture the unread host result in ordinary guest state.
+            let error = sbox.call::<()>("StashHostReturnAndError", ()).unwrap_err();
+            assert!(matches!(
+                error,
+                HyperlightError::GuestError(ErrorCode::GuestError, message)
+                    if message == "C dispatch error"
+            ));
+            let snapshot = sbox.snapshot().unwrap();
+
+            // The getter consumes the saved result.
+            let value: i32 = sbox.call("ReadStashedHostReturn", ()).unwrap();
+            assert_eq!(value, 42);
+
+            // Restoring the snapshot makes that result available again.
+            sbox.restore(snapshot).unwrap();
+            let value: i32 = sbox.call("ReadStashedHostReturn", ()).unwrap();
+            assert_eq!(value, 42);
+        },
+    );
 }
 
 fn simple_test_helper() {
@@ -425,18 +608,133 @@ fn h2g_capacity_failure_does_not_poison_sandbox() {
     });
 }
 
+fn assert_g2h_reply_capacity_failure_is_recoverable(queue_size: usize, pool_pages: usize) {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_buffer_size(4096);
+    cfg.set_g2h_queue_size(queue_size);
+    cfg.set_g2h_pool_pages(pool_pages);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host_calls = Arc::clone(&calls);
+        sandbox
+            .register("HostEchoVecBytes", move |value: Vec<u8>| {
+                host_calls.fetch_add(1, Ordering::Relaxed);
+                value
+            })
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let error = sandbox
+            .call::<Vec<u8>>("RoundTripHostVecBytes", vec![0; 4096])
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, HyperlightError::GuestError(_, message) if message.contains("G2H call retry")),
+            "{error}"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let expected = vec![1u8; 32];
+        let result: Vec<u8> = sandbox
+            .call("RoundTripHostVecBytes", expected.clone())
+            .unwrap();
+
+        assert_eq!(result, expected);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    });
+}
+
+#[test]
+fn g2h_reply_capacity_pool_exhaustion_is_recoverable() {
+    assert_g2h_reply_capacity_failure_is_recoverable(4, 2);
+}
+
+#[test]
+fn g2h_reply_capacity_descriptor_exhaustion_is_recoverable() {
+    assert_g2h_reply_capacity_failure_is_recoverable(2, 4);
+}
+
+#[test]
+fn g2h_reply_capacity_retained_buffers_are_recoverable() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_buffer_size(4096);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox
+            .register("HostEchoByteChunks", |_: Vec<Bytes>| {
+                vec![Bytes::from_static(b"retained")]
+            })
+            .unwrap();
+        sandbox
+            .register("HostEchoVecBytes", |value: Vec<u8>| value)
+            .unwrap();
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let retained: i32 = sandbox
+            .call("RetainHostByteChunks", Vec::<Bytes>::new())
+            .unwrap();
+        assert_eq!(retained, 8);
+
+        let error = sandbox
+            .call::<Vec<u8>>("RoundTripHostVecBytes", Vec::<u8>::new())
+            .unwrap_err();
+        assert!(
+            matches!(&error, HyperlightError::GuestError(_, message) if message.contains("G2H call retry")),
+            "{error}"
+        );
+
+        sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+        let released: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(released, retained);
+
+        let expected = vec![1u8; 32];
+        let result: Vec<u8> = sandbox
+            .call("RoundTripHostVecBytes", expected.clone())
+            .unwrap();
+        assert_eq!(result, expected);
+    });
+}
+
+#[test]
+fn g2h_reply_capacity_uses_available_upper_buffers() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_buffer_size(4096);
+    cfg.set_g2h_queue_size(4);
+    cfg.set_g2h_pool_pages(4);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        // The request uses one descriptor. The response needs three upper-tier buffers.
+        let expected = vec![1u8; 9 * 1024];
+        let host_result = expected.clone();
+        sandbox
+            .register("HostEchoVecBytes", move |_: Vec<u8>| host_result.clone())
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let result: Vec<u8> = sandbox
+            .call("RoundTripHostVecBytes", Vec::<u8>::new())
+            .unwrap();
+        assert_eq!(result, expected);
+    });
+}
+
 #[test]
 fn oversized_host_response_returns_transport_error() {
     with_rust_uninit_sandbox(|mut sandbox| {
         sandbox
             .register("HostOversizedVecBytes", || vec![0u8; 64 * 1024])
             .unwrap();
+
         sandbox.register("HostNoOp", || {}).unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
         let error = sandbox
             .call::<Vec<u8>>("GetOversizedHostVecBytes", ())
             .unwrap_err();
+
         assert!(matches!(
             error,
             HyperlightError::GuestError(_, message)
