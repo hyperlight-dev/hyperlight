@@ -435,6 +435,102 @@ fn restore_from_loaded_snapshot() {
     assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 0);
 }
 
+#[test]
+fn restore_missing_transport_preserves_target() {
+    // Remove transport from a snapshot with valid memory and vCPU state.
+    let mut bad_snapshot = create_snapshot();
+    Arc::get_mut(&mut bad_snapshot).unwrap().virtq = None;
+
+    // Seed guest state and read the mapped file before caching the snapshot.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), vec![0x5a; page_size::get()]).unwrap();
+
+    let mut target = create_test_sandbox();
+    target.call::<i32>("AddToStatic", 5i32).unwrap();
+
+    let guest_base = 0x200000000_u64;
+    target.map_file_cow(file.path(), guest_base).unwrap();
+
+    let args = (guest_base, hyperlight_common::vmem::PAGE_SIZE as u64, true);
+    let expected = vec![0x5a; hyperlight_common::vmem::PAGE_SIZE];
+    assert_eq!(
+        target.call::<Vec<u8>>("ReadMappedBuffer", args).unwrap(),
+        expected
+    );
+
+    let cached = target.snapshot().unwrap();
+    let generation = target.mem_mgr.snapshot_count;
+
+    // Reject the restore without changing the target's live or cached state.
+    let error = target.restore(bad_snapshot).unwrap_err();
+
+    assert!(
+        error.to_string().contains("no canonical transport state"),
+        "{error}"
+    );
+    assert!(target.status().is_ready());
+    assert!(Arc::ptr_eq(target.snapshot.as_ref().unwrap(), &cached));
+    assert_eq!(target.mem_mgr.snapshot_count, generation);
+    assert_eq!(
+        target.call::<Vec<u8>>("ReadMappedBuffer", args).unwrap(),
+        expected
+    );
+    assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 5);
+}
+
+#[test]
+fn restore_noncanonical_transport_preserves_target() {
+    // Give an empty G2H ring a nonzero descriptor.
+    let mut bad_snapshot = create_snapshot();
+    let snapshot = Arc::get_mut(&mut bad_snapshot).unwrap();
+    let transport = snapshot.virtq.as_ref().unwrap();
+
+    let mut g2h_ring = transport.g2h_ring().to_vec();
+    g2h_ring[0] = 1;
+
+    snapshot.virtq = Some(crate::mem::virtq::VirtqSnapshot::new(
+        transport.scratch_size(),
+        g2h_ring,
+        transport.h2g_ring().to_vec(),
+    ));
+
+    // Seed guest state and read the mapped file before caching the snapshot.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), vec![0x5a; page_size::get()]).unwrap();
+
+    let mut target = create_test_sandbox();
+    target.call::<i32>("AddToStatic", 5i32).unwrap();
+
+    let guest_base = 0x200000000_u64;
+    target.map_file_cow(file.path(), guest_base).unwrap();
+
+    let args = (guest_base, hyperlight_common::vmem::PAGE_SIZE as u64, true);
+    let expected = vec![0x5a; hyperlight_common::vmem::PAGE_SIZE];
+    assert_eq!(
+        target.call::<Vec<u8>>("ReadMappedBuffer", args).unwrap(),
+        expected
+    );
+    let cached = target.snapshot().unwrap();
+    let generation = target.mem_mgr.snapshot_count;
+
+    // Reject the restore without changing the target's live or cached state.
+    let error = target.restore(bad_snapshot).unwrap_err();
+
+    assert!(
+        error.to_string().contains("invalid canonical G2H image"),
+        "{error}"
+    );
+    assert!(target.status().is_ready());
+    assert!(Arc::ptr_eq(target.snapshot.as_ref().unwrap(), &cached));
+    assert_eq!(target.mem_mgr.snapshot_count, generation);
+
+    assert_eq!(
+        target.call::<Vec<u8>>("ReadMappedBuffer", args).unwrap(),
+        expected
+    );
+    assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 5);
+}
+
 /// Independent loads of the same image are structurally identical, so a
 /// sandbox built from one accepts a restore from the other.
 #[test]
@@ -1620,6 +1716,24 @@ fn checked_load_rejects_transport_blob_byte_mutation() {
     assert_err_contains(err, "digest");
 }
 
+#[test]
+fn unchecked_load_rejects_noncanonical_transport() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+
+    let transport_path = find_transport_blob(&path);
+    let mut bytes = std::fs::read(&transport_path).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&transport_path, bytes).unwrap();
+
+    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
+    assert_err_contains(error, "invalid canonical H2G image");
+}
+
 /// Config-blob byte mutation must be caught by digest verification
 /// before any structural validator runs.
 #[test]
@@ -1841,7 +1955,7 @@ fn malformed_manifest_json_rejected() {
         idx["manifests"][0]["size"] = Value::from(new_len);
     });
     let err = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
-    assert_err_contains(err, "manifest");
+    assert_err_contains(err, "failed to parse OCI manifest JSON");
 }
 
 #[test]
@@ -1977,6 +2091,18 @@ fn manifest_and_index_annotations_tolerated() {
 }
 
 #[test]
+fn manifest_blob_size_descriptor_mismatch_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_index(&path, |idx| {
+        let size = idx["manifests"][0]["size"].as_u64().unwrap();
+        idx["manifests"][0]["size"] = Value::from(size + 1);
+    });
+
+    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
+    assert_err_contains(error, "manifest blob size mismatch");
+}
+
+#[test]
 fn config_blob_size_descriptor_mismatch_rejected() {
     let (_dir, path) = save_for_mutation();
     // Bump the config descriptor's claimed size, leaving the blob as written.
@@ -1989,6 +2115,18 @@ fn config_blob_size_descriptor_mismatch_rejected() {
         OciTag::new("latest").unwrap(),
     ));
     assert_err_contains(err, "config blob size mismatch");
+}
+
+#[test]
+fn transport_blob_size_descriptor_mismatch_rejected() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_manifest(&path, |manifest| {
+        let size = manifest["layers"][1]["size"].as_u64().unwrap();
+        manifest["layers"][1]["size"] = Value::from(size + 1);
+    });
+
+    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
+    assert_err_contains(error, "transport blob size mismatch");
 }
 
 /// `load` reaches the config JSON parser. The digest path
@@ -2570,6 +2708,20 @@ fn config_blob_too_large_rejected() {
 }
 
 #[test]
+fn transport_blob_too_large_rejected() {
+    let (_dir, path) = save_for_mutation();
+    let transport_path = find_transport_blob(&path);
+    let bytes = vec![0; 2 * 1024 * 1024 + 1];
+    std::fs::write(transport_path, &bytes).unwrap();
+    rewrite_manifest(&path, |manifest| {
+        manifest["layers"][1]["size"] = Value::from(bytes.len() as u64);
+    });
+
+    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
+    assert_err_contains(error, "exceeds maximum allowed 2097152 bytes");
+}
+
+#[test]
 fn oci_layout_too_large_rejected() {
     let (_dir, path) = save_for_mutation();
     let huge = vec![b'a'; 1024 * 1024 + 16];
@@ -2902,23 +3054,25 @@ fn persisted_non_default_layout_loads_and_runs() {
 
 #[test]
 fn round_trip_preserves_transport_layout() {
-    use crate::sandbox::SandboxConfiguration;
+    let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+        .scratch_size(512 * 1024)
+        .heap_size(512 * 1024)
+        .g2h_queue_size(128)
+        .h2g_queue_size(16)
+        .g2h_buffer_size(8192)
+        .h2g_buffer_size(2048)
+        .g2h_pool_pages(16)
+        .h2g_pool_pages(6)
+        .build()
+        .unwrap();
 
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(512 * 1024);
-    cfg.set_heap_size(512 * 1024);
-    cfg.set_g2h_queue_size(128);
-    cfg.set_h2g_queue_size(16);
-    cfg.set_g2h_buffer_size(8192);
-    cfg.set_h2g_buffer_size(2048);
-    cfg.set_g2h_pool_pages(16);
-    cfg.set_h2g_pool_pages(6);
+    // Span several buffers in both directions.
+    let payload = "x".repeat(20 * 1024);
+    assert_eq!(
+        sbox.call::<String>("Echo", payload.clone()).unwrap(),
+        payload
+    );
 
-    let mut sbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), Some(cfg))
-            .unwrap()
-            .evolve()
-            .unwrap();
     let snapshot = sbox.snapshot().unwrap();
     let expected = snapshot.layout().get_transport_arena();
 
@@ -3308,20 +3462,38 @@ fn read_blob_dir(
 fn from_snapshot_silently_ignores_layout_overrides() {
     let mut sbox = create_test_sandbox();
     let snapshot = sbox.snapshot().unwrap();
-    let original_heap = snapshot.layout().heap_size();
-    let original_scratch = snapshot.layout().get_scratch_size();
+    let original = snapshot.layout();
 
     let mut sbox2 = SandboxBuilder::from_snapshot(snapshot.clone())
-        .heap_size((original_heap as u64) * 2)
-        .scratch_size(original_scratch * 2)
+        .heap_size((original.heap_size() as u64) * 2)
+        .scratch_size(original.get_scratch_size() * 2)
+        .g2h_queue_size(128)
+        .h2g_queue_size(16)
+        .g2h_buffer_size(8192)
+        .h2g_buffer_size(2048)
+        .g2h_pool_pages(16)
+        .h2g_pool_pages(6)
         .build()
         .unwrap();
 
     sbox2.call::<i32>("GetStatic", ()).unwrap();
 
     let new_snap = sbox2.snapshot().unwrap();
-    assert_eq!(new_snap.layout().heap_size(), original_heap);
-    assert_eq!(new_snap.layout().get_scratch_size(), original_scratch);
+    let restored = new_snap.layout();
+    assert_eq!(restored.heap_size(), original.heap_size());
+    assert_eq!(restored.get_scratch_size(), original.get_scratch_size());
+    assert_eq!(restored.get_g2h_queue_size(), original.get_g2h_queue_size());
+    assert_eq!(restored.get_h2g_queue_size(), original.get_h2g_queue_size());
+    assert_eq!(
+        restored.get_g2h_buffer_size(),
+        original.get_g2h_buffer_size()
+    );
+    assert_eq!(
+        restored.get_h2g_buffer_size(),
+        original.get_h2g_buffer_size()
+    );
+    assert_eq!(restored.get_g2h_pool_pages(), original.get_g2h_pool_pages());
+    assert_eq!(restored.get_h2g_pool_pages(), original.get_h2g_pool_pages());
 }
 
 #[test]

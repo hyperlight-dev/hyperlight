@@ -50,6 +50,26 @@ The runtime queue protocol and canonical checkpoint are described in
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
 
+## Transport framing
+
+The transport layer is at most 2 MiB. Integers are unsigned and little-endian.
+Sizes and lengths are in bytes. The fixed header is 40 bytes:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | Magic `HLVQSNAP` |
+| 8 | 4 | Version, `1` |
+| 12 | 4 | Reserved, `0` |
+| 16 | 8 | Scratch size |
+| 24 | 8 | G2H ring image length |
+| 32 | 8 | H2G ring image length |
+
+The G2H image follows the header. The H2G image follows the G2H image.
+The blob length must equal the header size plus both image lengths.
+
+The codec validates framing. Snapshot loading validates the ring contents
+against the finalized memory layout before admitting the snapshot.
+
 ## What is one snapshot
 
 A single saved `Snapshot` consists of exactly:

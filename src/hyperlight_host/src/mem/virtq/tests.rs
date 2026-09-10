@@ -80,11 +80,11 @@ impl TestVirtq {
     }
 
     pub(crate) fn h2g_consumer(&self) -> H2gConsumer {
-        attach_canonical(&memory_layout(), &self.scratch).unwrap().1
+        create_consumers(&memory_layout(), &self.scratch).unwrap().1
     }
 
     pub(crate) fn g2h_consumer(&self) -> G2hConsumer {
-        attach_canonical(&memory_layout(), &self.scratch).unwrap().0
+        create_consumers(&memory_layout(), &self.scratch).unwrap().0
     }
 
     fn validate(&self) -> Result<()> {
@@ -279,6 +279,26 @@ fn rejects_nonzero_g2h_descriptors() {
     desc.addr = queue.g2h_pool.start;
     queue.set_g2h_desc(0, desc);
     assert!(queue.validate().is_err());
+}
+
+#[test]
+fn rejects_chained_h2g_receive_buffers() {
+    let queue = TestVirtq::new();
+    let mut head = queue.h2g_desc(0);
+    let mut tail = queue.h2g_desc(1);
+    head.flags |= DescFlags::NEXT.bits();
+    tail.id = head.id;
+    queue.set_h2g_desc(0, head);
+    queue.set_h2g_desc(1, tail);
+
+    let error = queue.validate().unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid initial H2G receive buffers"),
+        "{error}"
+    );
 }
 
 #[test]

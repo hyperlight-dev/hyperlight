@@ -249,6 +249,12 @@ impl TransportArena {
         self.mbx_addr
     }
 
+    /// Byte offset of the snapshot checkpoint mailbox from the arena base.
+    pub const fn mbx_offset(&self) -> usize {
+        // `new` proves this difference is nonnegative and fits in `usize`.
+        (self.mbx_addr - self.g2h_ring_addr) as usize
+    }
+
     /// Address of the G2H pool.
     pub const fn g2h_pool_addr(&self) -> u64 {
         self.g2h_pool_addr
@@ -356,6 +362,30 @@ mod tests {
             TransportArena::new(u64::MAX - crate::vmem::PAGE_SIZE as u64 + 1, g2h, h2g,),
             None
         );
+    }
+
+    #[test]
+    fn transport_arena_mailbox_offset_at_high_base() {
+        // A high address must not affect the small arena-relative offset.
+        let base = u64::MAX - 16 * crate::vmem::PAGE_SIZE as u64 + 1;
+        let g2h = QueueDims::new(64, 8).unwrap();
+        let h2g = QueueDims::new(32, 4).unwrap();
+        let arena = TransportArena::new(base, g2h, h2g).unwrap();
+
+        assert_eq!(arena.mbx_offset(), 0x618);
+        assert_eq!(base + arena.mbx_offset() as u64, arena.mbx_addr());
+        assert!(arena.mbx_offset() + size_of::<u64>() <= arena.ring_span_len());
+    }
+
+    #[test]
+    fn transport_arena_mailbox_offset_with_largest_queues() {
+        // The mailbox follows both rings and fits within the control region.
+        let dims = QueueDims::new(32768, 1).unwrap();
+        let arena = TransportArena::new(0, dims, dims).unwrap();
+
+        assert_eq!(arena.mbx_offset(), 0x100018);
+        assert_eq!(arena.mbx_offset() as u64, arena.mbx_addr());
+        assert!(arena.mbx_offset() + size_of::<u64>() <= arena.ring_span_len());
     }
 
     #[test]

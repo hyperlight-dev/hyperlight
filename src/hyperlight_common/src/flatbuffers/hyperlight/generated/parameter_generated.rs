@@ -187,20 +187,6 @@ impl<'a> Parameter<'a> {
 
     #[inline]
     #[allow(non_snake_case)]
-    pub fn value_as_hlvecbytes(&self) -> Option<hlvecbytes<'a>> {
-        if self.value_type() == ParameterValue::hlvecbytes {
-            let u = self.value();
-            // Safety:
-            // Created from a valid Table for this object
-            // Which contains a valid union in this slot
-            Some(unsafe { hlvecbytes::init_from_table(u) })
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    #[allow(non_snake_case)]
     pub fn value_as_hlexternalbytes(&self) -> Option<hlexternalbytes<'a>> {
         if self.value_type() == ParameterValue::hlexternalbytes {
             let u = self.value();
@@ -267,11 +253,6 @@ impl flatbuffers::Verifiable for Parameter<'_> {
                     ParameterValue::hlbool => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<hlbool>>(
                             "ParameterValue::hlbool",
-                            pos,
-                        ),
-                    ParameterValue::hlvecbytes => v
-                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlvecbytes>>(
-                            "ParameterValue::hlvecbytes",
                             pos,
                         ),
                     ParameterValue::hlexternalbytes => v
@@ -411,16 +392,6 @@ impl core::fmt::Debug for Parameter<'_> {
             }
             ParameterValue::hlbool => {
                 if let Some(x) = self.value_as_hlbool() {
-                    ds.field("value", &x)
-                } else {
-                    ds.field(
-                        "value",
-                        &"InvalidFlatbuffer: Union discriminant does not match value.",
-                    )
-                }
-            }
-            ParameterValue::hlvecbytes => {
-                if let Some(x) = self.value_as_hlvecbytes() {
                     ds.field("value", &x)
                 } else {
                     ds.field(

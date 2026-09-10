@@ -7,61 +7,14 @@ use anyhow::{Context, bail};
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
-use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
+use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::transport::{
-    EncodedMessage, ExternalValues, MsgHeader, MsgKind, SIZE_PREFIX_LEN, size_prefix_payload_len,
-    size_prefixed_len,
+    EncodedMessage, ExternalValues, MsgHeader, MsgKind, SIZE_PREFIX_LEN,
 };
 use hyperlight_common::virtq::{RecvChain, WritableChain};
 
 use super::mem::HostMemOps;
-
-/// Copies external values from guest-writable scratch into host-owned storage.
-///
-/// Chunked values become one owned chunk because host calls cannot retain
-/// references into untrusted guest memory.
-struct ChainExternalValues<'a> {
-    request: &'a mut RecvChain<HostMemOps>,
-}
-
-impl<'a> ChainExternalValues<'a> {
-    fn new(request: &'a mut RecvChain<HostMemOps>) -> Self {
-        Self { request }
-    }
-}
-
-impl ExternalValueSource for ChainExternalValues<'_> {
-    fn take_bytes(&mut self, length: usize) -> anyhow::Result<Vec<u8>> {
-        validate_external_length("VecBytes", length, self.request.remaining())?;
-        let mut value = zeroed_vec(length, "external VecBytes")?;
-
-        self.request.read_exact(&mut value)?;
-        Ok(value)
-    }
-
-    fn take_chunks(&mut self, length: usize) -> anyhow::Result<Vec<Bytes>> {
-        if length == 0 {
-            return Ok(Vec::new());
-        }
-
-        validate_external_length("ByteChunks", length, self.request.remaining())?;
-        let mut value = zeroed_vec(length, "external ByteChunks")?;
-        self.request.read_exact(&mut value)?;
-
-        Ok(vec![Bytes::from(value)])
-    }
-
-    fn finish(&mut self) -> anyhow::Result<()> {
-        if self.request.remaining() != 0 {
-            bail!(
-                "G2H message has {} trailing external bytes",
-                self.request.remaining()
-            );
-        }
-        Ok(())
-    }
-}
 
 /// Decode one complete host function call from a G2H request.
 ///
@@ -71,8 +24,7 @@ pub(crate) fn get_host_function_call(
     chain: &mut RecvChain<HostMemOps>,
 ) -> anyhow::Result<FunctionCall> {
     let control = read_control(chain)?;
-    let mut exts = ChainExternalValues::new(chain);
-    FunctionCall::decode(&control, &mut exts)
+    FunctionCall::decode(&control, chain)
 }
 
 /// Read and validate one complete G2H message header.
@@ -99,11 +51,10 @@ pub(crate) fn read_guest_function_call_result(
     request: &mut RecvChain<HostMemOps>,
 ) -> anyhow::Result<FunctionCallResult> {
     let control = read_control(request)?;
-    let mut exts = ChainExternalValues::new(request);
-    FunctionCallResult::decode(&control, &mut exts)
+    FunctionCallResult::decode(&control, request)
 }
 
-/// Encode and write a response when its complete wire message fits.
+/// Append a complete response when it fits the remaining writable space.
 ///
 /// `false` leaves the writable chain unchanged.
 pub(crate) fn try_write_response(
@@ -118,7 +69,7 @@ pub(crate) fn try_write_response(
     let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
         .context("Host function response length overflow")?;
 
-    if msg.total_len() > reply.capacity() {
+    if msg.total_len() > reply.remaining() {
         return Ok(false);
     }
 
@@ -134,12 +85,7 @@ pub(crate) fn read_guest_log_data(
     chain: &mut RecvChain<HostMemOps>,
 ) -> anyhow::Result<GuestLogData> {
     let control = read_control(chain)?;
-    let remain = chain.remaining();
-
-    if remain != 0 {
-        bail!("G2H log has {remain} trailing external bytes");
-    }
-
+    chain.finish()?;
     GuestLogData::try_from(control.as_slice())
 }
 
@@ -148,7 +94,7 @@ fn read_control(request: &mut RecvChain<HostMemOps>) -> anyhow::Result<Vec<u8>> 
     let mut prefix = [0u8; SIZE_PREFIX_LEN];
     request.read_exact(&mut prefix)?;
 
-    let payload_len = size_prefix_payload_len(&prefix).context("invalid G2H size prefix")?;
+    let payload_len = u32::from_le_bytes(prefix) as usize;
     if payload_len > request.remaining() {
         bail!(
             "G2H control data declares {payload_len} bytes, only {} remain",
@@ -156,8 +102,8 @@ fn read_control(request: &mut RecvChain<HostMemOps>) -> anyhow::Result<Vec<u8>> 
         );
     }
 
-    let control_len = size_prefixed_len(payload_len).context("G2H control length overflow")?;
-    // Do not trust control_len to be small enough to allocate.
+    // The prefix and payload fit within the original chain length.
+    let control_len = SIZE_PREFIX_LEN + payload_len;
     let mut control = zeroed_vec(control_len, "G2H control data")?;
 
     control[..SIZE_PREFIX_LEN].copy_from_slice(&prefix);
@@ -177,27 +123,152 @@ fn zeroed_vec(length: usize, what: &str) -> anyhow::Result<Vec<u8>> {
     Ok(value)
 }
 
-/// Validate a declared external length before allocating its storage.
-fn validate_external_length(kind: &str, length: usize, remaining: usize) -> anyhow::Result<()> {
-    if length > remaining {
-        bail!("External {kind} requires {length} bytes, only {remaining} remain");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
+    use hyperlight_common::virtq::{BufferChainBuilder, MemOps, RingProducer, VirtqError};
 
-    #[test]
-    fn external_length_is_bounded_before_allocation() {
-        assert!(validate_external_length("VecBytes", usize::MAX, 16).is_err());
-        assert!(validate_external_length("ByteChunks", 17, 16).is_err());
-        assert!(validate_external_length("VecBytes", 16, 16).is_ok());
+    use super::*;
+    use crate::mem::virtq::tests::TestVirtq;
+
+    fn with_control(payload: &[u8], test: impl FnOnce(&mut RecvChain<HostMemOps>)) {
+        let queue = TestVirtq::new();
+        let pool = HostMemOps::new(&queue.scratch, queue.g2h_pool.clone()).unwrap();
+
+        let mut producer = RingProducer::new(queue.g2h_layout, queue.g2h_mem.clone());
+        pool.write(queue.g2h_pool.start, payload).unwrap();
+
+        let chain = BufferChainBuilder::new()
+            .readable(queue.g2h_pool.start, payload.len() as u32)
+            .build()
+            .unwrap();
+
+        producer.submit_available(&chain).unwrap();
+
+        let mut consumer = queue.g2h_consumer();
+        let (mut request, reply) = consumer.poll(payload.len()).unwrap().unwrap();
+
+        test(&mut request);
+        consumer.complete(request, reply).unwrap();
     }
 
     #[test]
     fn oversized_allocation_fails_without_panicking() {
         assert!(zeroed_vec(usize::MAX, "test buffer").is_err());
+    }
+
+    #[test]
+    fn read_control_rejects_truncated_prefix() {
+        with_control(b"\x04\0\0", |request| {
+            let error = read_control(request).unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<VirtqError>(),
+                Some(VirtqError::ReceiveTooShort {
+                    requested: SIZE_PREFIX_LEN,
+                    remaining: 3,
+                })
+            ));
+            assert_eq!(request.consumed(), 0);
+        });
+    }
+
+    #[test]
+    fn read_control_rejects_truncated_body() {
+        with_control(b"\x04\0\0\0ctr", |request| {
+            let error = read_control(request).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "G2H control data declares 4 bytes, only 3 remain"
+            );
+            assert_eq!(request.remaining(), 3);
+        });
+    }
+
+    #[test]
+    fn read_control_leaves_external_bytes_unread() {
+        let queue = TestVirtq::new();
+        let pool = HostMemOps::new(&queue.scratch, queue.g2h_pool.clone()).unwrap();
+        let mut producer = RingProducer::new(queue.g2h_layout, queue.g2h_mem.clone());
+        let payload = b"\x04\0\0\0ctrlext";
+        let addr = queue.g2h_pool.start;
+        pool.write(addr, payload).unwrap();
+
+        let chain = BufferChainBuilder::new()
+            .readable(addr, 2)
+            .readable(addr + 2, 5)
+            .readable(addr + 7, 4)
+            .build()
+            .unwrap();
+        producer.submit_available(&chain).unwrap();
+
+        let mut consumer = queue.g2h_consumer();
+        let (mut request, reply) = consumer.poll(payload.len()).unwrap().unwrap();
+        assert_eq!(read_control(&mut request).unwrap(), b"\x04\0\0\0ctrl");
+        assert_eq!(request.remaining(), 3);
+
+        let mut external = [0; 3];
+        request.read_exact(&mut external).unwrap();
+        assert_eq!(&external, b"ext");
+        consumer.complete(request, reply).unwrap();
+    }
+
+    #[test]
+    fn response_preflight_leaves_short_reply_unchanged() {
+        let queue = TestVirtq::new();
+        let mut consumer = queue.h2g_consumer();
+        let (request, reply) = consumer.poll(0).unwrap().unwrap();
+
+        let Ok(mut reply) = reply.into_writable() else {
+            panic!("expected writable reply");
+        };
+
+        let result = FunctionCallResult::new(Ok(ReturnValue::UInt(17)));
+        let mut builder = FlatBufferBuilder::new();
+        let mut externals = ExternalValues::new();
+
+        let control = result.encode(&mut builder, &mut externals).unwrap();
+        let message = EncodedMessage::new(MsgKind::Response, 7, control, externals).unwrap();
+
+        let prefix = vec![0xa5; reply.capacity() - message.total_len() + 1];
+        reply.write_all(&prefix).unwrap();
+        let addr = queue.h2g_desc(0).addr;
+        let before = queue.h2g_buffer(0, addr);
+
+        assert!(!try_write_response(&mut reply, 7, &result).unwrap());
+        assert_eq!(reply.written(), prefix.len());
+        assert_eq!(queue.h2g_buffer(0, addr), before);
+
+        consumer.complete(request, reply).unwrap();
+    }
+
+    #[test]
+    fn response_fits_remaining_capacity_exactly() {
+        let queue = TestVirtq::new();
+        let mut consumer = queue.h2g_consumer();
+        let (request, reply) = consumer.poll(0).unwrap().unwrap();
+        let Ok(mut reply) = reply.into_writable() else {
+            panic!("expected writable reply");
+        };
+
+        let result = FunctionCallResult::new(Ok(ReturnValue::UInt(17)));
+        let mut builder = FlatBufferBuilder::new();
+        let mut externals = ExternalValues::new();
+
+        let control = result.encode(&mut builder, &mut externals).unwrap();
+        let message = EncodedMessage::new(MsgKind::Response, 7, control, externals).unwrap();
+
+        let expected: Vec<_> = message.chunks().flatten().copied().collect();
+
+        let prefix = vec![0xa5; reply.capacity() - expected.len()];
+        reply.write_all(&prefix).unwrap();
+
+        assert!(try_write_response(&mut reply, 7, &result).unwrap());
+        assert_eq!(reply.remaining(), 0);
+
+        let actual = queue.h2g_buffer(0, queue.h2g_desc(0).addr);
+        assert_eq!(&actual[..prefix.len()], prefix);
+        assert_eq!(&actual[prefix.len()..], expected);
+
+        consumer.complete(request, reply).unwrap();
     }
 }

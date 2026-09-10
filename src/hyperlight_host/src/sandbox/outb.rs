@@ -233,9 +233,9 @@ fn outb_virtq_call(
         let header = virtq::read_message_header(&mut request)
             .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
-        match header.msg_kind() {
-            Ok(MsgKind::Request) => break (request, reply, header),
-            Ok(MsgKind::Log) => {
+        match header.kind {
+            MsgKind::Request => break (request, reply, header),
+            MsgKind::Log => {
                 if header.cid != 0 {
                     return Err(HandleOutbError::ReadHostFunctionCall(
                         "G2H log has a nonzero correlation ID".into(),
@@ -259,14 +259,9 @@ fn outb_virtq_call(
                     ))
                 })?;
             }
-            Ok(kind) => {
+            kind => {
                 return Err(HandleOutbError::ReadHostFunctionCall(format!(
                     "Expected G2H request, got {kind:?}"
-                )));
-            }
-            Err(kind) => {
-                return Err(HandleOutbError::ReadHostFunctionCall(format!(
-                    "Unknown G2H message kind {kind:#x}"
                 )));
             }
         }

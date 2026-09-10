@@ -458,45 +458,21 @@ impl MultiUseSandbox {
     }
 
     fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
-        if let Err(error) = self.mem_mgr.begin_snapshot_checkpoint() {
-            if error.is_poison_error() {
-                self.poison();
+        self.with_guest_execution(|sbox| {
+            sbox.mem_mgr.begin_snapshot_checkpoint()?;
+            sbox.dispatch_guest_call()?;
+
+            let guest_owned = sbox.mem_mgr.finish_snapshot_checkpoint()?;
+            if guest_owned != 0 {
+                // Fixed-pool payloads are outside the ordinary memory snapshot.
+                return Err(HyperlightError::Error(format!(
+                    "Cannot snapshot while {guest_owned} transport buffers are retained"
+                )));
             }
-            return Err(error);
-        }
 
-        if let Err(error) = self
-            .vm
-            .dispatch_call_from_host(&mut self.mem_mgr, &self.host_funcs)
-        {
-            let (error, should_poison) = error.promote();
-            if should_poison {
-                self.poison();
-            }
-            return Err(error);
-        }
-
-        let guest_owned = match self.mem_mgr.finish_snapshot_checkpoint() {
-            Ok(guest_owned) => guest_owned,
-            Err(error) => {
-                if error.is_poison_error() {
-                    self.poison();
-                }
-                return Err(error);
-            }
-        };
-
-        if guest_owned != 0 {
-            // TODO: Parse retained pool-relative ranges and initialized lengths
-            // from the mailbox, sanitize them, and include them in the snapshot.
-            // The count-only protocol cannot preserve payloads safely.
-            return Err(HyperlightError::Error(format!(
-                "Cannot snapshot while {guest_owned} transport buffers are retained"
-            )));
-        }
-
-        self.transport_dirty = false;
-        Ok(())
+            sbox.transport_dirty = false;
+            Ok(())
+        })
     }
 
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
@@ -646,6 +622,14 @@ impl MultiUseSandbox {
         let msrs = snapshot.msrs().ok_or_else(|| {
             HyperlightError::Error("snapshot from running sandbox should have MSRs".to_string())
         })?;
+
+        if let Some(virtq) = snapshot.virtq() {
+            virtq.preflight(snapshot.layout())?;
+        } else if matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_)) {
+            return Err(crate::new_error!(
+                "running snapshot has no canonical transport state"
+            ));
+        }
 
         // Errors below leave the sandbox poisoned unless base mapping updates make it unrecoverable.
         self.status = SandboxStatus::Poisoned;
@@ -970,13 +954,8 @@ impl MultiUseSandbox {
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
         self.check_ready()?;
-        // ===== KILL() TIMING POINT 1 =====
-        // Clear any stale cancellation from a previous guest function call or if kill() was called too early.
-        // Any kill() that completed (even partially) BEFORE this line has NO effect on this call.
-        self.vm.clear_cancel();
-
-        let res = (|| {
-            self.transport_dirty = true;
+        self.with_guest_execution(|sbox| {
+            sbox.transport_dirty = true;
 
             let fc = FunctionCall::new(
                 function_name.to_string(),
@@ -985,23 +964,10 @@ impl MultiUseSandbox {
                 return_type,
             );
 
-            let cid = self.mem_mgr.write_guest_function_call(&fc)?;
+            let cid = sbox.mem_mgr.write_guest_function_call(&fc)?;
+            sbox.dispatch_guest_call()?;
 
-            let dispatch_res = self
-                .vm
-                .dispatch_call_from_host(&mut self.mem_mgr, &self.host_funcs);
-
-            // Convert dispatch errors to HyperlightErrors to maintain backwards compatibility
-            // but first determine if sandbox should be poisoned
-            if let Err(e) = dispatch_res {
-                let (error, should_poison) = e.promote();
-                if should_poison {
-                    self.poison();
-                }
-                return Err(error);
-            }
-
-            let guest_result = self.mem_mgr.read_h2g_result_from_g2h(cid)?.into_inner();
+            let guest_result = sbox.mem_mgr.read_h2g_result_from_g2h(cid)?.into_inner();
 
             match guest_result {
                 Ok(val) => Ok(val),
@@ -1018,21 +984,33 @@ impl MultiUseSandbox {
                     ))
                 }
             }
-        })();
+        })
+    }
 
-        // Clear partial abort bytes so they don't leak across calls.
+    fn with_guest_execution<T>(&mut self, op: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        // Cancellation set before this reset is ignored for this operation.
+        // Cancellation during request preparation must reach the VM.
+        self.vm.clear_cancel();
+        let result = op(self);
         self.mem_mgr.abort_buffer.clear();
 
-        if let Err(e) = &res {
-            // Determine if we should poison the sandbox.
-            if e.is_poison_error() {
-                self.poison();
-            }
+        if result.as_ref().is_err_and(HyperlightError::is_poison_error) {
+            self.poison();
         }
 
-        // Note: clear_call_active() is automatically called when _guard is dropped here
+        result
+    }
 
-        res
+    fn dispatch_guest_call(&mut self) -> Result<()> {
+        self.vm
+            .dispatch_call_from_host(&mut self.mem_mgr, &self.host_funcs)
+            .map_err(|error| {
+                let (error, should_poison) = error.promote();
+                if should_poison {
+                    self.poison();
+                }
+                error
+            })
     }
 
     /// Returns a handle for interrupting guest execution.
@@ -1537,6 +1515,90 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_reject_noncanonical_transport_after_checkpoint() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        sandbox.checkpoint_transport_for_snapshot().unwrap();
+        sandbox.snapshot = None;
+
+        let generation = sandbox.mem_mgr.snapshot_count;
+        let ring = sandbox.mem_mgr.layout.get_transport_arena().g2h_ring_addr();
+        let offset = sandbox
+            .mem_mgr
+            .layout
+            .resolve_gpa(ring, &[])
+            .unwrap()
+            .offset;
+
+        sandbox.mem_mgr.scratch_mem.write::<u64>(offset, 1).unwrap();
+
+        let Err(error) = sandbox.snapshot() else {
+            panic!("expected invalid canonical transport");
+        };
+
+        assert!(
+            error.to_string().contains("invalid canonical G2H image"),
+            "{error}"
+        );
+        assert_eq!(sandbox.mem_mgr.snapshot_count, generation);
+        assert!(sandbox.snapshot.is_none());
+    }
+
+    #[test]
+    fn snapshot_checkpoint_ignores_idle_cancellation() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        assert!(!sandbox.interrupt_handle().kill());
+
+        sandbox.snapshot().unwrap();
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+        assert!(!sandbox.transport_dirty);
+        assert!(!sandbox.interrupt_handle().kill());
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 5);
+    }
+
+    #[test]
+    fn snapshot_checkpoint_clears_partial_abort_bytes() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
+
+        sandbox.snapshot().unwrap();
+
+        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+    }
+
+    #[test]
+    fn guest_execution_preserves_pre_entry_cancellation() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
+
+        let error = sandbox
+            .with_guest_execution(|sandbox| {
+                sandbox.mem_mgr.begin_snapshot_checkpoint()?;
+                assert!(!sandbox.interrupt_handle().kill());
+                sandbox.dispatch_guest_call()
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, HyperlightError::ExecutionCanceledByHost()));
+        assert_eq!(sandbox.status(), SandboxStatus::Poisoned);
+        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
+    }
+
+    #[test]
     fn snapshots_reject_retained_transport_buffers_without_poisoning() {
         let path = simple_guest_as_pathbuf();
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
@@ -1552,6 +1614,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(retained_len, 6 * 1024);
+        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
 
         let Err(error) = sandbox.snapshot() else {
             panic!("snapshot with retained H2G buffers succeeded");
@@ -1565,6 +1628,7 @@ mod tests {
         }
         assert!(!sandbox.status().is_poisoned());
         assert!(sandbox.transport_dirty);
+        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
 
         let released_len: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
         assert_eq!(released_len, retained_len);
@@ -1574,6 +1638,7 @@ mod tests {
 
         let retained_len: i32 = sandbox.call("RetainHostByteChunks", retained).unwrap();
         assert_eq!(retained_len, 6 * 1024);
+        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
 
         let Err(error) = sandbox.snapshot() else {
             panic!("snapshot with retained G2H buffers succeeded");
@@ -1587,6 +1652,7 @@ mod tests {
         }
         assert!(!sandbox.status().is_poisoned());
         assert!(sandbox.transport_dirty);
+        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
 
         let released_len: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
         assert_eq!(released_len, retained_len);

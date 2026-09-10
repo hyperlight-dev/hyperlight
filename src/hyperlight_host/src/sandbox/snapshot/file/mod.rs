@@ -9,6 +9,7 @@ mod digest;
 mod fsutil;
 mod media_types;
 pub(crate) mod reference;
+mod transport;
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +35,6 @@ use super::{NextAction, Snapshot};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
-use crate::mem::virtq::VirtqSnapshot;
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
@@ -50,10 +50,6 @@ pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
 /// `oci-layout`, `index.json`, the OCI image manifest, and the
 /// Hyperlight config blob. Bounds the allocation done before parsing.
 const MAX_JSON_BLOB_SIZE: u64 = 1024 * 1024;
-const MAX_TRANSPORT_BLOB_SIZE: u64 = 2 * 1024 * 1024;
-const TRANSPORT_MAGIC: [u8; 8] = *b"HLVQSNAP";
-const TRANSPORT_VERSION: u32 = 1;
-const TRANSPORT_HEADER_LEN: usize = 40;
 
 /// Reject a JSON artifact larger than the cap the loader reads with
 /// [`read_bounded`]. The writer holds to the same cap so every layout
@@ -68,108 +64,6 @@ fn check_json_blob_size(what: &str, len: usize) -> crate::Result<()> {
         ));
     }
     Ok(())
-}
-
-fn encode_transport(snapshot: &VirtqSnapshot) -> crate::Result<Vec<u8>> {
-    let g2h_len = snapshot.g2h_ring().len();
-    let h2g_len = snapshot.h2g_ring().len();
-
-    let total_len = TRANSPORT_HEADER_LEN
-        .checked_add(g2h_len)
-        .and_then(|len| len.checked_add(h2g_len))
-        .ok_or_else(|| crate::new_error!("snapshot transport length overflow"))?;
-
-    if total_len as u64 > MAX_TRANSPORT_BLOB_SIZE {
-        return Err(crate::new_error!(
-            "transport blob of {total_len} bytes exceeds the {MAX_TRANSPORT_BLOB_SIZE} byte maximum"
-        ));
-    }
-
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(total_len)
-        .map_err(|error| crate::new_error!("failed to allocate transport blob: {error}"))?;
-
-    bytes.extend_from_slice(&TRANSPORT_MAGIC);
-    bytes.extend_from_slice(&TRANSPORT_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&u64::try_from(snapshot.scratch_size())?.to_le_bytes());
-    bytes.extend_from_slice(&u64::try_from(g2h_len)?.to_le_bytes());
-    bytes.extend_from_slice(&u64::try_from(h2g_len)?.to_le_bytes());
-    bytes.extend_from_slice(snapshot.g2h_ring());
-    bytes.extend_from_slice(snapshot.h2g_ring());
-    Ok(bytes)
-}
-
-fn read_transport_field<const N: usize>(bytes: &mut &[u8], field: &str) -> crate::Result<[u8; N]> {
-    let (value, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or_else(|| crate::new_error!("snapshot transport {field} is truncated"))?;
-
-    let mut array = [0; N];
-    array.copy_from_slice(value);
-
-    *bytes = remaining;
-    Ok(array)
-}
-
-fn decode_transport(bytes: &[u8]) -> crate::Result<VirtqSnapshot> {
-    let total_len = bytes.len();
-    let mut bytes = bytes;
-
-    if read_transport_field(&mut bytes, "magic")? != TRANSPORT_MAGIC {
-        return Err(crate::new_error!("snapshot transport magic is invalid"));
-    }
-
-    let version = u32::from_le_bytes(read_transport_field(&mut bytes, "version")?);
-    if version != TRANSPORT_VERSION {
-        return Err(crate::new_error!(
-            "snapshot transport version mismatch: file has version {version}, this build expects {TRANSPORT_VERSION}"
-        ));
-    }
-
-    let reserved = u32::from_le_bytes(read_transport_field(&mut bytes, "reserved field")?);
-    if reserved != 0 {
-        return Err(crate::new_error!(
-            "snapshot transport reserved field is nonzero"
-        ));
-    }
-
-    let scratch_size = usize::try_from(u64::from_le_bytes(read_transport_field(
-        &mut bytes,
-        "scratch size",
-    )?))?;
-
-    let g2h_len = usize::try_from(u64::from_le_bytes(read_transport_field(
-        &mut bytes,
-        "G2H ring length",
-    )?))?;
-
-    let h2g_len = usize::try_from(u64::from_le_bytes(read_transport_field(
-        &mut bytes,
-        "H2G ring length",
-    )?))?;
-    let expected_len = TRANSPORT_HEADER_LEN
-        .checked_add(g2h_len)
-        .and_then(|len| len.checked_add(h2g_len))
-        .ok_or_else(|| crate::new_error!("snapshot transport length overflow"))?;
-
-    if total_len != expected_len {
-        return Err(crate::new_error!(
-            "snapshot transport length {} does not match header length {expected_len}",
-            total_len
-        ));
-    }
-
-    let (g2h_ring, h2g_ring) = bytes
-        .split_at_checked(g2h_len)
-        .ok_or_else(|| crate::new_error!("snapshot transport G2H ring is truncated"))?;
-
-    Ok(VirtqSnapshot::new(
-        scratch_size,
-        g2h_ring.to_vec(),
-        h2g_ring.to_vec(),
-    ))
 }
 
 /// Select one manifest descriptor from `index` by `reference`.
@@ -287,19 +181,13 @@ fn load_manifest(
             MediaType::ImageManifest.to_string()
         ));
     }
-    let manifest_hex = parse_oci_digest(manifest_desc.digest())?;
-    let manifest_path = blobs_dir.join(&manifest_hex);
-    let manifest_bytes = read_bounded(&manifest_path, MAX_JSON_BLOB_SIZE)?;
-    if manifest_bytes.len() as u64 != manifest_desc.size() {
-        return Err(crate::new_error!(
-            "OCI manifest size mismatch: descriptor says {}, file is {}",
-            manifest_desc.size(),
-            manifest_bytes.len()
-        ));
-    }
-    if verify_blobs {
-        verify_blob_bytes("manifest", &manifest_bytes, &manifest_hex)?;
-    }
+    let manifest_bytes = load_blob(
+        "manifest",
+        blobs_dir,
+        manifest_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
     let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| crate::new_error!("failed to parse OCI manifest JSON: {}", e))?;
     if manifest.schema_version() != SCHEMA_VERSION {
@@ -326,19 +214,13 @@ fn load_config(
     cfg_desc: &Descriptor,
     verify_blobs: bool,
 ) -> crate::Result<OciSnapshotConfig> {
-    let cfg_hex = parse_oci_digest(cfg_desc.digest())?;
-    let cfg_path = blobs_dir.join(&cfg_hex);
-    let cfg_bytes = read_bounded(&cfg_path, MAX_JSON_BLOB_SIZE)?;
-    if cfg_bytes.len() as u64 != cfg_desc.size() {
-        return Err(crate::new_error!(
-            "config blob size mismatch: descriptor says {}, file is {}",
-            cfg_desc.size(),
-            cfg_bytes.len()
-        ));
-    }
-    if verify_blobs {
-        verify_blob_bytes("config", &cfg_bytes, &cfg_hex)?;
-    }
+    let cfg_bytes = load_blob(
+        "config",
+        blobs_dir,
+        cfg_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
     let cfg: OciSnapshotConfig = serde_json::from_slice(&cfg_bytes)
         .map_err(|e| crate::new_error!("failed to parse Hyperlight config JSON: {}", e))?;
     cfg.validate_for_load()?;
@@ -380,23 +262,25 @@ fn open_snapshot_blob(
     Ok(snap_file)
 }
 
-fn load_transport_blob(
+/// Read a bounded OCI blob and check its descriptor size and optional digest.
+fn load_blob(
+    label: &str,
     blobs_dir: &Path,
-    transport_desc: &Descriptor,
+    descriptor: &Descriptor,
+    max_size: u64,
     verify_blobs: bool,
 ) -> crate::Result<Vec<u8>> {
-    let transport_hex = parse_oci_digest(transport_desc.digest())?;
-    let transport_path = blobs_dir.join(&transport_hex);
-    let bytes = read_bounded(&transport_path, MAX_TRANSPORT_BLOB_SIZE)?;
-    if bytes.len() as u64 != transport_desc.size() {
+    let hex = parse_oci_digest(descriptor.digest())?;
+    let bytes = read_bounded(&blobs_dir.join(&hex), max_size)?;
+    if bytes.len() as u64 != descriptor.size() {
         return Err(crate::new_error!(
-            "transport blob size mismatch: descriptor says {}, file is {}",
-            transport_desc.size(),
+            "{label} blob size mismatch: descriptor says {}, file is {}",
+            descriptor.size(),
             bytes.len()
         ));
     }
     if verify_blobs {
-        verify_blob_bytes("transport", &bytes, &transport_hex)?;
+        verify_blob_bytes(label, &bytes, &hex)?;
     }
     Ok(bytes)
 }
@@ -635,7 +519,7 @@ impl Snapshot {
         let transport = self.virtq.as_ref().ok_or_else(|| {
             crate::new_error!("initialized snapshot has no canonical transport state")
         })?;
-        let transport_bytes = encode_transport(transport)?;
+        let transport_bytes = transport::encode(transport)?;
         let transport_digest = Digest256::from_bytes(&transport_bytes);
         put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
 
@@ -720,10 +604,9 @@ impl Snapshot {
                 ));
             }
         };
-        let transport = self.virtq.as_ref().ok_or_else(|| {
+        self.virtq.as_ref().ok_or_else(|| {
             crate::new_error!("initialized snapshot has no canonical transport state")
         })?;
-        transport.preflight(&self.layout)?;
 
         let host_functions = match &self.host_functions.host_functions {
             Some(v) => v.iter().map(HostFunction::from).collect(),
@@ -961,8 +844,14 @@ impl Snapshot {
         //    handle so an attacker cannot swap the file between
         //    verification and mapping.
         let snap_file = open_snapshot_blob(&blobs_dir, snap_desc, cfg.memory_size, verify_blobs)?;
-        let transport_bytes = load_transport_blob(&blobs_dir, transport_desc, verify_blobs)?;
-        let virtq = decode_transport(&transport_bytes)?;
+        let transport_bytes = load_blob(
+            "transport",
+            &blobs_dir,
+            transport_desc,
+            transport::MAX_BLOB_SIZE,
+            verify_blobs,
+        )?;
+        let virtq = transport::decode(&transport_bytes)?;
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
@@ -1070,76 +959,5 @@ impl Snapshot {
             host_functions,
             virtq: Some(virtq),
         })
-    }
-}
-
-#[cfg(test)]
-mod transport_tests {
-    use super::*;
-
-    #[test]
-    fn transport_blob_round_trips() {
-        let snapshot = VirtqSnapshot::new(0x20_000, vec![1, 2, 3], vec![4, 5]);
-        let bytes = encode_transport(&snapshot).unwrap();
-        let decoded = decode_transport(&bytes).unwrap();
-
-        assert_eq!(decoded.scratch_size(), snapshot.scratch_size());
-        assert_eq!(decoded.g2h_ring(), snapshot.g2h_ring());
-        assert_eq!(decoded.h2g_ring(), snapshot.h2g_ring());
-    }
-
-    #[test]
-    fn transport_blob_rejects_header_corruption() {
-        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
-        let mut bytes = encode_transport(&snapshot).unwrap();
-
-        bytes[8..12].copy_from_slice(&TRANSPORT_VERSION.wrapping_add(1).to_le_bytes());
-        assert!(
-            decode_transport(&bytes)
-                .unwrap_err()
-                .to_string()
-                .contains("version mismatch")
-        );
-
-        bytes[8..12].copy_from_slice(&TRANSPORT_VERSION.to_le_bytes());
-        bytes[12] = 1;
-        assert!(
-            decode_transport(&bytes)
-                .unwrap_err()
-                .to_string()
-                .contains("reserved")
-        );
-    }
-
-    #[test]
-    fn transport_blob_rejects_truncated_header_fields() {
-        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
-        let bytes = encode_transport(&snapshot).unwrap();
-
-        for (len, field) in [
-            (0, "magic"),
-            (8, "version"),
-            (12, "reserved field"),
-            (16, "scratch size"),
-            (24, "G2H ring length"),
-            (32, "H2G ring length"),
-        ] {
-            let error = decode_transport(&bytes[..len]).unwrap_err();
-            assert!(error.to_string().contains(field), "{error:?}");
-        }
-    }
-
-    #[test]
-    fn transport_blob_rejects_length_mismatch() {
-        let snapshot = VirtqSnapshot::new(0x20_000, vec![1], vec![2]);
-        let mut bytes = encode_transport(&snapshot).unwrap();
-        bytes.push(3);
-
-        assert!(
-            decode_transport(&bytes)
-                .unwrap_err()
-                .to_string()
-                .contains("does not match")
-        );
     }
 }

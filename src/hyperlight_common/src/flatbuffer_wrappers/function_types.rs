@@ -369,9 +369,6 @@ where
                 DecodedExternalBytes::ByteChunks(value) => Ok(ParameterValue::ByteChunks(value)),
             }
         }
-        FbParameterValue::hlvecbytes => {
-            bail!("Embedded byte parameters are not supported")
-        }
         _ => param.try_into(),
     }
 }
@@ -393,9 +390,6 @@ where
                 DecodedExternalBytes::VecBytes(value) => Ok(ReturnValue::VecBytes(value)),
                 DecodedExternalBytes::ByteChunks(value) => Ok(ReturnValue::ByteChunks(value)),
             }
-        }
-        FbReturnValue::hlsizeprefixedbuffer => {
-            bail!("Embedded byte returns are not supported")
         }
         _ => return_value.try_into(),
     }
@@ -450,9 +444,6 @@ impl TryFrom<Parameter<'_>> for ParameterValue {
             FbParameterValue::hlstring => param.value_as_hlstring().map(|hlstring| {
                 ParameterValue::String(hlstring.value().unwrap_or_default().to_string())
             }),
-            FbParameterValue::hlvecbytes => {
-                bail!("Embedded byte parameters are not supported")
-            }
             FbParameterValue::hlexternalbytes => {
                 bail!("External byte parameter requires an external value source")
             }
@@ -870,9 +861,6 @@ impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
                 Ok(ReturnValue::String(hlstring.unwrap_or("".to_string())))
             }
             FbReturnValue::hlvoid => Ok(ReturnValue::Void(())),
-            FbReturnValue::hlsizeprefixedbuffer => {
-                bail!("Embedded byte returns are not supported")
-            }
             FbReturnValue::hlexternalbytes => {
                 bail!("External byte return requires an external value source")
             }
@@ -892,7 +880,9 @@ mod tests {
 
     use super::super::guest_error::ErrorCode;
     use super::*;
-    use crate::flatbuffers::hyperlight::generated::{hlexternalbytes, hlexternalbytesArgs};
+    use crate::flatbuffers::hyperlight::generated::{
+        ParameterArgs, hlexternalbytes, hlexternalbytesArgs,
+    };
 
     #[derive(Debug, Clone, PartialEq)]
     enum TestExternalValue {
@@ -955,6 +945,104 @@ mod tests {
                 anyhow::bail!("Unused external values")
             }
         }
+    }
+
+    #[test]
+    fn parameter_value_wire_tags_are_stable() {
+        let tags = [
+            FbParameterValue::NONE,
+            FbParameterValue::hlint,
+            FbParameterValue::hluint,
+            FbParameterValue::hllong,
+            FbParameterValue::hlulong,
+            FbParameterValue::hlfloat,
+            FbParameterValue::hldouble,
+            FbParameterValue::hlstring,
+            FbParameterValue::hlbool,
+            FbParameterValue::hlexternalbytes,
+        ];
+
+        // Tag 9 is reserved for embedded byte vectors.
+        assert_eq!(tags.map(|tag| tag.0), [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]);
+    }
+
+    #[test]
+    fn return_value_wire_tags_are_stable() {
+        let tags = [
+            FbReturnValue::NONE,
+            FbReturnValue::hlint,
+            FbReturnValue::hluint,
+            FbReturnValue::hllong,
+            FbReturnValue::hlulong,
+            FbReturnValue::hlfloat,
+            FbReturnValue::hldouble,
+            FbReturnValue::hlstring,
+            FbReturnValue::hlbool,
+            FbReturnValue::hlvoid,
+            FbReturnValue::hlexternalbytes,
+        ];
+
+        // Tag 10 is reserved for embedded size-prefixed buffers.
+        assert_eq!(tags.map(|tag| tag.0), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]);
+    }
+
+    #[test]
+    fn logical_byte_type_tags_are_stable() {
+        assert_eq!(FbParameterType::from(ParameterType::VecBytes).0, 8);
+        assert_eq!(FbParameterType::from(ParameterType::ByteChunks).0, 9);
+        assert_eq!(FbReturnType::from(ReturnType::VecBytes).0, 9);
+        assert_eq!(FbReturnType::from(ReturnType::ByteChunks).0, 10);
+    }
+
+    #[test]
+    fn embedded_parameter_tag_is_reserved_and_rejected() {
+        let mut builder = FlatBufferBuilder::new();
+        let bytes = builder.create_vector(&[1u8, 2, 3]);
+
+        // Build the retired byte-vector table without its generated type.
+        let start = builder.start_table();
+        builder.push_slot_always(4, bytes);
+        let value = builder.end_table(start);
+        let parameter = Parameter::create(
+            &mut builder,
+            &ParameterArgs {
+                value_type: FbParameterValue(9),
+                value: Some(value.as_union_value()),
+            },
+        );
+        builder.finish(parameter, None);
+
+        let parameter = flatbuffers::root::<Parameter>(builder.finished_data()).unwrap();
+        let mut externals = TestExternalValues::default();
+        assert!(decode_parameter_value(parameter, &mut externals).is_err());
+        assert!(ParameterValue::try_from(parameter).is_err());
+        assert_eq!(FbParameterValue(9).variant_name(), None);
+    }
+
+    #[test]
+    fn embedded_return_tag_is_reserved_and_rejected() {
+        let mut builder = FlatBufferBuilder::new();
+        let bytes = builder.create_vector(&[1u8, 2, 3]);
+
+        // Build the retired size-prefixed table without its generated type.
+        let start = builder.start_table();
+        builder.push_slot_always(6, bytes);
+        builder.push_slot::<i32>(4, 3, 0);
+        let value = builder.end_table(start);
+        let return_value = ReturnValueBox::create(
+            &mut builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue(10),
+                value: Some(value.as_union_value()),
+            },
+        );
+        builder.finish(return_value, None);
+
+        let return_value = flatbuffers::root::<ReturnValueBox>(builder.finished_data()).unwrap();
+        let mut externals = TestExternalValues::default();
+        assert!(decode_return_value(return_value, &mut externals).is_err());
+        assert!(ReturnValue::try_from(return_value).is_err());
+        assert_eq!(FbReturnValue(10).variant_name(), None);
     }
 
     #[test]

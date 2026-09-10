@@ -147,7 +147,7 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) g2h_consumer: Option<G2hConsumer>,
     /// H2G consumer bound to the current scratch mapping.
     pub(crate) h2g_consumer: Option<H2gConsumer>,
-    /// Correlation ID assigned to the next guest-function call.
+    /// Correlation ID sequence survives consumer replacement and manager cloning.
     next_guest_cid: u32,
 }
 
@@ -400,8 +400,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
         };
 
-        self.snapshot_count += 1;
-        Snapshot::new(
+        let snapshot = Snapshot::new(
             &mut self.shared_mem,
             &mut self.scratch_mem,
             self.layout,
@@ -414,10 +413,12 @@ impl SandboxMemoryManager<HostSharedMemory> {
             msrs,
             next_action,
             self.original_entrypoint,
-            self.snapshot_count,
+            self.snapshot_count + 1,
             host_functions,
             virtq,
-        )
+        )?;
+        self.snapshot_count = snapshot.snapshot_generation();
+        Ok(snapshot)
     }
 
     /// Create host consumers before the guest initializes the transport.
@@ -564,8 +565,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 ));
             }
 
-            match header.msg_kind() {
-                Ok(MsgKind::Log) => {
+            match header.kind {
+                MsgKind::Log => {
                     if header.cid != 0 {
                         return Err(HyperlightError::TransportError(
                             "G2H log has a correlation ID".into(),
@@ -584,7 +585,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
                     crate::sandbox::outb::emit_guest_log(&log);
                 }
-                Ok(MsgKind::Response) => {
+                MsgKind::Response => {
                     if header.cid != cid {
                         return Err(HyperlightError::TransportError(
                             "G2H guest function result correlation ID mismatch".into(),
@@ -604,14 +605,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
                         ))
                     });
                 }
-                Ok(kind) => {
+                kind => {
                     return Err(HyperlightError::TransportError(format!(
                         "Expected G2H guest function result, got {kind:?}"
-                    )));
-                }
-                Err(kind) => {
-                    return Err(HyperlightError::TransportError(format!(
-                        "Unknown G2H message kind {kind:#x}"
                     )));
                 }
             }
@@ -623,22 +619,17 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// The pending marker distinguishes a completed checkpoint with no retained
     /// buffers from a guest that halted without publishing mailbox status.
     pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
-        let offset = self.snapshot_mbx_offset()?;
+        let offset = self.layout.get_transport_arena().mbx_offset();
         self.scratch_mem.write(offset, u64::MAX.to_le_bytes())?;
 
         let message = EncodedMessage::new_snapshot_cp();
         self.write_h2g_message(&message)
     }
 
-    /// Reset host consumers and read the guest-side snapshot status.
+    /// Reset consumers before reading the retained count to keep rejected captures usable.
     ///
-    /// Consumer reset completes the canonical queue before the status is interpreted.
-    /// A retained-buffer rejection therefore leaves both queues usable. The current
-    /// status is only a retained slot count.
-    ///
-    /// TODO: This will change to allow the guest to publish a more detailed snapshot
-    /// status about what buffer ranges were retained so we can include them in the
-    /// snapshot. For now we simply error if the guest has retained any buffers.
+    /// Retained-buffer support will use the mailbox only for checkpoint and restore
+    /// completion (`u64::MAX` pending, zero ready after all preparation succeeds).
     pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<u64> {
         let Some(g2h) = self.g2h_consumer.as_mut() else {
             return Err(new_error!("G2H consumer is not attached"));
@@ -651,7 +642,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         g2h.reset()?;
         h2g.reset()?;
 
-        let offset = self.snapshot_mbx_offset()?;
+        let offset = self.layout.get_transport_arena().mbx_offset();
         let guest_owned = u64::from_le_bytes(self.scratch_mem.read(offset)?);
 
         if guest_owned == u64::MAX {
@@ -663,18 +654,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(guest_owned)
     }
 
-    /// Get the offset of the snapshot mailbox in scratch memory.
-    fn snapshot_mbx_offset(&self) -> Result<usize> {
-        let arena = self.layout.get_transport_arena();
-        Ok(usize::try_from(
-            arena
-                .mbx_addr()
-                .checked_sub(arena.base_addr())
-                .ok_or_else(|| new_error!("Snapshot mailbox precedes transport arena"))?,
-        )?)
-    }
-
-    /// This function restores a memory snapshot from a given snapshot.
+    /// Restore base memory after the caller checks snapshot compatibility.
     pub(crate) fn restore_snapshot(
         &mut self,
         snapshot: &Snapshot,
@@ -683,9 +663,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Option<GuestSharedMemory>,
     )> {
         let virtq = snapshot.virtq();
-        if let Some(virtq) = virtq {
-            virtq.preflight(snapshot.layout())?;
-        } else if matches!(snapshot.next_action(), NextAction::Call(_)) {
+        if virtq.is_none() && matches!(snapshot.next_action(), NextAction::Call(_)) {
             return Err(new_error!(
                 "running snapshot has no canonical transport state"
             ));
@@ -1160,7 +1138,7 @@ mod tests {
             .collect();
 
         let header = MsgHeader::from_bytes(&wire[..MsgHeader::SIZE]).unwrap();
-        assert_eq!(header.msg_kind(), Ok(MsgKind::Request));
+        assert_eq!(header.kind, MsgKind::Request);
         assert_eq!(header.cid, cid);
         assert_eq!(header.payload_len as usize, wire.len() - MsgHeader::SIZE);
 
@@ -1192,12 +1170,12 @@ mod tests {
         let header = MsgHeader::from_bytes(&wire).unwrap();
 
         assert_eq!(wire.len(), MsgHeader::SIZE);
-        assert_eq!(header.msg_kind(), Ok(MsgKind::SnapshotCheckpoint));
+        assert_eq!(header.kind, MsgKind::SnapshotCheckpoint);
         assert_eq!(header.cid, 0);
         assert_eq!(header.payload_len, 0);
         assert_eq!(mgr.next_guest_cid, 1);
 
-        let mbx = mgr.snapshot_mbx_offset().unwrap();
+        let mbx = mgr.layout.get_transport_arena().mbx_offset();
 
         assert_eq!(
             mgr.scratch_mem.read::<[u8; 8]>(mbx).unwrap(),
@@ -1225,7 +1203,7 @@ mod tests {
             let mut mgr = manager(&queue);
             mgr.g2h_consumer = Some(queue.g2h_consumer());
             mgr.begin_snapshot_checkpoint().unwrap();
-            let mbx = mgr.snapshot_mbx_offset().unwrap();
+            let mbx = mgr.layout.get_transport_arena().mbx_offset();
             mgr.scratch_mem.write(mbx, retained.to_le_bytes()).unwrap();
 
             assert_eq!(mgr.finish_snapshot_checkpoint().unwrap(), retained);
@@ -1246,6 +1224,37 @@ mod tests {
             u32::MAX
         );
         assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn cloning_preserves_guest_cids_without_consumers() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.g2h_consumer = Some(queue.g2h_consumer());
+        mgr.write_guest_function_call(&h2g_call(0)).unwrap();
+
+        let cloned = mgr.clone();
+
+        assert!(cloned.g2h_consumer.is_none());
+        assert!(cloned.h2g_consumer.is_none());
+        assert_eq!(cloned.next_guest_cid, 2);
+        assert!(mgr.g2h_consumer.is_some());
+        assert!(mgr.h2g_consumer.is_some());
+    }
+
+    #[test]
+    fn restoring_transport_preserves_guest_cids() {
+        let queue = TestVirtq::new();
+        let mut mgr = manager(&queue);
+        mgr.g2h_consumer = Some(queue.g2h_consumer());
+        let captured = virtq::snapshot(&mgr.layout, &mgr.scratch_mem).unwrap();
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+
+        mgr.g2h_consumer = None;
+        mgr.h2g_consumer = None;
+        mgr.restore_virtq(&captured).unwrap();
+
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
     }
 
     /// Build a snapshot for the given configuration and verify the

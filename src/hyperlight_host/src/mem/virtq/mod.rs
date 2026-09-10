@@ -11,7 +11,7 @@
 //! untrusted guest requests and results into host-owned values before use.
 //! Shared wire framing lives in `hyperlight_common::transport`.
 //!
-//! Snapshot capture and restore validate canonical ring images against the
+//! Snapshot construction and restore validate canonical ring images against the
 //! configured arena before exposing consumers.
 
 mod codec;
@@ -49,10 +49,10 @@ impl Notifier for HostNotifier {
     fn notify(&self, _stats: QueueStats) {}
 }
 
-/// Create both host consumers before the first guest entry.
+/// Bind both host consumers at canonical cursor zero.
 ///
-/// Ring contents are not inspected because the guest has not initialized them
-/// yet. Consumer cursors start at zero and observe descriptors published later.
+/// Rings must be uninitialized or contain a validated canonical image.
+/// Their contents are not inspected here.
 pub(crate) fn create_consumers(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
@@ -68,28 +68,6 @@ pub(crate) fn create_consumers(
     // SAFETY: The H2G range is disjoint from G2H and covers its configured ring.
     let h2g_layout = unsafe { VirtqLayout::from_base(regions.h2g_ring.start, h2g.size()) }
         .map_err(|error| new_error!("invalid H2G ring layout: {error}"))?;
-
-    build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
-}
-
-/// Validate a materialized canonical image before attaching consumers.
-fn attach_canonical(
-    layout: &SandboxMemoryLayout,
-    scratch_mem: &HostSharedMemory,
-) -> Result<(G2hConsumer, H2gConsumer)> {
-    let validator = Validator { layout };
-    let arena_gpa = read_published_arena_gpa(scratch_mem)?;
-    let regions = validator.validate_published_arena(arena_gpa)?;
-
-    let g2h_ring_mem = HostMemOps::new(scratch_mem, regions.g2h_ring.clone())?;
-    let g2h_layout = validator.validate_g2h(&g2h_ring_mem, regions.g2h_ring.clone())?;
-
-    let h2g_ring_mem = HostMemOps::new(scratch_mem, regions.h2g_ring.clone())?;
-    let h2g_layout = validator.validate_h2g(
-        &h2g_ring_mem,
-        regions.h2g_ring.clone(),
-        regions.h2g_pool.clone(),
-    )?;
 
     build_consumers(scratch_mem, regions, g2h_layout, h2g_layout)
 }
@@ -112,8 +90,9 @@ fn build_consumers(
     ))
 }
 
-/// Capture the canonical ring state omitted from the main memory snapshot.
+/// Copy the ring images omitted from the main memory snapshot.
 ///
+/// The `Snapshot` constructor validates them against its finalized layout.
 /// Pool contents are transient and are not included.
 pub(crate) fn snapshot(
     layout: &SandboxMemoryLayout,
@@ -123,12 +102,6 @@ pub(crate) fn snapshot(
 
     let arena_gpa = read_published_arena_gpa(scratch_mem)?;
     let regions = validator.validate_published_arena(arena_gpa)?;
-
-    let g2h_mem = HostMemOps::new(scratch_mem, regions.g2h_ring.clone())?;
-    validator.validate_g2h(&g2h_mem, regions.g2h_ring.clone())?;
-
-    let h2g_mem = HostMemOps::new(scratch_mem, regions.h2g_ring.clone())?;
-    validator.validate_h2g(&h2g_mem, regions.h2g_ring.clone(), regions.h2g_pool.clone())?;
 
     // The vCPU is stopped, so the ring images and snapshotted guest producer
     // bookkeeping describe the same instant.
@@ -153,7 +126,7 @@ pub(crate) fn restore(
     write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
     write_ring(scratch_mem, regions.g2h_ring, &snapshot.g2h_ring)?;
     write_ring(scratch_mem, regions.h2g_ring, &snapshot.h2g_ring)?;
-    attach_canonical(layout, scratch_mem)
+    create_consumers(layout, scratch_mem)
 }
 
 /// Bounded GVA regions derived from validated transport GPAs.
@@ -168,14 +141,14 @@ struct GvaRegions {
     h2g_pool: Range<u64>,
 }
 
-/// Canonical in-memory transport state excluded from ordinary snapshot pages.
+/// Captured ring images excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
     /// Scratch size used to derive transport GVAs.
     scratch_size: usize,
-    /// Canonical guest-to-host ring image.
+    /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
-    /// Canonical host-to-guest ring image.
+    /// Host-to-guest ring bytes.
     h2g_ring: Vec<u8>,
 }
 
@@ -292,7 +265,8 @@ impl Validator<'_> {
         })
         .map_err(|error| new_error!("invalid canonical H2G image: {error}"))?;
 
-        if image.len() != prefill || image.iter().any(|chain| chain.buffers().len() != 1) {
+        // N nonempty chains over N descriptors each contain one descriptor.
+        if image.len() != prefill {
             return Err(new_error!("invalid initial H2G receive buffers"));
         }
 
@@ -397,7 +371,7 @@ fn read_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>) -> Result<Vec<u8>
 
 /// Copy one validated ring image into its bounded scratch mapping.
 fn write_ring(scratch_mem: &HostSharedMemory, ring: Range<u64>, bytes: &[u8]) -> Result<()> {
-    validate_ring_len("restored", bytes, usize::try_from(ring.end - ring.start)?)?;
+    debug_assert_eq!(ring.end - ring.start, bytes.len() as u64);
     let mem = HostMemOps::new(scratch_mem, ring.clone())?;
     mem.write(ring.start, bytes)
 }

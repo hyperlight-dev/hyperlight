@@ -25,7 +25,7 @@ pub const ENUM_MAX_RETURN_VALUE: u8 = 11;
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 12] = [
+pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 11] = [
     ReturnValue::NONE,
     ReturnValue::hlint,
     ReturnValue::hluint,
@@ -36,7 +36,6 @@ pub const ENUM_VALUES_RETURN_VALUE: [ReturnValue; 12] = [
     ReturnValue::hlstring,
     ReturnValue::hlbool,
     ReturnValue::hlvoid,
-    ReturnValue::hlsizeprefixedbuffer,
     ReturnValue::hlexternalbytes,
 ];
 
@@ -55,7 +54,6 @@ impl ReturnValue {
     pub const hlstring: Self = Self(7);
     pub const hlbool: Self = Self(8);
     pub const hlvoid: Self = Self(9);
-    pub const hlsizeprefixedbuffer: Self = Self(10);
     pub const hlexternalbytes: Self = Self(11);
 
     pub const ENUM_MIN: u8 = 0;
@@ -71,7 +69,6 @@ impl ReturnValue {
         Self::hlstring,
         Self::hlbool,
         Self::hlvoid,
-        Self::hlsizeprefixedbuffer,
         Self::hlexternalbytes,
     ];
     /// Returns the variant's name or "" if unknown.
@@ -87,7 +84,6 @@ impl ReturnValue {
             Self::hlstring => Some("hlstring"),
             Self::hlbool => Some("hlbool"),
             Self::hlvoid => Some("hlvoid"),
-            Self::hlsizeprefixedbuffer => Some("hlsizeprefixedbuffer"),
             Self::hlexternalbytes => Some("hlexternalbytes"),
             _ => None,
         }

@@ -57,6 +57,11 @@ impl Segments {
         self.0.iter()
     }
 
+    /// Append another payload without copying its bytes.
+    pub fn append(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
     /// Split off an owned byte prefix without copying payload data.
     ///
     /// Returns `None` and leaves `self` unchanged when `len` exceeds the
@@ -121,7 +126,9 @@ impl Segments {
 
     fn collect(&self, sgs: &[Bytes], len: usize) -> Bytes {
         let mut out = Vec::with_capacity(len);
-        out.extend(sgs.iter().flat_map(|seg| seg.iter().copied()));
+        for seg in sgs {
+            out.extend_from_slice(seg);
+        }
         Bytes::from(out)
     }
 }
@@ -224,6 +231,8 @@ impl Drop for BufferLease {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
+
     use bytes::Buf;
 
     use super::*;
@@ -379,5 +388,87 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].as_ptr(), first_ptr);
         assert_eq!(chunks[1].as_ptr(), second_ptr);
+    }
+
+    #[test]
+    fn segments_append_keeps_small_payloads_inline() {
+        let chunks = [
+            Bytes::from(vec![1]),
+            Bytes::from(vec![2]),
+            Bytes::from(vec![3]),
+            Bytes::from(vec![4]),
+        ];
+        let ptrs = chunks.each_ref().map(|chunk| chunk.as_ptr());
+        let [first, second, third, fourth] = chunks;
+        let mut segments = Segments::new([first, second]);
+
+        // Four segments fit in the inline storage.
+        segments.append(Segments::new([third, fourth]));
+        assert!(!segments.0.spilled());
+        assert_eq!(segments.len(), 4);
+        assert_eq!(segments.segment_count(), 4);
+        assert_eq!(segments.to_bytes().as_ref(), &[1, 2, 3, 4]);
+        for (segment, ptr) in segments.iter().zip(ptrs) {
+            assert_eq!(segment.as_ptr(), ptr);
+        }
+    }
+
+    #[test]
+    fn segments_append_spills_in_order() {
+        let mut segments = Segments::new((0..4).map(|byte| Bytes::from(vec![byte])));
+        let last = Bytes::from(vec![4]);
+        let ptr = last.as_ptr();
+        assert!(!segments.0.spilled());
+
+        // The fifth segment requires heap storage for the segment list.
+        segments.append(Segments::single(last));
+        assert!(segments.0.spilled());
+        assert_eq!(segments.len(), 5);
+        assert_eq!(segments.segment_count(), 5);
+        assert_eq!(segments.to_bytes().as_ref(), &[0, 1, 2, 3, 4]);
+        assert_eq!(segments.as_slice()[4].as_ptr(), ptr);
+    }
+
+    #[test]
+    fn segments_append_to_empty() {
+        let bytes = Bytes::from(vec![1, 2, 3]);
+        let ptr = bytes.as_ptr();
+        let mut segments = Segments::default();
+
+        segments.append(Segments::single(bytes));
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments.segment_count(), 1);
+        assert_eq!(segments.as_slice()[0].as_ptr(), ptr);
+        assert_eq!(segments.as_slice()[0].as_ref(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn segments_append_empty_payload() {
+        let bytes = Bytes::from(vec![1, 2, 3]);
+        let ptr = bytes.as_ptr();
+        let mut segments = Segments::single(bytes);
+
+        segments.append(Segments::default());
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments.segment_count(), 1);
+        assert_eq!(segments.as_slice()[0].as_ptr(), ptr);
+        assert_eq!(segments.as_slice()[0].as_ref(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn segments_append_preserves_owner_lifetime() {
+        let storage: Arc<[u8]> = Arc::from(&b"data"[..]);
+        let owner = Arc::downgrade(&storage);
+        let mut segments = Segments::single(Bytes::from_static(b"header"));
+
+        // The appended segment becomes the only owner of this storage.
+        segments.append(Segments::single(Bytes::from_owner(storage)));
+        assert_eq!(owner.strong_count(), 1);
+        assert_eq!(segments.to_bytes().as_ref(), b"headerdata");
+
+        drop(segments);
+        assert!(owner.upgrade().is_none());
     }
 }
