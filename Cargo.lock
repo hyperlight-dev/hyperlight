@@ -184,6 +184,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.73.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54be9a169b85a1bef39252af30bb6246a31b23c7e0f6a162520dd869f8dad33c"
+dependencies = [
+ "bitflags 2.13.1",
+ "cexpr",
+ "clang-sys",
+ "log",
+ "prettyplease 0.3.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 2.0.1",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1656,7 +1675,7 @@ name = "hyperlight-host"
 version = "0.17.0"
 dependencies = [
  "anyhow",
- "bindgen",
+ "bindgen 0.73.1",
  "bitflags 2.13.1",
  "blake3",
  "built",
@@ -1733,7 +1752,7 @@ name = "hyperlight-libc"
 version = "0.17.0"
 dependencies = [
  "anyhow",
- "bindgen",
+ "bindgen 0.73.1",
  "cc",
  "glob",
 ]
@@ -2142,7 +2161,7 @@ version = "0.14.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a54ad7278b8bc5301d5ffd2a94251c004feb971feba96c971ea4063645990757"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "errno",
  "libc",
 ]
@@ -2958,7 +2977,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "221de5f6ef11b9be9d59b330c5b81799b3e7c51b18af84c1f235ef88998b00e1"
 dependencies = [
  "anyhow",
- "bindgen",
+ "bindgen 0.72.1",
  "libc",
  "libproc",
  "mach2",
