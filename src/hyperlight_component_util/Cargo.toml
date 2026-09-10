@@ -19,9 +19,9 @@ wasmparser = { version = "0.257.1" }
 wat = { version = "1.256.0" }
 wit-component = { version = "0.257.1" }
 wit-parser = { version = "0.257.1" }
-quote = { version = "1.0.45" }
-proc-macro2 = { version = "1.0.106" }
-syn = { version = "3.0.1" }
-itertools = { version = "0.15.0" }
-prettyplease = { version = "0.3.0" }
-tracing = { version = "0.1.44", features = ["log"]}
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+itertools = { workspace = true }
+prettyplease = { workspace = true }
+tracing = { workspace = true, features = ["log"] }

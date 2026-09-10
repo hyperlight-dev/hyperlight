@@ -26,10 +26,10 @@ hyperlight-guest-tracing = { workspace = true, default-features = false }
 hyperlight-guest-macro = { workspace = true, default-features = false, optional = true }
 hyperlight-libc = { workspace = true, default-features = false, optional = true }
 buddy_system_allocator = "0.13.0"
-log = { version = "0.4", default-features = false }
+log = { version = "0.4.32", default-features = false }
 linkme = { version = "0.3.36", optional = true }
-spin = "0.12.0"
-flatbuffers = { version = "25.12.19", default-features = false }
+spin = { workspace = true }
+flatbuffers = { workspace = true }
 tracing = { version = "0.1.44", default-features = false, features = ["attributes"] }
 
 [lints]

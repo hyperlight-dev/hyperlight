@@ -17,16 +17,16 @@ workspace = true
 [dependencies]
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 anyhow = { version = "1.0.102", default-features = false }
-bitflags = "2.13.0"
-bytemuck = { version = "1.24", features = ["derive"] }
+bitflags = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
 bytes = { version = "1", default-features = false }
 fixedbitset = { version = "0.5.7", default-features = false }
-flatbuffers = { version = "25.12.19", default-features = false }
-log = "0.4.32"
+flatbuffers = { workspace = true }
+log = { workspace = true }
 smallvec = "1.15.1"
-spin = "0.12.0"
+spin = { workspace = true }
 thiserror = { version = "2.0.18", default-features = false }
-tracing = { version = "0.1.44", optional = true }
+tracing = { workspace = true, optional = true }
 tracing-core = { version = "0.1.36", default-features = false }
 
 [features]
@@ -38,10 +38,10 @@ mem_profile = []
 std = ["thiserror/std", "log/std", "tracing/std"]
 
 [dev-dependencies]
-criterion = "0.8.1"
+criterion = { workspace = true }
 hyperlight-testing = { workspace = true }
 quickcheck = "1.0.3"
-rand = "0.10.1"
+rand = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.7"
