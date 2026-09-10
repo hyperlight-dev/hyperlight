@@ -51,7 +51,7 @@ jobs:
           key: sysroot-linux-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           shared-key: "code-checks-linux"
           cache-on-failure: "true"
@@ -120,7 +120,7 @@ jobs:
           key: sysroot-windows-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           shared-key: "code-checks-windows"
           cache-on-failure: "true"

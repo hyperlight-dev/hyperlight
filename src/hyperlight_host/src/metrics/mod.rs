@@ -78,15 +78,13 @@ pub(crate) fn maybe_time_and_emit_host_call<T, F: FnOnce() -> T>(
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-    use std::time::Duration;
-
     use hyperlight_testing::simple_guest_as_pathbuf;
     use metrics::{Key, with_local_recorder};
     use metrics_util::CompositeKey;
 
     use super::*;
-    use crate::SandboxBuilder;
+    use crate::func::Registerable;
+    use crate::{HyperlightError, SandboxBuilder};
 
     #[test]
     fn test_metrics_are_emitted() {
@@ -96,20 +94,25 @@ mod tests {
             let mut multi = SandboxBuilder::from_file(simple_guest_as_pathbuf())
                 .build()
                 .unwrap();
-            let interrupt_handle = multi.interrupt_handle();
-
-            // interrupt the guest function call to "Spin" after 1 second
-            let thread = thread::spawn(move || {
-                thread::sleep(Duration::from_secs(1));
-                assert!(interrupt_handle.kill());
-            });
 
             multi
                 .call::<i32>("PrintOutput", "Hello".to_string())
                 .unwrap();
 
-            multi.call::<i32>("Spin", ()).unwrap_err();
-            thread.join().unwrap();
+            let interrupt_handle = multi.interrupt_handle();
+            multi
+                .register_host_function("CancelGuest", move || {
+                    // The VM observes this cancellation before re-entering the guest.
+                    interrupt_handle.kill();
+                    Ok(())
+                })
+                .unwrap();
+
+            let result = multi.call::<()>("CallHostThenSpin", "CancelGuest".to_string());
+            assert!(
+                matches!(result, Err(HyperlightError::ExecutionCanceledByHost())),
+                "Expected guest cancellation, got {result:?}"
+            );
 
             snapshotter.snapshot()
         });
@@ -121,7 +124,7 @@ mod tests {
             if #[cfg(feature = "function_call_metrics")] {
                 use metrics::Label;
 
-                let expected_num_metrics = 4;
+                let expected_num_metrics = 5;
 
                 // Verify that the histogram metrics are recorded correctly
                 assert_eq!(snapshot.len(), expected_num_metrics);
@@ -158,7 +161,7 @@ mod tests {
                     metrics_util::MetricKind::Histogram,
                     Key::from_parts(
                         METRIC_GUEST_FUNC_DURATION,
-                        vec![Label::new("function_name", "Spin")],
+                        vec![Label::new("function_name", "CallHostThenSpin")],
                     ),
                 );
                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
@@ -169,6 +172,24 @@ mod tests {
                     ),
                     "Histogram metric does not match expected value"
                 );
+
+                for function_name in ["HostPrint", "CancelGuest"] {
+                    let histogram_key = CompositeKey::new(
+                        metrics_util::MetricKind::Histogram,
+                        Key::from_parts(
+                            METRIC_HOST_FUNC_DURATION,
+                            vec![Label::new("function_name", function_name)],
+                        ),
+                    );
+                    let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+                    assert!(
+                        matches!(
+                            histogram_value,
+                            metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
+                        ),
+                        "Histogram metric does not match expected value for {function_name}"
+                    );
+                }
             } else {
                 // Verify that the counter metrics are recorded correctly
                 assert_eq!(snapshot.len(), 1);
