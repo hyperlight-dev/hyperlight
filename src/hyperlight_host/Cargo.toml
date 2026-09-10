@@ -24,32 +24,32 @@ workspace = true
 gdbstub = { version = "0.7.10", optional = true }
 gdbstub_arch = { version = "0.3.3", optional = true }
 goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
-rand = { version = "0.10" }
+rand = { workspace = true }
 cfg-if = { version = "1.0.4" }
 libc = { version = "0.2.186" }
 flatbuffers = "25.12.19"
 framehop = { version = "0.16.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
-blake3 = "1.8.5"
-bytemuck = { version = "1.24", features = ["derive"] }
+blake3 = { workspace = true }
+bytemuck = { workspace = true, features = ["derive"] }
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.13.0"
-log = "0.4.32"
+bitflags = { workspace = true }
+log = { workspace = true }
 opentelemetry = { version = "0.32.0", optional = true }
-tracing = { version = "0.1.44", features = ["log"] }
-tracing-core = "0.1.36"
+tracing = { workspace = true, features = ["log"] }
+tracing-core = { workspace = true }
 tracing-opentelemetry = { version = "0.33.0", optional = true }
 hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
-thiserror = "2.0.18"
+thiserror = { workspace = true }
 chrono = { version = "0.4", optional = true }
-anyhow = "1.0"
+anyhow = { workspace = true }
 metrics = "0.24.6"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 elfcore = { version = "2.0", optional = true }
 uuid = { version = "1.23.3", features = ["v4"] }
 oci-spec = { version = "0.10", default-features = false, features = ["image"] }
@@ -97,12 +97,12 @@ signal-hook-registry = "1.4.8"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "code_asm"] }
 proptest = "1.11.0"
 crossbeam-queue = "0.3.12"
-tracing-serde = "0.2.0"
+tracing-serde = { workspace = true }
 serial_test = "4.0.1"
 hyperlight-testing = { workspace = true }
-env_logger = "0.11.10"
+env_logger = { workspace = true }
 tracing-forest = { version = "0.3.1", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
-tracing = "0.1.44"
+tracing = { workspace = true }
 tracing-subscriber = {version = "0.3.23", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.33.0"
 opentelemetry = "0.32.0"
@@ -110,11 +110,11 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
 opentelemetry-semantic-conventions = "0.32"
 opentelemetry_sdk = { version = "0.32.0", features = ["rt-tokio"] }
 tokio = { version = "1.52.3", features = ["full"] }
-criterion = "0.8.2"
+criterion = { workspace = true }
 tracing-chrome = "0.7.2"
 metrics-util = "0.20.4"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
-serde_json = "1.0"
+serde_json = { workspace = true }
 hyperlight-component-macro = { workspace = true }
 libtest-mimic = "0.8.2"
 
@@ -127,11 +127,11 @@ windows = { version = "0.62", features = [
 proc-maps = "0.5.0"
 
 [build-dependencies]
-anyhow = { version = "1.0.102" }
+anyhow = { workspace = true }
 cfg_aliases = "0.2.1"
 built = { version = "0.8.1", optional = true, features = ["chrono", "git2"] }
-bindgen = { version = "0.72", features = ["prettyplease"] }
-cc = "1.2"
+bindgen = { workspace = true, features = ["prettyplease"] }
+cc = { workspace = true }
 
 [features]
 default = ["kvm", "mshv3", "hvf", "build-metadata"]

@@ -22,7 +22,7 @@ default = []
 workspace = true
 
 [build-dependencies]
-anyhow = "1"
-cc = "1.2"
+anyhow = { workspace = true }
+cc = { workspace = true }
 glob = "0.3.3"
-bindgen = { version = "0.72", features = ["prettyplease"] }
+bindgen = { workspace = true, features = ["prettyplease"] }

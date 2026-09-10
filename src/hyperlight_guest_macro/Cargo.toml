@@ -12,9 +12,9 @@ Macros for registering guest and host functions on hyperlight guests binaries.
 """
 
 [dependencies]
-syn = { version = "3", features = ["full"] }
-quote = "1"
-proc-macro2 = "1.0"
+syn = { workspace = true, features = ["full"] }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
 proc-macro-crate = "3.5.0"
 
 [lib]
