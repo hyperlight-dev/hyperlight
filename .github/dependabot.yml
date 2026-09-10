@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    cooldown:
+      default-days: 7
     schedule:
       interval: "daily"
       time: "03:00"
@@ -9,6 +11,8 @@ updates:
       - "kind/dependencies"
   - package-ecosystem: "cargo"
     directory: "/"
+    cooldown:
+      default-days: 7
     schedule:
       interval: "daily"
       time: "03:00"
@@ -16,6 +20,9 @@ updates:
       - "kind/dependencies"
     open-pull-requests-limit: 20
     groups:
+      windows:
+        patterns:
+          - "windows-*"
       mshv:
         patterns:
           - "mshv-*"
@@ -26,6 +33,8 @@ updates:
           - "wit-component"
   - package-ecosystem: "cargo"
     directory: "/src/tests/rust_guests"
+    cooldown:
+      default-days: 7
     schedule:
       interval: "daily"
       time: "03:00"
@@ -33,3 +42,7 @@ updates:
       - "kind/dependencies"
       - "area/guest"
     open-pull-requests-limit: 5
+    groups:
+      windows:
+        patterns:
+          - "windows-*"
