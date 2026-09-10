@@ -25,10 +25,10 @@ pub struct Context {
     /// `rax` is at the top, `r15` the bottom
     pub gprs: [u64; 15],
 
-    _padding: u64,
+    _padding: [u64; 2],
 }
 
-const _: () = assert!(size_of::<Context>() == 32 + 2688 + 8 + 120 + 8);
+const _: () = assert!(size_of::<Context>() == 32 + 2688 + 8 + 120 + 16);
 
 // The combination of ExceptionInfo and Context must be 16-byte aligned
 // before calling hl_exception_handler as per x86-64 System V ABI.
