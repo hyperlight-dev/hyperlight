@@ -84,6 +84,10 @@ pub enum StackError {
     /// element to be pushed
     #[error("Not enough space in buffer to push data. Required: {0}, Available: {1}")]
     BufferFullError(usize, usize),
+
+    /// The data length plus the 8-byte header would overflow `usize`
+    #[error("Push size overflow: data length {0} overflows when adding 8-byte header.")]
+    PushSizeOverflow(usize),
 }
 /// This is just an alias for std::backtrace::Backtrace that we
 /// introduce to stop thiserror from using its backtrace
@@ -1374,7 +1378,10 @@ impl HostSharedMemory {
             ))?;
         }
 
-        let size_required = data.len() + 8;
+        let size_required = data
+            .len()
+            .checked_add(8)
+            .ok_or(StackError::PushSizeOverflow(data.len()))?;
         let size_available = buffer_size - stack_pointer_rel;
 
         if size_required > size_available {
@@ -1392,10 +1399,11 @@ impl HostSharedMemory {
         self.write::<u64>(stack_pointer_abs + data.len(), stack_pointer_rel as u64)?;
 
         // update stack pointer to point to the next free address
-        self.write::<u64>(
-            buffer_start_offset,
-            (stack_pointer_rel + data.len() + 8) as u64,
-        )?;
+        let new_sp = stack_pointer_rel
+            .checked_add(data.len())
+            .and_then(|v| v.checked_add(8))
+            .ok_or(StackError::PushSizeOverflow(data.len()))? as u64;
+        self.write::<u64>(buffer_start_offset, new_sp)?;
         Ok(())
     }
 
