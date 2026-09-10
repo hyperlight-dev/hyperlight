@@ -18,7 +18,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    const MEM_SIZE: usize = 65536;  // 64KB
+    const MEM_SIZE: usize = 65536; // 64KB
 
     // === TARGET 1: try_pop_buffer_into ===
     // Write fuzzer-generated data directly into shared memory, simulating a guest.
