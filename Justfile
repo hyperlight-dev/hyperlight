@@ -219,6 +219,7 @@ like-ci config=default-target hypervisor="kvm":
     just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_packed_ring {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_push_pop_buffer {{config}} {{hypervisor}}
 
     @# spelling
     typos
