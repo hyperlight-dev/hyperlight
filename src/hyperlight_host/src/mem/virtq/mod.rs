@@ -44,10 +44,10 @@ impl Notifier for HostNotifier {
     fn notify(&self, _stats: QueueStats) {}
 }
 
-/// Create both host consumers before the first guest entry.
+/// Bind both host consumers at canonical cursor zero.
 ///
-/// Ring contents are not inspected because the guest has not initialized them
-/// yet. Consumer cursors start at zero and observe descriptors published later.
+/// Rings must be uninitialized or contain a validated canonical image.
+/// Their contents are not inspected here.
 pub(crate) fn create_consumers(
     layout: &SandboxMemoryLayout,
     scratch_mem: &HostSharedMemory,
@@ -66,9 +66,9 @@ pub(crate) fn create_consumers(
 pub(crate) struct VirtqSnapshot {
     /// Scratch size used to derive transport GVAs.
     scratch_size: usize,
-    /// Canonical guest-to-host ring image.
+    /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
-    /// Canonical host-to-guest ring image.
+    /// Host-to-guest ring bytes.
     h2g_ring: Vec<u8>,
 }
 

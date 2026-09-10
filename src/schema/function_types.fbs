@@ -51,25 +51,12 @@ table hlbool {
     value:bool;
 }
 
-// hlvecbytes is a vector of bytes
-
-table hlvecbytes {
-    value:[ubyte];
-}
-
 // hlexternalbytes declares a logical byte value stored outside the FlatBuffer.
 // chunked requests the ByteChunks representation rather than VecBytes.
 
 table hlexternalbytes {
     length:ulong;
     chunked:bool;
-}
-
-// hlsizeprefixedbuffer is a vector of bytes prefixed with a 32 bit integer
-
-table hlsizeprefixedbuffer {
-    size:int;
-    value:[ubyte];
 }
 
 // hlvoid is a void (used for functions that return nothing)
@@ -80,16 +67,16 @@ table hlvoid {
 // This represents a parameter value in a function call
 
 union ParameterValue {
-    hlint,
-    hluint,
-    hllong,
-    hlulong,
-    hlfloat,
-    hldouble,
-    hlstring,
-    hlbool,
-    hlvecbytes,
-    hlexternalbytes,
+    hlint = 1,
+    hluint = 2,
+    hllong = 3,
+    hlulong = 4,
+    hlfloat = 5,
+    hldouble = 6,
+    hlstring = 7,
+    hlbool = 8,
+    // Tag 9 is reserved for embedded byte vectors.
+    hlexternalbytes = 10,
 }
 
 // This represents a parameter type in a function definition
@@ -122,15 +109,15 @@ enum ReturnType : ubyte {
 }
 
 union ReturnValue {
-    hlint,
-    hluint,
-    hllong,
-    hlulong,
-    hlfloat,
-    hldouble,
-    hlstring,
-    hlbool,
-    hlvoid,
-    hlsizeprefixedbuffer,
-    hlexternalbytes,
+    hlint = 1,
+    hluint = 2,
+    hllong = 3,
+    hlulong = 4,
+    hlfloat = 5,
+    hldouble = 6,
+    hlstring = 7,
+    hlbool = 8,
+    hlvoid = 9,
+    // Tag 10 is reserved for embedded size-prefixed buffers.
+    hlexternalbytes = 11,
 }

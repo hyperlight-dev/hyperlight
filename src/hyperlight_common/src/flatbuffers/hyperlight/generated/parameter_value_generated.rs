@@ -25,7 +25,7 @@ pub const ENUM_MAX_PARAMETER_VALUE: u8 = 10;
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 11] = [
+pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 10] = [
     ParameterValue::NONE,
     ParameterValue::hlint,
     ParameterValue::hluint,
@@ -35,7 +35,6 @@ pub const ENUM_VALUES_PARAMETER_VALUE: [ParameterValue; 11] = [
     ParameterValue::hldouble,
     ParameterValue::hlstring,
     ParameterValue::hlbool,
-    ParameterValue::hlvecbytes,
     ParameterValue::hlexternalbytes,
 ];
 
@@ -53,7 +52,6 @@ impl ParameterValue {
     pub const hldouble: Self = Self(6);
     pub const hlstring: Self = Self(7);
     pub const hlbool: Self = Self(8);
-    pub const hlvecbytes: Self = Self(9);
     pub const hlexternalbytes: Self = Self(10);
 
     pub const ENUM_MIN: u8 = 0;
@@ -68,7 +66,6 @@ impl ParameterValue {
         Self::hldouble,
         Self::hlstring,
         Self::hlbool,
-        Self::hlvecbytes,
         Self::hlexternalbytes,
     ];
     /// Returns the variant's name or "" if unknown.
@@ -83,7 +80,6 @@ impl ParameterValue {
             Self::hldouble => Some("hldouble"),
             Self::hlstring => Some("hlstring"),
             Self::hlbool => Some("hlbool"),
-            Self::hlvecbytes => Some("hlvecbytes"),
             Self::hlexternalbytes => Some("hlexternalbytes"),
             _ => None,
         }

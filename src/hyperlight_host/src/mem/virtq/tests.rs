@@ -18,9 +18,10 @@ pub(crate) const H2G_BUFFER_SIZE: usize = 3000;
 /// Empty G2H and prefilled H2G rings in host-backed scratch.
 pub(crate) struct TestCase {
     pub(crate) scratch: HostSharedMemory,
-    mem: HostMemOps,
+    pub(crate) mem: HostMemOps,
+    pub(crate) g2h_pool_base: u64,
     h2g_pool_base: u64,
-    g2h_layout: VirtqLayout,
+    pub(crate) g2h_layout: VirtqLayout,
     h2g_layout: VirtqLayout,
 }
 
@@ -31,8 +32,12 @@ impl TestCase {
         let layout = memory_layout();
         let arena = layout.get_transport_arena();
         let (g2h_layout, h2g_layout) = ring_layouts(&layout).unwrap();
-        let h2g_pool_base = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
-            + (arena.h2g_pool_addr() - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE));
+        let to_gva = |gpa| {
+            hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
+                + (gpa - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE))
+        };
+        let g2h_pool_base = to_gva(arena.g2h_pool_addr());
+        let h2g_pool_base = to_gva(arena.h2g_pool_addr());
         let h2g = layout.get_h2g_queue_dims();
         let mem = HostMemOps::new(&scratch);
         let buffer_size = layout.get_h2g_buffer_size();
@@ -55,6 +60,7 @@ impl TestCase {
         Self {
             scratch,
             mem,
+            g2h_pool_base,
             h2g_pool_base,
             g2h_layout,
             h2g_layout,
@@ -237,7 +243,11 @@ fn rejects_h2g_snapshot_chain_shape() {
     case.set_h2g_desc(0, head);
     case.set_h2g_desc(1, tail);
 
-    assert!(VirtqSnapshot::capture(&layout, &case.scratch).is_err());
+    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("must contain one descriptor"),
+        "{error}"
+    );
 }
 
 #[test]

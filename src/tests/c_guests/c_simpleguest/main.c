@@ -366,6 +366,40 @@ hl_ReturnValue *round_trip_host_byte_chunks(const hl_FunctionCall *params) {
   return result;
 }
 
+hl_ReturnValue *return_null(const hl_FunctionCall *params) {
+  (void)params;
+  return NULL;
+}
+
+hl_ReturnValue *return_null_with_error(const hl_FunctionCall *params) {
+  (void)params;
+  hl_set_error(hl_ErrorCode_GuestError, "C registered error");
+  return NULL;
+}
+
+hl_ReturnValue *return_value_with_error(const hl_FunctionCall *params) {
+  (void)params;
+  hl_set_error(hl_ErrorCode_GuestError, "C registered error");
+  return hl_result_from_Bytes((const uint8_t *)big_array, 16 * 1024);
+}
+
+hl_ReturnValue *stash_host_return_and_error(const hl_FunctionCall *params) {
+  (void)params;
+  const hl_FunctionCall host_call = {
+      .function_name = "HostInt",
+      .parameters = NULL,
+      .parameters_len = 0,
+      .return_type = hl_ReturnType_Int,
+  };
+  hl_call_host_function(&host_call);
+  hl_set_error(hl_ErrorCode_GuestError, "C dispatch error");
+  return NULL;
+}
+
+int read_stashed_host_return(void) {
+  return hl_get_host_return_value_as_Int();
+}
+
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_float_value, Float, 2, Float, Float)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_double_value, Double, 2, Double, Double)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 0)
@@ -402,6 +436,7 @@ HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_code, Int, 1, Int)
 HYPERLIGHT_WRAP_FUNCTION(execute_on_stack, Int, 0)
 HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 // HYPERLIGHT_WRAP_FUNCTION(twenty_four_k_in_eight_k_out, VecBytes, 1, VecBytes) is not valid for functions that return VecBytes
+HYPERLIGHT_WRAP_FUNCTION(read_stashed_host_return, Int, 0)
 
 void hyperlight_main(void)
 {
@@ -448,6 +483,11 @@ void hyperlight_main(void)
     // so we use hl_register_function_definition directly
     hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
     hl_register_function_definition("RoundTripHostByteChunks", round_trip_host_byte_chunks, 1, (hl_ParameterType[]){hl_ParameterType_ByteChunks}, hl_ReturnType_ByteChunks);
+    hl_register_function_definition("ReturnNull", return_null, 0, (hl_ParameterType[]){0}, hl_ReturnType_Void);
+    hl_register_function_definition("ReturnNullWithError", return_null_with_error, 0, (hl_ParameterType[]){0}, hl_ReturnType_Void);
+    hl_register_function_definition("ReturnValueWithError", return_value_with_error, 0, (hl_ParameterType[]){0}, hl_ReturnType_VecBytes);
+    hl_register_function_definition("StashHostReturnAndError", stash_host_return_and_error, 0, (hl_ParameterType[]){0}, hl_ReturnType_Void);
+    HYPERLIGHT_REGISTER_FUNCTION("ReadStashedHostReturn", read_stashed_host_return);
 }
 
 // This dispatch function is only used when the host dispatches a guest function
@@ -458,6 +498,16 @@ hl_ReturnValue *c_guest_dispatch_function(const hl_FunctionCall *function_call) 
     // TODO DO A LOG HERE
     // This is a special case for test `custom_guest_dispatch_is_working`.
     return hl_result_from_Int(99);
+  }
+
+  if (strcmp(func_name, "FallbackNullWithError") == 0) {
+    hl_set_error(hl_ErrorCode_GuestError, "C fallback error");
+    return NULL;
+  }
+
+  if (strcmp(func_name, "FallbackValueWithError") == 0) {
+    hl_set_error(hl_ErrorCode_GuestError, "C fallback error");
+    return hl_result_from_Bytes((const uint8_t *)big_array, 16 * 1024);
   }
 
   return NULL;

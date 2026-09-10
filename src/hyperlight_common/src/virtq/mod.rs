@@ -159,6 +159,7 @@ mod ring;
 #[cfg(all(test, loom))]
 mod concurrency;
 
+use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
 pub use access::*;
@@ -194,7 +195,8 @@ pub enum VirtqError {
     Backpressure,
     #[error("Allocation exceeds pool capacity")]
     OutOfMemory,
-    #[error("Failed to allocate virtqueue bookkeeping")]
+    /// Virtqueue-owned storage could not be allocated.
+    #[error("Failed to allocate virtqueue storage")]
     Bookkeeping,
     #[error("Invalid chain received")]
     BadChain,
@@ -226,6 +228,7 @@ impl From<RingError> for VirtqError {
     fn from(e: RingError) -> Self {
         match e {
             RingError::WouldBlock => Self::Backpressure,
+            RingError::Bookkeeping => Self::Bookkeeping,
             other => Self::RingError(other),
         }
     }
@@ -451,6 +454,16 @@ const _: () = {
     verify_layout(1024);
 };
 
+pub(crate) fn zeroed_vec(length: usize) -> Result<Vec<u8>, VirtqError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| VirtqError::Bookkeeping)?;
+
+    bytes.resize(length, 0);
+    Ok(bytes)
+}
+
 /// Shared test utilities for virtqueue tests.
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -544,6 +557,14 @@ mod tests {
         consumer: &mut VirtqConsumer<TestMem, TestNotifier>,
     ) -> (RecvChain<TestMem>, ReplyChain<TestMem>) {
         consumer.poll(1024).unwrap().unwrap()
+    }
+
+    #[test]
+    fn test_payload_capacity_overflow_is_an_error() {
+        assert!(matches!(
+            zeroed_vec(usize::MAX),
+            Err(VirtqError::Bookkeeping)
+        ));
     }
 
     #[test]

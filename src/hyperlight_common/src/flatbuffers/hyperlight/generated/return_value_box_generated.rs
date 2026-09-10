@@ -201,20 +201,6 @@ impl<'a> ReturnValueBox<'a> {
 
     #[inline]
     #[allow(non_snake_case)]
-    pub fn value_as_hlsizeprefixedbuffer(&self) -> Option<hlsizeprefixedbuffer<'a>> {
-        if self.value_type() == ReturnValue::hlsizeprefixedbuffer {
-            let u = self.value();
-            // Safety:
-            // Created from a valid Table for this object
-            // Which contains a valid union in this slot
-            Some(unsafe { hlsizeprefixedbuffer::init_from_table(u) })
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    #[allow(non_snake_case)]
     pub fn value_as_hlexternalbytes(&self) -> Option<hlexternalbytes<'a>> {
         if self.value_type() == ReturnValue::hlexternalbytes {
             let u = self.value();
@@ -286,11 +272,6 @@ impl flatbuffers::Verifiable for ReturnValueBox<'_> {
                     ReturnValue::hlvoid => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<hlvoid>>(
                             "ReturnValue::hlvoid",
-                            pos,
-                        ),
-                    ReturnValue::hlsizeprefixedbuffer => v
-                        .verify_union_variant::<flatbuffers::ForwardsUOffset<hlsizeprefixedbuffer>>(
-                            "ReturnValue::hlsizeprefixedbuffer",
                             pos,
                         ),
                     ReturnValue::hlexternalbytes => v
@@ -442,16 +423,6 @@ impl core::fmt::Debug for ReturnValueBox<'_> {
             }
             ReturnValue::hlvoid => {
                 if let Some(x) = self.value_as_hlvoid() {
-                    ds.field("value", &x)
-                } else {
-                    ds.field(
-                        "value",
-                        &"InvalidFlatbuffer: Union discriminant does not match value.",
-                    )
-                }
-            }
-            ReturnValue::hlsizeprefixedbuffer => {
-                if let Some(x) = self.value_as_hlsizeprefixedbuffer() {
                     ds.field("value", &x)
                 } else {
                     ds.field(
