@@ -8,7 +8,6 @@ use core::arch::{asm, global_asm};
 
 use hyperlight_common::outb::Exception;
 
-use super::super::context;
 use super::super::machine::{IDT, IdtEntry, IdtPointer, ProcCtrl};
 
 unsafe extern "C" {
@@ -58,8 +57,7 @@ macro_rules! generate_excp {
             "_do_excp",
             stringify!($num),
             ":\n",
-            context::save!(),
-            // rsi is the exception number.
+            "    call save_context\n",
             "    mov rsi, ",
             stringify!($num),
             "\n",
@@ -81,7 +79,7 @@ macro_rules! generate_excp {
             // For the ones that don't, we push a 0 to keep the
             // stack aligned.
             "   push 0\n",
-            context::save!(),
+            "    call save_context\n",
             // rsi is the exception number.
             "    mov rsi, ",
             stringify!($num),
@@ -100,13 +98,13 @@ macro_rules! generate_excp {
             "_do_excp",
             stringify!($num),
             ":\n",
-            context::save!(),
+            "    mov rdx, cr2\n",
+            "    call save_context\n",
             "    mov rsi, ",
             stringify!($num),
             "\n",
             // In a page fault exception, the cr2 register
             // contains the address that caused the page fault.
-            "    mov rdx, cr2\n",
             "    jmp _do_excp_common\n"
         )
     };
@@ -124,7 +122,7 @@ macro_rules! generate_exceptions {
             // stack pointer just before it was called.
             "    mov rdi, rsp\n",
             "    call {hl_exception_handler}\n",
-            context::restore!(),
+            "    call restore_context\n",
             "    add rsp, 8\n", // error code
             "    iretq\n",      // iretq is used to return from exception in x86_64
             generate_excp!(0, pusherrcode),
