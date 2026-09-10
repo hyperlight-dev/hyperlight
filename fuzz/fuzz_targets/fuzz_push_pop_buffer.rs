@@ -37,7 +37,8 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // === TARGET 2: push_buffer → try_pop_buffer_into roundtrip ===
-    // Verifies the correctness of the checked_add fix introduced in this PR.
+    // Verifies that push_buffer correctly returns Err on overflow
+    // rather than panicking or writing out of bounds.
     {
         let Ok(eshm) = ExclusiveSharedMemory::new(MEM_SIZE) else {
             return;
