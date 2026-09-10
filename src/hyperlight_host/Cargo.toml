@@ -80,7 +80,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",
 ] }
-windows-result = "0.4"
+windows-result = "0.100"
 rust-embed = { version = "8.11.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 windows-version = "0.1"
 lazy_static = "1.4.0"
