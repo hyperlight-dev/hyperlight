@@ -1161,6 +1161,7 @@ mod tests {
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(16 * 1024 * 1024); // 16MB heap
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 256 * 1024);
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1183,7 +1184,7 @@ mod tests {
         // Test 3: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_scratch_size(256 * 1024); // 256KB scratch
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024);
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1206,6 +1207,7 @@ mod tests {
         // Test 4: Create snapshot with custom input/output buffer sizes
         {
             let mut cfg = SandboxConfiguration::default();
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 128 * 1024);
             cfg.set_input_data_size(64 * 1024); // 64KB input
             cfg.set_output_data_size(64 * 1024); // 64KB output
 
@@ -1231,7 +1233,7 @@ mod tests {
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
-            cfg.set_scratch_size(256 * 1024 * 2); // 512KB scratch (256KB will be input/output)
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 1024 * 1024);
             cfg.set_input_data_size(128 * 1024); // 128KB input
             cfg.set_output_data_size(128 * 1024); // 128KB output
 

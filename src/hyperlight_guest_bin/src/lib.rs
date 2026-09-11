@@ -39,6 +39,7 @@ pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
 pub mod paging;
+pub mod transport;
 
 /// Bridge between picolibc's POSIX expectations and the Hyperlight host.
 /// cbindgen:ignore
@@ -290,6 +291,9 @@ pub(crate) extern "C" fn generic_init(
     for registration in __private::GUEST_FUNCTION_INIT {
         registration();
     }
+
+    // Prepare transport before guest code starts.
+    transport::initialize();
 
     unsafe {
         hyperlight_main();

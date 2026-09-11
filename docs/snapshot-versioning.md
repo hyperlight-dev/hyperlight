@@ -14,17 +14,17 @@ A snapshot carries three independently evolvable version markers:
   [src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs](../src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs)).
   This is what the host reads back from a snapshot: the `OutBAction`
   and `VmAction` port numbers, the input and output buffer stack
-  format, the offset and size of each memory region (including the
-  `HyperlightPEB` size), and the calling convention for guest function
-  entry. A change to any of these breaks older snapshots unless the
-  loader adds a compat path.
+  format, the virtqueue transport layout, the offset and size of each
+  memory region (including the `HyperlightPEB` size), and the calling
+  convention for guest function entry. A change to any of these breaks
+  older snapshots unless the loader adds a compat path.
 * **Snapshot blob encoding**, `MT_SNAPSHOT_V1`
   (`application/vnd.hyperlight.snapshot.memory.v1`), aliased as
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
-* **Config schema**, `MT_CONFIG_V1`
-  (`application/vnd.hyperlight.snapshot.config.v1+json`), aliased as
+* **Config schema**, `MT_CONFIG_V2`
+  (`application/vnd.hyperlight.snapshot.config.v2+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
@@ -367,4 +367,3 @@ major:
 * The loader accepts the old `abi_version` (Option 2 step 4), so the old
   golden loads.
 * Register the host functions the old golden's checks call.
-

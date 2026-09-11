@@ -17,6 +17,7 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
+use super::virtq::{self, G2hConsumer, H2gConsumer};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
@@ -117,6 +118,7 @@ impl ReadonlySharedMemory {
     }
 }
 pub(crate) use unused_hack::SnapshotSharedMemory;
+
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
@@ -141,6 +143,26 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
+    /// G2H consumer bound to the current scratch mapping.
+    pub(crate) g2h_consumer: Option<G2hConsumer>,
+    /// H2G consumer bound to the current scratch mapping.
+    pub(crate) h2g_consumer: Option<H2gConsumer>,
+}
+
+impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
+    fn clone(&self) -> Self {
+        Self {
+            shared_mem: self.shared_mem.clone(),
+            scratch_mem: self.scratch_mem.clone(),
+            layout: self.layout,
+            next_action: self.next_action,
+            original_entrypoint: self.original_entrypoint,
+            abort_buffer: self.abort_buffer.clone(),
+            snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
+        }
+    }
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -276,43 +298,14 @@ where
             original_entrypoint: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
+            g2h_consumer: None,
+            h2g_consumer: None,
         }
     }
 
     /// Get mutable access to the abort buffer
     pub(crate) fn get_abort_buffer_mut(&mut self) -> &mut Vec<u8> {
         &mut self.abort_buffer
-    }
-
-    /// Create a snapshot with the given mapped regions
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn snapshot(
-        &mut self,
-        mapped_regions: Vec<MemoryRegion>,
-        root_pt_gpas: &[u64],
-        rsp_gva: u64,
-        sregs: CommonSpecialRegisters,
-        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
-        next_action: NextAction,
-        host_functions: HostFunctionDetails,
-    ) -> Result<Snapshot> {
-        self.snapshot_count += 1;
-        Snapshot::new(
-            &mut self.shared_mem,
-            &mut self.scratch_mem,
-            self.layout,
-            crate::mem::exe::LoadInfo::dummy(),
-            mapped_regions,
-            root_pt_gpas,
-            rsp_gva,
-            sregs,
-            #[cfg(target_arch = "x86_64")]
-            msrs,
-            next_action,
-            self.original_entrypoint,
-            self.snapshot_count,
-            host_functions,
-        )
     }
 }
 
@@ -358,6 +351,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -367,6 +362,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             original_entrypoint: self.original_entrypoint,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
         Ok((host_mgr, guest_mgr))
@@ -374,6 +371,81 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Create a snapshot with the given mapped regions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn snapshot(
+        &mut self,
+        mapped_regions: Vec<MemoryRegion>,
+        root_pt_gpas: &[u64],
+        rsp_gva: u64,
+        sregs: CommonSpecialRegisters,
+        #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
+        next_action: NextAction,
+        host_functions: HostFunctionDetails,
+    ) -> Result<Snapshot> {
+        let virtq = match (&self.g2h_consumer, &self.h2g_consumer) {
+            (Some(_), Some(_)) => Some(virtq::snapshot(&self.layout, &self.scratch_mem)?),
+            (None, None) => None,
+            _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
+        };
+
+        self.snapshot_count += 1;
+        Snapshot::new(
+            &mut self.shared_mem,
+            &mut self.scratch_mem,
+            self.layout,
+            crate::mem::exe::LoadInfo::dummy(),
+            mapped_regions,
+            root_pt_gpas,
+            rsp_gva,
+            sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs,
+            next_action,
+            self.original_entrypoint,
+            self.snapshot_count,
+            host_functions,
+            virtq,
+        )
+    }
+
+    /// Attach host consumers to a guest-produced initial transport image.
+    ///
+    /// Before guest initialization, the host publishes queue dimensions and the
+    /// transport arena GPA. The guest derives and initializes every fixed region
+    /// without consuming dynamic scratch.
+    ///
+    /// This method runs after the initialization VM exit. It checks the
+    /// published arena against the host layout, derives bounded GVA views,
+    /// and validates each directional ring before exposing either consumer.
+    /// Fresh sandboxes and pre-initialization restores use this path.
+    pub(crate) fn attach_virtq(&mut self) -> Result<()> {
+        if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
+            return Err(new_error!("virtqueue consumers are already attached"));
+        }
+
+        let (g2h, h2g) = virtq::attach(&self.layout, &self.scratch_mem)?;
+        self.g2h_consumer = Some(g2h);
+        self.h2g_consumer = Some(h2g);
+        Ok(())
+    }
+
+    /// Restore a captured canonical transport image against this scratch mapping.
+    pub(crate) fn restore_virtq(&mut self, snapshot: Option<&virtq::VirtqSnapshot>) -> Result<()> {
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+
+        if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
+            return Err(new_error!("virtqueue consumers are already attached"));
+        }
+
+        let (g2h, h2g) = virtq::restore(&self.layout, &self.scratch_mem, snapshot)?;
+        self.g2h_consumer = Some(g2h);
+        self.h2g_consumer = Some(h2g);
+        Ok(())
+    }
+
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -473,6 +545,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Option<SnapshotSharedMemory<GuestSharedMemory>>,
         Option<GuestSharedMemory>,
     )> {
+        if let Some(virtq) = snapshot.virtq() {
+            virtq.preflight(snapshot.layout())?;
+        }
+
+        self.g2h_consumer = None;
+        self.h2g_consumer = None;
+
         let gsnapshot = if *snapshot.memory() == self.shared_mem {
             // If the snapshot memory is already the correct memory,
             // which is readonly, don't bother with restoring it,
@@ -515,6 +594,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
 
         self.update_scratch_bookkeeping()?;
+        self.restore_virtq(snapshot.virtq())?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -559,6 +639,38 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
+        )?;
+
+        // Record the G2H and H2G queue sizes, pool page counts, and buffer sizes.
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET,
+            u64::try_from(self.layout.get_g2h_queue_size())?,
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_G2H_POOL_PAGES_OFFSET,
+            u64::try_from(self.layout.get_g2h_pool_pages())?,
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET,
+            u64::try_from(self.layout.get_g2h_buffer_size())?,
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET,
+            u64::try_from(self.layout.get_h2g_queue_size())?,
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_H2G_POOL_PAGES_OFFSET,
+            u64::try_from(self.layout.get_h2g_pool_pages())?,
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET,
+            u64::try_from(self.layout.get_h2g_buffer_size())?,
+        )?;
+
+        let transport_arena = self.layout.get_transport_arena();
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET,
+            transport_arena.base_addr(),
         )?;
 
         // Initialise the guest input and output data buffers in

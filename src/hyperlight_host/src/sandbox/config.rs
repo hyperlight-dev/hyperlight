@@ -5,6 +5,8 @@ use std::cmp::max;
 use std::time::Duration;
 
 use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_common::virtq::G2H_LOWER_SLOT_SIZE;
+use hyperlight_common::vmem::PAGE_SIZE;
 #[cfg(target_os = "linux")]
 use libc::c_int;
 use tracing::{Span, instrument};
@@ -82,6 +84,18 @@ pub struct SandboxConfiguration {
     /// Stored as the guest ABI's numeric log-filter value, with `u64::MAX`
     /// representing an unset value, to keep this `#[repr(C)]` struct FFI-safe.
     max_guest_log_level: u64,
+    /// Number of descriptors in the G2H virtqueue.
+    g2h_queue_size: usize,
+    /// Number of descriptors in the H2G virtqueue.
+    h2g_queue_size: usize,
+    /// Capacity of each G2H upper-tier buffer.
+    g2h_buffer_size: usize,
+    /// Capacity of each H2G buffer.
+    h2g_buffer_size: usize,
+    /// Number of pages in the G2H buffer pool.
+    g2h_pool_pages: usize,
+    /// Number of pages in the H2G buffer pool.
+    h2g_pool_pages: usize,
     /// Declared guest MSRs, stored inline to keep this type `Copy`.
     #[cfg(target_arch = "x86_64")]
     guest_msrs: [u32; Self::MAX_GUEST_MSRS],
@@ -105,8 +119,29 @@ impl SandboxConfiguration {
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// The default size of the scratch region
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
+    // TODO: Reassess scratch sizing when virtqueues replace the input/output regions.
+    /// The default scratch size, aligned to 16 KiB for macOS hosts.
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x58000;
+    /// The default G2H virtqueue descriptor count.
+    pub const DEFAULT_G2H_QUEUE_SIZE: usize = 64;
+    /// The default H2G virtqueue descriptor count.
+    pub const DEFAULT_H2G_QUEUE_SIZE: usize = 32;
+    /// The default G2H upper-tier buffer size.
+    pub const DEFAULT_G2H_BUFFER_SIZE: usize = PAGE_SIZE;
+    /// The default H2G buffer size.
+    pub const DEFAULT_H2G_BUFFER_SIZE: usize = PAGE_SIZE;
+    /// The default total number of G2H pool pages.
+    pub const DEFAULT_G2H_POOL_PAGES: usize = 8;
+    /// The default total number of H2G pool pages.
+    pub const DEFAULT_H2G_POOL_PAGES: usize = 4;
+    /// The minimum G2H virtqueue descriptor count.
+    const MIN_QUEUE_SIZE: usize = 2;
+    /// The maximum G2H virtqueue descriptor count.
+    const MAX_QUEUE_SIZE: usize = 32_768;
+    /// The minimum configured transport buffer size.
+    const MIN_BUFFER_SIZE: usize = G2H_LOWER_SLOT_SIZE;
+    /// The maximum configured transport buffer size.
+    const MAX_BUFFER_SIZE: usize = u32::MAX as usize;
     /// Maximum number of distinct guest MSRs that can be declared.
     /// KVM supports at most 16 MSR filter ranges. Each index may require its
     /// own range, so 16 is the portable limit across backends.
@@ -133,6 +168,12 @@ impl SandboxConfiguration {
             heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
             max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
+            g2h_queue_size: Self::DEFAULT_G2H_QUEUE_SIZE,
+            h2g_queue_size: Self::DEFAULT_H2G_QUEUE_SIZE,
+            g2h_buffer_size: Self::DEFAULT_G2H_BUFFER_SIZE,
+            h2g_buffer_size: Self::DEFAULT_H2G_BUFFER_SIZE,
+            g2h_pool_pages: Self::DEFAULT_G2H_POOL_PAGES,
+            h2g_pool_pages: Self::DEFAULT_H2G_POOL_PAGES,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
@@ -316,6 +357,98 @@ impl SandboxConfiguration {
         }
     }
 
+    /// Get the G2H virtqueue descriptor count.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_queue_size(&self) -> usize {
+        self.g2h_queue_size
+    }
+
+    /// Set the G2H virtqueue descriptor count.
+    ///
+    /// Values are rounded up to a power of two in `2..=32768`.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_queue_size(&mut self, size: usize) {
+        self.g2h_queue_size = Self::normalize_queue_size(size);
+    }
+
+    /// Get the H2G virtqueue descriptor count.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_queue_size(&self) -> usize {
+        self.h2g_queue_size
+    }
+
+    /// Set the H2G virtqueue descriptor count.
+    ///
+    /// Values are rounded up to a power of two in `2..=32768`.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_queue_size(&mut self, size: usize) {
+        self.h2g_queue_size = Self::normalize_queue_size(size);
+    }
+
+    /// Get the capacity of each G2H upper-tier buffer.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_buffer_size(&self) -> usize {
+        self.g2h_buffer_size
+    }
+
+    /// Set the capacity of each G2H upper-tier buffer.
+    ///
+    /// Values are clamped to `256..=u32::MAX`.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_buffer_size(&mut self, size: usize) {
+        self.g2h_buffer_size = size.clamp(Self::MIN_BUFFER_SIZE, Self::MAX_BUFFER_SIZE);
+        self.g2h_pool_pages = max(
+            self.g2h_pool_pages,
+            Self::min_g2h_pool_pages(self.g2h_buffer_size),
+        );
+    }
+
+    /// Get the capacity of each H2G buffer.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_buffer_size(&self) -> usize {
+        self.h2g_buffer_size
+    }
+
+    /// Set the capacity of each H2G buffer.
+    ///
+    /// Values are clamped to `256..=u32::MAX`.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_buffer_size(&mut self, size: usize) {
+        self.h2g_buffer_size = size.clamp(Self::MIN_BUFFER_SIZE, Self::MAX_BUFFER_SIZE);
+        self.h2g_pool_pages = max(
+            self.h2g_pool_pages,
+            Self::min_h2g_pool_pages(self.h2g_buffer_size),
+        );
+    }
+
+    /// Get the total number of G2H pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_pool_pages(&self) -> usize {
+        self.g2h_pool_pages
+    }
+
+    /// Set the total number of G2H pool pages.
+    ///
+    /// The pool contains one lower-tier page and at least one upper buffer.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_pool_pages(&mut self, pages: usize) {
+        self.g2h_pool_pages = max(pages, Self::min_g2h_pool_pages(self.g2h_buffer_size));
+    }
+
+    /// Get the total number of H2G pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_pool_pages(&self) -> usize {
+        self.h2g_pool_pages
+    }
+
+    /// Set the total number of H2G pool pages.
+    ///
+    /// The pool contains at least one H2G buffer.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_pool_pages(&mut self, pages: usize) {
+        self.h2g_pool_pages = max(pages, Self::min_h2g_pool_pages(self.h2g_buffer_size));
+    }
+
     #[cfg(crashdump)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_core_dump(&self) -> bool {
@@ -340,6 +473,19 @@ impl SandboxConfiguration {
         self.heap_size_override_opt()
             .unwrap_or(Self::DEFAULT_HEAP_SIZE)
     }
+
+    fn normalize_queue_size(size: usize) -> usize {
+        size.clamp(Self::MIN_QUEUE_SIZE, Self::MAX_QUEUE_SIZE)
+            .next_power_of_two()
+    }
+
+    fn min_g2h_pool_pages(buffer_size: usize) -> usize {
+        1 + Self::min_h2g_pool_pages(buffer_size)
+    }
+
+    fn min_h2g_pool_pages(buffer_size: usize) -> usize {
+        buffer_size.div_ceil(PAGE_SIZE)
+    }
 }
 
 impl Default for SandboxConfiguration {
@@ -362,6 +508,7 @@ impl Default for SandboxConfiguration {
 
 #[cfg(test)]
 mod tests {
+    use hyperlight_common::vmem::PAGE_SIZE;
     use tracing_core::LevelFilter;
 
     #[cfg(target_arch = "x86_64")]
@@ -384,6 +531,12 @@ mod tests {
             cfg.set_max_guest_log_level(level);
             assert_eq!(cfg.get_max_guest_log_level(), Some(level));
         }
+    }
+
+    #[test]
+    fn default_scratch_size_supports_16k_pages() {
+        let cfg = SandboxConfiguration::default();
+        assert!(cfg.get_scratch_size().is_multiple_of(16 * 1024));
     }
 
     #[test]
@@ -472,6 +625,30 @@ mod tests {
         assert_eq!(0x40000, cfg.scratch_size);
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
         assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_G2H_QUEUE_SIZE,
+            cfg.get_g2h_queue_size()
+        );
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_H2G_QUEUE_SIZE,
+            cfg.get_h2g_queue_size()
+        );
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_G2H_BUFFER_SIZE,
+            cfg.get_g2h_buffer_size()
+        );
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_H2G_BUFFER_SIZE,
+            cfg.get_h2g_buffer_size()
+        );
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_G2H_POOL_PAGES,
+            cfg.get_g2h_pool_pages()
+        );
+        assert_eq!(
+            SandboxConfiguration::DEFAULT_H2G_POOL_PAGES,
+            cfg.get_h2g_pool_pages()
+        );
     }
 
     #[test]
@@ -497,6 +674,71 @@ mod tests {
 
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
+    }
+
+    #[test]
+    fn queue_sizes_are_normalized() {
+        let mut cfg = SandboxConfiguration::default();
+        for (size, expected) in [
+            (0, 2),
+            (1, 2),
+            (2, 2),
+            (3, 4),
+            (32_767, 32_768),
+            (32_768, 32_768),
+            (32_769, 32_768),
+            (usize::MAX, 32_768),
+        ] {
+            cfg.set_g2h_queue_size(size);
+            cfg.set_h2g_queue_size(size);
+            assert_eq!(expected, cfg.get_g2h_queue_size());
+            assert_eq!(expected, cfg.get_h2g_queue_size());
+        }
+    }
+
+    #[test]
+    fn buffer_sizes_are_normalized_without_page_rounding() {
+        let mut cfg = SandboxConfiguration::default();
+
+        cfg.set_g2h_buffer_size(0);
+        cfg.set_h2g_buffer_size(0);
+        assert_eq!(256, cfg.get_g2h_buffer_size());
+        assert_eq!(256, cfg.get_h2g_buffer_size());
+
+        cfg.set_g2h_buffer_size(3000);
+        cfg.set_h2g_buffer_size(3001);
+        assert_eq!(3000, cfg.get_g2h_buffer_size());
+        assert_eq!(3001, cfg.get_h2g_buffer_size());
+
+        cfg.set_g2h_buffer_size(usize::MAX);
+        cfg.set_h2g_buffer_size(usize::MAX);
+        assert_eq!(u32::MAX as usize, cfg.get_g2h_buffer_size());
+        assert_eq!(u32::MAX as usize, cfg.get_h2g_buffer_size());
+    }
+
+    #[test]
+    fn pool_page_counts_are_normalized() {
+        let mut cfg = SandboxConfiguration::default();
+
+        cfg.set_g2h_pool_pages(0);
+        cfg.set_h2g_pool_pages(0);
+        assert_eq!(2, cfg.get_g2h_pool_pages());
+        assert_eq!(1, cfg.get_h2g_pool_pages());
+
+        cfg.set_g2h_buffer_size(PAGE_SIZE + 1);
+        cfg.set_h2g_buffer_size(PAGE_SIZE + 1);
+        assert_eq!(3, cfg.get_g2h_pool_pages());
+        assert_eq!(2, cfg.get_h2g_pool_pages());
+
+        cfg.set_g2h_pool_pages(2);
+        cfg.set_h2g_pool_pages(1);
+        assert_eq!(3, cfg.get_g2h_pool_pages());
+        assert_eq!(2, cfg.get_h2g_pool_pages());
+
+        cfg.set_g2h_pool_pages(4);
+        cfg.set_h2g_pool_pages(3);
+        assert_eq!(4, cfg.get_g2h_pool_pages());
+        assert_eq!(3, cfg.get_h2g_pool_pages());
     }
 
     mod proptests {

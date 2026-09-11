@@ -4,6 +4,7 @@
 //! Shared harness for the `virtq_api` benchmarks: an in-memory [`MemOps`]
 //! backend, a counting [`Notifier`], producer/consumer pair construction, pool
 //! factories, and request/response round-trip drivers.
+//! Reply owners copy payloads to keep native buffer leases thread-local.
 
 use std::cell::UnsafeCell;
 use std::hint::black_box;
@@ -14,15 +15,12 @@ use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
 use bytemuck::Pod;
 use hyperlight_common::virtq::{
-    BufferPool, BufferProvider, Descriptor, Layout, MemOps, Notifier, QueueStats, RecyclePool,
-    ReplyChain, UsedChain, VirtqConsumer, VirtqProducer,
+    BufferLease, BufferMap, Descriptor, Layout, MemOps, Notifier, QueueStats, ReplyChain,
+    SlotLayout, SlotPool, UsedChain, VirtqConsumer, VirtqProducer,
 };
 
-pub const LOWER_SLOT: usize = 256;
 pub const UPPER_SLOT: usize = 4096;
 pub const POOL_SIZE: usize = 8 * 1024 * 1024;
-
-pub type RunBufferPool = BufferPool<LOWER_SLOT, UPPER_SLOT>;
 
 #[derive(Clone)]
 struct BenchMem {
@@ -112,6 +110,29 @@ unsafe impl MemOps for BenchMem {
     }
 }
 
+impl BufferMap for BenchMem {
+    type Mapping = Vec<u8>;
+
+    unsafe fn map_buffer(
+        &self,
+        lease: BufferLease,
+        written: usize,
+    ) -> Result<Self::Mapping, Self::Error> {
+        let allocation = lease.allocation();
+        assert!(written <= allocation.len as usize);
+
+        let offset = allocation.addr.checked_sub(self.base_addr()).unwrap() as usize;
+        // SAFETY: Benchmark storage is never resized.
+        let size = unsafe { &*self.inner.storage.get() }.len();
+        assert!(offset.checked_add(allocation.len as usize).unwrap() <= size);
+
+        let mut bytes = vec![0; written];
+        self.read(allocation.addr, &mut bytes)?;
+
+        Ok(bytes)
+    }
+}
+
 #[derive(Clone)]
 struct BenchNotifier {
     count: Arc<AtomicUsize>,
@@ -132,8 +153,8 @@ impl Notifier for BenchNotifier {
 }
 
 /// A producer/consumer pair sharing one in-memory ring and pool.
-pub struct BenchPair<P> {
-    producer: VirtqProducer<BenchMem, BenchNotifier, P>,
+pub struct BenchPair {
+    producer: VirtqProducer<BenchMem, BenchNotifier>,
     consumer: VirtqConsumer<BenchMem, BenchNotifier>,
 }
 
@@ -143,10 +164,7 @@ fn align_up(value: usize, align: usize) -> usize {
 
 /// Build a [`BenchPair`] with `descs` ring descriptors and a pool built by
 /// `make_pool`.
-pub fn make_pair<P>(descs: usize, make_pool: impl FnOnce(u64, usize) -> P) -> BenchPair<P>
-where
-    P: BufferProvider + Clone,
-{
+pub fn make_pair(descs: usize, make_pool: impl FnOnce(u64, usize) -> SlotPool) -> BenchPair {
     let ring_size = Layout::query_size(descs);
     let mem = BenchMem::new(ring_size + POOL_SIZE + 0x20000);
     let ring_base = align_up(mem.base_addr() as usize, Descriptor::ALIGN) as u64;
@@ -163,33 +181,13 @@ where
     BenchPair { producer, consumer }
 }
 
-pub fn run_buffer_pool(base: u64, size: usize) -> RunBufferPool {
-    BufferPool::new(base, size).unwrap()
+pub fn slot_pool(base: u64, size: usize) -> SlotPool {
+    let layout = SlotLayout::new(base, UPPER_SLOT, size / UPPER_SLOT);
+    SlotPool::new(layout).unwrap()
 }
 
-pub fn fragmented_run_buffer_pool(base: u64, size: usize, payload_size: usize) -> RunBufferPool {
-    let pool = run_buffer_pool(base, size);
-    let payload_slots = payload_size.div_ceil(UPPER_SLOT);
-    let prefix_slots = 32;
-    let suffix_slots = 32;
-
-    let allocated: Vec<_> = (0..prefix_slots + payload_slots + suffix_slots)
-        .map(|_| pool.alloc(UPPER_SLOT).unwrap())
-        .collect();
-
-    for alloc in &allocated[prefix_slots..prefix_slots + payload_slots] {
-        pool.dealloc(alloc.addr).unwrap();
-    }
-
-    pool
-}
-
-pub fn recycle_pool(base: u64, size: usize) -> RecyclePool {
-    RecyclePool::new(base, size, UPPER_SLOT).unwrap()
-}
-
-pub fn fragmented_recycle_pool(base: u64, size: usize, payload_size: usize) -> RecyclePool {
-    let pool = recycle_pool(base, size);
+pub fn fragmented_slot_pool(base: u64, size: usize, payload_size: usize) -> SlotPool {
+    let pool = slot_pool(base, size);
     let payload_slots = payload_size.div_ceil(UPPER_SLOT);
     let allocated: Vec<_> = (0..payload_slots * 2 + 16)
         .map(|_| pool.alloc(UPPER_SLOT).unwrap())
@@ -204,10 +202,7 @@ pub fn fragmented_recycle_pool(base: u64, size: usize, payload_size: usize) -> R
 
 /// Drive one read-only (fire-and-forget) chain through submit, consume, ack, and
 /// poll, returning the producer-observed used chain.
-pub fn readonly_roundtrip<P>(pair: &mut BenchPair<P>, payload: &[u8]) -> UsedChain
-where
-    P: BufferProvider + Clone + Send + 'static,
-{
+pub fn readonly_roundtrip(pair: &mut BenchPair, payload: &[u8]) -> UsedChain {
     let mut chain = pair
         .producer
         .chain()
@@ -219,8 +214,8 @@ where
     let token = pair.producer.submit(chain).unwrap();
 
     let (recv, reply) = pair.consumer.poll(payload.len()).unwrap().unwrap();
-    black_box(recv.segments().segment_count());
-    pair.consumer.complete(reply).unwrap();
+    black_box(recv.len());
+    pair.consumer.complete(recv, reply).unwrap();
 
     let used = pair.producer.poll().unwrap().unwrap();
     debug_assert_eq!(used.token(), token);
@@ -229,10 +224,7 @@ where
 
 /// Drive one request/response chain through submit, consume, write reply,
 /// complete, and poll, returning the producer-observed used chain.
-pub fn readwrite_roundtrip<P>(pair: &mut BenchPair<P>, request: &[u8], response: &[u8]) -> UsedChain
-where
-    P: BufferProvider + Clone + Send + 'static,
-{
+pub fn readwrite_roundtrip(pair: &mut BenchPair, request: &[u8], response: &[u8]) -> UsedChain {
     let mut chain = pair
         .producer
         .chain()
@@ -245,13 +237,13 @@ where
     let token = pair.producer.submit(chain).unwrap();
 
     let (recv, reply) = pair.consumer.poll(request.len()).unwrap().unwrap();
-    black_box(recv.segments().segment_count());
+    black_box(recv.len());
     let ReplyChain::Writable(mut writable) = reply else {
         panic!("expected writable reply");
     };
 
     writable.write_all(response).unwrap();
-    pair.consumer.complete(writable).unwrap();
+    pair.consumer.complete(recv, writable).unwrap();
 
     let used = pair.producer.poll().unwrap().unwrap();
     debug_assert_eq!(used.token(), token);
