@@ -520,6 +520,13 @@ impl VirtualMachine for WhpVm {
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
 
+        #[cfg_attr(
+            not(feature = "hw-interrupts"),
+            expect(
+                clippy::never_loop,
+                reason = "the loop continues when hw-interrupts is enabled"
+            )
+        )]
         loop {
             unsafe {
                 WHvRunVirtualProcessor(
