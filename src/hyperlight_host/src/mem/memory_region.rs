@@ -261,26 +261,33 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
     }
 }
 
-/// Type for memory regions that only track guest addresses.
+/// Marker for GPA-to-GVA mappings used to construct guest page tables.
 ///
+/// `host_region` contains GPAs and `guest_region` contains GVAs.
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct GuestMemoryRegion {}
 
 impl MemoryRegionKind for GuestMemoryRegion {
-    type HostBaseType = ();
+    type HostBaseType = usize;
 
-    fn add(_base: Self::HostBaseType, _size: usize) -> Self::HostBaseType {}
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        base + size
+    }
 }
 
 /// represents a single memory region inside the guest. All memory within a region has
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryRegion_<K: MemoryRegionKind> {
-    /// the range of guest memory addresses
-    pub guest_region: Range<usize>,
-    /// the range of host memory addresses
+    /// The destination range of the mapping.
     ///
-    /// Note that Range<()> = () x () = ().
+    /// This is a GVA for `GuestMemoryRegion`, a GPA for
+    /// `HostGuestMemoryRegion`, and a GVA for `CrashDumpMemoryRegion`.
+    pub guest_region: Range<usize>,
+    /// The source range of the mapping.
+    ///
+    /// This is a GPA for `GuestMemoryRegion` and an HVA for
+    /// `HostGuestMemoryRegion` and `CrashDumpMemoryRegion`.
     pub host_region: Range<K::HostBaseType>,
     /// memory access flags for the given region
     pub flags: MemoryRegionFlags,

@@ -76,6 +76,12 @@ impl ExeInfo {
             ExeInfo::Elf(elf) => Offset::from(elf.entrypoint_va()),
         }
     }
+    /// Returns whether this is a position-independent executable (ET_DYN).
+    pub fn is_pie(&self) -> bool {
+        match self {
+            ExeInfo::Elf(elf) => elf.is_pie(),
+        }
+    }
     /// Returns the base virtual address of the loaded binary (lowest PT_LOAD p_vaddr).
     pub fn base_va(&self) -> u64 {
         match self {
@@ -100,9 +106,9 @@ impl ExeInfo {
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
     // which requires it to be &mut.
-    pub fn load(self, load_addr: usize, target: &mut [u8]) -> Result<LoadInfo> {
+    pub fn load(self, load_gva: u64, target: &mut [u8]) -> Result<LoadInfo> {
         match self {
-            ExeInfo::Elf(elf) => elf.load_at(load_addr, target),
+            ExeInfo::Elf(elf) => elf.load_at(load_gva, target),
         }
     }
 }

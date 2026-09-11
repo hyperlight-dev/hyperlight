@@ -606,6 +606,7 @@ impl Snapshot {
                 output_data_size: l.output_data_size(),
                 heap_size: l.heap_size(),
                 code_size: l.code_size(),
+                code_virt_base: l.get_guest_code_gva() as u64,
                 init_data_size: l.init_data_size(),
                 init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
@@ -815,6 +816,12 @@ impl Snapshot {
             cfg.layout.init_data_size,
             init_data_perms,
         )?;
+        let code_gva = if cfg.layout.code_virt_base == 0 {
+            layout.get_guest_code_gpa() as u64
+        } else {
+            cfg.layout.code_virt_base
+        };
+        layout.set_code_gva(code_gva)?;
         // `snapshot_size` and `pt_size` are independent fields.
         if let Some(pt) = cfg.layout.pt_size {
             layout.set_pt_size(pt)?;

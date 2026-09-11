@@ -454,6 +454,7 @@ $RECYCLE.BIN/
 
 # Rust build artifacts
 **/**target
+**/**target-non-pie
 libhyperlight_host.so
 libhyperlight_host.d
 hyperlight_host.dll
