@@ -1399,10 +1399,12 @@ impl HostSharedMemory {
         self.write::<u64>(stack_pointer_abs + data.len(), stack_pointer_rel as u64)?;
 
         // update stack pointer to point to the next free address
-        let new_sp = stack_pointer_rel
+        let new_sp: u64 = stack_pointer_rel
             .checked_add(data.len())
             .and_then(|v| v.checked_add(8))
-            .ok_or(StackError::PushSizeOverflow(data.len()))? as u64;
+            .ok_or(StackError::PushSizeOverflow(data.len()))?
+            .try_into()
+            .map_err(|_| StackError::PushSizeOverflow(data.len()))?;
         self.write::<u64>(buffer_start_offset, new_sp)?;
         Ok(())
     }
