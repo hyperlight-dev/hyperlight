@@ -5,11 +5,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
-* Add per-direction virtqueue configuration and account its allocations in
-  scratch sizing.
+* Per-direction virtqueue configuration through `SandboxConfiguration` and
+  `SandboxBuilder`, with allocations included in scratch sizing.
 * Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.
+* `ExternalValueSource` implementations for `RecvChain` and `Segments`.
 * Producer batch completion without notification and segmented payload
-  extraction without flattening.
+  assembly and extraction without flattening.
 
 ### Changed
 * `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
@@ -29,12 +30,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `ChainBuilder::build()` allocates readable and writable requests.
   `writable_avail()` reserves available upper-tier slots within the descriptor
   budget. It may add zero slots to a nonempty chain.
+* Require guest logs and all host and guest function calls to use virtqueues.
+* Keep registered Rust guest return values typed until transport encoding so
+  external byte results avoid intermediate FlatBuffer copies.
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+  rejects snapshots without transport state.
+* Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
+  keep their deferred result path.
+* Reject snapshot capture while guest-owned transport buffers are retained.
+* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
+  and 8 pages.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
+* Remove legacy stack I/O, its `GuestHandle` methods, and its sandbox
+  configuration and builder options.
+* Embedded byte payload tables and their value-union variants.
 
 ### Fixed
+* Virtqueue consumers return errors when payload copies or runtime bookkeeping
+  cannot be allocated.
 * Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
+* Snapshot checkpoints ignore idle cancellation and clear partial abort state.
+* Keep sandboxes usable when G2H calls exhaust reply capacity.
+* Reject incompatible transport snapshots before changing sandbox state.
+* Allow guest host-return conversions to call or log to the host.
 
 ## [v0.17.0] - 2026-08-27
 

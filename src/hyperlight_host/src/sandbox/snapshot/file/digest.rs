@@ -45,7 +45,6 @@ pub(super) fn parse_oci_digest(digest: &Digest) -> crate::Result<String> {
 }
 
 /// Compute sha256 of `bytes` and verify it equals `expected_hex`.
-/// Used to validate manifest and config blobs (small, in memory).
 pub(super) fn verify_blob_bytes(
     label: &str,
     bytes: &[u8],

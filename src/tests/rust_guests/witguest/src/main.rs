@@ -233,10 +233,11 @@ pub extern "C" fn hyperlight_main() {
 
 use ::alloc::vec::Vec;
 use ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+use ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use ::hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use ::hyperlight_guest::error::{HyperlightGuestError, Result};
 #[no_mangle]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValue> {
     Err(HyperlightGuestError::new(
         ErrorCode::GuestFunctionNotFound,
         function_call.function_name.clone(),

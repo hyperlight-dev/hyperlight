@@ -55,13 +55,6 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "fuzz_push_pop_buffer"
-path = "fuzz_targets/fuzz_push_pop_buffer.rs"
-test = false
-doc = false
-bench = false
-
 [features]
 default = []
 trace = ["hyperlight-host/trace_guest", "hyperlight-common/trace_guest"]

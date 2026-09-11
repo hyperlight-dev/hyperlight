@@ -90,6 +90,8 @@ pub struct BufferElement {
     pub writable: bool,
 }
 
+pub(super) type ChainElems = SmallVec<[BufferElement; 4]>;
+
 impl BufferElement {
     /// Create a readable buffer element
     pub fn readable(addr: u64) -> Self {
@@ -172,6 +174,9 @@ pub enum RingError {
     WouldBlock,
     #[error("Out of memory")]
     OutOfMemory,
+    /// Cached descriptor storage could not be allocated.
+    #[error("Failed to allocate descriptor bookkeeping")]
+    Bookkeeping,
     #[error("Invalid state")]
     InvalidState,
     #[error("Invalid memory layout")]
@@ -218,7 +223,7 @@ pub struct Writable;
 /// common small chains. Larger chains are still supported and spill to the heap.
 #[derive(Debug, Default)]
 pub struct BufferChainBuilder<T> {
-    elems: SmallVec<[BufferElement; 4]>,
+    elems: ChainElems,
     split: usize,
     marker: PhantomData<T>,
 }
@@ -363,12 +368,40 @@ impl BufferChainBuilder<Writable> {
 #[derive(Debug, Clone)]
 pub struct BufferChain {
     /// All buffer elements (readable followed by writable)
-    elems: SmallVec<[BufferElement; 4]>,
+    elems: ChainElems,
     /// Split index between readable and writable buffers
     split: usize,
 }
 
 impl BufferChain {
+    /// Split descriptor ownership, reusing heap storage when a half needs it.
+    pub(super) fn into_parts(mut self) -> Result<(ChainElems, ChainElems), RingError> {
+        let should_move = self.split <= self.elems.len() - self.split;
+
+        let range = if should_move {
+            0..self.split
+        } else {
+            self.split..self.elems.len()
+        };
+
+        let mut detached = ChainElems::new();
+        detached
+            .try_reserve_exact(range.len())
+            .map_err(|_| RingError::Bookkeeping)?;
+
+        detached.extend(self.elems.drain(range));
+        if self.elems.len() <= self.elems.inline_size() {
+            // Shrinking into inline storage only copies and frees.
+            self.elems.shrink_to_fit();
+        }
+
+        Ok(if should_move {
+            (detached, self.elems)
+        } else {
+            (self.elems, detached)
+        })
+    }
+
     /// Get all buffer elements in the chain.
     pub fn elems(&self) -> &[BufferElement] {
         self.elems.as_slice()
@@ -453,6 +486,18 @@ impl RingCursor {
         self.head = 0;
         self.wrap = true;
     }
+}
+
+/// Local [`RingConsumer`] state needed to undo a sequence of polls.
+///
+/// No chains may be completed between capture and rollback.
+pub(super) struct Checkpoint {
+    /// Position of the next available chain.
+    avail_cursor: RingCursor,
+    /// Position of the next completion.
+    used_cursor: RingCursor,
+    /// Number of descriptors awaiting completion.
+    num_inflight: usize,
 }
 
 /// Producer (driver) side of a packed virtqueue.
@@ -1034,6 +1079,7 @@ impl<M: MemOps> RingConsumer<M> {
     /// - `Ok((id, chain))` - A buffer chain is available
     /// - `Err(RingError::WouldBlock)` - No buffers available
     /// - `Err(RingError::BadChain)` - Malformed chain (driver bug)
+    /// - `Err(RingError::Bookkeeping)` - Descriptor storage allocation failed
     pub fn poll_available(&mut self) -> Result<(u16, BufferChain), RingError> {
         let idx = self.avail_cursor.head();
         let wrap = self.avail_cursor.wrap();
@@ -1060,7 +1106,7 @@ impl<M: MemOps> RingConsumer<M> {
         }
 
         // Build chain (head + tails), tracking readable/writable split inline.
-        let mut elements = SmallVec::<[BufferElement; 4]>::new();
+        let mut elements = ChainElems::new();
         let mut pos = self.avail_cursor;
         let mut chain_len: u16 = 1;
 
@@ -1099,6 +1145,9 @@ impl<M: MemOps> RingConsumer<M> {
                 return Err(RingError::BadChain);
             }
 
+            elements
+                .try_reserve(1)
+                .map_err(|_| RingError::Bookkeeping)?;
             elements.push(elem);
 
             chain_len += 1;
@@ -1204,6 +1253,41 @@ impl<M: MemOps> RingConsumer<M> {
             .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
 
         Ok(flags.is_avail(self.avail_cursor.wrap()))
+    }
+
+    /// Capture the local state needed to undo subsequent polls.
+    pub(super) fn poll_checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            avail_cursor: self.avail_cursor,
+            used_cursor: self.used_cursor,
+            num_inflight: self.num_inflight,
+        }
+    }
+
+    /// Undo a batch's successful polls without publishing completions.
+    ///
+    /// `ids` must cover every chain polled since `cp` on this consumer.
+    /// Each pair of handles must be dropped before its ID is yielded,
+    /// with no intervening completions.
+    pub(super) fn rollback_polls(&mut self, cp: Checkpoint, ids: impl IntoIterator<Item = u16>) {
+        let mut desc_count = 0usize;
+        for id in ids {
+            let chain_len = core::mem::take(&mut self.id_num[id as usize]);
+            debug_assert_ne!(chain_len, 0);
+            desc_count += chain_len as usize;
+        }
+
+        debug_assert!(desc_count <= self.desc_table.len());
+        debug_assert_eq!(self.used_cursor, cp.used_cursor);
+        debug_assert_eq!(self.num_inflight, cp.num_inflight + desc_count);
+        debug_assert_eq!(self.avail_cursor, {
+            let mut expected = cp.avail_cursor;
+            expected.advance_by(desc_count as u16);
+            expected
+        });
+
+        self.avail_cursor = cp.avail_cursor;
+        self.num_inflight = cp.num_inflight;
     }
 
     /// Submit a used descriptor and return whether to notify the driver.

@@ -139,13 +139,10 @@ calls, i.e. there may be no calls in flight at the time of
 snapshotting. This is not enforced, but odd things may happen if it is
 violated.
 
-Buffer management between the host and guest is needed to pass call
-arguments and return values. Ideally, buffers would be dynamically
-allocated from the scratch region as needed.
-
-Currently, I/O buffers are statically allocated at the bottom of the
-scratch region. This is a stopgap pending improved
-physical allocation and buffer management.
+Host and guest calls use two virtqueues in a fixed transport arena at
+the bottom of scratch. The arena contains both rings and their
+fixed-slot buffer pools. Copied page tables follow the arena. Dynamic
+scratch allocations begin after the copied page tables.
 
 The minimum scratch size is calculated by `min_scratch_size()` in the
 architecture-specific layout modules under `hyperlight_common`; see
@@ -177,4 +174,3 @@ paging) and enables PAE.  The guest is always entered in long mode.
 
 Hyperlight unconditionally uses 48-bit virtual addresses. Hyperlight
 presently only uses addresses in the lower (ttbr0) half of the address range.
-

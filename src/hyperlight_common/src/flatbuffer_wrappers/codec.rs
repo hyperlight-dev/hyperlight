@@ -21,6 +21,9 @@ pub trait ExternalValueSink<'a> {
 
 /// Supplies complete external byte values while a FlatBuffer is decoded.
 ///
+/// [`RecvChain`](crate::virtq::RecvChain) copies values out of shared memory.
+/// [`Segments`](crate::virtq::Segments) retains existing chunk owners.
+///
 /// Implementations must validate `length` against available input and the
 /// resource budget before allocating.
 pub trait ExternalValueSource {

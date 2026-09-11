@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-use core::mem::{offset_of, size_of};
+use core::mem::{align_of, offset_of, size_of};
 use core::num::{NonZeroU16, NonZeroUsize};
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
@@ -113,12 +113,8 @@ pub fn scratch_base_gva(size: usize) -> u64 {
 ///
 /// `transport_len` includes both rings and buffer pools.
 /// The result saturates at [`usize::MAX`].
-pub fn min_scratch_size(
-    input_data_size: usize,
-    output_data_size: usize,
-    transport_len: usize,
-) -> usize {
-    arch::min_scratch_size(input_data_size, output_data_size)
+pub fn min_scratch_size(transport_len: usize) -> usize {
+    arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))
         .unwrap_or(usize::MAX)
 }
@@ -166,15 +162,15 @@ impl QueueDims {
     }
 }
 
-/// Addresses of both rings and pools in one fixed transport arena.
+/// Addresses of both rings, the checkpoint mailbox, and pools in one fixed arena.
 ///
 /// The G2H ring begins at the arena base. The H2G ring is descriptor aligned.
-/// Both pools are page aligned.
+/// The mailbox is `u64` aligned. Both pools are page aligned.
 ///
 /// ```text
-/// +----------+------------+----------+-----+----------+----------+
-/// | G2H ring | align pad  | H2G ring | pad | G2H pool | H2G pool |
-/// +----------+------------+----------+-----+----------+----------+
+/// +----------+-----+----------+-----+-----+-----+----------+----------+
+/// | G2H ring | pad | H2G ring | pad | mbx | pad | G2H pool | H2G pool |
+/// +----------+-----+----------+-----+-----+-----+----------+----------+
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportArena {
@@ -182,11 +178,13 @@ pub struct TransportArena {
     g2h_ring_addr: u64,
     /// Address of the H2G ring.
     h2g_ring_addr: u64,
+    /// Address of the snapshot checkpoint mailbox.
+    mbx_addr: u64,
     /// Address of the G2H pool.
     g2h_pool_addr: u64,
     /// Address of the H2G pool.
     h2g_pool_addr: u64,
-    /// Page-aligned length occupied by both rings.
+    /// Page-aligned length occupied by both rings and the mailbox.
     ring_span_len: usize,
     /// Total page-aligned arena length.
     len: usize,
@@ -203,8 +201,12 @@ impl TransportArena {
             .ring_len()
             .checked_next_multiple_of(virtq::Descriptor::ALIGN)?;
 
-        let g2h_pool_offset = h2g_ring_offset
+        let mbx_offset = h2g_ring_offset
             .checked_add(h2g.ring_len())?
+            .checked_next_multiple_of(align_of::<u64>())?;
+
+        let g2h_pool_offset = mbx_offset
+            .checked_add(size_of::<u64>())?
             .checked_next_multiple_of(crate::vmem::PAGE_SIZE)?;
 
         let g2h_pool_len = g2h.pool_len();
@@ -219,6 +221,7 @@ impl TransportArena {
         Some(Self {
             g2h_ring_addr: base_addr,
             h2g_ring_addr: addr(h2g_ring_offset)?,
+            mbx_addr: addr(mbx_offset)?,
             g2h_pool_addr: addr(g2h_pool_offset)?,
             h2g_pool_addr: addr(h2g_pool_offset)?,
             ring_span_len: g2h_pool_offset,
@@ -241,6 +244,17 @@ impl TransportArena {
         self.h2g_ring_addr
     }
 
+    /// Address of the snapshot checkpoint mailbox.
+    pub const fn mbx_addr(&self) -> u64 {
+        self.mbx_addr
+    }
+
+    /// Byte offset of the snapshot checkpoint mailbox from the arena base.
+    pub const fn mbx_offset(&self) -> usize {
+        // `new` proves this difference is nonnegative and fits in `usize`.
+        (self.mbx_addr - self.g2h_ring_addr) as usize
+    }
+
     /// Address of the G2H pool.
     pub const fn g2h_pool_addr(&self) -> u64 {
         self.g2h_pool_addr
@@ -251,7 +265,7 @@ impl TransportArena {
         self.h2g_pool_addr
     }
 
-    /// Page-aligned length occupied by both rings.
+    /// Page-aligned length occupied by both rings and the mailbox.
     pub const fn ring_span_len(&self) -> usize {
         self.ring_span_len
     }
@@ -267,12 +281,13 @@ impl TransportArena {
     }
 
     /// Convert the arena's absolute addresses into offsets from the arena base.
-    pub fn to_offsets(&self) -> (usize, usize, usize, usize) {
+    pub fn to_offsets(&self) -> (usize, usize, usize, usize, usize) {
         #[allow(clippy::unwrap_used)] // `new` proves every stored offset fits in `usize`.
         let to_offset = |addr| usize::try_from(addr - self.g2h_ring_addr).unwrap();
 
         (
             to_offset(self.h2g_ring_addr),
+            to_offset(self.mbx_addr),
             to_offset(self.g2h_pool_addr),
             to_offset(self.h2g_pool_addr),
             self.len,
@@ -316,6 +331,7 @@ mod tests {
                 .h2g_ring_addr()
                 .is_multiple_of(virtq::Descriptor::ALIGN as u64)
         );
+        assert!(arena.mbx_addr().is_multiple_of(align_of::<u64>() as u64));
         assert!(
             arena
                 .g2h_pool_addr()
@@ -330,6 +346,7 @@ mod tests {
             arena.to_offsets(),
             (
                 0x410,
+                0x618,
                 crate::vmem::PAGE_SIZE,
                 9 * crate::vmem::PAGE_SIZE,
                 13 * crate::vmem::PAGE_SIZE,
@@ -348,16 +365,39 @@ mod tests {
     }
 
     #[test]
+    fn transport_arena_mailbox_offset_at_high_base() {
+        // A high address must not affect the small arena-relative offset.
+        let base = u64::MAX - 16 * crate::vmem::PAGE_SIZE as u64 + 1;
+        let g2h = QueueDims::new(64, 8).unwrap();
+        let h2g = QueueDims::new(32, 4).unwrap();
+        let arena = TransportArena::new(base, g2h, h2g).unwrap();
+
+        assert_eq!(arena.mbx_offset(), 0x618);
+        assert_eq!(base + arena.mbx_offset() as u64, arena.mbx_addr());
+        assert!(arena.mbx_offset() + size_of::<u64>() <= arena.ring_span_len());
+    }
+
+    #[test]
+    fn transport_arena_mailbox_offset_with_largest_queues() {
+        // The mailbox follows both rings and fits within the control region.
+        let dims = QueueDims::new(32768, 1).unwrap();
+        let arena = TransportArena::new(0, dims, dims).unwrap();
+
+        assert_eq!(arena.mbx_offset(), 0x100018);
+        assert_eq!(arena.mbx_offset() as u64, arena.mbx_addr());
+        assert!(arena.mbx_offset() + size_of::<u64>() <= arena.ring_span_len());
+    }
+
+    #[test]
     fn minimum_scratch_includes_ring_arena_and_pools() {
-        let fixed = arch::min_scratch_size(0, 0).unwrap();
+        let fixed = arch::min_scratch_size().unwrap();
         let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
 
-        assert_eq!(fixed + transport_len, min_scratch_size(0, 0, transport_len));
+        assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
     }
 
     #[test]
     fn minimum_scratch_saturates_on_overflow() {
-        assert_eq!(usize::MAX, min_scratch_size(0, 0, usize::MAX));
-        assert_eq!(usize::MAX, min_scratch_size(usize::MAX, 1, 0));
+        assert_eq!(usize::MAX, min_scratch_size(usize::MAX));
     }
 }

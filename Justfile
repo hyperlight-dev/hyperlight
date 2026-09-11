@@ -219,7 +219,6 @@ like-ci config=default-target hypervisor="kvm":
     just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_packed_ring {{config}} {{hypervisor}}
-    just fuzz-like-ci fuzz_push_pop_buffer {{config}} {{hypervisor}}
 
     @# spelling
     typos
@@ -241,8 +240,8 @@ test-loom:
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else { "--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_emit_guest_log --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else { "--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
     @# CPU vendor check, gated to known CI runner hardware
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::snapshot::file::config::tests::cpu_vendor_current_is_recognized --exact --ignored
@@ -526,7 +525,7 @@ coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
 
     # isolated tests (require running separately due to global state)
     cargo +nightly test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    cargo +nightly test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_emit_guest_log --exact --ignored
     cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
     cargo +nightly test -p hyperlight-host --test integration_test -- log_message --exact --ignored
     cargo +nightly test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact

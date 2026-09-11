@@ -5,14 +5,18 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::{Result, bail};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, ParameterValue, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_host::SandboxBuilder;
+use hyperlight_common::transport::ExternalValues;
+use hyperlight_common::vmem::PAGE_SIZE;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
-use hyperlight_host::sandbox::MultiUseSandbox;
+use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, SandboxBuilder};
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
@@ -347,17 +351,22 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
 
     group.bench_function("guest_call_with_large_parameters", |b| {
         const SIZE: usize = 50 * 1024 * 1024; // 50 MB
+        const MIB: usize = 1024 * 1024;
         let large_vec = vec![0u8; SIZE];
         let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
-        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
-            .input_data_size(2 * SIZE + (1024 * 1024))
-            .heap_size(SIZE as u64 * 15)
-            // Big enough for the IO data regions and enough of the heap to be used
-            .scratch_size(6 * SIZE + 4 * (1024 * 1024))
-            .build()
-            .unwrap();
+        let mut config = SandboxConfiguration::default();
+        config.set_h2g_buffer_size(4 * MIB);
+        config.set_h2g_pool_pages((2 * SIZE + 8 * MIB).div_ceil(PAGE_SIZE));
+        config.set_heap_size(SIZE as u64 * 15);
+        config.set_scratch_size(9 * SIZE);
+
+        let sandbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_pathbuf()),
+            Some(config),
+        )
+        .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
 
         b.iter_with_setup(
             || (large_vec.clone(), large_string.clone()),
@@ -373,51 +382,129 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark Category: Serialization
+// Benchmark Category: Function Call Codec
 // ============================================================================
 
-fn function_call_serialization_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("function_call_serialization");
+enum BenchExternalValue<'a> {
+    Bytes(&'a [u8]),
+    Chunks(&'a [Bytes]),
+}
 
-    let function_call = FunctionCall::new(
+struct BenchExternalSource<'a> {
+    value: Option<BenchExternalValue<'a>>,
+}
+
+impl<'a> BenchExternalSource<'a> {
+    fn new(value: BenchExternalValue<'a>) -> Self {
+        Self { value: Some(value) }
+    }
+}
+
+impl ExternalValueSource for BenchExternalSource<'_> {
+    fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
+        let Some(BenchExternalValue::Bytes(value)) = self.value.take() else {
+            bail!("expected external bytes");
+        };
+        if value.len() != length {
+            bail!(
+                "external byte length mismatch: expected {length}, got {}",
+                value.len()
+            );
+        }
+        Ok(value.to_vec())
+    }
+
+    fn take_chunks(&mut self, length: usize) -> Result<Vec<Bytes>> {
+        let Some(BenchExternalValue::Chunks(value)) = self.value.take() else {
+            bail!("expected external byte chunks");
+        };
+        let actual = value.iter().map(Bytes::len).sum::<usize>();
+        if actual != length {
+            bail!("external chunk length mismatch: expected {length}, got {actual}");
+        }
+        Ok(value.to_vec())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        if self.value.is_some() {
+            bail!("external value was not consumed");
+        }
+        Ok(())
+    }
+}
+
+fn codec_benchmark_call(parameter: ParameterValue) -> FunctionCall {
+    FunctionCall::new(
         "TestFunction".to_string(),
         Some(vec![
-            ParameterValue::VecBytes(vec![1; 10 * 1024 * 1024]),
-            ParameterValue::String(String::from_utf8(vec![2; 10 * 1024 * 1024]).unwrap()),
+            parameter,
+            ParameterValue::String("argument".to_string()),
             ParameterValue::Int(42),
-            ParameterValue::UInt(100),
-            ParameterValue::Long(1000),
-            ParameterValue::ULong(2000),
-            ParameterValue::Float(521521.53),
-            ParameterValue::Double(432.53),
             ParameterValue::Bool(true),
-            ParameterValue::VecBytes(vec![1; 10 * 1024 * 1024]),
-            ParameterValue::String(String::from_utf8(vec![2; 10 * 1024 * 1024]).unwrap()),
         ]),
         FunctionCallType::Guest,
         ReturnType::Int,
-    );
+    )
+}
 
-    group.bench_function("serialize_function_call", |b| {
+fn function_call_codec_benchmark(c: &mut Criterion) {
+    const PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
+    const CHUNK_SIZE: usize = 256 * 1024;
+
+    let vec_bytes = vec![1; PAYLOAD_SIZE];
+    let byte_chunks = (0..PAYLOAD_SIZE / CHUNK_SIZE)
+        .map(|_| Bytes::from(vec![1; CHUNK_SIZE]))
+        .collect::<Vec<_>>();
+
+    let vec_call = codec_benchmark_call(ParameterValue::VecBytes(vec_bytes.clone()));
+    let chunk_call = codec_benchmark_call(ParameterValue::ByteChunks(byte_chunks.clone()));
+    let mut group = c.benchmark_group("function_call_codec");
+
+    for (name, function_call) in [("vec_bytes", &vec_call), ("byte_chunks", &chunk_call)] {
+        group.bench_function(BenchmarkId::new("encode_control", name), |b| {
+            b.iter(|| {
+                let estimated_capacity = estimate_flatbuffer_capacity(
+                    &function_call.function_name,
+                    function_call.parameters.as_deref().unwrap_or_default(),
+                );
+                let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+                let mut exts = ExternalValues::new();
+
+                let control = function_call.encode(&mut builder, &mut exts).unwrap();
+                std::hint::black_box((control, exts.total_len()));
+            });
+        });
+    }
+
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValues::new();
+
+    let vec_control = vec_call
+        .encode(&mut builder, &mut external_values)
+        .unwrap()
+        .to_vec();
+
+    group.bench_function("decode_vec_bytes_copy", |b| {
         b.iter(|| {
-            // We specifically want to include the time to estimate the capacity in this benchmark
-            let estimated_capacity = estimate_flatbuffer_capacity(
-                function_call.function_name.as_str(),
-                function_call.parameters.as_deref().unwrap_or(&[]),
-            );
-            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-            let serialized: &[u8] = function_call.encode(&mut builder);
-            std::hint::black_box(serialized);
+            let mut src = BenchExternalSource::new(BenchExternalValue::Bytes(&vec_bytes));
+            let function_call = FunctionCall::decode(&vec_control, &mut src).unwrap();
+            std::hint::black_box(function_call);
         });
     });
 
-    group.bench_function("deserialize_function_call", |b| {
-        let mut builder = FlatBufferBuilder::new();
-        let bytes = function_call.clone().encode(&mut builder);
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValues::new();
 
+    let chunk_control = chunk_call
+        .encode(&mut builder, &mut external_values)
+        .unwrap()
+        .to_vec();
+
+    group.bench_function("decode_byte_chunks_owner_backed", |b| {
         b.iter(|| {
-            let deserialized: FunctionCall = bytes.try_into().unwrap();
-            std::hint::black_box(deserialized);
+            let mut src = BenchExternalSource::new(BenchExternalValue::Chunks(&byte_chunks));
+            let function_call = FunctionCall::decode(&chunk_control, &mut src).unwrap();
+            std::hint::black_box(function_call);
         });
     });
 
@@ -432,9 +519,12 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
-        let mut sandbox = SandboxBuilder::from_file(guest_path)
-            .input_data_size(25 * 1024)
-            .build()
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_h2g_pool_pages(8);
+
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
+            .unwrap()
+            .evolve()
             .unwrap();
 
         b.iter_with_setup(
@@ -659,7 +749,7 @@ criterion_group! {
         guest_calls_benchmark,
         snapshots_benchmark,
         guest_call_benchmark_large_param,
-        function_call_serialization_benchmark,
+        function_call_codec_benchmark,
         sample_workloads_benchmark,
         shared_memory_benchmark,
         snapshot_file_benchmark

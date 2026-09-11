@@ -4,15 +4,17 @@
 use alloc::format;
 use alloc::vec::Vec;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
-use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{
+    FunctionCallResult, ParameterType, ReturnValue,
+};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
-use hyperlight_guest::bail;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::transport::DispatchAction;
+use hyperlight_guest::{bail, transport};
 use tracing::instrument;
 
-use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
+use crate::REGISTERED_GUEST_FUNCTIONS;
 
 core::arch::global_asm!(
     ".weak guest_dispatch_function",
@@ -21,13 +23,13 @@ core::arch::global_asm!(
 );
 
 #[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
-fn guest_dispatch_function_default(function_call: FunctionCall) -> Result<Vec<u8>> {
+fn guest_dispatch_function_default(function_call: FunctionCall) -> Result<ReturnValue> {
     let name = &function_call.function_name;
     bail!(ErrorCode::GuestFunctionNotFound => "No handler found for function call: {name:#?}");
 }
 
 #[instrument(skip_all, level = "Info")]
-pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnValue> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
         return Err(HyperlightGuestError::new(
@@ -60,12 +62,8 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
     } else {
         // The given function is not registered. The guest should implement a function called
         // guest_dispatch_function to handle this.
-
-        // TODO: ideally we would define a default implementation of this with weak linkage so the guest is not required
-        // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
-        // to not do that.
         unsafe extern "Rust" {
-            fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>;
+            fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValue>;
         }
 
         unsafe { guest_dispatch_function(function_call) }
@@ -85,34 +83,20 @@ pub(crate) fn internal_dispatch_function() {
         tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
     };
 
-    let handle = unsafe { GUEST_HANDLE };
+    let dispatch = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
+        .expect("H2G dispatch deserialization failed");
 
-    let function_call = handle
-        .try_pop_shared_input_data_into::<FunctionCall>()
-        .expect("Function call deserialization failed");
+    let result = match dispatch {
+        DispatchAction::Call(cid, fc) => {
+            // Reseed the libc PRNG if requested by the host.
+            #[cfg(feature = "libc")]
+            crate::refresh_libc_rng();
 
-    // Reseed the libc PRNG if requested by the host.
-    #[cfg(feature = "libc")]
-    crate::refresh_libc_rng();
-
-    let res = call_guest_function(function_call);
-
-    match res {
-        Ok(bytes) => {
-            handle
-                .push_shared_output_data(bytes.as_slice())
-                .expect("Failed to serialize function call result");
+            let res = call_guest_function(fc).map_err(|err| GuestError::new(err.kind, err.message));
+            Some((cid, FunctionCallResult::new(res)))
         }
-        Err(err) => {
-            let guest_error = Err(GuestError::new(err.kind, err.message));
-            let fcr = FunctionCallResult::new(guest_error);
-            let mut builder = FlatBufferBuilder::new();
-            let data = fcr.encode(&mut builder);
-            handle
-                .push_shared_output_data(data)
-                .expect("Failed to serialize function call result");
-        }
-    }
+        DispatchAction::SnapshotCheckpoint => None,
+    };
 
     // All this tracing logic shall be done right before the call to `hlt` which is done after this
     // function returns
@@ -129,5 +113,12 @@ pub(crate) fn internal_dispatch_function() {
         // Ensure that any tracing output during the call is flushed to
         // the host, if necessary.
         hyperlight_guest_tracing::flush();
+    }
+
+    match result {
+        Some((cid, result)) => transport::with_ctx(|ctx| ctx.send_h2g_result(cid, result))
+            .expect("Failed to send function call result"),
+        None => transport::with_ctx(|ctx| ctx.prepare_snapshot())
+            .expect("Failed to prepare snapshot transport"),
     }
 }

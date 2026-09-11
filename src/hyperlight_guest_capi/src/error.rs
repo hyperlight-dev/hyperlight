@@ -3,31 +3,36 @@
 
 use core::ffi::{CStr, c_char};
 
-use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
-use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
-use hyperlight_guest_bin::GUEST_HANDLE;
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_guest::error::HyperlightGuestError;
 
 use crate::alloc::borrow::ToOwned;
 
+static mut LAST_GUEST_ERROR: Option<HyperlightGuestError> = None;
+
+/// Set the error returned by the current C guest dispatch.
+///
+/// # Safety
+///
+/// `message` must point to a live NUL-terminated string.
+/// Calls must be serialized within a single-vCPU guest.
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_set_error(err: ErrorCode, message: *const c_char) {
+pub unsafe extern "C" fn hl_set_error(err: ErrorCode, message: *const c_char) {
+    // SAFETY: The caller supplies a live NUL-terminated string.
     let cstr = unsafe { CStr::from_ptr(message) };
-    let guest_error = Err(GuestError::new(
-        err.into(),
+    let guest_error = HyperlightGuestError::new(
+        err,
         cstr.to_str()
             .expect("Failed to convert CStr to &str")
             .to_owned(),
-    ));
-    let fcr = FunctionCallResult::new(guest_error);
-    let mut builder = FlatBufferBuilder::new();
-    let data = fcr.encode(&mut builder);
-    unsafe {
-        #[allow(static_mut_refs)] // we are single threaded
-        GUEST_HANDLE
-            .push_shared_output_data(data)
-            .expect("Failed to set error")
-    }
+    );
+    // SAFETY: Single vCPU guest execution serializes access to this slot.
+    let _ = unsafe { (&raw mut LAST_GUEST_ERROR).replace(Some(guest_error)) };
+}
+
+pub(crate) fn take_guest_error() -> Option<HyperlightGuestError> {
+    // SAFETY: Single vCPU guest execution serializes access to this slot.
+    unsafe { (&raw mut LAST_GUEST_ERROR).replace(None) }
 }
 
 #[unsafe(no_mangle)]

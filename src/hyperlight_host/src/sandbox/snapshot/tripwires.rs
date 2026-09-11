@@ -12,12 +12,14 @@
 //! When an assertion fires, see `docs/snapshot-versioning.md`.
 
 use super::file::{
-    MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, OCI_LAYOUT_VERSION, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_SNAPSHOT_CURRENT, MT_TRANSPORT_CURRENT, OCI_LAYOUT_VERSION,
+    SNAPSHOT_ABI_VERSION,
 };
 
 const EXPECTED_ABI_VERSION: u32 = 3;
 const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v2+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v1";
+const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
 
 /// `assert!` with the shared tripwire failure message. The message must
@@ -37,6 +39,7 @@ const _: () = {
     abi_assert!(SNAPSHOT_ABI_VERSION == EXPECTED_ABI_VERSION);
     abi_assert!(str_eq(MT_CONFIG_CURRENT, EXPECTED_MT_CONFIG));
     abi_assert!(str_eq(MT_SNAPSHOT_CURRENT, EXPECTED_MT_SNAPSHOT));
+    abi_assert!(str_eq(MT_TRANSPORT_CURRENT, EXPECTED_MT_TRANSPORT));
     abi_assert!(str_eq(OCI_LAYOUT_VERSION, EXPECTED_OCI_LAYOUT_VERSION));
 };
 
@@ -54,8 +57,6 @@ const _: () = {
 
 const _: () = {
     use hyperlight_common::outb::OutBAction;
-    abi_assert!(OutBAction::Log as u16 == 99);
-    abi_assert!(OutBAction::CallFunction as u16 == 101);
     abi_assert!(OutBAction::Abort as u16 == 102);
     abi_assert!(OutBAction::DebugPrint as u16 == 103);
     #[cfg(feature = "trace_guest")]
@@ -64,6 +65,7 @@ const _: () = {
     abi_assert!(OutBAction::TraceMemoryAlloc as u16 == 105);
     #[cfg(feature = "mem_profile")]
     abi_assert!(OutBAction::TraceMemoryFree as u16 == 106);
+    abi_assert!(OutBAction::VirtqNotify as u16 == 109);
 };
 
 const _: () = {
