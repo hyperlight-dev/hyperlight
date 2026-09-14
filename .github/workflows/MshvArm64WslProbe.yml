@@ -16,7 +16,7 @@ defaults:
 jobs:
   probe:
     runs-on: ["self-hosted", "Windows", "ARM64", "1ES.Pool=hl-windows-arm"]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Inspect Windows
         run: |
@@ -25,6 +25,12 @@ jobs:
               OsArchitecture, HyperVisorPresent
           systeminfo |
             Select-String "OS Name","OS Version","System Type","Hyper-V"
+
+      - name: Install WSL
+        continue-on-error: true
+        run: |
+          wsl.exe --install --no-distribution --web-download
+          Write-Output "wsl --install exit code: $LASTEXITCODE"
 
       - name: Inspect WSL
         continue-on-error: true
