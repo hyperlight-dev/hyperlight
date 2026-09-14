@@ -481,11 +481,11 @@ where
     ///
     /// Use this to free resources under backpressure without losing
     /// writable data. Returns the number of chains reclaimed.
+    /// Buffered completions can span multiple ring reuse cycles.
     pub fn reclaim(&mut self) -> Result<usize, VirtqError> {
         let mut count = 0;
         while let Some(chain) = self.poll_ring()? {
             if matches!(chain, UsedChain::Data(_, _)) {
-                debug_assert!(self.pending.len() < self.inner.len());
                 self.pending
                     .try_reserve(1)
                     .map_err(|_| VirtqError::Bookkeeping)?;
@@ -1755,6 +1755,34 @@ mod tests {
                 .collect::<Vec<_>>(),
             addresses
         );
+    }
+
+    #[test]
+    fn reclaim_buffers_multiple_ring_generations() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer) = make_virtq_pair(&ring, 64);
+        let count = ring.len() * 2 + 1;
+
+        for _ in 0..count {
+            let chain = producer.chain().writable(1).build().unwrap();
+            producer.submit(chain).unwrap();
+            let (recv, reply) = poll_received(&mut consumer);
+            consumer.complete(recv, reply).unwrap();
+            assert_eq!(producer.reclaim().unwrap(), 1);
+            assert_eq!(producer.num_free(), ring.len());
+            assert_eq!(producer.pool().num_live(), 0);
+        }
+
+        for seq in 0..count {
+            let Some(UsedChain::Data(token, segments)) = producer.poll().unwrap() else {
+                panic!("expected an empty writable completion");
+            };
+
+            assert_eq!(token.seq as usize, seq);
+            assert!(segments.is_empty());
+        }
+
+        assert!(producer.poll().unwrap().is_none());
     }
 
     #[test]
