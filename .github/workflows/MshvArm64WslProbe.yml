@@ -29,6 +29,12 @@ jobs:
       - name: Install WSL
         continue-on-error: true
         run: |
+          $result = Enable-WindowsOptionalFeature -Online `
+            -FeatureName Microsoft-Windows-Subsystem-Linux `
+            -All `
+            -NoRestart
+          $result | Format-List
+
           wsl.exe --install --no-distribution --web-download
           Write-Output "wsl --install exit code: $LASTEXITCODE"
 
