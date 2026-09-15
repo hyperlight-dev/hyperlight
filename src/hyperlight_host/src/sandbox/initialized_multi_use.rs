@@ -189,12 +189,11 @@ impl MultiUseSandbox {
     /// or the load fails with an MSR mismatch.
     ///
     /// [`SandboxConfiguration::set_max_guest_log_level`](crate::sandbox::SandboxConfiguration::set_max_guest_log_level)
-    /// sets the maximum log level passed to the guest. This only takes effect
-    /// for snapshots that still need their guest entrypoint run
-    /// (`NextAction::Initialise`). For a snapshot taken from an
-    /// already-initialized guest, the level was baked into the captured memory
-    /// when the guest first ran, so a configured value has no effect and a
-    /// warning is logged.
+    /// sets the maximum log level used by the restored guest. For snapshots
+    /// captured before guest initialization, the level is passed to the guest
+    /// during initialization. For snapshots captured after guest
+    /// initialization, the level is requested through guest memory before the
+    /// next guest call.
     ///
     /// # Examples
     ///
@@ -4752,6 +4751,84 @@ mod tests {
                 trace_count > error_count,
                 "TRACE must let more guest logs through than ERROR (trace={trace_count}, \
                  error={error_count}); equal counts mean max_guest_log_level was ignored"
+            );
+        }
+
+        /// A configured log level overrides the level captured by an initialized snapshot.
+        ///
+        /// Ignored because it installs a process-global `log` logger; run
+        /// in isolation via the `test-isolated` Justfile recipe.
+        #[test]
+        #[ignore]
+        fn max_guest_log_level_overrides_initialized_snapshot() {
+            use hyperlight_common::log_level::GuestLogFilter;
+            use hyperlight_testing::logger::{LOGGER, Logger};
+            use tracing_core::LevelFilter;
+
+            Logger::initialize_test_logger();
+            LOGGER.set_max_level(log::LevelFilter::Trace);
+
+            let initialized_snapshot = |captured_level: LevelFilter| {
+                SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                    .guest_log_level(captured_level)
+                    .build()
+                    .unwrap()
+                    .snapshot()
+                    .unwrap()
+            };
+
+            let count_guest_logs =
+                |snapshot: Arc<Snapshot>, override_level: Option<LevelFilter>| -> usize {
+                    let config = override_level.map(|level| {
+                        let mut config = SandboxConfiguration::default();
+                        config.set_max_guest_log_level(level);
+                        config
+                    });
+                    let mut sandbox =
+                        MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), config)
+                            .unwrap();
+
+                    LOGGER.clear_log_calls();
+                    for level in [
+                        LevelFilter::TRACE,
+                        LevelFilter::DEBUG,
+                        LevelFilter::INFO,
+                        LevelFilter::WARN,
+                        LevelFilter::ERROR,
+                    ] {
+                        let encoded: u64 = GuestLogFilter::from(level).into();
+                        sandbox
+                            .call::<()>("LogMessage", ("hello".to_string(), encoded as i32))
+                            .unwrap();
+                    }
+
+                    let count = (0..LOGGER.num_log_calls())
+                        .filter_map(|i| LOGGER.get_log_call(i))
+                        .filter(|call| call.target == "hyperlight_guest")
+                        .count();
+                    LOGGER.clear_log_calls();
+                    count
+                };
+
+            let trace_snapshot = initialized_snapshot(LevelFilter::TRACE);
+            let error_snapshot = initialized_snapshot(LevelFilter::ERROR);
+
+            let captured_trace = count_guest_logs(trace_snapshot.clone(), None);
+            let overridden_trace = count_guest_logs(trace_snapshot, Some(LevelFilter::ERROR));
+            let captured_error = count_guest_logs(error_snapshot.clone(), None);
+            let overridden_error = count_guest_logs(error_snapshot, Some(LevelFilter::TRACE));
+
+            assert!(
+                captured_trace > overridden_trace,
+                "ERROR override should reduce TRACE snapshot logs (trace={}, error={})",
+                captured_trace,
+                overridden_trace
+            );
+            assert!(
+                overridden_error > captured_error,
+                "TRACE override should increase ERROR snapshot logs (trace={}, error={})",
+                overridden_error,
+                captured_error
             );
         }
 
