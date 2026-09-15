@@ -6,24 +6,45 @@
 mod arch;
 
 pub use arch::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
+
+fn scratch_top_gva(offset: u64) -> *mut u64 {
+    (hyperlight_common::layout::SCRATCH_TOP_GVA as u64 - offset + 1) as *mut u64
+}
+
 pub fn scratch_size_gva() -> *mut u64 {
-    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SIZE_OFFSET};
-    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SIZE_OFFSET + 1) as *mut u64
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_SIZE_OFFSET)
 }
 pub fn allocator_gva() -> *mut u64 {
-    use hyperlight_common::layout::{SCRATCH_TOP_ALLOCATOR_OFFSET, SCRATCH_TOP_GVA};
-    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_ALLOCATOR_OFFSET + 1) as *mut u64
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET)
 }
 pub fn snapshot_pt_gpa_base_gva() -> *mut u64 {
-    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET};
-    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 1) as *mut u64
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET)
 }
 pub fn snapshot_generation_gva() -> *mut u64 {
-    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET};
-    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET + 1) as *mut u64
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET)
+}
+pub fn g2h_queue_size_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET)
+}
+pub fn transport_arena_gpa_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET)
+}
+pub fn g2h_pool_pages_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_POOL_PAGES_OFFSET)
+}
+pub fn g2h_buffer_size_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_G2H_BUFFER_SIZE_OFFSET)
+}
+pub fn h2g_queue_size_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET)
+}
+pub fn h2g_pool_pages_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_H2G_POOL_PAGES_OFFSET)
+}
+pub fn h2g_buffer_size_gva() -> *mut u64 {
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET)
 }
 pub fn libc_rng_seed_gva() -> *mut u64 {
-    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_LIBC_RNG_SEED_OFFSET};
-    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_LIBC_RNG_SEED_OFFSET + 1) as *mut u64
+    scratch_top_gva(hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET)
 }
 pub use arch::{scratch_base_gpa, scratch_base_gva};

@@ -35,12 +35,16 @@
 //! There is also a scratch region at the top of physical memory,
 //! which is mostly laid out as a large undifferentiated blob of
 //! memory, although at present the snapshot process specially
-//! privileges the statically allocated input and output data regions:
+//! privileges fixed input, output, and transport regions:
 //!
 //! +-------------------------------------------+ (top of physical memory)
 //! |         Exception Stack, Metadata         |
 //! +-------------------------------------------+ (1 page below)
 //! |              Scratch Memory               |
+//! +-------------------------------------------+
+//! |             Guest Page Tables             |
+//! +-------------------------------------------+
+//! |              Transport Arena              |
 //! +-------------------------------------------+
 //! |                Output Data                |
 //! +-------------------------------------------+
@@ -50,6 +54,7 @@
 use std::fmt::Debug;
 use std::mem::size_of;
 
+use hyperlight_common::layout::{QueueDims, TransportArena};
 use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::vmem::PAGE_SIZE;
 use tracing::{Span, instrument};
@@ -250,6 +255,16 @@ pub(crate) struct SandboxMemoryLayout {
     init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
     scratch_size: usize,
+    /// G2H ring and buffer pool dimensions.
+    g2h_dims: QueueDims,
+    /// H2G ring and buffer pool dimensions.
+    h2g_dims: QueueDims,
+    /// Capacity of each G2H upper-tier buffer.
+    g2h_buffer_size: usize,
+    /// Capacity of each H2G buffer.
+    h2g_buffer_size: usize,
+    /// Fixed ring and pool placement within scratch.
+    transport_arena: TransportArena,
     /// Size of the primary guest memory region at `BASE_ADDRESS`
     /// (code, PEB, heap, init data). For a snapshot-backed layout
     /// this is also the guest-visible prefix of the host snapshot
@@ -284,6 +299,12 @@ impl Debug for SandboxMemoryLayout {
             &format_args!("{:#x}", self.output_data_size),
         )
         .field("Scratch Size", &format_args!("{:#x}", self.scratch_size))
+        .field("G2H Queue Size", &self.get_g2h_queue_size())
+        .field("H2G Queue Size", &self.get_h2g_queue_size())
+        .field("G2H Buffer Size", &self.g2h_buffer_size)
+        .field("H2G Buffer Size", &self.h2g_buffer_size)
+        .field("G2H Pool Pages", &self.get_g2h_pool_pages())
+        .field("H2G Pool Pages", &self.get_h2g_pool_pages())
         .field("Snapshot Size", &format_args!("{:#x}", self.snapshot_size))
         .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
         .field(
@@ -332,10 +353,38 @@ impl SandboxMemoryLayout {
         if scratch_size > Self::MAX_MEMORY_SIZE {
             return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
         }
+        if !scratch_size.is_multiple_of(PAGE_SIZE) {
+            return Err(new_error!(
+                "scratch size {scratch_size} must be a multiple of {PAGE_SIZE}"
+            ));
+        }
         let input_data_size = cfg.get_input_data_size();
         let output_data_size = cfg.get_output_data_size();
-        let min_scratch_size =
-            hyperlight_common::layout::min_scratch_size(input_data_size, output_data_size);
+        let g2h_queue_size = cfg.get_g2h_queue_size();
+        let h2g_queue_size = cfg.get_h2g_queue_size();
+        let g2h_buffer_size = cfg.get_g2h_buffer_size();
+        let h2g_buffer_size = cfg.get_h2g_buffer_size();
+        let g2h_pool_pages = cfg.get_g2h_pool_pages();
+        let h2g_pool_pages = cfg.get_h2g_pool_pages();
+
+        let g2h_dims = QueueDims::new(g2h_queue_size, g2h_pool_pages)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let h2g_dims = QueueDims::new(h2g_queue_size, h2g_pool_pages)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let io_len = input_data_size
+            .checked_add(output_data_size)
+            .and_then(|len| len.checked_next_multiple_of(PAGE_SIZE))
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let arena_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size)
+            .checked_add(io_len as u64)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let transport_arena = TransportArena::new(arena_base_gpa, g2h_dims, h2g_dims)
+            .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            input_data_size,
+            output_data_size,
+            transport_arena.size(),
+        );
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
@@ -349,6 +398,11 @@ impl SandboxMemoryLayout {
             init_data_permissions,
             pt_size: None,
             scratch_size,
+            g2h_dims,
+            h2g_dims,
+            g2h_buffer_size,
+            h2g_buffer_size,
+            transport_arena,
             snapshot_size: 0,
         };
         ret.set_snapshot_size(ret.get_memory_size()?);
@@ -383,6 +437,44 @@ impl SandboxMemoryLayout {
         self.scratch_size
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn get_g2h_queue_size(&self) -> usize {
+        usize::from(self.g2h_dims.size().get())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_h2g_queue_size(&self) -> usize {
+        usize::from(self.h2g_dims.size().get())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_g2h_buffer_size(&self) -> usize {
+        self.g2h_buffer_size
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_h2g_buffer_size(&self) -> usize {
+        self.h2g_buffer_size
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_g2h_pool_pages(&self) -> usize {
+        self.g2h_dims.pool_pages().get()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_h2g_pool_pages(&self) -> usize {
+        self.h2g_dims.pool_pages().get()
+    }
+
+    pub(crate) fn get_g2h_queue_dims(&self) -> QueueDims {
+        self.g2h_dims
+    }
+
+    pub(crate) fn get_h2g_queue_dims(&self) -> QueueDims {
+        self.h2g_dims
+    }
+
     /// Guest-visible prefix size of the snapshot blob.
     pub(crate) fn snapshot_size(&self) -> usize {
         self.snapshot_size
@@ -408,8 +500,9 @@ impl SandboxMemoryLayout {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.input_data_size,
             self.output_data_size,
+            self.transport_arena.size(),
         );
-        let min_scratch = min_fixed_scratch + size;
+        let min_scratch = min_fixed_scratch.saturating_add(size);
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
         }
@@ -670,19 +763,23 @@ impl SandboxMemoryLayout {
     /// Offset from the beginning of the scratch region to the location
     /// where page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.input_data_size + self.output_data_size).next_multiple_of(PAGE_SIZE)
+        (self.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(self.scratch_size))
+            as usize
     }
 
     /// Base GPA to which the page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_gpa(&self) -> u64 {
-        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
-            + self.get_pt_base_scratch_offset() as u64
+        self.transport_arena.end_addr()
     }
 
-    /// First GPA of the scratch region the host has not used for
-    /// something else.
+    /// First GPA available to the guest scratch allocator.
     pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
         self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
+    }
+
+    /// Exact transport placement in the fixed scratch prefix.
+    pub(crate) fn get_transport_arena(&self) -> TransportArena {
+        self.transport_arena
     }
 
     /// Total size of guest memory in `self`'s memory layout.
@@ -737,6 +834,88 @@ mod tests {
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)
+        );
+    }
+
+    #[test]
+    fn transport_arena_after_unaligned_io_buffers() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x4001);
+        cfg.set_output_data_size(0x2001);
+        let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let arena = layout.get_transport_arena();
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+
+        assert_eq!(arena.base_addr(), scratch_base + 0x7000);
+        assert_eq!(layout.get_pt_base_gpa(), arena.end_addr());
+
+        layout.set_pt_size(PAGE_SIZE).unwrap();
+
+        assert_eq!(layout.get_transport_arena(), arena);
+        assert_eq!(
+            layout.get_first_free_scratch_gpa(),
+            arena.end_addr() + PAGE_SIZE as u64
+        );
+    }
+
+    #[test]
+    fn transport_memory_is_part_of_minimum_scratch_size() {
+        let mut cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let minimum = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+            layout.get_transport_arena().size(),
+        );
+        cfg.set_scratch_size(minimum);
+        let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+
+        assert!(matches!(
+            layout.set_pt_size(PAGE_SIZE),
+            Err(MemoryRequestTooSmall(..))
+        ));
+    }
+
+    #[test]
+    fn transport_minimum_rejects_capacity_overflow() {
+        for (g2h_pages, h2g_pages) in [
+            (usize::MAX, 4),
+            (8, usize::MAX),
+            (usize::MAX / PAGE_SIZE, 1),
+        ] {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_g2h_pool_pages(g2h_pages);
+            cfg.set_h2g_pool_pages(h2g_pages);
+
+            let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None);
+            assert!(matches!(layout, Err(MemoryRequestTooSmall(_, usize::MAX))));
+        }
+    }
+
+    #[test]
+    fn transport_minimum_rejects_io_overflow() {
+        for input_size in [usize::MAX, usize::MAX - 0x2000, usize::MAX - 0x5000 + 1] {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_input_data_size(input_size);
+            cfg.set_output_data_size(0x2000);
+
+            let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None);
+            assert!(matches!(layout, Err(MemoryRequestTooSmall(_, usize::MAX))));
+        }
+    }
+
+    #[test]
+    fn rejects_unaligned_scratch_size() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 1);
+
+        let error = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "scratch size {} must be a multiple of {PAGE_SIZE}",
+                SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 1
+            )
         );
     }
 
@@ -811,7 +990,7 @@ mod tests {
         cfg.set_input_data_size(0x2000);
         cfg.set_output_data_size(0x2000);
         cfg.set_heap_size(0x2000);
-        cfg.set_scratch_size(0x10000);
+        cfg.set_scratch_size(0x20000);
         let layout = SandboxMemoryLayout::new(cfg, 0x1000, 0, None).unwrap();
 
         pin_eq!(layout.guest_code_offset(), 0);
@@ -821,12 +1000,20 @@ mod tests {
         pin_eq!(layout.init_data_offset(), 0x4000);
         pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
 
-        pin_eq!(layout.get_scratch_size(), 0x10000);
+        pin_eq!(layout.get_scratch_size(), 0x20000);
         pin_eq!(layout.get_pt_size(), 0);
 
         pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
         pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x2000);
-        pin_eq!(layout.get_pt_base_scratch_offset(), 0x4000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x11000);
+
+        let arena = layout.get_transport_arena();
+        let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x20000);
+        pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0x4000);
+        pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x4410);
+        pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x5000);
+        pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xd000);
+        pin_eq!(arena.end_addr() - scratch_base_gpa, 0x11000);
 
         // The output buffer sits one input buffer past the input
         // buffer in the guest's scratch view.
@@ -840,12 +1027,12 @@ mod tests {
         // `SCRATCH_TOP` pins above, these fix the absolute addresses.
         pin_eq!(
             layout.get_input_data_buffer_gva()
-                - hyperlight_common::layout::scratch_base_gva(0x10000),
+                - hyperlight_common::layout::scratch_base_gva(0x20000),
             0
         );
         pin_eq!(
-            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x10000),
-            0x4000
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x20000),
+            0x11000
         );
         // pt_size is zero here, so the first free scratch GPA equals
         // the page table base.
@@ -860,7 +1047,7 @@ mod tests {
         cfg.set_input_data_size(0x4000);
         cfg.set_output_data_size(0x2000);
         cfg.set_heap_size(0x5000);
-        cfg.set_scratch_size(0x20000);
+        cfg.set_scratch_size(0x30000);
         let layout = SandboxMemoryLayout::new(cfg, 0x3000, 0, None).unwrap();
 
         pin_eq!(layout.guest_code_offset(), 0);
@@ -873,12 +1060,20 @@ mod tests {
             0x9000_usize.next_multiple_of(page_size::get())
         );
 
-        pin_eq!(layout.get_scratch_size(), 0x20000);
+        pin_eq!(layout.get_scratch_size(), 0x30000);
         pin_eq!(layout.get_pt_size(), 0);
 
         pin_eq!(layout.get_input_data_buffer_scratch_host_offset(), 0);
         pin_eq!(layout.get_output_data_buffer_scratch_host_offset(), 0x4000);
-        pin_eq!(layout.get_pt_base_scratch_offset(), 0x6000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0x13000);
+
+        let arena = layout.get_transport_arena();
+        let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x30000);
+        pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0x6000);
+        pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x6410);
+        pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x7000);
+        pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xf000);
+        pin_eq!(arena.end_addr() - scratch_base_gpa, 0x13000);
 
         pin_eq!(
             layout.get_output_data_buffer_gva() - layout.get_input_data_buffer_gva(),
@@ -887,12 +1082,12 @@ mod tests {
 
         pin_eq!(
             layout.get_input_data_buffer_gva()
-                - hyperlight_common::layout::scratch_base_gva(0x20000),
+                - hyperlight_common::layout::scratch_base_gva(0x30000),
             0
         );
         pin_eq!(
-            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x20000),
-            0x6000
+            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x30000),
+            0x13000
         );
         pin_eq!(
             layout.get_first_free_scratch_gpa(),
