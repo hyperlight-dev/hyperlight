@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* Support overriding the guest log level when building or restoring initialized snapshots. Persisted snapshots use ABI version 3 and must be regenerated.
 * `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
   blocks instead of writing them. A guest memory image is mostly untouched
   pages, so this cuts the bytes actually written by roughly the proportion of

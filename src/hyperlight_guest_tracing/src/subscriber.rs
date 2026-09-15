@@ -9,7 +9,7 @@ use hyperlight_common::log_level::GuestLogFilter;
 use spin::Mutex;
 use tracing_core::span::{Attributes, Id, Record};
 use tracing_core::subscriber::Subscriber;
-use tracing_core::{Event, LevelFilter, Metadata};
+use tracing_core::{Event, Interest, LevelFilter, Metadata};
 
 use crate::state::GuestState;
 
@@ -45,6 +45,10 @@ impl GuestSubscriber {
 }
 
 impl Subscriber for GuestSubscriber {
+    fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+        Interest::sometimes()
+    }
+
     fn enabled(&self, md: &Metadata<'_>) -> bool {
         let Ok(filter) = GuestLogFilter::try_from(self.max_log_level.load(Ordering::Relaxed))
         else {
