@@ -240,8 +240,8 @@ impl SandboxBuilder {
     /// If not set, the log level is determined by the `RUST_LOG` environment variable,
     /// defaulting to [`LevelFilter::ERROR`] if unset.
     ///
-    /// Note: [`Self::build`] errors if this setting is set and the builder's
-    /// source is a snapshot, as the log level is already captured in the snapshot.
+    /// When building from a snapshot, this overrides the level captured in the
+    /// snapshot for subsequent guest calls.
     pub fn guest_log_level(mut self, level: LevelFilter) -> Self {
         self.guest_log_level = Some(level);
         self
