@@ -26,4 +26,8 @@ pub fn libc_rng_seed_gva() -> *mut u64 {
     use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_LIBC_RNG_SEED_OFFSET};
     (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_LIBC_RNG_SEED_OFFSET + 1) as *mut u64
 }
+pub fn guest_log_level_gva() -> *mut u64 {
+    use hyperlight_common::layout::{SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET, SCRATCH_TOP_GVA};
+    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET + 1) as *mut u64
+}
 pub use arch::{scratch_base_gpa, scratch_base_gva};
