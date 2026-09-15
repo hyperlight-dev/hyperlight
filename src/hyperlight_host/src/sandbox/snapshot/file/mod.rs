@@ -9,6 +9,7 @@ mod digest;
 mod fsutil;
 mod media_types;
 pub(crate) mod reference;
+mod transport;
 
 use std::path::{Path, PathBuf};
 
@@ -27,7 +28,7 @@ use self::media_types::{
 };
 pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1,
-    SNAPSHOT_ABI_VERSION,
+    MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
@@ -180,19 +181,13 @@ fn load_manifest(
             MediaType::ImageManifest.to_string()
         ));
     }
-    let manifest_hex = parse_oci_digest(manifest_desc.digest())?;
-    let manifest_path = blobs_dir.join(&manifest_hex);
-    let manifest_bytes = read_bounded(&manifest_path, MAX_JSON_BLOB_SIZE)?;
-    if manifest_bytes.len() as u64 != manifest_desc.size() {
-        return Err(crate::new_error!(
-            "OCI manifest size mismatch: descriptor says {}, file is {}",
-            manifest_desc.size(),
-            manifest_bytes.len()
-        ));
-    }
-    if verify_blobs {
-        verify_blob_bytes("manifest", &manifest_bytes, &manifest_hex)?;
-    }
+    let manifest_bytes = load_blob(
+        "manifest",
+        blobs_dir,
+        manifest_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
     let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| crate::new_error!("failed to parse OCI manifest JSON: {}", e))?;
     if manifest.schema_version() != SCHEMA_VERSION {
@@ -219,19 +214,13 @@ fn load_config(
     cfg_desc: &Descriptor,
     verify_blobs: bool,
 ) -> crate::Result<OciSnapshotConfig> {
-    let cfg_hex = parse_oci_digest(cfg_desc.digest())?;
-    let cfg_path = blobs_dir.join(&cfg_hex);
-    let cfg_bytes = read_bounded(&cfg_path, MAX_JSON_BLOB_SIZE)?;
-    if cfg_bytes.len() as u64 != cfg_desc.size() {
-        return Err(crate::new_error!(
-            "config blob size mismatch: descriptor says {}, file is {}",
-            cfg_desc.size(),
-            cfg_bytes.len()
-        ));
-    }
-    if verify_blobs {
-        verify_blob_bytes("config", &cfg_bytes, &cfg_hex)?;
-    }
+    let cfg_bytes = load_blob(
+        "config",
+        blobs_dir,
+        cfg_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
     let cfg: OciSnapshotConfig = serde_json::from_slice(&cfg_bytes)
         .map_err(|e| crate::new_error!("failed to parse Hyperlight config JSON: {}", e))?;
     cfg.validate_for_load()?;
@@ -271,6 +260,29 @@ fn open_snapshot_blob(
         verify_blob_file("snapshot", &mut snap_file, &snap_hex)?;
     }
     Ok(snap_file)
+}
+
+/// Read a bounded OCI blob and check its descriptor size and optional digest.
+fn load_blob(
+    label: &str,
+    blobs_dir: &Path,
+    descriptor: &Descriptor,
+    max_size: u64,
+    verify_blobs: bool,
+) -> crate::Result<Vec<u8>> {
+    let hex = parse_oci_digest(descriptor.digest())?;
+    let bytes = read_bounded(&blobs_dir.join(&hex), max_size)?;
+    if bytes.len() as u64 != descriptor.size() {
+        return Err(crate::new_error!(
+            "{label} blob size mismatch: descriptor says {}, file is {}",
+            descriptor.size(),
+            bytes.len()
+        ));
+    }
+    if verify_blobs {
+        verify_blob_bytes(label, &bytes, &hex)?;
+    }
+    Ok(bytes)
 }
 
 impl Snapshot {
@@ -503,6 +515,14 @@ impl Snapshot {
         let snapshot_digest = Digest256::from_bytes(memory_bytes);
         put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
 
+        // Transport blob: the canonical ring image omitted from memory.
+        let transport = self.virtq.as_ref().ok_or_else(|| {
+            crate::new_error!("initialized snapshot has no canonical transport state")
+        })?;
+        let transport_bytes = transport::encode(transport)?;
+        let transport_digest = Digest256::from_bytes(&transport_bytes);
+        put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
+
         // Config blob.
         let cfg_digest = Digest256::from_bytes(cfg_bytes);
         put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
@@ -520,6 +540,12 @@ impl Snapshot {
             .size(memory_size as u64)
             .build()
             .map_err(|e| crate::new_error!("failed to build snapshot descriptor: {}", e))?;
+        let transport_descriptor = DescriptorBuilder::default()
+            .media_type(MediaType::Other(MT_TRANSPORT_CURRENT.to_string()))
+            .digest(oci_digest(&transport_digest)?)
+            .size(transport_bytes.len() as u64)
+            .build()
+            .map_err(|e| crate::new_error!("failed to build transport descriptor: {}", e))?;
         // `artifactType` is set equal to `config.mediaType` per OCI
         // image-spec "Guidelines for Artifact Usage". Registries
         // surface this on the distribution-spec referrers API. Tools
@@ -529,7 +555,7 @@ impl Snapshot {
             .media_type(MediaType::ImageManifest)
             .artifact_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
             .config(config_descriptor)
-            .layers(vec![snapshot_descriptor])
+            .layers(vec![snapshot_descriptor, transport_descriptor])
             .build()
             .map_err(|e| crate::new_error!("failed to build OCI manifest: {}", e))?;
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -578,6 +604,9 @@ impl Snapshot {
                 ));
             }
         };
+        self.virtq.as_ref().ok_or_else(|| {
+            crate::new_error!("initialized snapshot has no canonical transport state")
+        })?;
 
         let host_functions = match &self.host_functions.host_functions {
             Some(v) => v.iter().map(HostFunction::from).collect(),
@@ -603,8 +632,6 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
                 .clone(),
             layout: MemoryLayout {
-                input_data_size: l.input_data_size(),
-                output_data_size: l.output_data_size(),
                 heap_size: l.heap_size(),
                 code_size: l.code_size(),
                 init_data_size: l.init_data_size(),
@@ -661,7 +688,7 @@ impl Snapshot {
     ///
     /// # Verification
     ///
-    /// This method does not check the manifest, config, or snapshot
+    /// This method does not check the manifest, config, memory, or transport
     /// blobs against their recorded sha256 digests. Load only from a
     /// layout you trust.
     ///
@@ -697,7 +724,7 @@ impl Snapshot {
     /// Loads a snapshot like [`Snapshot::load`]. See its rustdoc for
     /// `path`, `reference`, portability, and the file-mutation
     /// hazard. This method additionally checks the manifest, config,
-    /// and snapshot blobs against their recorded sha256 digests
+    /// memory, and transport blobs against their recorded sha256 digests
     /// before use, at the expense of some performance.
     ///
     /// # Trust
@@ -779,9 +806,9 @@ impl Snapshot {
             }
         }
         let layers = manifest.layers();
-        if layers.len() != 1 {
+        if layers.len() != 2 {
             return Err(crate::new_error!(
-                "expected exactly one OCI layer (the snapshot), found {}",
+                "expected exactly two OCI layers (memory and transport), found {}",
                 layers.len()
             ));
         }
@@ -797,6 +824,18 @@ impl Snapshot {
                 ));
             }
         }
+        let transport_desc = &layers[1];
+        let transport_media = transport_desc.media_type().to_string();
+        match transport_media.as_str() {
+            MT_TRANSPORT_V1 => {}
+            other => {
+                return Err(crate::new_error!(
+                    "unexpected transport layer media type {:?} (supported: {:?})",
+                    other,
+                    MT_TRANSPORT_V1
+                ));
+            }
+        }
 
         // 4. config blob
         let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
@@ -805,11 +844,17 @@ impl Snapshot {
         //    handle so an attacker cannot swap the file between
         //    verification and mapping.
         let snap_file = open_snapshot_blob(&blobs_dir, snap_desc, cfg.memory_size, verify_blobs)?;
+        let transport_bytes = load_blob(
+            "transport",
+            &blobs_dir,
+            transport_desc,
+            transport::MAX_BLOB_SIZE,
+            verify_blobs,
+        )?;
+        let virtq = transport::decode(&transport_bytes)?;
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
-        sbox_cfg.set_input_data_size(cfg.layout.input_data_size);
-        sbox_cfg.set_output_data_size(cfg.layout.output_data_size);
         sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
         sbox_cfg.set_g2h_queue_size(cfg.layout.g2h_queue_size);
@@ -883,6 +928,7 @@ impl Snapshot {
 
         // 8. Build the next action + sregs back from the config.
         let next_action = NextAction::Call(cfg.entrypoint_addr);
+        virtq.preflight(&layout)?;
 
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
@@ -911,7 +957,7 @@ impl Snapshot {
             original_entrypoint: cfg.original_entrypoint_addr,
             snapshot_generation,
             host_functions,
-            virtq: None,
+            virtq: Some(virtq),
         })
     }
 }

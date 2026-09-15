@@ -12,14 +12,15 @@ use anyhow::Result;
 pub use bytes::Buf;
 use bytes::Bytes;
 
-use crate::flatbuffer_wrappers::ExternalValueSink;
+use crate::flatbuffer_wrappers::{ExternalValueSink, ExternalValueSource};
+use crate::virtq::{MemOps, RecvChain, Segments, VirtqError, zeroed_vec};
 
 /// Length of a FlatBuffer size prefix.
 pub const SIZE_PREFIX_LEN: usize = core::mem::size_of::<u32>();
 
 /// Message types for the virtqueue wire protocol.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
 pub enum MsgKind {
     /// A function call request (FunctionCall payload follows).
     Request = 0x01,
@@ -55,11 +56,11 @@ impl TryFrom<u8> for MsgKind {
 }
 
 /// Wire header for all virtqueue messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct MsgHeader {
     /// Discriminates the message type.
-    pub kind: u8,
+    pub kind: MsgKind,
     /// Keep the header aligned to four bytes.
     reserved: [u8; 3],
     /// Caller-assigned correlation ID. Responses echo the request's ID.
@@ -74,16 +75,11 @@ impl MsgHeader {
     /// Create a message header.
     pub const fn new(kind: MsgKind, cid: u32, payload_len: u32) -> Self {
         Self {
-            kind: kind as u8,
+            kind,
             reserved: [0; 3],
             cid,
             payload_len,
         }
-    }
-
-    /// Parse the kind field into a [`MsgKind`] enum.
-    pub fn msg_kind(&self) -> Result<MsgKind, u8> {
-        MsgKind::try_from(self.kind)
     }
 
     /// Return the wire representation.
@@ -93,12 +89,8 @@ impl MsgHeader {
 
     /// Parse and validate a wire header.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != Self::SIZE {
-            return None;
-        }
-
-        let header: Self = bytemuck::pod_read_unaligned(bytes);
-        (header.reserved == [0; 3] && header.msg_kind().is_ok()).then_some(header)
+        let header: Self = bytemuck::checked::try_pod_read_unaligned(bytes).ok()?;
+        (header.reserved == [0; 3]).then_some(header)
     }
 }
 
@@ -337,6 +329,90 @@ impl<'a> ExternalValueSink<'a> for ExternalValues<'a> {
     }
 }
 
+/// Copies values so later shared-memory writes cannot change decoded arguments.
+impl<M: MemOps> ExternalValueSource for RecvChain<M> {
+    fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
+        let mut value = external_buffer(length, self.remaining())?;
+        self.read_exact(&mut value)?;
+        Ok(value)
+    }
+
+    fn take_chunks(&mut self, length: usize) -> Result<Vec<Bytes>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut value = external_buffer(length, self.remaining())?;
+        let mut chunks = Vec::new();
+
+        chunks
+            .try_reserve_exact(1)
+            .map_err(|_| VirtqError::Bookkeeping)?;
+
+        self.read_exact(&mut value)?;
+
+        chunks.push(Bytes::from(value));
+        Ok(chunks)
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        finish_external_values(self.remaining())
+    }
+}
+
+impl ExternalValueSource for Segments {
+    fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
+        let segments = take_external_segments(self, length)?;
+        let mut value = Vec::new();
+
+        value
+            .try_reserve_exact(length)
+            .map_err(|_| VirtqError::Bookkeeping)?;
+
+        for seg in segments.iter() {
+            value.extend_from_slice(seg);
+        }
+
+        Ok(value)
+    }
+
+    fn take_chunks(&mut self, length: usize) -> Result<Vec<Bytes>> {
+        Ok(take_external_segments(self, length)?.into_chunks())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        finish_external_values(self.len())
+    }
+}
+
+fn external_buffer(length: usize, remaining: usize) -> Result<Vec<u8>> {
+    if length > remaining {
+        return Err(VirtqError::ReceiveTooShort {
+            requested: length,
+            remaining,
+        }
+        .into());
+    }
+    Ok(zeroed_vec(length)?)
+}
+
+fn take_external_segments(segments: &mut Segments, length: usize) -> Result<Segments> {
+    segments.split_to(length).ok_or_else(|| {
+        VirtqError::ReceiveTooShort {
+            requested: length,
+            remaining: segments.len(),
+        }
+        .into()
+    })
+}
+
+fn finish_external_values(remaining: usize) -> Result<()> {
+    if remaining != 0 {
+        anyhow::bail!("Virtqueue message has {remaining} trailing external bytes");
+    }
+    Ok(())
+}
+
 /// Decode a FlatBuffer size prefix.
 pub fn size_prefix_payload_len(prefix: &[u8]) -> Option<usize> {
     // TODO: this is flatbuffer-specific and should be moved probably somewhere else.
@@ -360,10 +436,25 @@ mod tests {
         let header = MsgHeader::new(MsgKind::Response, 0x1234_5678, 4096);
 
         assert_eq!(MsgHeader::SIZE, 12);
-        assert_eq!(header.msg_kind(), Ok(MsgKind::Response));
+        assert_eq!(header.kind, MsgKind::Response);
         assert_eq!(header.cid, 0x1234_5678);
         assert_eq!(header.payload_len, 4096);
         assert_eq!(header.reserved, [0; 3]);
+        assert_eq!(
+            header.as_bytes(),
+            &[0x02, 0, 0, 0, 0x78, 0x56, 0x34, 0x12, 0, 0x10, 0, 0]
+        );
+        assert_eq!(MsgHeader::from_bytes(header.as_bytes()), Some(header));
+    }
+
+    #[test]
+    fn header_decodes_unaligned_bytes() {
+        let header = MsgHeader::new(MsgKind::Response, 7, 4096);
+        let mut storage = [0u32; 4];
+        let bytes = &mut bytemuck::cast_slice_mut(&mut storage)[1..1 + MsgHeader::SIZE];
+        bytes.copy_from_slice(header.as_bytes());
+
+        assert_eq!(MsgHeader::from_bytes(bytes), Some(header));
     }
 
     #[test]
@@ -372,15 +463,23 @@ mod tests {
         let mut bytes = [0; MsgHeader::SIZE];
         bytes.copy_from_slice(header.as_bytes());
 
-        bytes[1] = 1;
-        assert_eq!(MsgHeader::from_bytes(&bytes), None);
+        for index in 1..4 {
+            bytes[index] = 1;
+            assert_eq!(MsgHeader::from_bytes(&bytes), None);
+            bytes[index] = 0;
+        }
 
-        bytes[1] = 0;
         bytes[0] = u8::MAX;
         assert_eq!(MsgHeader::from_bytes(&bytes), None);
 
         bytes[0] = MsgKind::Request as u8;
-        assert_eq!(MsgHeader::from_bytes(&bytes[..MsgHeader::SIZE - 1]), None);
+        for len in 0..MsgHeader::SIZE {
+            assert_eq!(MsgHeader::from_bytes(&bytes[..len]), None);
+        }
+
+        let mut oversized = [0; MsgHeader::SIZE + 1];
+        oversized[..MsgHeader::SIZE].copy_from_slice(&bytes);
+        assert_eq!(MsgHeader::from_bytes(&oversized), None);
     }
 
     #[test]
@@ -438,6 +537,30 @@ mod tests {
         let chunks = [Bytes::from_static(b"x")];
         assert!(external_values.push_chunks(&chunks).is_err());
         assert!(external_values.chunks.is_empty());
+    }
+
+    #[test]
+    fn segments_source_flattens_only_contiguous_values() {
+        let first = Bytes::from_static(b"ab");
+        let second = Bytes::from_static(b"cd");
+        let second_ptr = second.as_ptr();
+        let mut source = Segments::new([first, second]);
+
+        assert!(source.take_bytes(usize::MAX).is_err());
+        assert!(source.take_chunks(usize::MAX).is_err());
+        assert!(source.take_bytes(0).unwrap().is_empty());
+        assert!(source.take_chunks(0).unwrap().is_empty());
+        assert_eq!(source.len(), 4);
+        assert!(source.finish().is_err());
+
+        let contiguous = source.take_bytes(3).unwrap();
+        let chunks = source.take_chunks(1).unwrap();
+        source.finish().unwrap();
+
+        assert_eq!(contiguous, b"abc");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].as_ref(), b"d");
+        assert_eq!(chunks[0].as_ptr(), second_ptr.wrapping_add(1));
     }
 
     #[test]

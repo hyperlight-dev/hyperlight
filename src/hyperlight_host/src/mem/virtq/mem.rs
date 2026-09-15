@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use hyperlight_common::layout::scratch_base_gva;
 use hyperlight_common::virtq::MemOps;
 
-use super::shared_mem::{HostSharedMemory, SharedMemory};
+use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
 use crate::{HyperlightError, Result, new_error};
 
 /// Host virtqueue memory access confined to one scratch GVA range.
@@ -82,9 +82,8 @@ impl HostMemOps {
             return Err(out_of_bounds());
         }
 
-        addr.checked_sub(self.scratch_base_gva)
-            .and_then(|offset| usize::try_from(offset).ok())
-            .ok_or_else(out_of_bounds)
+        // The constructor confines the region to a usize-sized scratch mapping.
+        Ok((addr - self.scratch_base_gva) as usize)
     }
 }
 
@@ -230,6 +229,9 @@ mod tests {
         mem.read(region.start, &mut bytes).unwrap();
         assert_eq!(bytes, [1, 2, 3, 4]);
 
+        assert_eq!(mem.to_offset(region.start, 0x1000).unwrap(), 0x1000);
+        assert_eq!(mem.to_offset(region.end, 0).unwrap(), 0x2000);
+        assert!(mem.to_offset(region.start, usize::MAX).is_err());
         assert!(mem.read(region.start - 1, &mut [0]).is_err());
         assert!(mem.write(region.end - 1, &[1, 2]).is_err());
         assert!(mem.read(region.end, &mut [0]).is_err());
@@ -248,13 +250,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_regions_outside_scratch() {
+    fn region_bounds_must_fit_scratch() {
         let scratch = ExclusiveSharedMemory::new(SCRATCH_SIZE).unwrap();
         let (scratch, _) = scratch.build();
         let scratch_base = scratch_base();
         let scratch_end = scratch_base + SCRATCH_SIZE as u64;
 
+        let mem = HostMemOps::new(&scratch, scratch_base..scratch_end).unwrap();
+        assert_eq!(mem.to_offset(scratch_base, SCRATCH_SIZE).unwrap(), 0);
+        assert_eq!(mem.to_offset(scratch_end, 0).unwrap(), SCRATCH_SIZE);
+
         assert!(HostMemOps::new(&scratch, scratch_base - 1..scratch_base).is_err());
         assert!(HostMemOps::new(&scratch, scratch_end - 1..scratch_end + 1).is_err());
+        assert!(HostMemOps::new(&scratch, scratch_base..scratch_base).is_err());
+        assert!(HostMemOps::new(&scratch, scratch_end..scratch_base).is_err());
     }
 }
