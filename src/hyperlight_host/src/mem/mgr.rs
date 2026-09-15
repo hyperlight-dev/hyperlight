@@ -8,6 +8,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -533,6 +534,17 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.update_scratch_bookkeeping_item(
             hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET,
             (1_u64 << 32) | u64::from(seed),
+        )
+    }
+
+    pub(crate) fn request_guest_log_level_update(
+        &mut self,
+        log_level: tracing_core::LevelFilter,
+    ) -> Result<()> {
+        self.update_scratch_bookkeeping_item(
+            hyperlight_common::layout::SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET,
+            (hyperlight_common::log_level::GUEST_LOG_FILTER_UPDATE_PENDING)
+                | u64::from(GuestLogFilter::from(log_level)),
         )
     }
 

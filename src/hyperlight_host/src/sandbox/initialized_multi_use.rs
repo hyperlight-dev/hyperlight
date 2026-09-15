@@ -13,6 +13,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
+use tracing_core::LevelFilter;
 
 use super::Callable;
 use super::file_mapping::prepare_file_cow;
@@ -91,6 +92,8 @@ pub struct MultiUseSandbox {
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
     /// If not set, only CR3 is used as the single root.
     pt_root_finder: Option<PtRootFinder>,
+    /// Runtime guest log-level override reapplied after snapshot restores.
+    max_guest_log_level: Option<LevelFilter>,
 }
 
 /// Callback for discovering page table roots from guest memory.
@@ -138,7 +141,18 @@ impl MultiUseSandbox {
             vm,
             snapshot: None,
             pt_root_finder: None,
+            max_guest_log_level: None,
         }
+    }
+
+    /// Sets the maximum log level used by future guest calls.
+    ///
+    /// The setting is reapplied after restoring a snapshot.
+    pub fn log_level(&mut self, log_level: LevelFilter) -> Result<()> {
+        self.check_ready()?;
+        self.mem_mgr.request_guest_log_level_update(log_level)?;
+        self.max_guest_log_level = Some(log_level);
+        Ok(())
     }
 
     /// Set a callback that discovers page table roots from guest memory.
@@ -295,22 +309,8 @@ impl MultiUseSandbox {
         };
         let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
 
-        // `max_guest_log_level` is consumed by `initialise` when it runs the
-        // guest entrypoint, which only happens for a preinitialised
-        // (`NextAction::Initialise`) snapshot. A `Call` snapshot already ran
-        // its entrypoint and baked the log level into the captured memory, so
-        // warn instead of silently ignoring the configured value.
-        if max_guest_log_level.is_some()
-            && matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_))
-        {
-            tracing::warn!(
-                "max_guest_log_level was configured for from_snapshot, but the snapshot is \
-                 an already-initialized (Call) snapshot; the log level is baked into the \
-                 snapshot's memory and the configured value has no effect"
-            );
-        }
-
-        // noop for NextAction::Call
+        // For NextAction::Call, initialise is a no-op. Runtime overrides are
+        // delivered through the scratch-memory request below.
         vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, max_guest_log_level)
             .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
 
@@ -345,7 +345,10 @@ impl MultiUseSandbox {
             })?;
         }
 
-        let sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
+        let mut sbox = MultiUseSandbox::from_uninit(host_funcs, hshm, vm);
+        if let Some(log_level) = max_guest_log_level {
+            sbox.log_level(log_level)?;
+        }
         Ok(sbox)
     }
 

@@ -86,7 +86,11 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     )
     .map_err(HyperlightVmError::Initialize)?;
 
-    Ok(MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm))
+    let mut sbox = MultiUseSandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+    if let Some(log_level) = max_guest_log_level {
+        sbox.log_level(log_level)?;
+    }
+    Ok(sbox)
 }
 
 pub(crate) fn set_up_hypervisor_partition(
