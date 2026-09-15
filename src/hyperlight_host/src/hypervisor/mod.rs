@@ -508,8 +508,8 @@ pub(crate) mod tests {
         )?;
 
         // Set up required parameters for initialise
-        let peb_addr = RawPtr::from(0x1000u64); // Dummy PEB address
-        let seed = 12345u64; // Random seed
+        let peb_addr = RawPtr::from(0x230000u64);
+        let seed = 1234567890u64;
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
         let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
