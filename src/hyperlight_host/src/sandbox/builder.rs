@@ -130,12 +130,11 @@ impl SandboxBuilder {
     /// # Errors
     ///
     /// When building from a snapshot, returns an error if [`Self::init_data`]
-    /// or [`Self::guest_log_level`] are set. The snapshot already carries
-    /// both, so they have no effect there.
+    /// is set because the snapshot already contains it.
     pub fn build(self) -> Result<Sandbox> {
         let Self {
             source,
-            cfg,
+            mut cfg,
             host_funcs,
             init_data,
             mapped_file_cow,
@@ -174,10 +173,8 @@ impl SandboxBuilder {
                     ));
                 }
 
-                if guest_log_level.is_some() {
-                    return Err(new_error!(
-                        "guest_log_level has no effect when building from a snapshot, as the snapshot already contains it"
-                    ));
+                if let Some(log_level) = guest_log_level {
+                    cfg.set_max_guest_log_level(log_level);
                 }
 
                 let mut sandbox = Sandbox::from_snapshot(snapshot, host_funcs, Some(cfg))?;
@@ -243,8 +240,8 @@ impl SandboxBuilder {
     /// If not set, the log level is determined by the `RUST_LOG` environment variable,
     /// defaulting to [`LevelFilter::ERROR`] if unset.
     ///
-    /// Note: [`Self::build`] errors if this setting is set and the builder's
-    /// source is a snapshot, as the log level is already captured in the snapshot.
+    /// When building from a snapshot, this overrides the level captured in the
+    /// snapshot for subsequent guest calls.
     pub fn guest_log_level(mut self, level: LevelFilter) -> Self {
         self.guest_log_level = Some(level);
         self
@@ -474,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn build_from_snapshot_errors_on_ignored_settings() {
+    fn build_from_snapshot_rejects_init_data_and_accepts_guest_log_level() {
         let path = simple_guest_as_string().unwrap();
         let mut sandbox = SandboxBuilder::from_file(path).build().unwrap();
         let snapshot = sandbox.snapshot().unwrap();
@@ -490,7 +487,7 @@ mod tests {
             SandboxBuilder::from_snapshot(snapshot)
                 .guest_log_level(LevelFilter::INFO)
                 .build()
-                .is_err()
+                .is_ok()
         );
     }
 }

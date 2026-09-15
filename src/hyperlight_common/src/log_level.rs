@@ -20,6 +20,9 @@ pub enum GuestLogFilter {
     Trace,
 }
 
+/// Marks a pending runtime guest log-level update in scratch memory.
+pub const GUEST_LOG_FILTER_UPDATE_PENDING: u64 = 1 << 63;
+
 impl From<GuestLogFilter> for tracing_core::LevelFilter {
     fn from(filter: GuestLogFilter) -> Self {
         match filter {

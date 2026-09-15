@@ -3,11 +3,13 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use hyperlight_common::log_level::GuestLogFilter;
 use spin::Mutex;
 use tracing_core::span::{Attributes, Id, Record};
 use tracing_core::subscriber::Subscriber;
-use tracing_core::{Event, LevelFilter, Metadata};
+use tracing_core::{Event, Interest, LevelFilter, Metadata};
 
 use crate::state::GuestState;
 
@@ -19,7 +21,7 @@ pub(crate) struct GuestSubscriber {
     /// so it can be accessed from the guest tracing API
     state: Arc<Mutex<GuestState>>,
     /// Maximum log level to record
-    max_log_level: LevelFilter,
+    max_log_level: AtomicU64,
 }
 
 impl GuestSubscriber {
@@ -27,8 +29,13 @@ impl GuestSubscriber {
     pub(crate) fn new(guest_start_tsc: u64, filter: LevelFilter) -> Self {
         Self {
             state: Arc::new(Mutex::new(GuestState::new(guest_start_tsc))),
-            max_log_level: filter,
+            max_log_level: AtomicU64::new(u64::from(GuestLogFilter::from(filter))),
         }
+    }
+
+    pub(crate) fn set_max_log_level(&self, filter: LevelFilter) {
+        self.max_log_level
+            .store(u64::from(GuestLogFilter::from(filter)), Ordering::Relaxed);
     }
     /// Returns a reference to the internal state of the subscriber
     /// This is used to access the spans and events collected by the subscriber
@@ -38,9 +45,16 @@ impl GuestSubscriber {
 }
 
 impl Subscriber for GuestSubscriber {
+    fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+        Interest::sometimes()
+    }
+
     fn enabled(&self, md: &Metadata<'_>) -> bool {
-        // Check if the metadata level is less than or equal to the maximum log level filter
-        md.level() <= &self.max_log_level
+        let Ok(filter) = GuestLogFilter::try_from(self.max_log_level.load(Ordering::Relaxed))
+        else {
+            return false;
+        };
+        md.level() <= &LevelFilter::from(filter)
     }
 
     fn new_span(&self, attrs: &Attributes<'_>) -> Id {
@@ -62,7 +76,6 @@ impl Subscriber for GuestSubscriber {
 
         state.new_span(attrs)
     }
-
     fn record(&self, id: &Id, values: &Record<'_>) {
         // We want to protect against re-entrancy issues produced by tracing code that locks
         // the state and then causes an exception that tries to lock the state again.
@@ -166,4 +179,40 @@ impl Subscriber for GuestSubscriber {
     fn record_follows_from(&self, _span: &Id, _follows: &Id) {
         // no-op: we don't track follows-from relationships
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing_core::metadata::LevelFilter;
+    use tracing_core::subscriber::Subscriber;
+
+    use super::GuestSubscriber;
+
+    #[test]
+    fn filter_can_be_updated() {
+        let subscriber = GuestSubscriber::new(0, LevelFilter::ERROR);
+        let metadata = tracing_core::metadata! {
+            name: "event",
+            target: "test",
+            level: tracing_core::Level::INFO,
+            fields: &[],
+            callsite: &CALLSITE,
+            kind: tracing_core::metadata::Kind::EVENT,
+        };
+
+        assert!(!subscriber.enabled(&metadata));
+        subscriber.set_max_log_level(LevelFilter::INFO);
+        assert!(subscriber.enabled(&metadata));
+    }
+
+    static CALLSITE: tracing_core::callsite::DefaultCallsite =
+        tracing_core::callsite::DefaultCallsite::new(&CALLSITE_METADATA);
+    static CALLSITE_METADATA: tracing_core::Metadata<'static> = tracing_core::metadata! {
+        name: "event",
+        target: "test",
+        level: tracing_core::Level::INFO,
+        fields: &[],
+        callsite: &CALLSITE,
+        kind: tracing_core::metadata::Kind::EVENT,
+    };
 }

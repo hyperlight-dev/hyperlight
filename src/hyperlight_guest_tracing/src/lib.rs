@@ -26,6 +26,7 @@ pub use state::TraceBatchInfo;
 #[cfg(feature = "trace")]
 pub use trace::{
     end_trace, flush, init_guest_tracing, is_trace_enabled, new_call, reset, serialized_data,
+    update_guest_tracing,
 };
 
 /// This module is gated because some of these types are also used on the host, but we want
@@ -48,6 +49,7 @@ mod trace {
     ///
     /// The mutex ensures safe access to the state from both places.
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
+    static GUEST_SUBSCRIBER: spin::Once<Weak<GuestSubscriber>> = spin::Once::new();
 
     /// Initialize the guest tracing subscriber as global default.
     pub fn init_guest_tracing(guest_start_tsc: u64, max_log_level: LevelFilter) {
@@ -55,13 +57,25 @@ mod trace {
         if tracing_core::dispatcher::has_been_set() {
             return;
         }
-        let sub = GuestSubscriber::new(guest_start_tsc, max_log_level);
+        let sub = Arc::new(GuestSubscriber::new(guest_start_tsc, max_log_level));
         let state = sub.state();
         // Store state Weak<GuestState> to use later at runtime
         GUEST_STATE.call_once(|| Arc::downgrade(state));
+        GUEST_SUBSCRIBER.call_once(|| Arc::downgrade(&sub));
 
         // Set global dispatcher
         let _ = tracing_core::dispatcher::set_global_default(tracing_core::Dispatch::new(sub));
+    }
+
+    /// Update the maximum log level for an existing guest tracing subscriber.
+    pub fn update_guest_tracing(guest_start_tsc: u64, max_log_level: LevelFilter) {
+        if let Some(w) = GUEST_SUBSCRIBER.get()
+            && let Some(subscriber) = w.upgrade()
+        {
+            subscriber.set_max_log_level(max_log_level);
+        } else {
+            init_guest_tracing(guest_start_tsc, max_log_level);
+        }
     }
 
     /// Ends the current trace by ending all active spans in the

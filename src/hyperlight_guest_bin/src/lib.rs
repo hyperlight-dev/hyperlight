@@ -12,7 +12,7 @@ use buddy_system_allocator::LockedHeap;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_common::log_level::{GUEST_LOG_FILTER_UPDATE_PENDING, GuestLogFilter};
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
@@ -212,6 +212,32 @@ pub(crate) fn refresh_libc_rng() {
             seed_ptr.write_volatile(0u64);
         }
     }
+}
+
+pub(crate) fn refresh_guest_log_level() {
+    let level_ptr = hyperlight_guest::layout::guest_log_level_gva();
+    // SAFETY: The host maps this aligned u64 scratch slot for the guest's
+    // lifetime and writes it only while the guest is stopped.
+    let request = unsafe { level_ptr.read_volatile() };
+    if request & GUEST_LOG_FILTER_UPDATE_PENDING == 0 {
+        return;
+    }
+
+    let Ok(filter) = GuestLogFilter::try_from(request & !GUEST_LOG_FILTER_UPDATE_PENDING) else {
+        // SAFETY: The scratch slot has the validity and exclusivity described above.
+        unsafe { level_ptr.write_volatile(0) };
+        return;
+    };
+
+    log::set_max_level(filter.into());
+    #[cfg(feature = "trace_guest")]
+    hyperlight_guest_tracing::update_guest_tracing(
+        hyperlight_guest_tracing::invariant_tsc::read_tsc(),
+        filter.into(),
+    );
+
+    // SAFETY: The scratch slot has the validity and exclusivity described above.
+    unsafe { level_ptr.write_volatile(0) };
 }
 
 #[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
