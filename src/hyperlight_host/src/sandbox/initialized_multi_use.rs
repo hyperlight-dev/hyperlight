@@ -629,6 +629,9 @@ impl MultiUseSandbox {
 
         self.mem_mgr
             .request_libc_rng_reseed(rand::random::<u32>())?;
+        if let Some(log_level) = self.max_guest_log_level {
+            self.mem_mgr.request_guest_log_level_update(log_level)?;
+        }
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
@@ -4830,6 +4833,60 @@ mod tests {
                 overridden_error,
                 captured_error
             );
+        }
+
+        /// A runtime log-level override set on a MultiUseSandbox survives restore.
+        ///
+        /// Ignored because it installs a process-global `log` logger; run
+        /// in isolation via the `test-isolated` Justfile recipe.
+        #[test]
+        #[ignore]
+        fn max_guest_log_level_setter_survives_restore() {
+            use hyperlight_common::log_level::GuestLogFilter;
+            use hyperlight_testing::logger::{LOGGER, Logger};
+            use tracing_core::LevelFilter;
+
+            Logger::initialize_test_logger();
+            LOGGER.set_max_level(log::LevelFilter::Trace);
+
+            let mut source = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .guest_log_level(LevelFilter::TRACE)
+                .build()
+                .unwrap();
+            let snapshot = source.snapshot().unwrap();
+            let mut sandbox = SandboxBuilder::from_snapshot(snapshot.clone())
+                .build()
+                .unwrap();
+            sandbox.log_level(LevelFilter::ERROR).unwrap();
+
+            let count_guest_logs = |sandbox: &mut MultiUseSandbox| {
+                LOGGER.clear_log_calls();
+                for level in [
+                    LevelFilter::TRACE,
+                    LevelFilter::DEBUG,
+                    LevelFilter::INFO,
+                    LevelFilter::WARN,
+                    LevelFilter::ERROR,
+                ] {
+                    let encoded: u64 = GuestLogFilter::from(level).into();
+                    sandbox
+                        .call::<()>("LogMessage", ("hello".to_string(), encoded as i32))
+                        .unwrap();
+                }
+                let count = (0..LOGGER.num_log_calls())
+                    .filter_map(|i| LOGGER.get_log_call(i))
+                    .filter(|call| call.target == "hyperlight_guest")
+                    .count();
+                LOGGER.clear_log_calls();
+                count
+            };
+
+            let before_restore = count_guest_logs(&mut sandbox);
+            sandbox.restore(snapshot).unwrap();
+            let after_restore = count_guest_logs(&mut sandbox);
+
+            assert!(before_restore >= 1);
+            assert_eq!(before_restore, after_restore);
         }
 
         /// Two sandboxes built from clones of one `Arc<Snapshot>` can
