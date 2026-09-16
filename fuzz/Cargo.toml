@@ -49,15 +49,15 @@ doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_virtq_packed_ring"
-path = "fuzz_targets/virtq_packed_ring.rs"
+name = "fuzz_virtq_malformed"
+path = "fuzz_targets/virtq_malformed.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_push_pop_buffer"
-path = "fuzz_targets/fuzz_push_pop_buffer.rs"
+name = "fuzz_virtq_roundtrip"
+path = "fuzz_targets/virtq_roundtrip.rs"
 test = false
 doc = false
 bench = false

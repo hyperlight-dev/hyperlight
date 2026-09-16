@@ -114,8 +114,8 @@ pub struct Snapshot {
 
     /// Validated ring images omitted from ordinary snapshot pages.
     ///
-    /// Images and the finalized layout are immutable.
-    /// File snapshots omit this state while stack communication remains active.
+    /// Construction and loading validate these images against `layout`.
+    /// Both the images and layout remain immutable afterwards.
     virtq: Option<VirtqSnapshot>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
