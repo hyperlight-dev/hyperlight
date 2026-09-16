@@ -372,11 +372,23 @@ where
 
     /// Reset a stopped producer and release transport-owned allocations.
     ///
-    /// The peer must not access the ring until its consumer is reset. Buffered
-    /// writable completions are guest-owned and make this operation fail.
+    /// Buffered writable completions are guest-owned and make this operation fail.
     /// Owner-backed payloads already returned to callers are not tracked as
     /// in-flight and remain allocated.
-    pub fn reset(&mut self) -> Result<(), VirtqError> {
+    ///
+    /// # Safety
+    ///
+    /// All consumer-side chain handles must be dropped. The peer must stay
+    /// stopped until its consumer is reset or replaced. Surviving handles
+    /// could access recycled buffers, violating ownership of borrowed views.
+    ///
+    /// ```compile_fail,E0133
+    /// # use hyperlight_common::virtq::{MemOps, Notifier, VirtqProducer};
+    /// fn reset<M: MemOps + Clone, N: Notifier>(producer: &mut VirtqProducer<M, N>) {
+    ///     producer.reset().unwrap();
+    /// }
+    /// ```
+    pub unsafe fn reset(&mut self) -> Result<(), VirtqError> {
         if !self.pending.is_empty() {
             return Err(VirtqError::InvalidState);
         }
@@ -1319,7 +1331,8 @@ mod tests {
             producer.chain().readable(1).build(),
             Err(VirtqError::Backpressure)
         ));
-        producer.reset().unwrap();
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -1341,7 +1354,8 @@ mod tests {
         ));
         assert_eq!(pool.num_live(), 2);
 
-        producer.reset().unwrap();
+        // SAFETY: The consumer has never polled the ring and is reset next.
+        unsafe { producer.reset() }.unwrap();
         consumer.reset().unwrap();
 
         assert_eq!(pool.num_live(), 0);
@@ -1379,7 +1393,8 @@ mod tests {
             assert!(orig_gen.upgrade().is_some());
 
             mem.allow_writes();
-            producer.reset().unwrap();
+            // SAFETY: No consumer is attached to this ring.
+            unsafe { producer.reset() }.unwrap();
 
             assert_eq!(pool.num_live(), 0);
             assert!(orig_gen.upgrade().is_none());
@@ -1444,7 +1459,8 @@ mod tests {
         assert_eq!(pool.num_live(), 1);
         assert_eq!(pool.strong_count(), 3);
 
-        producer.reset().unwrap();
+        // SAFETY: All consumer handles were completed. The consumer is reset next.
+        unsafe { producer.reset() }.unwrap();
         consumer.reset().unwrap();
 
         drop(producer);
@@ -1748,7 +1764,8 @@ mod tests {
 
         assert_eq!(pool.num_free(), 0);
 
-        producer.reset().unwrap();
+        // SAFETY: No consumer is attached to this ring.
+        unsafe { producer.reset() }.unwrap();
 
         assert_eq!(producer.num_inflight(), 0);
         assert_eq!(producer.num_free(), ring.len());
@@ -1766,7 +1783,45 @@ mod tests {
             let chain = producer.chain().writable(64).build().unwrap();
             producer.submit(chain).unwrap();
         }
-        producer.reset().unwrap();
+
+        // SAFETY: No consumer is attached to this ring.
+        unsafe { producer.reset() }.unwrap();
+    }
+
+    #[test]
+    fn stopped_reset_reuses_slot_after_consumer_handles_drop() {
+        let ring = make_ring(4);
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = SlotPool::new(SlotLayout::new(pool_base, 4, 1)).unwrap();
+        let notifier = TestNotifier::new();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), mem.clone(), notifier.clone(), pool.clone());
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem.clone(), notifier.clone());
+
+        let sent = producer.chain().writable(4).build().unwrap();
+        producer.submit(sent).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        assert!(matches!(reply, ReplyChain::Writable(_)));
+
+        drop((recv, reply, consumer));
+        assert_eq!(pool.num_live(), 1);
+
+        // SAFETY: The consumer and all its chain handles have been dropped.
+        unsafe { producer.reset() }.unwrap();
+        assert_eq!(pool.num_live(), 0);
+
+        let mut replacement = producer.chain().readable(4).build().unwrap();
+        assert_eq!(replacement.owned.buffers[0].addr, pool_base);
+        replacement.write_all(b"GOOD").unwrap();
+        producer.submit(replacement).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem, notifier);
+        let (recv, reply) = poll_received(&mut consumer);
+        assert_eq!(recv.to_bytes().unwrap().as_ref(), b"GOOD");
+        consumer.complete(recv, reply).unwrap();
+        producer.drain(drop).unwrap();
+        assert_eq!(pool.num_live(), 0);
     }
 
     #[test]
@@ -1785,10 +1840,16 @@ mod tests {
         consumer.complete(recv, reply).unwrap();
         producer.reclaim().unwrap();
 
-        assert!(matches!(producer.reset(), Err(VirtqError::InvalidState)));
+        // SAFETY: The consumer completed its handles and stays inactive.
+        assert!(matches!(
+            unsafe { producer.reset() },
+            Err(VirtqError::InvalidState)
+        ));
 
         drop(producer.poll().unwrap().unwrap());
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer completed its handles and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -1841,7 +1902,7 @@ mod tests {
         assert_eq!(segments.as_slice()[1].as_ref(), b" world");
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2160,7 +2221,7 @@ mod tests {
         assert_eq!(segments.as_slice()[0].as_ref(), b"abcd");
         assert_eq!(segments.as_slice()[1].as_ref(), b"ef");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2201,7 +2262,7 @@ mod tests {
         assert_eq!(segments.as_slice()[2].as_ref(), b"ij");
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
 
         assert_eq!(producer.pool.num_live(), 0);
     }
@@ -2244,7 +2305,7 @@ mod tests {
         assert_eq!(segments.as_slice()[2].as_ref(), b"ij");
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
 
         assert_eq!(producer.pool.num_live(), 0);
     }
@@ -2309,7 +2370,7 @@ mod tests {
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"headbody");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2335,7 +2396,7 @@ mod tests {
         assert_eq!(segments.segment_count(), 2);
         assert_eq!(segments.to_bytes().as_ref(), b"headbody");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2353,7 +2414,7 @@ mod tests {
         assert_eq!(segments.segment_count(), 2);
         assert_eq!(segments.to_bytes().as_ref(), b"headbody");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2470,7 +2531,7 @@ mod tests {
         assert_eq!(recv.token(), tok);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello world");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2491,7 +2552,7 @@ mod tests {
         assert_eq!(recv.token(), tok);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello world");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2508,7 +2569,7 @@ mod tests {
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello wo");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2528,7 +2589,7 @@ mod tests {
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2549,7 +2610,7 @@ mod tests {
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"hello");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2633,7 +2694,9 @@ mod tests {
         let se = producer.chain().readable(64).writable(128).build().unwrap();
         let tok = producer.submit(se).unwrap();
         assert!(tok.id < 16);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2650,7 +2713,9 @@ mod tests {
         let se = producer.chain().readable(64).writable(128).build().unwrap();
         let tok = producer.submit(se).unwrap();
         assert!(tok.id < 16);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2665,7 +2730,9 @@ mod tests {
         producer.submit(se).unwrap();
 
         assert!(notifier.notification_count() > initial_count);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2680,7 +2747,9 @@ mod tests {
         producer.submit(se).unwrap();
 
         assert!(notifier.notification_count() > initial_count);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2694,7 +2763,9 @@ mod tests {
         producer.submit(se).unwrap();
 
         assert!(notifier.notification_count() > initial_count);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2725,7 +2796,7 @@ mod tests {
         let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"second");
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2752,7 +2823,9 @@ mod tests {
         assert!(batch.finish().unwrap());
 
         assert_eq!(notifier.notification_count(), 1);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2782,7 +2855,7 @@ mod tests {
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"data");
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -2899,7 +2972,9 @@ mod tests {
         let se = producer.chain().writable(4).build().unwrap();
         producer.submit(se).unwrap();
         assert_eq!(producer.inner.num_inflight(), 1);
-        producer.reset().unwrap();
+
+        // SAFETY: Both consumers stay inactive and no chain handles survive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -2919,6 +2994,8 @@ mod tests {
             Err(VirtqError::RingError(RingError::InvalidState))
         ));
         assert_eq!(producer.inner.num_inflight(), 1);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 }

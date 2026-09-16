@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Consumers validate descriptors and payload accesses during use.
 * Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
   ownership. `BufferMap` supplies complete owners exposing initialized bytes.
+* `VirtqProducer::reset` is unsafe and requires a stopped peer with no live
+  consumer-side chain handles.
 * `ChainBuilder::build()` allocates readable and writable requests.
   `writable_avail()` reserves available upper-tier slots within the descriptor
   budget. It may add zero slots to a nonempty chain.
@@ -38,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 * Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
+* Guest virtqueue copies reject overlapping buffers before accessing memory.
 
 ## [v0.17.0] - 2026-08-27
 

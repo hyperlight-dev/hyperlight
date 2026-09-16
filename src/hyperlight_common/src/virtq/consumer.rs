@@ -599,8 +599,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
 
     /// Reset ring and inflight state to initial values.
     ///
-    /// Fails while a polled chain has not yet been completed, preventing a
-    /// live [`RecvChain`] from reading descriptors after reset and reuse.
+    /// Fails while a chain polled by this consumer remains uncompleted.
     ///
     /// # Errors
     ///
@@ -788,7 +787,7 @@ mod tests {
             wc.write_all(b"response").unwrap();
             consumer.complete(recv, wc).unwrap();
         }
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -805,7 +804,7 @@ mod tests {
         assert!(matches!(reply, ReplyChain::Ack(_)));
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -831,7 +830,7 @@ mod tests {
         } else {
             panic!("expected Writable reply for recv+reply chain");
         }
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -872,7 +871,7 @@ mod tests {
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"abcdefgh");
 
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -926,7 +925,7 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -936,15 +935,17 @@ mod tests {
 
         let se = producer.chain().writable(4).build().unwrap();
         producer.submit(se).unwrap();
-        let (_recv, reply) = poll_data(&mut consumer);
+        let (recv, reply) = poll_data(&mut consumer);
 
         if let ReplyChain::Writable(mut wc) = reply {
             let err = wc.write_all(b"too long").err().unwrap();
             assert!(matches!(err, VirtqError::ReplyTooLarge));
+            consumer.complete(recv, wc).unwrap();
         } else {
             panic!("expected Writable");
         }
-        producer.reset().unwrap();
+
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -960,7 +961,7 @@ mod tests {
             consumer.poll(4),
             Err(VirtqError::PayloadTooLarge { recv: 8, limit: 4 })
         ));
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -1070,7 +1071,7 @@ mod tests {
         } else {
             panic!("expected Writable");
         }
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -1164,7 +1165,7 @@ mod tests {
         // Complete in reverse order
         consumer.complete(e2, c2).unwrap();
         consumer.complete(e1, c1).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -1192,7 +1193,9 @@ mod tests {
         assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
 
         drop((recv2, reply1));
-        producer.reset().unwrap();
+
+        // SAFETY: All consumer handles were dropped. The consumer stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -1212,7 +1215,7 @@ mod tests {
         assert_eq!(data.as_ref(), b"abc");
         assert_eq!(recv.consumed(), 1);
         consumer.complete(recv, reply).unwrap();
-        producer.reset().unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -1234,7 +1237,9 @@ mod tests {
         consumer.reset().unwrap();
 
         assert_eq!(consumer.inner.num_inflight(), 0);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer completed all handles, reset, and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -1257,7 +1262,9 @@ mod tests {
         consumer.reset().unwrap();
 
         assert_eq!(consumer.inner.num_inflight(), 0);
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer completed all handles, reset, and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -1280,6 +1287,8 @@ mod tests {
         mem.allow_writes();
         assert_eq!(consumer.inner.num_inflight(), 1);
         assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
-        producer.reset().unwrap();
+
+        // SAFETY: Failed completion dropped both handles. The consumer stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 }
