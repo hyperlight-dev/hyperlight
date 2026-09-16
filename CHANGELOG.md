@@ -5,6 +5,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add per-direction virtqueue configuration and account its allocations in
+  scratch sizing.
+* Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.
+* Producer batch completion without notification and segmented payload
+  extraction without flattening.
 
 ### Changed
 * `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
@@ -17,10 +22,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Expose C guest `ByteChunks` values as pointer and length arrays.
 * Return typed `hl_ReturnValue` objects from C guest functions through
   `hl_result_from_*` constructors.
+* Place virtqueue rings and pools in host-owned scratch before page tables.
+  Snapshot ABI 3 rejects snapshots created with earlier layouts.
+* Host virtqueue access uses checked copies and atomics across mapped scratch.
+  Snapshot admission checks geometry, canonical ring state, and H2G buffer shape.
+  Consumers validate descriptors and payload accesses during use.
+* Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
+  ownership. `BufferMap` supplies complete owners exposing initialized bytes.
+* `VirtqProducer::reset` is unsafe and requires a stopped peer with no live
+  consumer-side chain handles.
+* `ChainBuilder::build()` allocates readable and writable requests.
+  `writable_avail()` reserves available upper-tier slots within the descriptor
+  budget. It may add zero slots to a nonempty chain.
 
 ### Removed
+* `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
 
 ### Fixed
+* Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
+* Guest virtqueue copies reject overlapping buffers before accessing memory.
 
 ## [v0.17.0] - 2026-08-27
 
