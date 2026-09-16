@@ -189,7 +189,7 @@ impl MultiUseSandbox {
     /// or the load fails with an MSR mismatch.
     ///
     /// [`SandboxConfiguration::set_max_guest_log_level`](crate::sandbox::SandboxConfiguration::set_max_guest_log_level)
-    /// sets the maximum log level used by the restored guest. For snapshots
+    /// or [`Self::log_level`] sets the maximum log level used by the restored guest. For snapshots
     /// captured before guest initialization, the level is passed to the guest
     /// during initialization. For snapshots captured after guest
     /// initialization, the level is requested through guest memory before the
@@ -4885,7 +4885,7 @@ mod tests {
             sandbox.restore(snapshot).unwrap();
             let after_restore = count_guest_logs(&mut sandbox);
 
-            assert!(before_restore >= 1);
+            assert_eq!(before_restore, 1);
             assert_eq!(before_restore, after_restore);
         }
 

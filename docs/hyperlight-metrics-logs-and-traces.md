@@ -145,6 +145,10 @@ trait from `tracing_core` that allows defining a subscriber for the `tracing` cr
 This custom subscriber stores the spans and events in a buffer initialized only when tracing is enabled. For each new span and event, a method is called on the custom subscriber which not only stores the data, but also keeps track of the hierarchy and dependencies between the other spans/events.
 **NOTE**: The spans/events attributes are truncated to fit in the allocated buffer.
 
+The guest log level can be configured when building a sandbox and overridden
+for an initialized sandbox with `MultiUseSandbox::log_level`. The override
+applies to later guest calls and is reapplied after snapshot restore.
+
 When the storage space is filled, the guest triggers a VM Exit that sends the guest pointers to the host. The host can access the guest memory, get the data and parse it to create the `spans` and `events` using the `opentelemetry` crate which allows specifying the starting and ending timestamps
 which are captured in the guest using the `TSC`.
 

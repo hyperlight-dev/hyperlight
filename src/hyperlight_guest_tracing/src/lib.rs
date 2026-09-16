@@ -25,8 +25,8 @@ mod visitor;
 pub use state::TraceBatchInfo;
 #[cfg(feature = "trace")]
 pub use trace::{
-    end_trace, flush, init_guest_tracing, is_trace_enabled, new_call, reset, serialized_data,
-    update_guest_tracing,
+    accepts_trace_events, end_trace, flush, init_guest_tracing, is_trace_enabled, new_call, reset,
+    serialized_data, update_guest_tracing,
 };
 
 /// This module is gated because some of these types are also used on the host, but we want
@@ -73,9 +73,16 @@ mod trace {
             && let Some(subscriber) = w.upgrade()
         {
             subscriber.set_max_log_level(max_log_level);
-        } else {
+        } else if max_log_level != LevelFilter::OFF {
             init_guest_tracing(guest_start_tsc, max_log_level);
         }
+    }
+
+    pub fn accepts_trace_events() -> bool {
+        GUEST_SUBSCRIBER
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|subscriber| subscriber.accepts_trace_events())
     }
 
     /// Ends the current trace by ending all active spans in the

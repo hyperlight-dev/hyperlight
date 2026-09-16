@@ -37,6 +37,10 @@ impl GuestSubscriber {
         self.max_log_level
             .store(u64::from(GuestLogFilter::from(filter)), Ordering::Relaxed);
     }
+
+    pub(crate) fn accepts_trace_events(&self) -> bool {
+        self.max_log_level.load(Ordering::Relaxed) == u64::from(GuestLogFilter::Trace)
+    }
     /// Returns a reference to the internal state of the subscriber
     /// This is used to access the spans and events collected by the subscriber
     pub(crate) fn state(&self) -> &Arc<Mutex<GuestState>> {

@@ -173,7 +173,9 @@ impl GuestHandle {
         };
 
         #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
-        if hyperlight_guest_tracing::is_trace_enabled() {
+        if hyperlight_guest_tracing::is_trace_enabled()
+            && hyperlight_guest_tracing::accepts_trace_events()
+        {
             // If the "trace_guest" feature is enabled and tracing is initialized, log using tracing
             tracing::trace!(
                 event = message,
