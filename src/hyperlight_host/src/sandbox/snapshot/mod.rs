@@ -112,10 +112,10 @@ pub struct Snapshot {
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
 
-    /// Canonical in-memory virtqueue state omitted from ordinary snapshot pages.
+    /// Validated ring images omitted from ordinary snapshot pages.
     ///
-    /// File snapshot persistence is deferred while stack communication remains
-    /// active.
+    /// Images and the finalized layout are immutable.
+    /// File snapshots omit this state while stack communication remains active.
     virtq: Option<VirtqSnapshot>,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
@@ -410,8 +410,9 @@ impl Snapshot {
     // the sandbox vm itself (which modifies it as it receives
     // requests from the sandbox).
     #[allow(clippy::too_many_arguments)]
-    /// Take a snapshot of the memory in `shared_mem`, then create a new
-    /// instance of `Self` with the snapshot stored therein.
+    /// Capture memory with optional validated transport images.
+    ///
+    /// Page-table and snapshot sizes do not affect transport geometry.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new<S: SharedMemory>(
         shared_mem: &mut SnapshotSharedMemory<S>,
@@ -576,10 +577,6 @@ impl Snapshot {
         let guest_visible_size = memory.len() - layout.get_pt_size();
         debug_assert!(guest_visible_size.is_multiple_of(page_size::get()));
         layout.set_snapshot_size(guest_visible_size);
-
-        if let Some(virtq) = &virtq {
-            virtq.preflight(&layout)?;
-        }
 
         Ok(Self {
             layout,

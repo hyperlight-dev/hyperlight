@@ -4680,6 +4680,7 @@ mod tests {
     mod from_snapshot {
         use std::sync::Arc;
 
+        use hyperlight_common::layout;
         use hyperlight_testing::simple_guest_as_pathbuf;
 
         use crate::func::Registerable;
@@ -4719,6 +4720,29 @@ mod tests {
             assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 11);
             let echoed: String = sbox2.call("Echo", "hi".to_string()).unwrap();
             assert_eq!(echoed, "hi");
+        }
+
+        #[test]
+        fn rejects_noncanonical_transport_snapshot() {
+            let mut sbox = make_sandbox();
+            sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+
+            let layout = &sbox.mem_mgr.layout;
+            let scratch_base = layout::scratch_base_gpa(layout.get_scratch_size());
+
+            let ring_offset =
+                (layout.get_transport_arena().g2h_ring_addr() - scratch_base) as usize;
+
+            sbox.mem_mgr
+                .scratch_mem
+                .write::<u64>(ring_offset, 1)
+                .unwrap();
+
+            let Err(err) = sbox.snapshot() else {
+                panic!("noncanonical transport must fail snapshot creation");
+            };
+
+            assert!(err.to_string().contains("invalid canonical G2H image"));
         }
 
         #[test]

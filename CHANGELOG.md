@@ -24,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `hl_result_from_*` constructors.
 * Place virtqueue rings and pools in host-owned scratch before page tables.
   Snapshot ABI 3 rejects snapshots created with earlier layouts.
+* Host virtqueue access uses checked copies and atomics across mapped scratch.
+  Snapshot admission checks geometry, canonical ring state, and H2G buffer shape.
+  Consumers validate descriptors and payload accesses during use.
 * Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
   ownership. `BufferMap` supplies complete owners exposing initialized bytes.
 * `ChainBuilder::build()` allocates readable and writable requests.
