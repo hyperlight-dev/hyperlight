@@ -18,7 +18,7 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
-use super::virtq::{self, G2hConsumer, H2gConsumer};
+use super::virtq::{self, G2hConsumer, H2gConsumer, VirtqSnapshot};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
@@ -385,7 +385,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
         let virtq = match (&self.g2h_consumer, &self.h2g_consumer) {
-            (Some(_), Some(_)) => Some(virtq::snapshot(&self.layout, &self.scratch_mem)?),
+            (Some(_), Some(_)) => Some(VirtqSnapshot::capture(&self.layout, &self.scratch_mem)?),
             (None, None) => None,
             _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
         };
@@ -412,14 +412,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Attach host consumers to a guest-produced initial transport image.
     ///
-    /// Before guest initialization, the host publishes queue dimensions and the
-    /// transport arena GPA. The guest derives and initializes every fixed region
-    /// without consuming dynamic scratch.
-    ///
-    /// This method runs after the initialization VM exit. It checks the
-    /// published arena against the host layout, derives bounded GVA views,
-    /// and validates each directional ring before exposing either consumer.
     /// Fresh sandboxes and pre-initialization restores use this path.
+    /// Ring addresses come from the host layout, with entries checked during use.
     pub(crate) fn attach_virtq(&mut self) -> Result<()> {
         if self.g2h_consumer.is_some() || self.h2g_consumer.is_some() {
             return Err(new_error!("virtqueue consumers are already attached"));
@@ -431,8 +425,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Restore a captured canonical transport image against this scratch mapping.
-    pub(crate) fn restore_virtq(&mut self, snapshot: Option<&virtq::VirtqSnapshot>) -> Result<()> {
+    /// Restore admitted ring images into this scratch mapping.
+    pub(crate) fn restore_virtq(&mut self, snapshot: Option<&VirtqSnapshot>) -> Result<()> {
         let Some(snapshot) = snapshot else {
             return Ok(());
         };
@@ -441,7 +435,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             return Err(new_error!("virtqueue consumers are already attached"));
         }
 
-        let (g2h, h2g) = virtq::restore(&self.layout, &self.scratch_mem, snapshot)?;
+        let (g2h, h2g) = snapshot.restore(&self.layout, &self.scratch_mem)?;
         self.g2h_consumer = Some(g2h);
         self.h2g_consumer = Some(h2g);
         Ok(())
@@ -546,10 +540,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Option<SnapshotSharedMemory<GuestSharedMemory>>,
         Option<GuestSharedMemory>,
     )> {
-        if let Some(virtq) = snapshot.virtq() {
-            virtq.preflight(snapshot.layout())?;
-        }
-
         self.g2h_consumer = None;
         self.h2g_consumer = None;
 
