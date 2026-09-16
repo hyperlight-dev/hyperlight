@@ -594,7 +594,9 @@ fn virtq_event_suppression_reconfig() {
             se.write_all(b"ping").unwrap();
             prod.submit(se).unwrap();
             t_cons.join().unwrap();
-            prod.reset().unwrap();
+
+            // SAFETY: The consumer thread has exited without polling any chains.
+            unsafe { prod.reset() }.unwrap();
         });
 
         t_prod.join().unwrap();

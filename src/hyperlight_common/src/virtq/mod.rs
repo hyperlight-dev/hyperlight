@@ -556,9 +556,10 @@ mod tests {
         let token = send_readwrite(&mut producer, b"hello", 64);
         assert!(notifier.notification_count() > initial_count);
 
-        let (recv, _reply) = poll_received(&mut consumer);
+        let (recv, reply) = poll_received(&mut consumer);
         assert_eq!(recv.token(), token);
-        producer.reset().unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.drain(drop).unwrap();
     }
 
     #[test]
@@ -663,7 +664,9 @@ mod tests {
         producer.submit(se).unwrap();
         assert_eq!(notifier.count.load(Ordering::Relaxed), 1);
         assert!(notifier.last_num_inflight.load(Ordering::Relaxed) > 0);
-        producer.reset().unwrap();
+
+        // SAFETY: No consumer is attached to this ring.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]
@@ -889,7 +892,9 @@ mod tests {
 
         // Ring should have space now
         send_readonly(&mut producer, b"e");
-        producer.reset().unwrap();
+
+        // SAFETY: The consumer completed all handles and stays inactive.
+        unsafe { producer.reset() }.unwrap();
     }
 
     #[test]

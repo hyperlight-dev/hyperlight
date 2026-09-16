@@ -11,6 +11,8 @@ use hyperlight_common::virtq::MemOps;
 use crate::layout;
 
 /// Guest-side memory accessor for GVA-valued virtqueue addresses.
+///
+/// Copies reject buffers that overlap the accessed scratch range.
 #[derive(Clone, Copy, Debug)]
 pub struct GuestMemOps {
     scratch_gva: u64,
@@ -70,14 +72,32 @@ unsafe impl MemOps for GuestMemOps {
 
     fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
         let src = self.ptr(addr, dst.len())?;
-        // SAFETY: `src` covers `dst.len()` initialized scratch bytes.
+
+        if dst.is_empty() {
+            return Ok(());
+        }
+
+        if (src as usize).abs_diff(dst.as_ptr() as usize) < dst.len() {
+            return Err(GuestMemError);
+        }
+
+        // SAFETY: The initialized scratch range is disjoint from `dst`.
         unsafe { src.copy_to_nonoverlapping(dst.as_mut_ptr(), dst.len()) };
         Ok(())
     }
 
     fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
         let dst = self.ptr(addr, src.len())?;
-        // SAFETY: `dst` covers `src.len()` scratch bytes.
+
+        if src.is_empty() {
+            return Ok(());
+        }
+
+        if (dst as usize).abs_diff(src.as_ptr() as usize) < src.len() {
+            return Err(GuestMemError);
+        }
+
+        // SAFETY: The writable scratch range is disjoint from `src`.
         unsafe { src.as_ptr().copy_to_nonoverlapping(dst, src.len()) };
         Ok(())
     }
@@ -131,5 +151,74 @@ mod tests {
 
         assert!(mem.write(base + LEN as u64 - 1, &[1, 2]).is_err());
         assert!(mem.load_acquire(base + 1).is_err());
+    }
+
+    #[test]
+    fn guest_mem_rejects_overlapping_reads() {
+        let mut backing = [1u8, 2, 3, 4];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing stays initialized and mapped. No peer accesses it.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 4) };
+
+        assert_eq!(mem.read(base, &mut backing), Err(GuestMemError));
+        assert_eq!(mem.read(base, &mut backing[1..]), Err(GuestMemError));
+        assert_eq!(mem.read(base + 1, &mut backing[..3]), Err(GuestMemError));
+        assert_eq!(backing, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn guest_mem_rejects_overlapping_writes() {
+        let mut backing = [1u8, 2, 3, 4];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing stays initialized and mapped. No peer accesses it.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 4) };
+
+        assert_eq!(mem.write(base, &backing), Err(GuestMemError));
+        assert_eq!(mem.write(base, &backing[1..]), Err(GuestMemError));
+        assert_eq!(mem.write(base + 1, &backing[..3]), Err(GuestMemError));
+        assert_eq!(backing, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn guest_mem_copies_disjoint_scratch_ranges() {
+        let mut backing = [1u8, 2, 3, 4];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing stays initialized and mapped. No peer accesses it.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 4) };
+
+        // Expose each copy address after splitting to preserve pointer provenance.
+        let (left, right) = backing.split_at_mut(2);
+
+        mem.read(left.as_mut_ptr() as u64, right).unwrap();
+        assert_eq!(right, [1, 2]);
+
+        right.copy_from_slice(&[3, 4]);
+        mem.read(right.as_mut_ptr() as u64, left).unwrap();
+        assert_eq!(left, [3, 4]);
+
+        right.copy_from_slice(&[5, 6]);
+        mem.write(left.as_mut_ptr() as u64, right).unwrap();
+        assert_eq!(left, [5, 6]);
+
+        left.copy_from_slice(&[7, 8]);
+        mem.write(right.as_mut_ptr() as u64, left).unwrap();
+        assert_eq!(right, [7, 8]);
+    }
+
+    #[test]
+    fn guest_mem_empty_copies_preserve_bounds() {
+        let mut backing = [1u8, 2, 3, 4];
+        let base = backing.as_mut_ptr() as u64;
+        // SAFETY: Backing stays initialized and mapped. No peer accesses it.
+        let mem = unsafe { GuestMemOps::from_raw_parts(base, 4) };
+
+        mem.read(base, &mut backing[..0]).unwrap();
+        mem.write(base, &backing[..0]).unwrap();
+        mem.read(base + 4, &mut []).unwrap();
+        mem.write(base + 4, &[]).unwrap();
+
+        assert_eq!(mem.read(base + 5, &mut []), Err(GuestMemError));
+        assert_eq!(mem.write(base + 5, &[]), Err(GuestMemError));
+        assert_eq!(backing, [1, 2, 3, 4]);
     }
 }
