@@ -209,6 +209,22 @@ mod tests {
         assert!(subscriber.enabled(&metadata));
     }
 
+    #[test]
+    fn callsite_interest_is_rechecked_after_filter_updates() {
+        let subscriber = GuestSubscriber::new(0, LevelFilter::ERROR);
+        assert!(
+            subscriber
+                .register_callsite(&CALLSITE_METADATA)
+                .is_sometimes()
+        );
+
+        subscriber.set_max_log_level(LevelFilter::TRACE);
+        assert!(subscriber.enabled(&CALLSITE_METADATA));
+
+        subscriber.set_max_log_level(LevelFilter::ERROR);
+        assert!(!subscriber.enabled(&CALLSITE_METADATA));
+    }
+
     static CALLSITE: tracing_core::callsite::DefaultCallsite =
         tracing_core::callsite::DefaultCallsite::new(&CALLSITE_METADATA);
     static CALLSITE_METADATA: tracing_core::Metadata<'static> = tracing_core::metadata! {
