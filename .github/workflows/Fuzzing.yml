@@ -33,7 +33,9 @@ jobs:
   notify-failure:
     runs-on: ubuntu-latest
     needs: [build-guests, fuzzing]
-    if: always() && (needs.build-guests.result == 'failure' || needs.fuzzing.result == 'failure')
+    # A timed-out job reports 'cancelled', so notify on that too. A human
+    # cancelling the whole run also cancels this job, so it stays quiet then.
+    if: always() && (needs.build-guests.result == 'failure' || needs.build-guests.result == 'cancelled' || needs.fuzzing.result == 'failure' || needs.fuzzing.result == 'cancelled')
     permissions:
       issues: write
     steps:

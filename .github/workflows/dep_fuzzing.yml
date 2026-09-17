@@ -27,8 +27,12 @@ permissions:
 jobs:
   fuzz:
     if: ${{ inputs.docs_only == 'false' }}
+    # libFuzzer's own budget plus 30 minutes for setup, build and corpus save.
+    timeout-minutes: ${{ inputs.max_total_time / 60 + 30 }}
+    # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
     runs-on: ${{ fromJson(inputs.arch == 'X64'
-        && format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=fuzz-{0}-{1}-{2}-{3}"]',
+        && format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-{0}", "JobId=fuzz-{1}-{2}-{3}-{4}"]',
+            (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && 'amd' || 'intel',
             inputs.target,
             github.run_id,
             github.run_number,
@@ -56,9 +60,41 @@ jobs:
       - name: Install cargo-fuzz
         run: command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz
 
+      # cargo-fuzz resolves the fuzz project by walking up from the working
+      # directory, so the corpus lives at <repo root>/fuzz/corpus/<target>.
+      # Runners are single-use, so without this each run starts from an empty
+      # corpus and coverage-guided fuzzing never accumulates progress.
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: fuzz/corpus/${{ inputs.target }}
+          key: fuzz-corpus-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ inputs.target }}-
+
       - name: Run Fuzzing
         run: just fuzz-timed ${{ inputs.target }} ${{ inputs.max_total_time }}
         working-directory: src/hyperlight_host
+
+      # The corpus grows every week and the repo shares a 10 GB cache budget
+      # with the rust-cache entries PrimeCaches.yml maintains. cmin keeps only
+      # the minimal input set preserving coverage, bounding that growth.
+      # Housekeeping, so a failure here must not fail the job.
+      - name: Minimise fuzz corpus
+        if: always()
+        timeout-minutes: 20
+        continue-on-error: true
+        run: just fuzz-cmin ${{ inputs.target }}
+        working-directory: src/hyperlight_host
+
+      # always() so the evolved corpus survives a timeout or a crash, not just
+      # a clean run.
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: fuzz/corpus/${{ inputs.target }}
+          key: fuzz-corpus-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Crash Artifacts
         if: failure() # This ensures artifacts are only uploaded on failure

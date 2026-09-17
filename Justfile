@@ -456,6 +456,11 @@ fuzz fuzz-target:
 fuzz-timed fuzz-target max_time:
     case "{{ fuzz-target }}" in *trace*) just fuzz-trace-timed {{ max_time }} {{ fuzz-target }} ;; *) cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }} ;; esac
 
+# Minimises the corpus of the given target to the smallest set preserving coverage
+# Uses *case* for compatibility to determine if the target is a tracing fuzzer or not
+fuzz-cmin fuzz-target:
+    case "{{ fuzz-target }}" in *trace*) just fuzz-trace-cmin {{ fuzz-target }} ;; *) cargo +nightly fuzz cmin {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} ;; esac
+
 # Builds fuzzers for submission to external fuzzing services
 build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") (build-fuzzer "fuzz_host_print")
 
@@ -479,6 +484,17 @@ fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
     just build-rust-guests release trace_guest
     just move-rust-guests release
     RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
+    # Rebuild the trace guest without the trace feature to avoid affecting other tests
+    just build-rust-guests release
+    just move-rust-guests release
+
+# Minimises the corpus of a tracing fuzzer
+# cmin re-executes every input, so the trace guest must be in place for it
+fuzz-trace-cmin fuzz-target="fuzz_guest_trace":
+    # We need to build the trace guest with the trace feature enabled
+    just build-rust-guests release trace_guest
+    just move-rust-guests release
+    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz cmin {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }}
     # Rebuild the trace guest without the trace feature to avoid affecting other tests
     just build-rust-guests release
     just move-rust-guests release
