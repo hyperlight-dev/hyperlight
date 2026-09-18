@@ -56,8 +56,8 @@ use tracing::{Span, instrument};
 
 use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
-    MemoryRegionVecBuilder,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion, MemoryRegion_,
+    MemoryRegionFlags, MemoryRegionVecBuilder,
 };
 #[cfg(readable_shared_mem)]
 use super::shared_mem::HostSharedMemory;
@@ -244,6 +244,8 @@ pub(crate) struct SandboxMemoryLayout {
     heap_size: usize,
     /// The size of the guest code section.
     code_size: usize,
+    /// Guest virtual address of the code section.
+    code_gva: usize,
     /// The size of the init data section (guest blob).
     init_data_size: usize,
     /// Permission flags for the init data region.
@@ -270,6 +272,7 @@ impl Debug for SandboxMemoryLayout {
             &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
         )
         .field("Code Size", &format_args!("{:#x}", self.code_size))
+        .field("Code GVA", &format_args!("{:#x}", self.code_gva))
         .field("Heap Size", &format_args!("{:#x}", self.heap_size))
         .field(
             "Init Data Size",
@@ -345,6 +348,7 @@ impl SandboxMemoryLayout {
             output_data_size,
             heap_size,
             code_size,
+            code_gva: Self::BASE_ADDRESS,
             init_data_size,
             init_data_permissions,
             pt_size: None,
@@ -423,11 +427,8 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
-        &self,
-        host_base: K::HostBaseType,
-    ) -> Result<Vec<MemoryRegion_<K>>> {
-        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, host_base);
+    pub(crate) fn get_memory_regions(&self) -> Result<Vec<MemoryRegion_<GuestMemoryRegion>>> {
+        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, Self::BASE_ADDRESS);
 
         // code
         let peb_offset = builder.push_page_aligned(
@@ -517,7 +518,54 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        Ok(builder.build())
+        let mut regions = builder.build();
+        for region in &mut regions {
+            if region.region_type == Code {
+                let end = self
+                    .code_gva
+                    .checked_add(region.guest_region.len())
+                    .ok_or_else(|| {
+                        new_error!(
+                            "code mapping overflow: base {:#x} + size {:#x}",
+                            self.code_gva,
+                            region.guest_region.len()
+                        )
+                    })?;
+                region.guest_region = self.code_gva..end;
+            }
+        }
+        Ok(regions)
+    }
+
+    /// Set the code GVA after checking that it does not overlap another region.
+    pub(crate) fn set_code_gva(&mut self, code_gva: u64) -> Result<()> {
+        let code_gva = usize::try_from(code_gva)?;
+        let code_end = code_gva
+            .checked_add(self.code_size.next_multiple_of(PAGE_SIZE))
+            .ok_or_else(|| {
+                new_error!(
+                    "code mapping overflow: base {:#x} + size {:#x}",
+                    code_gva,
+                    self.code_size
+                )
+            })?;
+        for region in self.get_memory_regions()? {
+            if region.region_type == Code {
+                continue;
+            }
+            if code_gva < region.guest_region.end && region.guest_region.start < code_end {
+                return Err(new_error!(
+                    "code mapping [{:#x}, {:#x}) conflicts with {:?} region [{:#x}, {:#x})",
+                    code_gva,
+                    code_end,
+                    region.region_type,
+                    region.guest_region.start,
+                    region.guest_region.end,
+                ));
+            }
+        }
+        self.code_gva = code_gva;
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -642,9 +690,14 @@ impl SandboxMemoryLayout {
         0
     }
 
-    /// Guest address of the code section in the sandbox.
-    pub(crate) fn get_guest_code_address(&self) -> usize {
+    /// Guest physical address of the code section.
+    pub(crate) fn get_guest_code_gpa(&self) -> usize {
         Self::BASE_ADDRESS + self.guest_code_offset()
+    }
+
+    /// Guest virtual address of the code section.
+    pub(crate) fn get_guest_code_gva(&self) -> usize {
+        self.code_gva
     }
 
     /// Guest virtual address of the start of output data.
@@ -738,6 +791,35 @@ mod tests {
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)
         );
+    }
+
+    #[test]
+    fn code_gva_updates_code_region() {
+        let mut layout =
+            SandboxMemoryLayout::new(SandboxConfiguration::default(), PAGE_SIZE, 0, None).unwrap();
+        let code_gva = 0x100_0000;
+        layout.set_code_gva(code_gva).unwrap();
+
+        assert_eq!(
+            layout.get_guest_code_gpa(),
+            SandboxMemoryLayout::BASE_ADDRESS
+        );
+        assert_eq!(layout.get_guest_code_gva(), code_gva as usize);
+        let code = layout
+            .get_memory_regions()
+            .unwrap()
+            .into_iter()
+            .find(|region| region.region_type == Code)
+            .unwrap();
+        assert_eq!(code.host_region.start, SandboxMemoryLayout::BASE_ADDRESS);
+        assert_eq!(code.guest_region.start, code_gva as usize);
+    }
+
+    #[test]
+    fn code_gva_rejects_overlap() {
+        let mut layout =
+            SandboxMemoryLayout::new(SandboxConfiguration::default(), PAGE_SIZE, 0, None).unwrap();
+        assert!(layout.set_code_gva(layout.peb_address() as u64).is_err());
     }
 
     #[test]
