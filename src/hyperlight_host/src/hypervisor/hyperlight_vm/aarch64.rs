@@ -12,7 +12,7 @@ use super::{
 #[cfg(hvf)]
 use crate::hypervisor::HvfInterruptHandle;
 use crate::hypervisor::InterruptHandleImpl;
-#[cfg(any(kvm, mshv3))]
+#[cfg(target_os = "linux")]
 use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
