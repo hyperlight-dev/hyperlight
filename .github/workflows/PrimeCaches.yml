@@ -81,10 +81,12 @@ jobs:
             hypervisor: kvm
             config: release
     timeout-minutes: ${{ fromJSON(vars.PRIME_CACHES_JOB_TIMEOUT || '30') }}
+    # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
     runs-on: ${{ fromJson(matrix.arch == 'X64'
-        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd", "JobId=prime-cache-{2}-{3}-{4}-{5}-{6}"]',
+        && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=prime-cache-{3}-{4}-{5}-{6}-{7}"]',
             matrix.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
             matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor,
+            (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && 'amd' || 'intel',
             matrix.hypervisor,
             matrix.config,
             github.run_id,

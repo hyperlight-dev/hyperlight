@@ -26,7 +26,12 @@ jobs:
   linux-checks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: ${{ fromJSON(vars.CODE_CHECKS_JOB_TIMEOUT || '30') }}
-    runs-on: ["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=linux-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
+    # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
+    runs-on: ${{ fromJSON(format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-{0}", "JobId=linux-checks-{1}-{2}-{3}"]',
+        (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && 'amd' || 'intel',
+        github.run_id,
+        github.run_number,
+        github.run_attempt)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -99,7 +104,12 @@ jobs:
   windows-checks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: ${{ fromJSON(vars.CODE_CHECKS_JOB_TIMEOUT || '30') }}
-    runs-on: ["self-hosted", "Windows", "X64", "1ES.Pool=hld-win2025-amd", "JobId=windows-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
+    # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
+    runs-on: ${{ fromJSON(format('["self-hosted", "Windows", "X64", "1ES.Pool=hld-win2025-{0}", "JobId=windows-checks-{1}-{2}-{3}"]',
+        (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && 'amd' || 'intel',
+        github.run_id,
+        github.run_number,
+        github.run_attempt)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
