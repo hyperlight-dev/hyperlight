@@ -1,0 +1,84 @@
+# Benchmarks whose results appear in pull request comments.
+#
+# Entries are regular expressions matched against criterion benchmark ids such
+# as `sandboxes/create_initialized/default`. CI runs every benchmark and reports
+# only the ones selected here, so noisy benchmarks can be dropped from the
+# comment without losing their results in the uploaded criterion artifact.
+#
+# A benchmark is reported when it matches `allowlist` and no `denylist` entry.
+# An empty `allowlist` keeps every benchmark the denylist does not exclude, and
+# leaving both lists empty disables filtering.
+#
+# An allowlist entry matching no benchmark fails the report, so a renamed or
+# deleted benchmark surfaces instead of silently vanishing from the comment. A
+# denylist entry matching nothing is accepted, because a benchmark may be absent
+# on some platforms.
+#
+#   cargo ci bench-report --config-file bench_report.toml
+#   cargo ci bench --config-file bench_report.toml
+#
+# The lists below keep the benchmarks whose median drifted by at most 5% across
+# five back-to-back local runs on an idle 32 core machine. CI runners are
+# smaller and noisier, so treat that as a lower bound on the drift CI sees.
+# Regenerate by running the suite several times with `--save-baseline` and
+# comparing `target/criterion/<id>/<baseline>/estimates.json`.
+#
+# `snapshot_files/cold_start_via_snapshot` and `snapshots/restore` stay out
+# whatever they measure. Both families have members far outside the threshold,
+# and `snapshots/restore/small` swung 1.43x on a later run after measuring 1.25%
+# over the five sampled here.
+#
+# The `hyperlight_common` groups were restructured by the virtqueue transport
+# work, which replaced the `alloc_*`, `free*`, `recycle_pool` and
+# `segmented_payload` groups with `payload_allocation` and `slot_pool`, and
+# shortened the `virtq_*_allocator_strategy` names. The entries below are the
+# members of the new groups that hold to the threshold.
+#
+# The `snapshot_files`, `snapshots`, `sandboxes/sandbox_from_snapshot` and
+# `guest_calls/call_with_restore` entries keep the drift measured before that
+# work landed. Taking a snapshot fails on this machine now, so those families
+# could not be re-measured.
+#
+# The commented entries widen the allowlist back to the full suite. Uncommenting
+# all of them and emptying the denylist reports all 87 benchmarks. The trailing
+# count is how many extra benchmarks each one pulls in.
+allowlist = [
+  # "^function_call_serialization/",  # adds 2
+  "^guest_calls/",
+  # "^guest_functions_with_large_parameters/",  # adds 1
+  "^payload_allocation/",
+  "^sample_workloads/",
+  # "^sandboxes/",  # adds 12
+  # "^shared_memory/",  # adds 4
+  "^shared_memory/copy_to_slice/1MB$",
+  "^shared_memory/fill/1MB$",
+  # "^slot_pool/",  # adds 2
+  "^slot_pool/alloc_dealloc_128$",
+  # "^snapshot_files/",  # adds 19
+  "^snapshot_files/load_snapshot/large$",
+  "^snapshot_files/load_snapshot_unverified/large$",
+  "^snapshot_files/load_snapshot_unverified/medium$",
+  "^snapshot_files/load_snapshot_unverified/small$",
+  "^snapshot_files/save_snapshot/large$",
+  # "^snapshots/",  # adds 8
+  "^virtq_readonly/",
+  # "^virtq_readwrite/",  # adds 4
+  "^virtq_readwrite/slot_pool_segmented/65536$",
+  "^virtq_readwrite/slot_pool_segmented/8192$",
+]
+
+# Noisy members of otherwise stable groups, with the measured drift.
+#
+# Every `sandboxes` benchmark drifted by more than 9%, reaching 218% on
+# `create_initialized/small`, so that group is absent from the allowlist rather
+# than listed here. `function_call_serialization` (9% to 15%) and
+# `guest_functions_with_large_parameters` (8%) are absent for the same reason,
+# as are the `slot_pool` and `virtq_readwrite` members left out above.
+denylist = [
+  "^guest_calls/call_with_restore/large$",                # 13%
+  "^guest_calls/call_with_restore/medium$",               # 16%
+  "^guest_calls/call_with_restore/small$",                # 11%
+  "^guest_calls/interrupt_latency$",                      # 51%
+  "^virtq_readonly/slot_pool_segmented/8192$",            # 19%
+  "^virtq_readonly/slot_pool_segmented_fragmented/8192$", # 11%
+]

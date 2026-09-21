@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 mod bench;
 mod bench_report;
+mod config;
 
 use clap::{Parser, Subcommand};
 

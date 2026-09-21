@@ -2,11 +2,14 @@
 // Copyright 2025 The Hyperlight Authors.
 //! The `bench` subcommand: runs criterion benchmarks in parallel via criterion-swarm.
 
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Context;
 use criterion_swarm::{CriterionSwarm, OutputMode};
+
+use crate::config::BenchConfig;
 
 /// An output mode flag for `--build-output` / `--benchmarks-output`.
 #[derive(Clone, Debug)]
@@ -66,12 +69,22 @@ pub struct BenchArgs {
     #[arg(short = 'F', long)]
     pub features: Vec<String>,
 
+    /// Run only the benchmarks selected by this config file
+    #[arg(long, value_name = "PATH")]
+    pub config_file: Option<PathBuf>,
+
     /// Additional arguments to forward to criterion benchmarks
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub bench_args: Vec<String>,
 }
 
 pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
+    let config = args
+        .config_file
+        .as_deref()
+        .map(BenchConfig::load)
+        .transpose()?;
+
     let mut swarm = CriterionSwarm::builder().jobs(args.jobs);
 
     if !args.binary.is_empty() {
@@ -112,10 +125,19 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
             .benchmarks(bench_mode),
     );
 
-    let swarm = swarm
+    let mut swarm = swarm
         .prepare()
         .await
         .context("Failed to prepare criterion swarm")?;
+
+    if let Some(config) = &config {
+        let selected: HashSet<String> = config
+            .select(swarm.benchmarks().into_iter().map(str::to_string))?
+            .into_iter()
+            .collect();
+        swarm.retain(|name| selected.contains(name));
+    }
+
     if bench_mode == (bench_mode | OutputMode::SUMMARY) {
         let total = swarm.benchmarks().len();
         let jobs = swarm.jobs().min(total);

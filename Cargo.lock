@@ -694,9 +694,9 @@ dependencies = [
 
 [[package]]
 name = "criterion-swarm"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82693ab3e80479ca52770515f3837028800e365aac48a83edb86f920a6783232"
+checksum = "4bbb01e7dd0d588f78fe0bd2fdc12e921875542754473f22b09da4f9edbc2770"
 dependencies = [
  "ansi-replace",
  "anyhow",
@@ -1624,9 +1624,11 @@ dependencies = [
  "clap",
  "criterion-markdown",
  "criterion-swarm",
+ "regex",
  "serde",
  "serde_json",
  "tokio",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

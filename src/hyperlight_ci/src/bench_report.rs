@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use clap::Args;
 use criterion_swarm::{CriterionSwarm, NoopReporter};
 
+use crate::config::BenchConfig;
+
 /// Command-line arguments for the `bench-report` subcommand.
 #[derive(Args)]
 pub struct BenchReportArgs {
@@ -25,6 +27,10 @@ pub struct BenchReportArgs {
     #[arg(long)]
     pub collapsible: Option<String>,
 
+    /// Report only the benchmarks selected by this config file
+    #[arg(long, value_name = "PATH")]
+    pub config_file: Option<PathBuf>,
+
     /// Additional arguments to forward to criterion benchmarks (e.g. filter, --exact)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub bench_args: Vec<String>,
@@ -32,24 +38,28 @@ pub struct BenchReportArgs {
 
 /// Entry point for the bench-report subcommand.
 pub async fn run(args: BenchReportArgs) -> Result<()> {
-    let allowlist = build_allowlist(&args).await?;
+    let mut benchmarks = discover_benchmarks(&args).await?;
+
+    if let Some(path) = &args.config_file {
+        benchmarks = BenchConfig::load(path)?.select(benchmarks)?;
+    }
 
     let options = criterion_markdown::RenderOptions {
         collapsible: args.collapsible,
     };
     let markdown =
-        criterion_markdown::render_with_options(&args.criterion_dir, &allowlist, &options)?;
+        criterion_markdown::render_with_options(&args.criterion_dir, &benchmarks, &options)?;
 
     print!("{markdown}");
 
     Ok(())
 }
 
-/// Builds an allowlist of benchmark full_ids by discovering benchmarks via CriterionSwarm.
+/// Discovers benchmark full_ids via CriterionSwarm.
 ///
 /// All trailing arguments (filter, --exact, etc.) are forwarded as bench args
 /// to CriterionSwarm so it handles filtering during discovery.
-async fn build_allowlist(args: &BenchReportArgs) -> Result<Vec<String>> {
+async fn discover_benchmarks(args: &BenchReportArgs) -> Result<Vec<String>> {
     let mut swarm = CriterionSwarm::builder();
 
     if !args.binary.is_empty() {
