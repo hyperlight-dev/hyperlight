@@ -114,10 +114,10 @@ test-like-ci config=default-target hypervisor="kvm":
     just test-compilation-no-default-features {{config}}
 
     @# test the crashdump feature
-    just test-rust-crashdump {{config}}
+    {{ set-env-command }}RUST_LOG='debug'; just test-rust-crashdump {{config}}
 
     @# test the tracing related features
-    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "RUST_LOG=debug just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
 code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
@@ -170,13 +170,13 @@ build-test-like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
 
     @# Run Rust Gdb tests
-    just test-rust-gdb-debugging {{config}}
+    {{ set-env-command }}RUST_LOG='debug'; just test-rust-gdb-debugging {{config}}
 
     @# Run Rust Crashdump tests
-    just test-rust-crashdump {{config}}
+    {{ set-env-command }}RUST_LOG='debug'; just test-rust-crashdump {{config}}
 
     @# Run Rust Tracing tests
-    {{ if os() == "linux" { "just test-rust-tracing " + config } else { "" } }}
+    {{ if os() == "linux" { "RUST_LOG=debug just test-rust-tracing " + config } else { "" } }}
 
 run-examples-like-ci config=default-target hypervisor="kvm":
     @# Run Rust examples - Windows
@@ -282,14 +282,15 @@ test-compilation-no-default-features target=default-target:
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
 
 # runs a subset of existing tests with HYPERLIGHT_MAX_SURROGATES=0 (Windows only).
-# Covers: guest calls, host callbacks, in-memory snapshot/restore, and
-# save/load snapshot from disk.
+# Covers guest calls, host callbacks, virtqueue buffers and errors,
+# in-memory snapshot/restore, and save/load from disk.
+# No-surrogate mode permits only one live VM per process, so tests run serially.
 # NOTE: if any of the test names below are renamed, update both this
 # recipe AND the matching CI step in .github/workflows/dep_build_test.yml.
 test-no-surrogate target=default-target:
     {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --lib -- no_surrogate_tests --test-threads=1
-    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test -- guest_malloc guest_panic corrupt_output_size_prefix_rejected --test-threads=1
-    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test sandbox_host_tests -- --exact callback_test float_roundtrip --test-threads=1
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test -- guest_malloc guest_panic --test-threads=1
+    {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --test sandbox_host_tests -- --exact callback_test float_roundtrip guest_external_bytes_round_trip_and_retention oversized_host_response_returns_transport_error --test-threads=1
     {{ set-env-command }}HYPERLIGHT_MAX_SURROGATES=0; {{ set-env-command }}HYPERLIGHT_INITIAL_SURROGATES=0; {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} --lib -- snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot --test-threads=1
 
 # runs tests that exercise gdb debugging

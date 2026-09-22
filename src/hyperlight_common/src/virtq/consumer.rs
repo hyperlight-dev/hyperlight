@@ -1406,6 +1406,11 @@ mod tests {
         // The rejected chain is returned. The earlier chain remains in flight.
         assert_eq!(producer.poll().unwrap().unwrap().token(), rejected);
         assert!(producer.poll().unwrap().is_none());
+
+        drop(consumer);
+        // SAFETY: The peer is stopped and all consumer chain handles are dropped.
+        unsafe { producer.reset().unwrap() };
+        assert_eq!(producer.pool().num_live(), 0);
     }
 
     #[test]
@@ -1428,6 +1433,11 @@ mod tests {
         assert_eq!(consumer.inner.num_inflight(), 0);
         assert_eq!(consumer.next_token, 0);
         assert!(producer.poll().unwrap().is_none());
+
+        drop(consumer);
+        // SAFETY: The peer is stopped and all consumer chain handles are dropped.
+        unsafe { producer.reset().unwrap() };
+        assert_eq!(producer.pool().num_live(), 0);
     }
 
     #[test]
@@ -1452,6 +1462,11 @@ mod tests {
         assert_eq!(consumer.inner.num_inflight(), 1);
         assert_eq!(consumer.next_token, 1);
         assert!(producer.poll().unwrap().is_none());
+
+        drop(consumer);
+        // SAFETY: The peer is stopped and all consumer chain handles are dropped.
+        unsafe { producer.reset().unwrap() };
+        assert_eq!(producer.pool().num_live(), 0);
     }
 
     #[test]

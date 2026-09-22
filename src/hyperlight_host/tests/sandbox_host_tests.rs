@@ -615,6 +615,9 @@ fn assert_g2h_reply_capacity_failure_is_recoverable(queue_size: usize, pool_page
     cfg.set_g2h_pool_pages(pool_pages);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        // Guest logs must not consume the capacity under test.
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::OFF);
+
         let calls = Arc::new(AtomicUsize::new(0));
         let host_calls = Arc::clone(&calls);
         sandbox
@@ -662,6 +665,8 @@ fn g2h_reply_capacity_retained_buffers_are_recoverable() {
     cfg.set_g2h_pool_pages(2);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::OFF);
+
         sandbox
             .register("HostEchoByteChunks", |_: Vec<Bytes>| {
                 vec![Bytes::from_static(b"retained")]
@@ -706,6 +711,8 @@ fn g2h_reply_capacity_uses_available_upper_buffers() {
     cfg.set_g2h_pool_pages(4);
 
     with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::OFF);
+
         // The request uses one descriptor. The response needs three upper-tier buffers.
         let expected = vec![1u8; 9 * 1024];
         let host_result = expected.clone();

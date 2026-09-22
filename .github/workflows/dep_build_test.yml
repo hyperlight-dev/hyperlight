@@ -141,6 +141,7 @@ jobs:
           HYPERLIGHT_INITIAL_SURROGATES: "0"
         run: |
           PROFILE=${{ inputs.config == 'debug' && 'dev' || inputs.config }}
+          # No-surrogate mode permits only one live VM per process.
           # Verify each expected test actually ran (guards against silent
           # renames where cargo test exits 0 with 0 matches).
           # NOTE: keep in sync with `just test-no-surrogate`.
@@ -156,12 +157,12 @@ jobs:
           OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- no_surrogate_tests --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
           echo "$OUT"
           assert_ran "$OUT" single_vm_lifecycle
-          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test integration_test -- guest_malloc guest_panic corrupt_output_size_prefix_rejected --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test integration_test -- guest_malloc guest_panic --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
           echo "$OUT"
-          assert_ran "$OUT" guest_malloc guest_panic corrupt_output_size_prefix_rejected
-          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test sandbox_host_tests -- --exact callback_test float_roundtrip --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
+          assert_ran "$OUT" guest_malloc guest_panic
+          OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --test sandbox_host_tests -- --exact callback_test float_roundtrip guest_external_bytes_round_trip_and_retention oversized_host_response_returns_transport_error --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
           echo "$OUT"
-          assert_ran "$OUT" callback_test float_roundtrip
+          assert_ran "$OUT" callback_test float_roundtrip guest_external_bytes_round_trip_and_retention oversized_host_response_returns_transport_error
           OUT=$(cargo test -p hyperlight-host --profile=$PROFILE --lib -- snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot --test-threads=1 2>&1) || { echo "$OUT"; exit 1; }
           echo "$OUT"
           assert_ran "$OUT" snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot

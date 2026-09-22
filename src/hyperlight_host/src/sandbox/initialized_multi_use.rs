@@ -4920,6 +4920,9 @@ mod tests {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 1i32).unwrap();
 
+            // Checkpointing repairs the rings, so inject corruption afterward.
+            sbox.checkpoint_transport_for_snapshot().unwrap();
+
             let layout = &sbox.mem_mgr.layout;
             let scratch_base = layout::scratch_base_gpa(layout.get_scratch_size());
 

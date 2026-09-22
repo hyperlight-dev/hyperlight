@@ -1027,12 +1027,14 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
 
     fn manager(case: &TestCase) -> SandboxMemoryManager<HostSharedMemory> {
+        let host_page_size = page_size::get();
+
         #[cfg(not(unshared_snapshot_mem))]
         let shared_mem =
-            ReadonlySharedMemory::from_bytes(&vec![0; vmem::PAGE_SIZE], vmem::PAGE_SIZE).unwrap();
+            ReadonlySharedMemory::from_bytes(&vec![0; host_page_size], host_page_size).unwrap();
 
         #[cfg(unshared_snapshot_mem)]
-        let shared_mem = ExclusiveSharedMemory::new(vmem::PAGE_SIZE)
+        let shared_mem = ExclusiveSharedMemory::new(host_page_size)
             .unwrap()
             .build()
             .0;
