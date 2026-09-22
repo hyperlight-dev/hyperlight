@@ -998,6 +998,7 @@ impl MultiUseSandbox {
     }
 
     fn with_guest_execution<T>(&mut self, op: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        // ===== KILL() TIMING POINT 1 =====
         // Cancellation set before this reset is ignored for this operation.
         // Cancellation during request preparation must reach the VM.
         self.vm.clear_cancel();
