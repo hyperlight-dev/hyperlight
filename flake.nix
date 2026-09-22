@@ -96,9 +96,9 @@
               sha256 = "sha256-qqF33vNuAdU5vua96VKVIwuc43j4EFeEXbjQ6+l4mO4=";
             };
             nightly = {
-              date = "2026-02-27";
+              date = "2026-09-22";
               channel = "nightly";
-              sha256 = "sha256-5twI9QsrPl0ryOZ4POGYAivSeI08jgmWnv0wVvzbjcE=";
+              sha256 = "sha256-7qsyGDZErke6MdrngELbKaqs1Xgx8ols/e/HIygUIXg=";
             };
             "1.89" = {
               date = "2025-08-07";
