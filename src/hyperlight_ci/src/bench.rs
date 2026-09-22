@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use criterion_swarm::{CriterionSwarm, OutputMode};
 
+use crate::ballast::Ballast;
 use crate::config::BenchConfig;
 
 /// An output mode flag for `--build-output` / `--benchmarks-output`.
@@ -72,6 +73,10 @@ pub struct BenchArgs {
     /// Run only the benchmarks selected by this config file
     #[arg(long, value_name = "PATH")]
     pub config_file: Option<PathBuf>,
+
+    /// Run without holding a sandbox resident for the duration of the run
+    #[arg(long)]
+    pub no_ballast: bool,
 
     /// Additional arguments to forward to criterion benchmarks
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -143,5 +148,15 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
         let jobs = swarm.jobs().min(total);
         println!("Running {total} benchmarks with parallelism {jobs}");
     }
-    swarm.run().await.context("Failed to run criterion swarm")
+
+    // Held until the run finishes.
+    let ballast = if args.no_ballast {
+        None
+    } else {
+        Some(Ballast::start()?)
+    };
+
+    let result = swarm.run().await.context("Failed to run criterion swarm");
+    drop(ballast);
+    result
 }
