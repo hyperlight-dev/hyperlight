@@ -153,7 +153,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v2+json`.
+/// `application/vnd.hyperlight.snapshot.config.v3+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -907,7 +907,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 4,
+  "abi_version": 5,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,
@@ -1097,7 +1097,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 4,
+  "abi_version": 5,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "stack_top_gva": 3735928559,

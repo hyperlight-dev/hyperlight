@@ -32,7 +32,7 @@ Four blob kinds per tag:
 * **manifest** (`application/vnd.oci.image.manifest.v1+json`). Tiny JSON
   pointer record selected via `index.json`. References one config and
   two layers by digest.
-* **config** (`application/vnd.hyperlight.snapshot.config.v2+json`). The
+* **config** (`application/vnd.hyperlight.snapshot.config.v3+json`). The
   snapshot descriptor: arch, hypervisor, CPU vendor, ABI version,
   resume address and captured registers, memory and transport layout,
   registered host functions, and snapshot generation counter. Loaded

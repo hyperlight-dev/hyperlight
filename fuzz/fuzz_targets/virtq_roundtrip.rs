@@ -51,12 +51,9 @@ fuzz_target!(|data: &[u8]| -> Corpus {
         Layout::from_base(BASE_ADDR, NonZeroU16::new(QUEUE_SIZE as u16).unwrap()).unwrap()
     };
 
-    let pool = SlotPool::new(SlotLayout::new(
-        BASE_ADDR + ring_bytes as u64,
-        SLOT_SIZE,
-        QUEUE_SIZE,
-    ))
-    .unwrap();
+    let pool_layout =
+        SlotLayout::new(BASE_ADDR + ring_bytes as u64, SLOT_SIZE, QUEUE_SIZE).unwrap();
+    let pool = SlotPool::new(pool_layout).unwrap();
 
     let mut producer = VirtqProducer::new(layout, mem.clone(), NoopNotifier, pool.clone());
     let mut consumer = VirtqConsumer::new(layout, mem, NoopNotifier);

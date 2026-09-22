@@ -27,14 +27,16 @@ A snapshot carries four independently evolvable version markers:
   (`application/vnd.hyperlight.snapshot.transport.v1`), aliased as
   `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
   virtqueue state stored outside the memory layer.
-* **Config schema**, `MT_CONFIG_V2`
-  (`application/vnd.hyperlight.snapshot.config.v2+json`), aliased as
+* **Config schema**, `MT_CONFIG_V3`
+  (`application/vnd.hyperlight.snapshot.config.v3+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
   sizes, `abi_version`, `hyperlight_version`, etc.). Renaming a field,
   changing its type, or adding a required field is a schema change and
-  bumps this constant. Version 2 requires a transport layer.
+  bumps this constant. Version 3 describes the virtqueue-only memory layout
+  and requires a transport layer. Config v1 and v2 are incompatible with
+  the current ABI.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.

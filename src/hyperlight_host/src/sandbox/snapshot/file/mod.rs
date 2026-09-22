@@ -27,8 +27,8 @@ use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
 };
 pub(super) use self::media_types::{
-    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V1,
-    MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_SNAPSHOT_CURRENT,
+    MT_SNAPSHOT_V1, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::{NextAction, Snapshot};
@@ -771,10 +771,11 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V2 => {}
-            MT_CONFIG_V1 => {
+            MT_CONFIG_V3 => {}
+            MT_CONFIG_V1 | MT_CONFIG_V2 => {
                 return Err(crate::new_error!(
-                    "snapshot config v1 is incompatible with snapshot ABI {}",
+                    "snapshot config media type {:?} is incompatible with snapshot ABI {}",
+                    cfg_media,
                     SNAPSHOT_ABI_VERSION
                 ));
             }
@@ -782,7 +783,7 @@ impl Snapshot {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V2
+                    MT_CONFIG_V3
                 ));
             }
         }

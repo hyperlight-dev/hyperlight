@@ -1984,17 +1984,21 @@ fn unknown_config_media_type_rejected() {
 }
 
 #[test]
-fn config_v1_rejected() {
-    let (_dir, path) = save_for_mutation();
-    rewrite_manifest(&path, |m| {
-        m["config"]["mediaType"] =
-            Value::from("application/vnd.hyperlight.snapshot.config.v1+json");
-    });
-    let err = unwrap_err_snapshot(Snapshot::checked_load(
-        &path,
-        OciTag::new("latest").unwrap(),
-    ));
-    assert_err_contains(err, "incompatible with snapshot ABI 4");
+fn legacy_config_versions_rejected() {
+    for media_type in [
+        "application/vnd.hyperlight.snapshot.config.v1+json",
+        "application/vnd.hyperlight.snapshot.config.v2+json",
+    ] {
+        let (_dir, path) = save_for_mutation();
+        rewrite_manifest(&path, |m| {
+            m["config"]["mediaType"] = Value::from(media_type);
+        });
+        let err = unwrap_err_snapshot(Snapshot::checked_load(
+            &path,
+            OciTag::new("latest").unwrap(),
+        ));
+        assert_err_contains(err, "incompatible with snapshot ABI 5");
+    }
 }
 
 #[test]
@@ -2500,7 +2504,7 @@ fn manifest_uses_correct_config_and_layer_media_types() {
         serde_json::from_slice(&std::fs::read(manifest_path(&path)).unwrap()).unwrap();
     assert_eq!(
         manifest["config"]["mediaType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v2+json"
+        "application/vnd.hyperlight.snapshot.config.v3+json"
     );
     assert_eq!(manifest["layers"].as_array().unwrap().len(), 2);
     assert_eq!(
@@ -2516,7 +2520,7 @@ fn manifest_uses_correct_config_and_layer_media_types() {
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"].as_str().unwrap(),
-        "application/vnd.hyperlight.snapshot.config.v2+json"
+        "application/vnd.hyperlight.snapshot.config.v3+json"
     );
 }
 

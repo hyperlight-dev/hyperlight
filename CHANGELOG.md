@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured level is above `OFF` rather than whether the tracing state was
   allocated.
 * **Breaking:** Virtqueue rings and pools occupy host-owned scratch before page
-  tables. Snapshots use ABI 4 and config schema v2. Existing snapshots must be
+  tables. Snapshots use ABI 5 and config schema v3. Existing snapshots must be
   regenerated.
 * Host virtqueue access uses checked copies and atomics across mapped scratch.
   Snapshot admission checks geometry, canonical ring state, and H2G buffer shape.
@@ -46,7 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Require guest logs and all host and guest function calls to use virtqueues.
 * Keep registered Rust guest return values typed until transport encoding so
   external byte results avoid intermediate FlatBuffer copies.
-* Store canonical virtqueue rings in versioned OCI transport layers. Config v2
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v3
   rejects snapshots without transport state.
 * Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
   keep their deferred result path.

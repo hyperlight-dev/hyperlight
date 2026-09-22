@@ -8,7 +8,9 @@ pub(in crate::sandbox::snapshot) const MT_CONFIG_V1: &str =
     "application/vnd.hyperlight.snapshot.config.v1+json";
 pub(in crate::sandbox::snapshot) const MT_CONFIG_V2: &str =
     "application/vnd.hyperlight.snapshot.config.v2+json";
-pub(in crate::sandbox::snapshot) const MT_CONFIG_CURRENT: &str = MT_CONFIG_V2;
+pub(in crate::sandbox::snapshot) const MT_CONFIG_V3: &str =
+    "application/vnd.hyperlight.snapshot.config.v3+json";
+pub(in crate::sandbox::snapshot) const MT_CONFIG_CURRENT: &str = MT_CONFIG_V3;
 pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_V1: &str =
     "application/vnd.hyperlight.snapshot.memory.v1";
 pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_CURRENT: &str = MT_SNAPSHOT_V1;
@@ -19,7 +21,7 @@ pub(in crate::sandbox::snapshot) const MT_TRANSPORT_CURRENT: &str = MT_TRANSPORT
 /// ABI version for the snapshot memory blob. Bumped when the
 /// host-guest contract for the snapshot bytes changes. See
 /// docs/snapshot-versioning.md.
-pub(in crate::sandbox::snapshot) const SNAPSHOT_ABI_VERSION: u32 = 4;
+pub(in crate::sandbox::snapshot) const SNAPSHOT_ABI_VERSION: u32 = 5;
 
 /// OCI standard annotation key for a manifest's tag inside an image
 /// index. Set on the manifest descriptor in `index.json`, not on the

@@ -295,7 +295,8 @@ mod tests {
         let base = backing.as_mut_ptr() as u64;
         // SAFETY: Backing remains live until all mapped views are dropped.
         let mem = unsafe { GuestMemOps::from_raw_parts(base, 8) };
-        let pool = SlotPool::new(SlotLayout::new(base, 8, 1)).unwrap();
+        let layout = SlotLayout::new(base, 8, 1).unwrap();
+        let pool = SlotPool::new(layout).unwrap();
         let allocation = pool.alloc(8).unwrap();
         let lease = BufferLease::new(pool.clone(), allocation);
 
@@ -320,7 +321,8 @@ mod tests {
         let base = backing.as_mut_ptr() as u64;
         // SAFETY: Backing remains mapped for the accessor's lifetime.
         let mem = unsafe { GuestMemOps::from_raw_parts(base, 8) };
-        let pool = SlotPool::new(SlotLayout::new(base + 8, 8, 1)).unwrap();
+        let layout = SlotLayout::new(base + 8, 8, 1).unwrap();
+        let pool = SlotPool::new(layout).unwrap();
         let allocation = pool.alloc(8).unwrap();
         let lease = BufferLease::new(pool.clone(), allocation);
 
