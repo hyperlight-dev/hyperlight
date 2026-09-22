@@ -16,8 +16,8 @@ use hyperlight_host::sandbox::MultiUseSandbox;
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
-/// Sandbox heap size configurations for benchmarking.
-/// Only affects heap size - all other configuration remains at defaults.
+/// Sandbox heap sizes and scratch budgets for benchmarking.
+/// Larger heaps need extra scratch for page tables.
 #[derive(Clone, Copy)]
 enum SandboxSize {
     /// Default configuration (uses hyperlight defaults)
@@ -37,7 +37,7 @@ impl SandboxSize {
         match self {
             Self::Default => builder,
             Self::Small => builder.heap_size(SMALL_HEAP_SIZE),
-            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x50000),
+            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x60000),
             Self::Large => builder.heap_size(LARGE_HEAP_SIZE).scratch_size(0x100000),
         }
     }
