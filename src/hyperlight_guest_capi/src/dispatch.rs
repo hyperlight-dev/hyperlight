@@ -25,6 +25,19 @@ static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
 
 type CGuestFunc = extern "C" fn(&FfiFunctionCall) -> *mut FfiReturnValue;
 
+core::arch::global_asm!(
+    ".weak c_guest_dispatch_function",
+    ".set c_guest_dispatch_function, {}",
+    sym c_guest_dispatch_function_default,
+);
+
+extern "C" fn c_guest_dispatch_function_default(
+    _function_call: &FfiFunctionCall,
+) -> *mut FfiReturnValue {
+    // Null surfaces as ErrorCode::GuestFunctionNotFound
+    core::ptr::null_mut()
+}
+
 unsafe extern "C" {
     // The guest must return a value created by an hl_result_from_* function.
     fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiReturnValue;
@@ -78,11 +91,6 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 
         Ok(encode_return_value(function_result))
     } else {
-        // The given function is not registered. The guest should implement a function called c_guest_dispatch_function to handle this.
-
-        // TODO: ideally we would define a default implementation of this with weak linkage so the guest is not required
-        // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
-        // to not do that.
         let function_name = function_call.function_name.clone();
         let ffi_func_call = OwnedFfiFunctionCall::from_function_call(function_call)?;
         let function_result = unsafe { c_guest_dispatch_function(ffi_func_call.as_ffi()) };

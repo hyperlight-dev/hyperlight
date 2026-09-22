@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   extraction without flattening.
 
 ### Changed
+* C guests may omit `c_guest_dispatch_function` when they do not need custom
+  fallback dispatch.
 * Support overriding the guest log level when building or restoring initialized
   snapshots.
 * `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
