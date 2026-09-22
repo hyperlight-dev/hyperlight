@@ -31,7 +31,7 @@
       ],
       "settings": {
         "rust-analyzer.rustfmt.extraArgs": [
-          "+nightly" // required for rustfmt.toml which uses nightly features
+          "+nightly-2026-09-22" // required for rustfmt.toml which uses nightly features
         ]
       }
     }

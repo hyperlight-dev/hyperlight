@@ -61,8 +61,8 @@ jobs:
 
       - name: Install nightly toolchain
         run: |
-          rustup toolchain install nightly
-          rustup component add llvm-tools --toolchain nightly
+          rustup toolchain install nightly-2026-09-22
+          rustup component add llvm-tools --toolchain nightly-2026-09-22
 
       - name: Generate coverage report
         run: just coverage-ci ${{ matrix.hypervisor }}

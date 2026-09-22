@@ -5,7 +5,7 @@ set dotenv-load := true
 
 set-env-command := if os() == "windows" { "$env:" } else { "export " }
 bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
-nightly-toolchain := "nightly-2026-02-27"
+nightly-toolchain := "nightly-2026-09-22"
 # Pinned cargo-hyperlight version used to build the guest sysroot. Keep this in
 # lockstep with the version pinned in flake.nix.
 cargo-hyperlight-version := "0.1.14"
@@ -313,10 +313,10 @@ test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
 miri-tests:
-    rustup +nightly component list | grep -q "miri.*installed" || rustup component add miri --toolchain nightly
+    rustup +{{nightly-toolchain}} component list | grep -q "miri.*installed" || rustup component add miri --toolchain {{nightly-toolchain}}
     # We can add more as needed
-    cargo +nightly miri test -p hyperlight-common -F trace_guest
-    cargo +nightly miri test -p hyperlight-host --lib -- mem::shared_mem::tests
+    cargo +{{nightly-toolchain}} miri test -p hyperlight-common -F trace_guest
+    cargo +{{nightly-toolchain}} miri test -p hyperlight-host --lib -- mem::shared_mem::tests
 
 ################
 ### LINTING ####
@@ -453,26 +453,26 @@ fuzz_memory_limit := "4096"
 # Fuzzes the given target
 # Uses *case* for compatibility to determine if the target is a tracing fuzzer or not
 fuzz fuzz-target:
-    case "{{ fuzz-target }}" in *trace*) just fuzz-trace {{ fuzz-target }} ;; *) cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} ;; esac
+    case "{{ fuzz-target }}" in *trace*) just fuzz-trace {{ fuzz-target }} ;; *) cargo +{{nightly-toolchain}} fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} ;; esac
 
 # Fuzzes the given target. Stops after `max_time` seconds
 # Uses *case* for compatibility to determine if the target is a tracing fuzzer or not
 fuzz-timed fuzz-target max_time:
-    case "{{ fuzz-target }}" in *trace*) just fuzz-trace-timed {{ max_time }} {{ fuzz-target }} ;; *) cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }} ;; esac
+    case "{{ fuzz-target }}" in *trace*) just fuzz-trace-timed {{ max_time }} {{ fuzz-target }} ;; *) cargo +{{nightly-toolchain}} fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }} ;; esac
 
 # Builds fuzzers for submission to external fuzzing services
 build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") (build-fuzzer "fuzz_host_print")
 
 # Builds the given fuzzer
 build-fuzzer fuzz-target:
-    cargo +nightly fuzz build {{ fuzz-target }}
+    cargo +{{nightly-toolchain}} fuzz build {{ fuzz-target }}
 
 # Fuzzes the guest with tracing enabled
 fuzz-trace fuzz-target="fuzz_guest_trace":
     # We need to build the trace guest with the trace feature enabled
     just build-rust-guests release trace_guest
     just move-rust-guests release
-    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }}
+    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +{{nightly-toolchain}} fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }}
     # Rebuild the trace guest without the trace feature to avoid affecting other tests
     just build-rust-guests release
     just move-rust-guests release
@@ -482,13 +482,13 @@ fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
     # We need to build the trace guest with the trace feature enabled
     just build-rust-guests release trace_guest
     just move-rust-guests release
-    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
+    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +{{nightly-toolchain}} fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
     # Rebuild the trace guest without the trace feature to avoid affecting other tests
     just build-rust-guests release
     just move-rust-guests release
 
 build-trace-fuzzers:
-    cargo +nightly fuzz build fuzz_guest_trace --features trace
+    cargo +{{nightly-toolchain}} fuzz build fuzz_guest_trace --features trace
 
 ####################
 ### COVERAGE #######
@@ -497,8 +497,8 @@ build-trace-fuzzers:
 # install cargo-llvm-cov if not already installed and ensure nightly toolchain + llvm-tools are available
 ensure-cargo-llvm-cov:
     command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov --locked
-    rustup toolchain install nightly 2>/dev/null
-    rustup component add llvm-tools --toolchain nightly 2>/dev/null
+    rustup toolchain install {{nightly-toolchain}} 2>/dev/null
+    rustup component add llvm-tools --toolchain {{nightly-toolchain}} 2>/dev/null
 
 # host-side packages to collect coverage for (guest/no_std crates are excluded because they
 # define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
@@ -519,80 +519,80 @@ coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
 
     # Set up coverage instrumentation environment variables (RUSTFLAGS, LLVM_PROFILE_FILE, etc.)
     # and clean previous artifacts. All subsequent cargo commands inherit instrumentation.
-    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
-    cargo +nightly llvm-cov clean --workspace
+    source <(cargo +{{nightly-toolchain}} llvm-cov show-env --export-prefix --branch)
+    cargo +{{nightly-toolchain}} llvm-cov clean --workspace
 
     # tests with default features (all drivers; skip stress tests — too slow under instrumentation)
-    cargo +nightly test {{ coverage-packages }} --tests -- --skip stress_test
+    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --tests -- --skip stress_test
 
     # tests with single driver + build-metadata
-    cargo +nightly test {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
 
     # isolated tests (require running separately due to global state)
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_overrides_initialized_snapshot --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_setter_survives_restore --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_can_be_disabled_and_reenabled --exact --ignored
-    cargo +nightly test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_can_be_enabled_after_off_init --exact --ignored
-    cargo +nightly test -p hyperlight-host --test integration_test -- log_message --exact --ignored
-    cargo +nightly test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_overrides_initialized_snapshot --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_setter_survives_restore --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_can_be_disabled_and_reenabled --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::from_snapshot::max_guest_log_level_can_be_enabled_after_off_init --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact
 
     # integration test with executable_heap feature
-    cargo +nightly test {{ coverage-packages }} --no-default-features -F executable_heap,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --test integration_test -- execute_on_heap
+    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features -F executable_heap,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --test integration_test -- execute_on_heap
 
     # crashdump tests + example
-    cargo +nightly test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump
-    cargo +nightly run --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example crashdump
+    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump
+    cargo +{{nightly-toolchain}} run --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example crashdump
 
     # tracing feature tests (host-side only; hyperlight-guest-tracing is no_std)
-    cargo +nightly test -p hyperlight-common --no-default-features --features trace_guest --tests -- --skip stress_test
-    cargo +nightly test -p hyperlight-host --no-default-features --features trace_guest,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+    cargo +{{nightly-toolchain}} test -p hyperlight-common --no-default-features --features trace_guest --tests -- --skip stress_test
+    cargo +{{nightly-toolchain}} test -p hyperlight-host --no-default-features --features trace_guest,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
 
     # examples: metrics, logging, tracing
-    cargo +nightly run --example metrics
-    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example metrics
-    cargo +nightly run --example logging
-    cargo +nightly run --example tracing
-    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example tracing
-    cargo +nightly test --no-default-features -F gdb,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example guest-debugging
+    cargo +{{nightly-toolchain}} run --example metrics
+    cargo +{{nightly-toolchain}} run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example metrics
+    cargo +{{nightly-toolchain}} run --example logging
+    cargo +{{nightly-toolchain}} run --example tracing
+    cargo +{{nightly-toolchain}} run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example tracing
+    cargo +{{nightly-toolchain}} test --no-default-features -F gdb,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example guest-debugging
 
 # generate a text coverage summary to stdout
 # for this to work you need to run `coverage-run hypervisor` beforehand
 coverage hypervisor="kvm":
     #!/usr/bin/env bash
     set -euo pipefail
-    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
-    cargo +nightly llvm-cov report
+    source <(cargo +{{nightly-toolchain}} llvm-cov show-env --export-prefix --branch)
+    cargo +{{nightly-toolchain}} llvm-cov report
 
 # generate an HTML coverage report to target/coverage/html/
 # for this to work you need to run `coverage-run hypervisor` beforehand
 coverage-html hypervisor="kvm":
     #!/usr/bin/env bash
     set -euo pipefail
-    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
-    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
+    source <(cargo +{{nightly-toolchain}} llvm-cov show-env --export-prefix --branch)
+    cargo +{{nightly-toolchain}} llvm-cov report --html --output-dir target/coverage/html
 
 # generate LCOV coverage output to target/coverage/lcov.info
 # for this to work you need to run `coverage-run hypervisor` beforehand
 coverage-lcov hypervisor="kvm":
     #!/usr/bin/env bash
     set -euo pipefail
-    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    source <(cargo +{{nightly-toolchain}} llvm-cov show-env --export-prefix --branch)
     mkdir -p target/coverage
-    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+    cargo +{{nightly-toolchain}} llvm-cov report --lcov --output-path target/coverage/lcov.info
 
 # generate all coverage reports for CI: HTML + LCOV + text summary.
 # (run `just guests` first to build guest binaries)
 coverage-ci hypervisor="kvm": (coverage-run hypervisor)
     #!/usr/bin/env bash
     set -euo pipefail
-    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    source <(cargo +{{nightly-toolchain}} llvm-cov show-env --export-prefix --branch)
     mkdir -p target/coverage
-    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
-    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
-    cargo +nightly llvm-cov report | tee target/coverage/summary.txt
+    cargo +{{nightly-toolchain}} llvm-cov report --html --output-dir target/coverage/html
+    cargo +{{nightly-toolchain}} llvm-cov report --lcov --output-path target/coverage/lcov.info
+    cargo +{{nightly-toolchain}} llvm-cov report | tee target/coverage/summary.txt
 
 ###################
 ### FLATBUFFERS ###
