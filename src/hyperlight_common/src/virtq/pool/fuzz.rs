@@ -58,11 +58,11 @@ impl Arbitrary for SlotScenario {
 
 fn make_slot_pool(scenario: &SlotScenario) -> SlotPool {
     if scenario.tiered {
-        let lower = SlotLayout::new(LOWER_BASE, LOWER_SLOT_SIZE, scenario.lower_count);
-        let upper = SlotLayout::new(UPPER_BASE, UPPER_SLOT_SIZE, scenario.upper_count);
+        let lower = SlotLayout::new(LOWER_BASE, LOWER_SLOT_SIZE, scenario.lower_count).unwrap();
+        let upper = SlotLayout::new(UPPER_BASE, UPPER_SLOT_SIZE, scenario.upper_count).unwrap();
         SlotPool::new_tiered(lower, upper).unwrap()
     } else {
-        let layout = SlotLayout::new(UPPER_BASE, UPPER_SLOT_SIZE, scenario.upper_count);
+        let layout = SlotLayout::new(UPPER_BASE, UPPER_SLOT_SIZE, scenario.upper_count).unwrap();
         SlotPool::new(layout).unwrap()
     }
 }
@@ -113,10 +113,7 @@ fn run_slot_pool_scenario(scenario: SlotScenario) -> bool {
 }
 
 fn layout_contains(layout: SlotLayout, addr: u64) -> bool {
-    let Ok(end) = layout.end_addr() else {
-        return false;
-    };
-    (layout.base_addr..end).contains(&addr)
+    (layout.base_addr()..layout.end_addr()).contains(&addr)
 }
 
 fn slot_capacity(pool: &SlotPool, addr: u64) -> Option<usize> {
@@ -124,9 +121,9 @@ fn slot_capacity(pool: &SlotPool, addr: u64) -> Option<usize> {
     if let Some(lower) = lower
         && layout_contains(lower, addr)
     {
-        return Some(lower.slot_size);
+        return Some(lower.slot_size());
     }
-    layout_contains(upper, addr).then_some(upper.slot_size)
+    layout_contains(upper, addr).then_some(upper.slot_size())
 }
 
 fn check_slot_pool_invariants(
@@ -172,20 +169,18 @@ fn check_slot_pool_invariants(
 
     // Reported geometry must agree with the stored tier layouts.
     let (lower, upper) = pool.layouts();
-    let expected_base = lower.map_or(upper.base_addr, |layout| layout.base_addr);
-    if pool.base_addr() != expected_base || pool.slot_size() != upper.slot_size {
+    let expected_base = lower.map_or(upper.base_addr(), SlotLayout::base_addr);
+    if pool.base_addr() != expected_base || pool.slot_size() != upper.slot_size() {
         return Err("reported pool layout is inconsistent");
     }
 
     // Distinct tiers need increasing slot sizes and ordered, non-overlapping ranges.
-    let mut expected_count = upper.slot_count;
+    let mut expected_count = upper.slot_count();
     if let Some(lower) = lower {
-        if lower.slot_size >= upper.slot_size
-            || lower.end_addr().map_err(|_| "lower layout overflow")? > upper.base_addr
-        {
+        if lower.slot_size() >= upper.slot_size() || lower.end_addr() > upper.base_addr() {
             return Err("tier layout is invalid");
         }
-        expected_count += lower.slot_count;
+        expected_count += lower.slot_count();
     }
     if pool.count() != expected_count || pool.slot_addr(pool.count()).is_some() {
         return Err("reported slot count is inconsistent");

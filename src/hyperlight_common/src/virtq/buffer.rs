@@ -231,7 +231,8 @@ mod tests {
 
     #[test]
     fn lease_returns_slot_on_drop() {
-        let pool = SlotPool::new(SlotLayout::new(0, 4, 1)).unwrap();
+        let layout = SlotLayout::new(0, 4, 1).unwrap();
+        let pool = SlotPool::new(layout).unwrap();
         let allocation = pool.alloc(4).unwrap();
         let lease = BufferLease::new(pool.clone(), allocation);
 

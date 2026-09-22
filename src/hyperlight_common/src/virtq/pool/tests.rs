@@ -4,19 +4,25 @@
 use super::*;
 
 fn make_slot_pool(slot_count: usize, slot_size: usize) -> SlotPool {
-    let layout = SlotLayout::new(0x80000, slot_size, slot_count);
+    let layout = SlotLayout::new(0x80000, slot_size, slot_count).unwrap();
     SlotPool::new(layout).unwrap()
 }
 
 fn make_tiered_slot_pool(lower_count: usize, upper_count: usize) -> SlotPool {
-    let lower = SlotLayout::new(0x80000, 256, lower_count);
-    let upper = SlotLayout::new(0x90000, 4096, upper_count);
+    let lower = SlotLayout::new(0x80000, 256, lower_count).unwrap();
+    let upper = SlotLayout::new(0x90000, 4096, upper_count).unwrap();
     SlotPool::new_tiered(lower, upper).unwrap()
 }
 
 #[test]
 fn test_slot_pool_preserves_exact_base() {
-    let layout = SlotLayout::new(0x80001, 4096, 2);
+    let layout = SlotLayout::new(0x80001, 4096, 2).unwrap();
+    assert_eq!(layout.base_addr(), 0x80001);
+    assert_eq!(layout.slot_size(), 4096);
+    assert_eq!(layout.slot_count(), 2);
+    assert_eq!(layout.byte_len(), 8192);
+    assert_eq!(layout.end_addr(), 0x82001);
+
     let pool = SlotPool::new(layout).unwrap();
 
     assert_eq!(pool.base_addr(), 0x80001);
@@ -27,13 +33,13 @@ fn test_slot_pool_preserves_exact_base() {
 
 #[test]
 fn test_tiered_slot_pool_reports_layouts() {
-    let lower = SlotLayout::new(0x80001, 0x100, 2);
-    let upper = SlotLayout::new(0x90001, 0x1000, 2);
+    let lower = SlotLayout::new(0x80001, 0x100, 2).unwrap();
+    let upper = SlotLayout::new(0x90001, 0x1000, 2).unwrap();
     let pool = SlotPool::new_tiered(lower, upper).unwrap();
 
     let (lower, upper) = pool.layouts();
-    assert_eq!(lower, Some(SlotLayout::new(0x80001, 0x100, 2)));
-    assert_eq!(upper, SlotLayout::new(0x90001, 0x1000, 2));
+    assert_eq!(lower, Some(SlotLayout::new(0x80001, 0x100, 2).unwrap()));
+    assert_eq!(upper, SlotLayout::new(0x90001, 0x1000, 2).unwrap());
     assert_eq!(pool.base_addr(), 0x80001);
     assert_eq!(pool.slot_size(), 0x1000);
     assert_eq!(pool.count(), 4);
@@ -46,11 +52,14 @@ fn test_tiered_slot_pool_reports_layouts() {
 
 #[test]
 fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
-    let lower = SlotLayout::new(0x80000, 0x100, 2);
-    let upper = SlotLayout::new(0x80200, 0x100, 3);
+    let lower = SlotLayout::new(0x80000, 0x100, 2).unwrap();
+    let upper = SlotLayout::new(0x80200, 0x100, 3).unwrap();
     let pool = SlotPool::new_tiered(lower, upper).unwrap();
 
-    assert_eq!(pool.layouts(), (None, SlotLayout::new(0x80000, 0x100, 5)));
+    assert_eq!(
+        pool.layouts(),
+        (None, SlotLayout::new(0x80000, 0x100, 5).unwrap())
+    );
     assert_eq!(pool.base_addr(), 0x80000);
     assert_eq!(pool.slot_size(), 0x100);
     assert_eq!(pool.count(), 5);
@@ -61,27 +70,92 @@ fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
 
 #[test]
 fn test_tiered_slot_pool_rejects_invalid_layout() {
-    let lower = SlotLayout::new(0x80000, 0x100, 32);
-    let overlapping_upper = SlotLayout::new(0x81000, 0x1000, 2);
+    let lower = SlotLayout::new(0x80000, 0x100, 32).unwrap();
+    let overlapping_upper = SlotLayout::new(0x81000, 0x1000, 2).unwrap();
     let overlapping = SlotPool::new_tiered(lower, overlapping_upper);
     assert!(matches!(overlapping, Err(AllocError::InvalidArg)));
 
-    let lower = SlotLayout::new(0x80000, 0x100, 2);
-    let separated_upper = SlotLayout::new(0x80300, 0x100, 2);
+    let lower = SlotLayout::new(0x80000, 0x100, 2).unwrap();
+    let separated_upper = SlotLayout::new(0x80300, 0x100, 2).unwrap();
     let separated = SlotPool::new_tiered(lower, separated_upper);
     assert!(matches!(separated, Err(AllocError::InvalidArg)));
 
-    let lower = SlotLayout::new(0x80000, 0x1000, 2);
-    let smaller_upper = SlotLayout::new(0x90000, 0x100, 32);
+    let lower = SlotLayout::new(0x80000, 0x1000, 2).unwrap();
+    let smaller_upper = SlotLayout::new(0x90000, 0x100, 32).unwrap();
     let reversed_sizes = SlotPool::new_tiered(lower, smaller_upper);
     assert!(matches!(reversed_sizes, Err(AllocError::InvalidArg)));
 }
 
 #[cfg(target_pointer_width = "64")]
 #[test]
-fn test_slot_pool_rejects_unrepresentable_slot_size() {
-    let layout = SlotLayout::new(0x80000, u32::MAX as usize + 1, 1);
-    assert!(matches!(SlotPool::new(layout), Err(AllocError::InvalidArg)));
+fn test_slot_layout_rejects_unrepresentable_slot_size() {
+    assert!(matches!(
+        SlotLayout::new(0x80000, u32::MAX as usize + 1, 1),
+        Err(AllocError::InvalidArg)
+    ));
+}
+
+#[test]
+fn test_slot_layout_rejects_empty_geometry() {
+    assert!(matches!(
+        SlotLayout::new(0, 0, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert!(matches!(
+        SlotLayout::new(0, 1, 0),
+        Err(AllocError::EmptyRegion)
+    ));
+}
+
+#[test]
+fn test_slot_layout_accepts_maximum_descriptor_capacity() {
+    let layout = SlotLayout::new(0, u32::MAX as usize, 1).unwrap();
+    assert_eq!(layout.slot_size(), u32::MAX as usize);
+    assert_eq!(layout.byte_len(), u32::MAX as usize);
+    assert_eq!(layout.end_addr(), u64::from(u32::MAX));
+}
+
+#[test]
+fn test_slot_layout_rejects_overflowing_ranges() {
+    assert!(matches!(
+        SlotLayout::new(0, u32::MAX as usize, usize::MAX),
+        Err(AllocError::Overflow)
+    ));
+    assert!(matches!(
+        SlotLayout::new(u64::MAX, 1, 1),
+        Err(AllocError::Overflow)
+    ));
+    assert!(matches!(
+        SlotLayout::new(u64::MAX - 7, 4, 2),
+        Err(AllocError::Overflow)
+    ));
+
+    let layout = SlotLayout::new(u64::MAX - 8, 4, 2).unwrap();
+    assert_eq!(layout.end_addr(), u64::MAX);
+}
+
+#[test]
+fn test_slot_layout_bounds_free_list_capacity() {
+    let max_slots = isize::MAX as usize / core::mem::size_of::<u64>();
+    let layout = SlotLayout::new(0, 1, max_slots).unwrap();
+    assert_eq!(layout.slot_count(), max_slots);
+
+    assert!(matches!(
+        SlotLayout::new(0, 1, max_slots + 1),
+        Err(AllocError::Overflow)
+    ));
+}
+
+#[test]
+fn test_tiered_slot_pool_validates_merged_capacity_before_allocating() {
+    let max_slots = isize::MAX as usize / core::mem::size_of::<u64>();
+    let lower = SlotLayout::new(0, 1, max_slots).unwrap();
+    let upper = SlotLayout::new(lower.end_addr(), 1, 1).unwrap();
+
+    assert!(matches!(
+        SlotPool::new_tiered(lower, upper),
+        Err(AllocError::Overflow)
+    ));
 }
 
 #[test]

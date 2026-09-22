@@ -391,7 +391,8 @@ fn virtq_ping_pong() {
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
         let t_prod = thread::spawn(move || {
-            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let pool_layout = SlotLayout::new(pool_base, 256, pool_size / 256).unwrap();
+            let pool = SlotPool::new(pool_layout).unwrap();
             let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).writable(32).build().unwrap();
             se.write_all(b"ping").unwrap();
@@ -439,7 +440,8 @@ fn virtq_ack_only() {
         let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
         let t_prod = thread::spawn(move || {
-            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let pool_layout = SlotLayout::new(pool_base, 256, pool_size / 256).unwrap();
+            let pool = SlotPool::new(pool_layout).unwrap();
             let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).build().unwrap();
             se.write_all(b"ping").unwrap();
@@ -488,7 +490,8 @@ fn virtq_out_of_order_completions() {
         let t_prod = thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(move || {
-                let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+                let pool_layout = SlotLayout::new(pool_base, 256, pool_size / 256).unwrap();
+                let pool = SlotPool::new(pool_layout).unwrap();
                 let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
                 let mut first = prod.chain().readable(5).writable(8).build().unwrap();
                 first.write_all(b"first").unwrap();
@@ -588,7 +591,8 @@ fn virtq_event_suppression_reconfig() {
         });
 
         let t_prod = thread::spawn(move || {
-            let pool = SlotPool::new(SlotLayout::new(pool_base, 256, pool_size / 256)).unwrap();
+            let pool_layout = SlotLayout::new(pool_base, 256, pool_size / 256).unwrap();
+            let pool = SlotPool::new(pool_layout).unwrap();
             let mut prod = VirtqProducer::new(mem.layout(), mem, notify, pool);
             let mut se = prod.chain().readable(4).build().unwrap();
             se.write_all(b"ping").unwrap();

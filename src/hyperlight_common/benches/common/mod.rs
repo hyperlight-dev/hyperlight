@@ -182,7 +182,7 @@ pub fn make_pair(descs: usize, make_pool: impl FnOnce(u64, usize) -> SlotPool) -
 }
 
 pub fn slot_pool(base: u64, size: usize) -> SlotPool {
-    let layout = SlotLayout::new(base, UPPER_SLOT, size / UPPER_SLOT);
+    let layout = SlotLayout::new(base, UPPER_SLOT, size / UPPER_SLOT).unwrap();
     SlotPool::new(layout).unwrap()
 }
 

@@ -16,7 +16,8 @@ fn bench_segmented_payload(c: &mut Criterion) {
             BenchmarkId::new("slot_pool_segmented", payload_size),
             &payload_size,
             |b, &payload_size| {
-                let pool = SlotPool::new(SlotLayout::new(0x80000, 4096, 1024)).unwrap();
+                let layout = SlotLayout::new(0x80000, 4096, 1024).unwrap();
+                let pool = SlotPool::new(layout).unwrap();
                 b.iter(|| {
                     let allocations: Vec<_> = (0..black_box(payload_size).div_ceil(4096))
                         .map(|_| pool.alloc(4096).unwrap())
@@ -36,7 +37,7 @@ fn bench_slot_pool(c: &mut Criterion) {
     let mut group = c.benchmark_group("slot_pool");
 
     group.bench_function("alloc_dealloc_4096", |b| {
-        let layout = SlotLayout::new(0x80000, 4096, 1024);
+        let layout = SlotLayout::new(0x80000, 4096, 1024).unwrap();
         let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(4096)).unwrap();
@@ -45,7 +46,7 @@ fn bench_slot_pool(c: &mut Criterion) {
     });
 
     group.bench_function("alloc_dealloc_128", |b| {
-        let layout = SlotLayout::new(0x80000, 256, 16 * 1024);
+        let layout = SlotLayout::new(0x80000, 256, 16 * 1024).unwrap();
         let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(128)).unwrap();
@@ -54,7 +55,7 @@ fn bench_slot_pool(c: &mut Criterion) {
     });
 
     group.bench_function("alloc_dealloc_1500", |b| {
-        let layout = SlotLayout::new(0x80000, 4096, 1024);
+        let layout = SlotLayout::new(0x80000, 4096, 1024).unwrap();
         let pool = SlotPool::new(layout).unwrap();
         b.iter(|| {
             let alloc = pool.alloc(black_box(1500)).unwrap();

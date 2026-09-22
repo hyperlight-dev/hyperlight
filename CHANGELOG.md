@@ -28,8 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   level is `OFF`. `hyperlight_guest_tracing::is_trace_enabled` reports whether
   the configured level is above `OFF` rather than whether the tracing state was
   allocated.
-* Place virtqueue rings and pools in host-owned scratch before page tables.
-  Snapshot ABI 4 rejects snapshots created with earlier layouts.
+* **Breaking:** Virtqueue rings and pools occupy host-owned scratch before page
+  tables. Snapshots use ABI 4 and config schema v2. Existing snapshots must be
+  regenerated.
 * Host virtqueue access uses checked copies and atomics across mapped scratch.
   Snapshot admission checks geometry, canonical ring state, and H2G buffer shape.
   Consumers validate descriptors and payload accesses during use.

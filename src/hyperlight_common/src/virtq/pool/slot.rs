@@ -20,39 +20,73 @@ use smallvec::SmallVec;
 
 use super::{AllocError, Allocation};
 
-/// Exact memory layout for one [`SlotPool`] tier.
+/// Validated memory layout for one [`SlotPool`] tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotLayout {
     /// Start of the first slot.
-    pub base_addr: u64,
+    base_addr: u64,
     /// Capacity of each slot. Must fit in [`Allocation::len`].
-    pub slot_size: usize,
+    slot_size: u32,
     /// Number of slots.
-    pub slot_count: usize,
+    slot_count: usize,
 }
 
 impl SlotLayout {
-    /// Describe exact fixed-slot placement.
-    pub const fn new(base_addr: u64, slot_size: usize, slot_count: usize) -> Self {
-        Self {
+    /// Validate exact fixed-slot placement.
+    ///
+    /// Rejects empty layouts, slots larger than [`u32::MAX`], and unrepresentable
+    /// backing or free-list byte ranges.
+    pub fn new(base_addr: u64, slot_size: usize, slot_count: usize) -> Result<Self, AllocError> {
+        let slot_size = u32::try_from(slot_size).map_err(|_| AllocError::InvalidArg)?;
+
+        if slot_size == 0 {
+            return Err(AllocError::InvalidArg);
+        }
+
+        if slot_count == 0 {
+            return Err(AllocError::EmptyRegion);
+        }
+
+        let byte_len = (slot_size as usize)
+            .checked_mul(slot_count)
+            .ok_or(AllocError::Overflow)?;
+
+        base_addr
+            .checked_add(u64::try_from(byte_len).map_err(|_| AllocError::Overflow)?)
+            .ok_or(AllocError::Overflow)?;
+
+        core::alloc::Layout::array::<u64>(slot_count).map_err(|_| AllocError::Overflow)?;
+
+        Ok(Self {
             base_addr,
             slot_size,
             slot_count,
-        }
+        })
+    }
+
+    /// Start address of the first slot.
+    pub const fn base_addr(self) -> u64 {
+        self.base_addr
+    }
+
+    /// Capacity of each slot in bytes.
+    pub const fn slot_size(self) -> usize {
+        self.slot_size as usize
+    }
+
+    /// Number of equal-sized slots.
+    pub const fn slot_count(self) -> usize {
+        self.slot_count
     }
 
     /// Total bytes occupied by the slots.
-    pub fn byte_len(self) -> Result<usize, AllocError> {
-        self.slot_size
-            .checked_mul(self.slot_count)
-            .ok_or(AllocError::Overflow)
+    pub const fn byte_len(self) -> usize {
+        self.slot_size as usize * self.slot_count
     }
 
     /// Exclusive end address.
-    pub fn end_addr(self) -> Result<u64, AllocError> {
-        self.base_addr
-            .checked_add(u64::try_from(self.byte_len()?).map_err(|_| AllocError::Overflow)?)
-            .ok_or(AllocError::Overflow)
+    pub const fn end_addr(self) -> u64 {
+        self.base_addr + self.byte_len() as u64
     }
 }
 
@@ -77,25 +111,17 @@ struct Tier {
 
 impl Tier {
     fn from_layout(layout: SlotLayout) -> Result<Self, AllocError> {
-        if layout.slot_size == 0 {
-            return Err(AllocError::InvalidArg);
-        }
-        let slot_size = u32::try_from(layout.slot_size).map_err(|_| AllocError::InvalidArg)?;
+        let mut free = SmallVec::new();
+        free.try_reserve_exact(layout.slot_count)
+            .map_err(|_| AllocError::Bookkeeping)?;
 
-        if layout.slot_count == 0 {
-            return Err(AllocError::EmptyRegion);
-        }
-
-        layout.end_addr()?;
-
-        let mut free = SmallVec::with_capacity(layout.slot_count);
         for i in 0..layout.slot_count {
-            free.push(layout.base_addr + (i * layout.slot_size) as u64);
+            free.push(layout.base_addr + (i * layout.slot_size as usize) as u64);
         }
 
         Ok(Self {
             base_addr: layout.base_addr,
-            slot_size,
+            slot_size: layout.slot_size,
             count: layout.slot_count,
             free,
             allocated: FixedBitSet::with_capacity(layout.slot_count),
@@ -191,7 +217,11 @@ impl Tier {
     }
 
     fn layout(&self) -> SlotLayout {
-        SlotLayout::new(self.base_addr, self.slot_size as usize, self.count)
+        SlotLayout {
+            base_addr: self.base_addr,
+            slot_size: self.slot_size,
+            slot_count: self.count,
+        }
     }
 }
 
@@ -202,28 +232,28 @@ struct Inner {
 
 impl Inner {
     fn new(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
-        let lower = lower.map(Tier::from_layout).transpose()?;
-        let upper = Tier::from_layout(upper)?;
-
         let Some(lower) = lower else {
-            return Ok(Self { lower: None, upper });
+            return Ok(Self {
+                lower: None,
+                upper: Tier::from_layout(upper)?,
+            });
         };
 
-        if lower.slot_size > upper.slot_size || lower.end() > upper.base_addr {
+        if lower.slot_size > upper.slot_size || lower.end_addr() > upper.base_addr {
             return Err(AllocError::InvalidArg);
         }
 
         if lower.slot_size == upper.slot_size {
-            if lower.end() != upper.base_addr {
+            if lower.end_addr() != upper.base_addr {
                 return Err(AllocError::InvalidArg);
             }
 
             let count = lower
-                .count
-                .checked_add(upper.count)
+                .slot_count
+                .checked_add(upper.slot_count)
                 .ok_or(AllocError::Overflow)?;
 
-            let layout = SlotLayout::new(lower.base_addr, lower.slot_size as usize, count);
+            let layout = SlotLayout::new(lower.base_addr, lower.slot_size(), count)?;
 
             return Ok(Self {
                 lower: None,
@@ -232,8 +262,8 @@ impl Inner {
         }
 
         Ok(Self {
-            lower: Some(lower),
-            upper,
+            lower: Some(Tier::from_layout(lower)?),
+            upper: Tier::from_layout(upper)?,
         })
     }
 

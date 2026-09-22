@@ -251,12 +251,8 @@ mod tests {
         let mem = HostMemOps::new(&scratch);
         let h2g_prefill_chains = (H2G_POOL_PAGES * vmem::PAGE_SIZE) / H2G_BUFFER_SIZE;
 
-        let h2g_pool = SlotPool::new(SlotLayout::new(
-            h2g_pool_base,
-            H2G_BUFFER_SIZE,
-            h2g_prefill_chains,
-        ))
-        .unwrap();
+        let layout = SlotLayout::new(h2g_pool_base, H2G_BUFFER_SIZE, h2g_prefill_chains).unwrap();
+        let h2g_pool = SlotPool::new(layout).unwrap();
 
         let mut h2g = VirtqProducer::new(h2g_layout, mem.clone(), HostNotifier, h2g_pool.clone());
         let mut batch = h2g.batch();

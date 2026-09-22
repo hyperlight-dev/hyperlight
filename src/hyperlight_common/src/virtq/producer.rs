@@ -1243,8 +1243,8 @@ mod tests {
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
 
-        let lower = SlotLayout::new(pool_base, slot_size / 2, ring.len());
-        let upper = SlotLayout::new(lower.end_addr().unwrap(), slot_size, ring.len());
+        let lower = SlotLayout::new(pool_base, slot_size / 2, ring.len()).unwrap();
+        let upper = SlotLayout::new(lower.end_addr(), slot_size, ring.len()).unwrap();
         let pool = SlotPool::new_tiered(lower, upper).unwrap();
 
         let notifier = TestNotifier::new();
@@ -1259,13 +1259,15 @@ mod tests {
         slot_size: usize,
         max_descs: usize,
     ) -> ChainBuilder<TestMem> {
-        let mem = TestMem::new(lower_count * 256 + upper_count * slot_size);
-        let lower = SlotLayout::new(mem.base_addr(), 256, lower_count);
-        let upper = SlotLayout::new(lower.end_addr().unwrap(), slot_size, upper_count);
+        let lower_len = lower_count * 256;
+        let mem = TestMem::new(lower_len + upper_count * slot_size);
+        let upper =
+            SlotLayout::new(mem.base_addr() + lower_len as u64, slot_size, upper_count).unwrap();
 
         let pool = if lower_count == 0 {
             SlotPool::new(upper)
         } else {
+            let lower = SlotLayout::new(mem.base_addr(), 256, lower_count).unwrap();
             SlotPool::new_tiered(lower, upper)
         }
         .unwrap();
@@ -1275,7 +1277,8 @@ mod tests {
 
     fn inflight(seq: u32, id: u16) -> Inflight<TestMem> {
         let mem = TestMem::new(8);
-        let pool = SlotPool::new(SlotLayout::new(mem.base_addr(), 8, 1)).unwrap();
+        let pool_layout = SlotLayout::new(mem.base_addr(), 8, 1).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let chain = ChainBuilder::new(mem, pool, 1).readable(8).build().unwrap();
         Inflight {
             token: Token { seq, id },
@@ -1369,7 +1372,8 @@ mod tests {
             let orig_gen = Arc::downgrade(&orig_mem.0);
 
             let base = ring.mem().base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-            let pool = SlotPool::new(SlotLayout::new(base, 64, 4)).unwrap();
+            let pool_layout = SlotLayout::new(base, 64, 4).unwrap();
+            let pool = SlotPool::new(pool_layout).unwrap();
             let notif = TestNotifier::new();
 
             let source = VirtqProducer::new(ring.layout(), orig_mem, notif.clone(), pool.clone());
@@ -1406,7 +1410,8 @@ mod tests {
         let ring = make_ring(8);
         let mem = ring.mem();
         let base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(base, 64, 8)).unwrap();
+        let pool_layout = SlotLayout::new(base, 64, 8).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
 
         let notif = TestNotifier::new();
         let mapping = FaultMem::new(mem.clone());
@@ -1484,7 +1489,8 @@ mod tests {
         let ring = make_ring(4);
         let mem = Rc::new(ring.mem());
         let base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(base, 64, 1)).unwrap();
+        let pool_layout = SlotLayout::new(base, 64, 1).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notif = TestNotifier::new();
 
         let mut producer =
@@ -1529,7 +1535,8 @@ mod tests {
         let base = ring.mem().base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
 
         let notifier = TestNotifier::new();
-        let original = SlotPool::new(SlotLayout::new(base, 64, 4)).unwrap();
+        let original_layout = SlotLayout::new(base, 64, 4).unwrap();
+        let original = SlotPool::new(original_layout).unwrap();
         let source = VirtqProducer::new(ring.layout(), mem, TestNotifier::new(), original.clone());
 
         let chain = source.chain().writable(64).build().unwrap();
@@ -1537,8 +1544,8 @@ mod tests {
 
         assert!(orig_gen.upgrade().is_some());
 
-        let replacement =
-            SlotPool::new(SlotLayout::new(original.base_addr() + 0x1000, 64, 4)).unwrap();
+        let replacement_layout = SlotLayout::new(original.base_addr() + 0x1000, 64, 4).unwrap();
+        let replacement = SlotPool::new(replacement_layout).unwrap();
 
         let replacement_mem = FaultMem::new(ring.mem());
         replacement_mem.fail_mapping_at(0);
@@ -1595,7 +1602,8 @@ mod tests {
             mem.fail_mapping_at(fail_at);
 
             let base = ring.mem().base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-            let pool = SlotPool::new(SlotLayout::new(base, 64, 8)).unwrap();
+            let pool_layout = SlotLayout::new(base, 64, 8).unwrap();
+            let pool = SlotPool::new(pool_layout).unwrap();
             let notif = TestNotifier::new();
             let mut producer =
                 VirtqProducer::new(ring.layout(), mem.clone(), notif.clone(), pool.clone());
@@ -1659,7 +1667,8 @@ mod tests {
         mem.fail_mapping_at(0);
 
         let base = ring.mem().base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(base, 64, 4)).unwrap();
+        let pool_layout = SlotLayout::new(base, 64, 4).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notif = TestNotifier::new();
 
         let mut producer =
@@ -1701,8 +1710,8 @@ mod tests {
         let storage = TestMem::new(16);
         let base = storage.base_addr();
         let mem = FaultMem::new(storage);
-        let t1 = SlotLayout::new(base, 2, 2);
-        let t2 = SlotLayout::new(base + 4, 4, 3);
+        let t1 = SlotLayout::new(base, 2, 2).unwrap();
+        let t2 = SlotLayout::new(base + 4, 4, 3).unwrap();
         let pool = SlotPool::new_tiered(t1, t2).unwrap();
 
         let mut chain = ChainBuilder::new(mem.clone(), pool.clone(), 8)
@@ -1753,7 +1762,8 @@ mod tests {
         let ring = make_ring(8);
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(pool_base, 64, ring.len())).unwrap();
+        let pool_layout = SlotLayout::new(pool_base, 64, ring.len()).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = TestNotifier::new();
         let mut producer = VirtqProducer::new(ring.layout(), mem, notifier, pool.clone());
 
@@ -1793,7 +1803,8 @@ mod tests {
         let ring = make_ring(4);
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(pool_base, 4, 1)).unwrap();
+        let pool_layout = SlotLayout::new(pool_base, 4, 1).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = TestNotifier::new();
         let mut producer =
             VirtqProducer::new(ring.layout(), mem.clone(), notifier.clone(), pool.clone());
@@ -1915,9 +1926,10 @@ mod tests {
             mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100,
             256,
             1,
-        );
+        )
+        .unwrap();
 
-        let upper = SlotLayout::new(lower.end_addr().unwrap(), 4096, 1);
+        let upper = SlotLayout::new(lower.end_addr(), 4096, 1).unwrap();
         let pool = SlotPool::new_tiered(lower, upper).unwrap();
         let notifier = TestNotifier::new();
         let producer = VirtqProducer::new(layout, mem, notifier, pool.clone());
@@ -1932,8 +1944,8 @@ mod tests {
         let readables = send.owned.descriptors().collect::<Vec<_>>();
 
         assert_eq!(readables.len(), 2);
-        assert_eq!(readables[0].addr, lower.base_addr);
-        assert_eq!(readables[1].addr, upper.base_addr);
+        assert_eq!(readables[0].addr, lower.base_addr());
+        assert_eq!(readables[1].addr, upper.base_addr());
         assert_eq!(pool.num_free_lower(), 0);
         assert_eq!(pool.num_free_upper(), 0);
 
@@ -2931,7 +2943,8 @@ mod tests {
         let layout = ring.layout();
         let test_mem = ring.mem();
         let pool_base = test_mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(pool_base, 128, 0x8000 / 128)).unwrap();
+        let pool_layout = SlotLayout::new(pool_base, 128, 0x8000 / 128).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = TestNotifier::new();
         let mem = FaultMem::new(test_mem);
         mem.deny_views();

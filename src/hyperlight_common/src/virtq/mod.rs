@@ -504,8 +504,8 @@ pub(crate) mod test_utils {
 
         // Pool needs to be in memory accessible via mem - use memory after ring layout
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool =
-            SlotPool::new(SlotLayout::new(pool_base, slot_size, 0x8000 / slot_size)).unwrap();
+        let pool_layout = SlotLayout::new(pool_base, slot_size, 0x8000 / slot_size).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = TestNotifier::new();
 
         let producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
@@ -650,7 +650,8 @@ mod tests {
         let layout = ring.layout();
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
-        let pool = SlotPool::new(SlotLayout::new(pool_base, 128, 0x8000 / 128)).unwrap();
+        let pool_layout = SlotLayout::new(pool_base, 128, 0x8000 / 128).unwrap();
+        let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = CtxNotifier {
             last_num_free: Arc::new(AtomicUsize::new(0)),
             last_num_inflight: Arc::new(AtomicUsize::new(0)),

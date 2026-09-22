@@ -437,32 +437,26 @@ impl SandboxMemoryLayout {
         self.scratch_size
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_g2h_queue_size(&self) -> usize {
         usize::from(self.g2h_dims.size().get())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_h2g_queue_size(&self) -> usize {
         usize::from(self.h2g_dims.size().get())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_g2h_buffer_size(&self) -> usize {
         self.g2h_buffer_size
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_h2g_buffer_size(&self) -> usize {
         self.h2g_buffer_size
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_g2h_pool_pages(&self) -> usize {
         self.g2h_dims.pool_pages().get()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_h2g_pool_pages(&self) -> usize {
         self.h2g_dims.pool_pages().get()
     }

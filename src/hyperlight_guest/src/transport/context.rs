@@ -115,7 +115,8 @@ fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotP
         return Err(AllocError::InvalidArg);
     }
     let count = pool_len(pages)? / buffer_size;
-    SlotPool::new(SlotLayout::new(base, buffer_size, count))
+    let layout = SlotLayout::new(base, buffer_size, count)?;
+    SlotPool::new(layout)
 }
 
 /// Build the tiered G2H pool.
@@ -138,7 +139,7 @@ fn g2h_pool(base: u64, pages: usize, upper_size: usize) -> result::Result<SlotPo
 
     let upper_count = upper_len / upper_size;
 
-    let lower = SlotLayout::new(base, G2H_LOWER_SLOT_SIZE, G2H_LOWER_SLOT_COUNT);
-    let upper = SlotLayout::new(lower.end_addr()?, upper_size, upper_count);
+    let lower = SlotLayout::new(base, G2H_LOWER_SLOT_SIZE, G2H_LOWER_SLOT_COUNT)?;
+    let upper = SlotLayout::new(lower.end_addr(), upper_size, upper_count)?;
     SlotPool::new_tiered(lower, upper)
 }
