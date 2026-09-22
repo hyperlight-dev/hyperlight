@@ -86,7 +86,7 @@ pub struct MultiUseSandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
-    /// Whether queue traffic occurred since the last canonical boundary.
+    /// Whether the transport needs a checkpoint before snapshot capture.
     transport_dirty: bool,
     /// Optional callback to discover page table roots from guest memory.
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
@@ -134,13 +134,16 @@ impl MultiUseSandbox {
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
     ) -> MultiUseSandbox {
+        // Initialization can log or call the host before the first guest call.
+        let transport_dirty = matches!(mgr.next_action, super::snapshot::NextAction::Initialise(_));
+
         Self {
             status: SandboxStatus::Ready,
             host_funcs,
             mem_mgr: mgr,
             vm,
             snapshot: None,
-            transport_dirty: false,
+            transport_dirty,
             pt_root_finder: None,
             max_guest_log_level: None,
         }
@@ -1505,7 +1508,13 @@ mod tests {
             .build()
             .unwrap();
 
+        assert!(sandbox.transport_dirty);
+        let initial = sandbox.snapshot().unwrap();
         assert!(!sandbox.transport_dirty);
+
+        let restored = SandboxBuilder::from_snapshot(initial).build().unwrap();
+        assert!(!restored.transport_dirty);
+
         sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
         assert!(sandbox.transport_dirty);
 
