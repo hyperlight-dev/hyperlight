@@ -4,15 +4,65 @@
 #[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 
+use goblin::elf::header::ET_DYN;
 #[cfg(target_arch = "aarch64")]
 use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
 use goblin::elf::reloc::{R_X86_64_NONE, R_X86_64_RELATIVE};
 use goblin::elf::{Elf, ProgramHeaders, Reloc};
-use goblin::elf64::program_header::PT_LOAD;
+#[cfg(test)]
+use goblin::elf64::program_header::PF_R;
+use goblin::elf64::program_header::{PF_X, PT_LOAD};
 
 use super::exe::LoadInfo;
 use crate::{Result, log_then_return, new_error};
+
+fn apply_relative_relocation(
+    name: &str,
+    relocation_va: u64,
+    addend: i64,
+    base_va: u64,
+    load_gva: u64,
+    target: &mut [u8],
+) -> Result<()> {
+    let offset = relocation_va.checked_sub(base_va).ok_or_else(|| {
+        new_error!(
+            "{} target VA ({:#x}) is below ELF base VA ({:#x})",
+            name,
+            relocation_va,
+            base_va
+        )
+    })?;
+    let offset: usize = offset.try_into()?;
+    let end = offset
+        .checked_add(size_of::<u64>())
+        .ok_or_else(|| new_error!("{} target offset overflow", name))?;
+    let target_len = target.len();
+    let destination = target.get_mut(offset..end).ok_or_else(|| {
+        new_error!(
+            "{} target range [{:#x}, {:#x}) exceeds loaded image size ({:#x})",
+            name,
+            offset,
+            end,
+            target_len
+        )
+    })?;
+
+    let load_bias = i128::from(load_gva) - i128::from(base_va);
+    let value = i128::from(addend)
+        .checked_add(load_bias)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            new_error!(
+                "{} result does not fit in u64: addend ({:#x}) + load bias ({:#x})",
+                name,
+                addend,
+                load_bias
+            )
+        })?;
+    destination.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
 
 #[cfg(feature = "mem_profile")]
 struct ResolvedSectionHeader {
@@ -33,6 +83,8 @@ pub(crate) struct ElfInfo {
     base_va: u64,
     /// Total loaded span: `max(p_vaddr + p_memsz) - min(p_vaddr)`.
     va_size: u64,
+    /// Whether this is a position-independent executable (ET_DYN).
+    is_pie: bool,
     /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     guest_bin_version: Option<String>,
@@ -154,6 +206,21 @@ impl ElfInfo {
             .into_iter()
             .max()
             .ok_or_else(|| new_error!("ELF must have at least one PT_LOAD header"))?;
+        let entry_is_executable = elf.program_headers.iter().any(|phdr| {
+            phdr.p_type == PT_LOAD
+                && phdr.p_flags & PF_X != 0
+                && phdr.p_vaddr <= elf.entry
+                && phdr
+                    .p_vaddr
+                    .checked_add(phdr.p_memsz)
+                    .is_some_and(|end| elf.entry < end)
+        });
+        if !entry_is_executable {
+            log_then_return!(
+                "ELF entrypoint ({:#x}) is not inside an executable PT_LOAD segment",
+                elf.entry
+            );
+        }
         let va_size = max_va_end - base_va;
         if va_size > super::layout::SandboxMemoryLayout::MAX_MEMORY_SIZE as u64 {
             log_then_return!(
@@ -184,6 +251,7 @@ impl ElfInfo {
 
         let phdrs = std::mem::take(&mut elf.program_headers);
         let entry = elf.entry;
+        let is_pie = elf.header.e_type == ET_DYN;
         #[cfg(feature = "mem_profile")]
         let shdrs = elf
             .section_headers
@@ -209,6 +277,7 @@ impl ElfInfo {
             shdrs,
             entry,
             relocs,
+            is_pie,
             guest_bin_version,
         })
     }
@@ -234,6 +303,11 @@ impl ElfInfo {
         self.entry
     }
 
+    /// Returns whether this is a position-independent executable (ET_DYN).
+    pub(crate) fn is_pie(&self) -> bool {
+        self.is_pie
+    }
+
     /// Returns the hyperlight version string embedded in the guest binary, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     pub(crate) fn guest_bin_version(&self) -> Option<&str> {
@@ -247,7 +321,7 @@ impl ElfInfo {
         // new() bounds this by MAX_MEMORY_SIZE, which fits in a usize.
         self.va_size as usize
     }
-    pub(crate) fn load_at(self, load_addr: usize, target: &mut [u8]) -> Result<LoadInfo> {
+    pub(crate) fn load_at(self, load_gva: u64, target: &mut [u8]) -> Result<LoadInfo> {
         let base_va = self.get_base_va();
         let va_size = self.get_va_size();
         if target.len() < va_size {
@@ -299,22 +373,18 @@ impl ElfInfo {
                 .ok_or_else(|| new_error!("{} missing addend", name))
         };
         for r in self.relocs.iter() {
-            let r_off = usize::try_from(r.r_offset)
-                .map_err(|_| new_error!("relocation offset too large"))?;
-            let r_end = r_off
-                .checked_add(8)
-                .ok_or_else(|| new_error!("relocation range overflows"))?;
-            let dest = target
-                .get_mut(r_off..r_end)
-                .ok_or_else(|| new_error!("relocation target out of bounds"))?;
             #[cfg(target_arch = "aarch64")]
             match r.r_type {
                 R_AARCH64_RELATIVE => {
                     let addend = get_addend("R_AARCH64_RELATIVE", r)?;
-                    let value = (load_addr as i64)
-                        .checked_add(addend)
-                        .ok_or_else(|| new_error!("relocation addend overflows"))?;
-                    dest.copy_from_slice(&value.to_le_bytes());
+                    apply_relative_relocation(
+                        "R_AARCH64_RELATIVE",
+                        r.r_offset,
+                        addend,
+                        base_va,
+                        load_gva,
+                        target,
+                    )?;
                 }
                 R_AARCH64_NONE => {}
                 _ => {
@@ -325,10 +395,14 @@ impl ElfInfo {
             match r.r_type {
                 R_X86_64_RELATIVE => {
                     let addend = get_addend("R_X86_64_RELATIVE", r)?;
-                    let value = (load_addr as i64)
-                        .checked_add(addend)
-                        .ok_or_else(|| new_error!("relocation addend overflows"))?;
-                    dest.copy_from_slice(&value.to_le_bytes());
+                    apply_relative_relocation(
+                        "R_X86_64_RELATIVE",
+                        r.r_offset,
+                        addend,
+                        base_va,
+                        load_gva,
+                        target,
+                    )?;
                 }
                 R_X86_64_NONE => {}
                 _ => {
@@ -343,7 +417,7 @@ impl ElfInfo {
                 Ok(LoadInfo {
                     info: Arc::new(UnwindInfo {
                         payload: self.payload,
-                        load_addr: load_addr as u64,
+                        load_addr: load_gva,
                         va_size,
                         base_svma,
                         shdrs: self.shdrs,
@@ -362,6 +436,8 @@ mod tests {
 
     const EHDR_SIZE: usize = 64;
     const PHDR_SIZE: usize = 56;
+    const ENTRY_OFFSET: usize = 24;
+    const PH_FLAGS_OFFSET: usize = 4;
 
     struct TestPh {
         p_offset: u64,
@@ -390,7 +466,7 @@ mod tests {
         // Program headers
         for p in phs {
             v.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type
-            v.extend_from_slice(&5u32.to_le_bytes()); // p_flags = R+X
+            v.extend_from_slice(&(PF_R | PF_X).to_le_bytes());
             v.extend_from_slice(&p.p_offset.to_le_bytes());
             v.extend_from_slice(&p.p_vaddr.to_le_bytes());
             v.extend_from_slice(&p.p_vaddr.to_le_bytes()); // p_paddr
@@ -402,6 +478,15 @@ mod tests {
             v.resize(file_len, 0);
         }
         v
+    }
+
+    fn set_entry(elf: &mut [u8], entry: u64) {
+        elf[ENTRY_OFFSET..ENTRY_OFFSET + size_of::<u64>()].copy_from_slice(&entry.to_le_bytes());
+    }
+
+    fn set_program_header_flags(elf: &mut [u8], index: usize, flags: u32) {
+        let offset = EHDR_SIZE + index * PHDR_SIZE + PH_FLAGS_OFFSET;
+        elf[offset..offset + size_of::<u32>()].copy_from_slice(&flags.to_le_bytes());
     }
 
     #[test]
@@ -443,6 +528,46 @@ mod tests {
         assert_eq!(info.get_base_va(), 0x1000);
         // va_size = max(0x10000+0x1000, 0x1000+0x1000) - 0x1000 = 0x11000 - 0x1000 = 0x10000
         assert_eq!(info.get_va_size(), 0x10000);
+    }
+
+    #[test]
+    fn reject_entrypoint_in_segment_gap() {
+        let mut elf = build_test_elf(
+            &[
+                TestPh {
+                    p_offset: 0,
+                    p_vaddr: 0x1000,
+                    p_filesz: 0x40,
+                    p_memsz: 0x1000,
+                },
+                TestPh {
+                    p_offset: 0,
+                    p_vaddr: 0x3000,
+                    p_filesz: 0x40,
+                    p_memsz: 0x1000,
+                },
+            ],
+            0x1000,
+        );
+        set_entry(&mut elf, 0x2000);
+
+        assert!(ElfInfo::new(elf).is_err());
+    }
+
+    #[test]
+    fn reject_entrypoint_in_non_executable_segment() {
+        let mut elf = build_test_elf(
+            &[TestPh {
+                p_offset: 0,
+                p_vaddr: 0x1000,
+                p_filesz: 0x40,
+                p_memsz: 0x1000,
+            }],
+            0x1000,
+        );
+        set_program_header_flags(&mut elf, 0, PF_R);
+
+        assert!(ElfInfo::new(elf).is_err());
     }
 
     #[test]
@@ -575,5 +700,25 @@ mod tests {
         let mut target = vec![0u8; va_size];
         info.load_at(0x1000, &mut target)
             .expect("load_at should succeed with unsorted segments");
+    }
+
+    #[test]
+    fn relative_relocation_uses_link_base() {
+        let mut target = [0u8; 16];
+
+        apply_relative_relocation("R_RELATIVE", 0x1008, 0x1010, 0x1000, 0x3000, &mut target)
+            .unwrap();
+
+        assert_eq!(u64::from_le_bytes(target[8..].try_into().unwrap()), 0x3010);
+    }
+
+    #[test]
+    fn relative_relocation_supports_negative_load_bias() {
+        let mut target = [0u8; 8];
+
+        apply_relative_relocation("R_RELATIVE", 0x1000, 0x1010, 0x1000, 0x800, &mut target)
+            .unwrap();
+
+        assert_eq!(u64::from_le_bytes(target), 0x810);
     }
 }

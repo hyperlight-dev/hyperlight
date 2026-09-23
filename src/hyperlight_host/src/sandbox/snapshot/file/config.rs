@@ -210,6 +210,10 @@ pub(super) struct MemoryLayout {
     pub(super) output_data_size: usize,
     pub(super) heap_size: usize,
     pub(super) code_size: usize,
+    /// Virtual base address of the code region. A value of zero means the
+    /// code region is identity mapped.
+    #[serde(default)]
+    pub(super) code_virt_base: u64,
     pub(super) init_data_size: usize,
     /// Memory region flag bits. `None` means default permissions.
     pub(super) init_data_permissions: Option<u32>,
@@ -369,6 +373,33 @@ impl From<HostFunction> for HostFunctionDefinition {
 }
 
 impl OciSnapshotConfig {
+    fn validate_entrypoints(&self, code_lo: u64, code_hi: u64) -> crate::Result<()> {
+        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                self.entrypoint_addr,
+                code_lo,
+                code_hi
+            ));
+        }
+        #[cfg(target_arch = "aarch64")]
+        if !self.entrypoint_addr.is_multiple_of(4) {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
+                self.entrypoint_addr
+            ));
+        }
+        if self.original_entrypoint_addr < code_lo || self.original_entrypoint_addr >= code_hi {
+            return Err(crate::new_error!(
+                "snapshot original entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                self.original_entrypoint_addr,
+                code_lo,
+                code_hi
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_for_load(&self) -> crate::Result<()> {
         if self.arch != Arch::current() {
             return Err(crate::new_error!(
@@ -542,50 +573,23 @@ impl OciSnapshotConfig {
         }
 
         // The saved dispatch entrypoint must be in the executable code
-        // region. Code occupies the page-rounded prefix of the snapshot.
-        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        // region. For non-PIE or ASLR guests the code region's virtual
+        // base differs from the physical load address.
+        let code_lo = if self.layout.code_virt_base != 0 {
+            self.layout.code_virt_base
+        } else {
+            SandboxMemoryLayout::BASE_ADDRESS as u64
+        };
         let code_hi = code_lo
             .checked_add(self.layout.code_size.next_multiple_of(PAGE_SIZE) as u64)
             .ok_or_else(|| {
                 crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + code_size ({}) does not fit in u64",
+                    "snapshot layout overflow: code_virt_base ({:#x}) + code_size ({}) does not fit in u64",
+                    code_lo,
                     self.layout.code_size
                 )
             })?;
-        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
-                self.entrypoint_addr,
-                code_lo,
-                code_hi
-            ));
-        }
-        #[cfg(target_arch = "aarch64")]
-        if !self.entrypoint_addr.is_multiple_of(4) {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
-                self.entrypoint_addr
-            ));
-        }
-
-        // ELF entry point GVA for `AT_ENTRY` in core dumps. It must point
-        // inside the snapshot region, like `entrypoint_addr`.
-        let snapshot_hi = code_lo
-            .checked_add(self.layout.snapshot_size as u64)
-            .ok_or_else(|| {
-                crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + snapshot_size ({}) does not fit in u64",
-                    self.layout.snapshot_size
-                )
-            })?;
-        if self.original_entrypoint_addr < code_lo || self.original_entrypoint_addr >= snapshot_hi {
-            return Err(crate::new_error!(
-                "snapshot original entrypoint addr {:#x} is outside the snapshot region [{:#x}, {:#x})",
-                self.original_entrypoint_addr,
-                code_lo,
-                snapshot_hi
-            ));
-        }
+        self.validate_entrypoints(code_lo, code_hi)?;
 
         // `stack_top_gva` is restored directly into the guest stack
         // pointer. It must be aligned and in the guest address range.
@@ -838,6 +842,7 @@ mod tests {
                 output_data_size: 0,
                 heap_size: 0,
                 code_size: 0,
+                code_virt_base: 0,
                 init_data_size: 0,
                 init_data_permissions: None,
                 scratch_size: 0,
@@ -881,6 +886,21 @@ mod tests {
         cfg.abi_version = SNAPSHOT_ABI_VERSION.wrapping_add(1);
         let err = cfg.validate_for_load().unwrap_err().to_string();
         assert!(err.contains("ABI version mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_entrypoints_rejects_original_entrypoint_after_code() {
+        let mut cfg = gating_config();
+        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let code_hi = code_lo + PAGE_SIZE as u64;
+        cfg.entrypoint_addr = code_lo;
+        cfg.original_entrypoint_addr = code_hi;
+
+        let err = cfg
+            .validate_entrypoints(code_lo, code_hi)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("original entrypoint"), "got: {err}");
     }
 
     /// A snapshot captured under a different hypervisor backend is
@@ -1076,6 +1096,7 @@ mod schema_pin {
     "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
+    "code_virt_base": 0,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
@@ -1124,6 +1145,7 @@ mod schema_pin {
     "output_data_size": 2,
     "heap_size": 3,
     "code_size": 4,
+    "code_virt_base": 0,
     "init_data_size": 5,
     "init_data_permissions": null,
     "scratch_size": 8,
