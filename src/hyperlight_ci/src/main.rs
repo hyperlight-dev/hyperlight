@@ -4,6 +4,7 @@ mod ballast;
 mod bench;
 mod bench_report;
 mod config;
+mod manifest;
 
 use clap::{Parser, Subcommand};
 

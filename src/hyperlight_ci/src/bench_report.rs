@@ -10,6 +10,7 @@ use clap::Args;
 use criterion_swarm::{CriterionSwarm, NoopReporter};
 
 use crate::config::BenchConfig;
+use crate::manifest;
 
 /// Command-line arguments for the `bench-report` subcommand.
 #[derive(Args)]
@@ -55,11 +56,19 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
     Ok(())
 }
 
-/// Discovers benchmark full_ids via CriterionSwarm.
+/// Benchmark ids for the results being reported.
 ///
-/// All trailing arguments (filter, --exact, etc.) are forwarded as bench args
-/// to CriterionSwarm so it handles filtering during discovery.
+/// A run records what it measured, so prefer that: listing the binaries builds
+/// them and describes the current checkout rather than the run in hand, which
+/// differ whenever results come from elsewhere. Explicit binaries or bench args
+/// ask for the binaries, and older results carry no manifest.
 async fn discover_benchmarks(args: &BenchReportArgs) -> Result<Vec<String>> {
+    if args.binary.is_empty() && args.bench_args.is_empty() {
+        if let Some(benchmarks) = manifest::read(&args.criterion_dir)? {
+            return Ok(benchmarks);
+        }
+    }
+
     let mut swarm = CriterionSwarm::builder();
 
     if !args.binary.is_empty() {

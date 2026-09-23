@@ -11,6 +11,7 @@ use criterion_swarm::{CriterionSwarm, OutputMode};
 
 use crate::ballast::Ballast;
 use crate::config::BenchConfig;
+use crate::manifest;
 
 /// An output mode flag for `--build-output` / `--benchmarks-output`.
 #[derive(Clone, Debug)]
@@ -148,6 +149,9 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
         let jobs = swarm.jobs().min(total);
         println!("Running {total} benchmarks with parallelism {jobs}");
     }
+
+    manifest::write(swarm.benchmarks().into_iter().map(str::to_string))
+        .context("Failed to write the benchmark manifest")?;
 
     // Held until the run finishes.
     let ballast = if args.no_ballast {
