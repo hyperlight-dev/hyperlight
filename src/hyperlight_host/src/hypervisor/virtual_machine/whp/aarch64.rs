@@ -83,6 +83,8 @@ const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
 
 const GICR_BASE_GPA: u64 = 0xeffee000;
 
+type WhvResetPartitionFn = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
+
 /// ARM64 WHP exit reasons (from the SDK header under `_ARM64_`).
 #[allow(dead_code)]
 mod arm64_exit_reasons {
@@ -270,6 +272,7 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
 #[derive(Debug)]
 pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
+    reset_partition: WhvResetPartitionFn,
     surrogate_process: Option<SurrogateProcess>,
     /// Tracks host-side file mappings for cleanup.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
@@ -284,6 +287,8 @@ impl WhpVm {
     pub(crate) fn new() -> Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
 
+        let reset_partition = unsafe { try_load_whv_reset_partition() }
+            .map_err(|error| CreateVmError::InitializeVm(error.into()))?;
         let no_surrogate = surrogates_disabled();
         let no_surrogate_guard = if no_surrogate {
             Some(NoSurrogateGuard::acquire()?)
@@ -339,6 +344,7 @@ impl WhpVm {
 
         let mut vm = WhpVm {
             partition,
+            reset_partition,
             surrogate_process: None,
             file_mappings: Vec::new(),
             _no_surrogate_guard: no_surrogate_guard,
@@ -789,10 +795,12 @@ impl VirtualMachine for WhpVm {
 
     fn reset_vcpu(&mut self) -> Result<(), ResetVcpuError> {
         unsafe {
-            WHvDeleteVirtualProcessor(self.partition, 0)
-                .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
-            WHvCreateVirtualProcessor(self.partition, 0, 0)
-                .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
+            let result = (self.reset_partition)(self.partition);
+            if result.is_err() {
+                return Err(ResetVcpuError::Hypervisor(
+                    windows_result::Error::from_hresult(result).into(),
+                ));
+            }
 
             let names = [WHV_ARM64_REGISTER_GICR_BASE_GPA];
             let values = [Align16(WHV_REGISTER_VALUE {
@@ -834,8 +842,25 @@ impl Drop for WhpVm {
 }
 
 // ============================================================================
-// Helper: dynamically load WHvMapGpaRange2
+// Helpers: dynamically load optional WHP APIs
 // ============================================================================
+
+unsafe fn try_load_whv_reset_partition() -> Result<WhvResetPartitionFn, windows_result::Error> {
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows::core::s;
+
+    let module = unsafe { GetModuleHandleA(s!("winhvplatform.dll")) }?;
+    let proc = unsafe { GetProcAddress(module, s!("WHvResetPartition")) };
+    proc.map(|function| unsafe {
+        std::mem::transmute::<unsafe extern "system" fn() -> isize, WhvResetPartitionFn>(function)
+    })
+    .ok_or_else(|| {
+        windows_result::Error::new(
+            HRESULT::from_win32(127),
+            "Failed to find WHvResetPartition in winhvplatform.dll",
+        )
+    })
+}
 
 type WhvMapGpaRange2Fn = unsafe extern "system" fn(
     WHV_PARTITION_HANDLE,

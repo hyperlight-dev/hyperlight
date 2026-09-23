@@ -202,7 +202,7 @@ impl HyperlightVm {
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
-        self.interrupt_handle.reset_vcpu(self.vm.as_mut())?;
+        self.vm.reset_vcpu()?;
         self.apply_sregs(cr3, sregs)?;
         Ok(())
     }
