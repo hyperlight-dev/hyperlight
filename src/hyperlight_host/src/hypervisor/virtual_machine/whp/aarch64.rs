@@ -15,6 +15,7 @@ use hyperlight_common::outb::VmAction;
 use windows::Win32::System::Hypervisor::*;
 use windows_result::HRESULT;
 
+use crate::hypervisor::regs::whp_reg::*;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
@@ -40,11 +41,6 @@ use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
 const WHV_PARTITION_PROPERTY_CODE_ARM64_IC_PARAMETERS: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001012);
-const WHV_ARM64_REGISTER_GICR_BASE_GPA: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00063000);
-
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Default)]
-struct Align16<T>(T);
 
 #[repr(C)]
 struct Arm64IcGicV3Parameters {
@@ -65,9 +61,6 @@ struct Arm64IcParameters {
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<WHV_REGISTER_VALUE>() == 16);
-    assert!(core::mem::size_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
-    assert!(core::mem::align_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
     assert!(core::mem::size_of::<Arm64IcGicV3Parameters>() == 56);
     assert!(core::mem::align_of::<Arm64IcGicV3Parameters>() == 8);
     assert!(core::mem::size_of::<Arm64IcParameters>() == 64);
@@ -89,63 +82,6 @@ const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
 };
 
 const GICR_BASE_GPA: u64 = 0xeffee000;
-
-/// ARM64 WHP register name constants.
-/// Mapped from `WHV_REGISTER_NAME` enum values in the SDK header under `_ARM64_`.
-mod arm64_regs {
-    use windows::Win32::System::Hypervisor::WHV_REGISTER_NAME;
-
-    // General-purpose registers X0-X28
-    pub const WHV_ARM64_REGISTER_X0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020000);
-    // Fp = X29
-    pub const WHV_ARM64_REGISTER_FP: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0002001D);
-    // Lr = X30
-    pub const WHV_ARM64_REGISTER_LR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0002001E);
-    pub const WHV_ARM64_REGISTER_PC: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020022);
-    pub const WHV_ARM64_REGISTER_PSTATE: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020023);
-    pub const WHV_ARM64_REGISTER_SP_EL0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020020);
-    pub const WHV_ARM64_REGISTER_SP_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020021);
-
-    // Floating-point registers Q0-Q31
-    pub const WHV_ARM64_REGISTER_Q0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00030000);
-
-    // FP status/control
-    pub const WHV_ARM64_REGISTER_FPCR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040012);
-    pub const WHV_ARM64_REGISTER_FPSR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040013);
-
-    // System registers
-    pub const WHV_ARM64_REGISTER_SCTLR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040002);
-    pub const WHV_ARM64_REGISTER_CPACR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040004);
-    pub const WHV_ARM64_REGISTER_TTBR0_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040005);
-    pub const WHV_ARM64_REGISTER_TTBR1_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040006);
-    pub const WHV_ARM64_REGISTER_TCR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040007);
-    pub const WHV_ARM64_REGISTER_MAIR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0004000B);
-    pub const WHV_ARM64_REGISTER_VBAR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0004000C);
-
-    /// Helper: produce the `WHV_REGISTER_NAME` for general-purpose register X<i>.
-    /// For i in 0..29, uses sequential numbering from X0.
-    /// i == 29 maps to FP, i == 30 maps to LR.
-    pub fn xreg(i: u32) -> WHV_REGISTER_NAME {
-        match i {
-            0..=28 => WHV_REGISTER_NAME(WHV_ARM64_REGISTER_X0.0 + i as i32),
-            29 => WHV_ARM64_REGISTER_FP,
-            30 => WHV_ARM64_REGISTER_LR,
-            _ => panic!("Invalid ARM64 GP register index: {i}"),
-        }
-    }
-
-    /// Helper: produce the `WHV_REGISTER_NAME` for SIMD register Q<i>.
-    pub fn qreg(i: u32) -> WHV_REGISTER_NAME {
-        debug_assert!(i < 32, "Invalid ARM64 SIMD register index: {i}");
-        WHV_REGISTER_NAME(WHV_ARM64_REGISTER_Q0.0 + i as i32)
-    }
-
-    // Suppress unused warnings for registers defined for completeness
-    #[allow(dead_code)]
-    pub const WHV_ARM64_REGISTER_TTBR1_EL1_: WHV_REGISTER_NAME = WHV_ARM64_REGISTER_TTBR1_EL1;
-    #[allow(dead_code)]
-    pub const WHV_ARM64_REGISTER_SP_EL0_: WHV_REGISTER_NAME = WHV_ARM64_REGISTER_SP_EL0;
-}
 
 /// ARM64 WHP exit reasons (from the SDK header under `_ARM64_`).
 #[allow(dead_code)]
@@ -630,8 +566,6 @@ impl VirtualMachine for WhpVm {
         #[cfg(feature = "trace_guest")] _tc: &mut SandboxTraceContext,
     ) -> Result<VmExit, RunVcpuError> {
         use arm64_exit_reasons::*;
-        use arm64_regs::*;
-
         let mut exit_context = Arm64ExitContext::default();
 
         unsafe {
@@ -726,8 +660,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn regs(&self) -> Result<CommonRegisters, RegisterError> {
-        use arm64_regs::*;
-
         // Get all 31 GP regs + PC + SP + PSTATE in one batch
         const COUNT: usize = 31 + 3; // X0..X30, PC, SP, PSTATE
         let mut names = [WHV_REGISTER_NAME(0); COUNT];
@@ -764,8 +696,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn set_regs(&mut self, regs: &CommonRegisters) -> Result<(), RegisterError> {
-        use arm64_regs::*;
-
         const COUNT: usize = 31 + 3;
         let mut names = [WHV_REGISTER_NAME(0); COUNT];
         let mut values: [Align16<WHV_REGISTER_VALUE>; COUNT] = unsafe { core::mem::zeroed() };
@@ -797,8 +727,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn fpu(&self) -> Result<CommonFpu, RegisterError> {
-        use arm64_regs::*;
-
         let mut v = [0u128; 32];
         for i in 0..32u32 {
             v[i as usize] = self.get_reg128(qreg(i))?;
@@ -820,8 +748,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<(), RegisterError> {
-        use arm64_regs::*;
-
         for i in 0..32u32 {
             self.set_reg128(qreg(i), fpu.v[i as usize])?;
         }
@@ -839,8 +765,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn sregs(&self) -> Result<CommonSpecialRegisters, RegisterError> {
-        use arm64_regs::*;
-
         Ok(CommonSpecialRegisters {
             ttbr0_el1: self.get_reg64(WHV_ARM64_REGISTER_TTBR0_EL1)?,
             tcr_el1: self.get_reg64(WHV_ARM64_REGISTER_TCR_EL1)?,
@@ -853,8 +777,6 @@ impl VirtualMachine for WhpVm {
     }
 
     fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<(), RegisterError> {
-        use arm64_regs::*;
-
         self.set_reg64(WHV_ARM64_REGISTER_TTBR0_EL1, sregs.ttbr0_el1)?;
         self.set_reg64(WHV_ARM64_REGISTER_TCR_EL1, sregs.tcr_el1)?;
         self.set_reg64(WHV_ARM64_REGISTER_MAIR_EL1, sregs.mair_el1)?;

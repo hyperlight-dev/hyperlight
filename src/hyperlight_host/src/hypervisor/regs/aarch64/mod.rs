@@ -19,3 +19,6 @@ pub(crate) struct CommonDebugRegs {
 
 #[cfg(kvm)]
 pub(crate) mod kvm_reg;
+
+#[cfg(target_os = "windows")]
+pub(crate) mod whp_reg;
