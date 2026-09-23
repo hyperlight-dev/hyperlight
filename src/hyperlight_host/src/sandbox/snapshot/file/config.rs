@@ -373,6 +373,33 @@ impl From<HostFunction> for HostFunctionDefinition {
 }
 
 impl OciSnapshotConfig {
+    fn validate_entrypoints(&self, code_lo: u64, code_hi: u64) -> crate::Result<()> {
+        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                self.entrypoint_addr,
+                code_lo,
+                code_hi
+            ));
+        }
+        #[cfg(target_arch = "aarch64")]
+        if !self.entrypoint_addr.is_multiple_of(4) {
+            return Err(crate::new_error!(
+                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
+                self.entrypoint_addr
+            ));
+        }
+        if self.original_entrypoint_addr < code_lo || self.original_entrypoint_addr >= code_hi {
+            return Err(crate::new_error!(
+                "snapshot original entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
+                self.original_entrypoint_addr,
+                code_lo,
+                code_hi
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_for_load(&self) -> crate::Result<()> {
         if self.arch != Arch::current() {
             return Err(crate::new_error!(
@@ -562,40 +589,7 @@ impl OciSnapshotConfig {
                     self.layout.code_size
                 )
             })?;
-        if self.entrypoint_addr < code_lo || self.entrypoint_addr >= code_hi {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
-                self.entrypoint_addr,
-                code_lo,
-                code_hi
-            ));
-        }
-        #[cfg(target_arch = "aarch64")]
-        if !self.entrypoint_addr.is_multiple_of(4) {
-            return Err(crate::new_error!(
-                "snapshot entrypoint addr {:#x} is not 4-byte aligned",
-                self.entrypoint_addr
-            ));
-        }
-
-        // ELF entry point GVA for `AT_ENTRY` in core dumps. It must point
-        // inside the snapshot region, like `entrypoint_addr`.
-        let snapshot_hi = code_lo
-            .checked_add(self.layout.snapshot_size as u64)
-            .ok_or_else(|| {
-                crate::new_error!(
-                    "snapshot layout overflow: BASE_ADDRESS + snapshot_size ({}) does not fit in u64",
-                    self.layout.snapshot_size
-                )
-            })?;
-        if self.original_entrypoint_addr < code_lo || self.original_entrypoint_addr >= snapshot_hi {
-            return Err(crate::new_error!(
-                "snapshot original entrypoint addr {:#x} is outside the code region [{:#x}, {:#x})",
-                self.original_entrypoint_addr,
-                code_lo,
-                code_hi
-            ));
-        }
+        self.validate_entrypoints(code_lo, code_hi)?;
 
         // `stack_top_gva` is restored directly into the guest stack
         // pointer. It must be aligned and in the guest address range.
@@ -892,6 +886,21 @@ mod tests {
         cfg.abi_version = SNAPSHOT_ABI_VERSION.wrapping_add(1);
         let err = cfg.validate_for_load().unwrap_err().to_string();
         assert!(err.contains("ABI version mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_entrypoints_rejects_original_entrypoint_after_code() {
+        let mut cfg = gating_config();
+        let code_lo = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let code_hi = code_lo + PAGE_SIZE as u64;
+        cfg.entrypoint_addr = code_lo;
+        cfg.original_entrypoint_addr = code_hi;
+
+        let err = cfg
+            .validate_entrypoints(code_lo, code_hi)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("original entrypoint"), "got: {err}");
     }
 
     /// A snapshot captured under a different hypervisor backend is
