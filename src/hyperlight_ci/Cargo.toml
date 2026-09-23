@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 anyhow = "1"
 clap = { version = "4.6.1", features = ["derive"] }
-criterion-markdown = "0.1.2"
+criterion-markdown = "0.2.1"
 criterion-swarm = "0.2.2"
 regex = "1"
 serde = { version = "1.0", features = ["derive"] }

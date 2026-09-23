@@ -463,10 +463,10 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 # Options for Linux hypervisor: "kvm", "mshv3"
 # Options for Windows hypervisor: "hyperv", "hyperv-ws2025"
 # Options for cpu_vendor: "amd", "intel"
-bench-download os hypervisor cpu_vendor tag="":
+bench-download os hypervisor cpu_vendor tag="" dest="target/criterion":
     gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz
-    mkdir -p target/criterion {{ if os() == "windows" { "-Force" } else { "" } }}
-    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz -C target/criterion/ --strip-components=1
+    mkdir -p {{ dest }} {{ if os() == "windows" { "-Force" } else { "" } }}
+    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz -C {{ dest }}/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
 bench-ci baseline features="":

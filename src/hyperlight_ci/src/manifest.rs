@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{env, fs};
+use std::{env, fs, io};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,24 +20,27 @@ const FILE_NAME: &str = "benchmarks.json";
 /// longer exist, indistinguishable from the ones just measured. This lists what
 /// the run actually covered.
 #[derive(Serialize, Deserialize)]
-struct Manifest {
+pub(crate) struct Manifest {
     /// Seconds since the Unix epoch. Criterion timestamps nothing, and archived
     /// results lose their file times.
     timestamp: u64,
-    host: Host,
-    benchmarks: Vec<String>,
+    pub host: Host,
+    pub benchmarks: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Host {
-    os: String,
-    arch: String,
+pub(crate) struct Host {
+    pub os: String,
+    pub arch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    logical_cpus: Option<usize>,
+    pub logical_cpus: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cpu_vendor: Option<String>,
+    pub cpu_vendor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cpu_model: Option<String>,
+    pub cpu_model: Option<String>,
+    /// The hypervisor hyperlight would use here, `kvm` and so on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypervisor: Option<String>,
 }
 
 /// Where criterion keeps its results.
@@ -76,6 +79,31 @@ fn cpu_vendor_and_model() -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+/// Kvm and mshv cannot both be present, so the device that exists names the
+/// hypervisor hyperlight would pick.
+#[cfg(target_os = "linux")]
+fn hypervisor() -> Option<String> {
+    [("/dev/kvm", "kvm"), ("/dev/mshv", "mshv")]
+        .into_iter()
+        .find(|(device, _)| Path::new(device).exists())
+        .map(|(_, name)| name.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn hypervisor() -> Option<String> {
+    Some("whp".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn hypervisor() -> Option<String> {
+    Some("hvf".to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn hypervisor() -> Option<String> {
+    None
+}
+
 /// Record `benchmarks` as the contents of the run about to start.
 pub(crate) fn write(benchmarks: impl IntoIterator<Item = String>) -> Result<()> {
     let (cpu_vendor, cpu_model) = cpu_vendor_and_model();
@@ -93,6 +121,7 @@ pub(crate) fn write(benchmarks: impl IntoIterator<Item = String>) -> Result<()> 
             logical_cpus: std::thread::available_parallelism().ok().map(Into::into),
             cpu_vendor,
             cpu_model,
+            hypervisor: hypervisor(),
         },
         benchmarks,
     };
@@ -104,15 +133,31 @@ pub(crate) fn write(benchmarks: impl IntoIterator<Item = String>) -> Result<()> 
     fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))
 }
 
-/// The benchmarks a run recorded, or `None` when it left no manifest.
-pub(crate) fn read(dir: &Path) -> Result<Option<Vec<String>>> {
+/// Drop the record of the run whose results are about to be replaced, so a
+/// run that fails part way leaves nothing claiming to describe what is there.
+pub(crate) fn clear() -> Result<()> {
+    let path = criterion_dir().join(FILE_NAME);
+    match fs::remove_file(&path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            Err(error).with_context(|| format!("Failed to remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// What a run recorded, or `None` when it left no manifest.
+pub(crate) fn read(dir: &Path) -> Result<Option<Manifest>> {
     let path = dir.join(FILE_NAME);
-    let Ok(text) = fs::read_to_string(&path) else {
-        return Ok(None);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        // Criterion results predating the manifest, or taken by criterion alone.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", path.display()));
+        }
     };
 
-    let manifest: Manifest = serde_json::from_str(&text)
-        .with_context(|| format!("Failed to parse {}", path.display()))?;
-
-    Ok(Some(manifest.benchmarks))
+    serde_json::from_str(&text)
+        .map(Some)
+        .with_context(|| format!("Failed to parse {}", path.display()))
 }

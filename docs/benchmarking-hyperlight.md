@@ -72,6 +72,17 @@ Found 1 outliers among 100 measurements (1.00%)
 
 ## Running benchmarks locally
 
-Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] ` to download and extract the GitHub release benchmarks to the correct folder. You can then run `just bench-ci main` to compare to (and overwrite) the previous release benchmarks. Note that `main` is the name of the baselines stored in GitHub.
+Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] [dest]` to download and extract the GitHub release benchmarks. Pass a `dest` outside `target/criterion` and point `cargo ci bench-report --baseline-root` at it, since `just bench-ci main` overwrites the `main` baseline it runs against. Note that `main` is the name of the baselines stored in GitHub.
+
+`cargo ci bench-report` renders the comparison. `--candidate` and `--baseline` say where each side comes from: a criterion directory, `run:<ID>` for a CI run, or `pr:<NUMBER>` for the latest run of a pull request. Criterion keeps the last run of a directory in `new` and the one before it in `base`, so a directory on its own reports the last run against the previous one.
+
+CI results cover every hypervisor and cpu vendor, so results are paired with the ones measured on the same kind of machine. A run records its own operating system, cpu vendor and hypervisor, and CI artifacts are named after the configuration that produced them. Results that fit no counterpart, or several, are reported without a comparison.
+
+```sh
+# a local run against results downloaded into their own directory
+cargo ci bench-report --baseline target/criterion-baseline
+# this machine against the configuration in CI that matches it
+cargo ci bench-report --baseline pr:1529
+```
 
 **Important**: The `just bench` command uses release builds by default to ensure meaningful performance measurements. For profiling purposes, you can compile benchmarks with debug symbols by running `cargo bench` directly.

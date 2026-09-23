@@ -150,8 +150,11 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
         println!("Running {total} benchmarks with parallelism {jobs}");
     }
 
-    manifest::write(swarm.benchmarks().into_iter().map(str::to_string))
-        .context("Failed to write the benchmark manifest")?;
+    let benchmarks: Vec<String> = swarm.benchmarks().into_iter().map(str::to_string).collect();
+
+    // A run that fails leaves the results of the last one in place, which a
+    // manifest written up front would claim as this run's.
+    manifest::clear().context("Failed to clear the benchmark manifest")?;
 
     // Held until the run finishes.
     let ballast = if args.no_ballast {
@@ -162,5 +165,7 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
 
     let result = swarm.run().await.context("Failed to run criterion swarm");
     drop(ballast);
-    result
+    result?;
+
+    manifest::write(benchmarks).context("Failed to write the benchmark manifest")
 }

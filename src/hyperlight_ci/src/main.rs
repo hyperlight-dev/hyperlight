@@ -5,6 +5,7 @@ mod bench;
 mod bench_report;
 mod config;
 mod manifest;
+mod remote;
 
 use clap::{Parser, Subcommand};
 
