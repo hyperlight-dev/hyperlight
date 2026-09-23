@@ -398,7 +398,9 @@ impl Snapshot {
             )
         })?;
 
-        let entrypoint_gva = layout.get_guest_code_gva() as u64 + entrypoint_offset;
+        let entrypoint_gva = (layout.get_guest_code_gva() as u64)
+            .checked_add(entrypoint_offset)
+            .ok_or_else(|| crate::new_error!("ELF entrypoint GVA overflows"))?;
 
         Ok(Self {
             memory: ReadonlySharedMemory::from_bytes(&memory, layout.snapshot_size())?,

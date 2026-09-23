@@ -10,7 +10,9 @@ use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
 use goblin::elf::reloc::{R_X86_64_NONE, R_X86_64_RELATIVE};
 use goblin::elf::{Elf, ProgramHeaders, Reloc};
-use goblin::elf64::program_header::PT_LOAD;
+#[cfg(test)]
+use goblin::elf64::program_header::PF_R;
+use goblin::elf64::program_header::{PF_X, PT_LOAD};
 
 use super::exe::LoadInfo;
 use crate::{Result, log_then_return, new_error};
@@ -204,6 +206,21 @@ impl ElfInfo {
             .into_iter()
             .max()
             .ok_or_else(|| new_error!("ELF must have at least one PT_LOAD header"))?;
+        let entry_is_executable = elf.program_headers.iter().any(|phdr| {
+            phdr.p_type == PT_LOAD
+                && phdr.p_flags & PF_X != 0
+                && phdr.p_vaddr <= elf.entry
+                && phdr
+                    .p_vaddr
+                    .checked_add(phdr.p_memsz)
+                    .is_some_and(|end| elf.entry < end)
+        });
+        if !entry_is_executable {
+            log_then_return!(
+                "ELF entrypoint ({:#x}) is not inside an executable PT_LOAD segment",
+                elf.entry
+            );
+        }
         let va_size = max_va_end - base_va;
         if va_size > super::layout::SandboxMemoryLayout::MAX_MEMORY_SIZE as u64 {
             log_then_return!(
@@ -419,6 +436,8 @@ mod tests {
 
     const EHDR_SIZE: usize = 64;
     const PHDR_SIZE: usize = 56;
+    const ENTRY_OFFSET: usize = 24;
+    const PH_FLAGS_OFFSET: usize = 4;
 
     struct TestPh {
         p_offset: u64,
@@ -447,7 +466,7 @@ mod tests {
         // Program headers
         for p in phs {
             v.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type
-            v.extend_from_slice(&5u32.to_le_bytes()); // p_flags = R+X
+            v.extend_from_slice(&(PF_R | PF_X).to_le_bytes());
             v.extend_from_slice(&p.p_offset.to_le_bytes());
             v.extend_from_slice(&p.p_vaddr.to_le_bytes());
             v.extend_from_slice(&p.p_vaddr.to_le_bytes()); // p_paddr
@@ -459,6 +478,15 @@ mod tests {
             v.resize(file_len, 0);
         }
         v
+    }
+
+    fn set_entry(elf: &mut [u8], entry: u64) {
+        elf[ENTRY_OFFSET..ENTRY_OFFSET + size_of::<u64>()].copy_from_slice(&entry.to_le_bytes());
+    }
+
+    fn set_program_header_flags(elf: &mut [u8], index: usize, flags: u32) {
+        let offset = EHDR_SIZE + index * PHDR_SIZE + PH_FLAGS_OFFSET;
+        elf[offset..offset + size_of::<u32>()].copy_from_slice(&flags.to_le_bytes());
     }
 
     #[test]
@@ -500,6 +528,46 @@ mod tests {
         assert_eq!(info.get_base_va(), 0x1000);
         // va_size = max(0x10000+0x1000, 0x1000+0x1000) - 0x1000 = 0x11000 - 0x1000 = 0x10000
         assert_eq!(info.get_va_size(), 0x10000);
+    }
+
+    #[test]
+    fn reject_entrypoint_in_segment_gap() {
+        let mut elf = build_test_elf(
+            &[
+                TestPh {
+                    p_offset: 0,
+                    p_vaddr: 0x1000,
+                    p_filesz: 0x40,
+                    p_memsz: 0x1000,
+                },
+                TestPh {
+                    p_offset: 0,
+                    p_vaddr: 0x3000,
+                    p_filesz: 0x40,
+                    p_memsz: 0x1000,
+                },
+            ],
+            0x1000,
+        );
+        set_entry(&mut elf, 0x2000);
+
+        assert!(ElfInfo::new(elf).is_err());
+    }
+
+    #[test]
+    fn reject_entrypoint_in_non_executable_segment() {
+        let mut elf = build_test_elf(
+            &[TestPh {
+                p_offset: 0,
+                p_vaddr: 0x1000,
+                p_filesz: 0x40,
+                p_memsz: 0x1000,
+            }],
+            0x1000,
+        );
+        set_program_header_flags(&mut elf, 0, PF_R);
+
+        assert!(ElfInfo::new(elf).is_err());
     }
 
     #[test]
