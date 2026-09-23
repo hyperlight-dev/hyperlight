@@ -33,7 +33,7 @@ use crate::hypervisor::surrogate_process_manager::{
     get_surrogate_process_manager, surrogates_disabled,
 };
 #[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::{self, TimerThread};
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
     VirtualMachine, VmExit, XSAVE_MIN_SIZE,
@@ -580,11 +580,7 @@ impl VirtualMachine for WhpVm {
                             if self.handle_hw_io_out(port, &data) {
                                 continue;
                             }
-                        } else if let Some(val) =
-                            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_io_in(
-                                port,
-                            )
-                        {
+                        } else if let Some(val) = hw_interrupts::handle_io_in(port) {
                             self.set_registers(&[(
                                 WHvX64RegisterRax,
                                 Align16(WHV_REGISTER_VALUE { Reg64: val }),
@@ -1330,7 +1326,7 @@ impl WhpVm {
             ));
         }
 
-        crate::hypervisor::virtual_machine::x86_64::hw_interrupts::init_lapic_registers(&mut state);
+        hw_interrupts::init_lapic_registers(&mut state);
 
         unsafe {
             WHvSetVirtualProcessorInterruptControllerState2(
@@ -1379,7 +1375,7 @@ impl WhpVm {
     /// delivers through the LAPIC and the guest only acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut state) = self.get_lapic_state() {
-            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::lapic_eoi(&mut state);
+            hw_interrupts::lapic_eoi(&mut state);
             if let Err(e) = self.set_lapic_state(&state) {
                 tracing::warn!("WHP set_lapic_state (EOI) failed: {e}");
             }
@@ -1389,35 +1385,26 @@ impl WhpVm {
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
             let partition_raw = self.partition.0;
-            let vector = crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TIMER_VECTOR;
-            crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_pv_timer_config(
-                &mut self.timer,
-                data,
-                move || {
-                    let partition = WHV_PARTITION_HANDLE(partition_raw);
-                    let interrupt = WHV_INTERRUPT_CONTROL {
-                        _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
-                        Destination: 0,
-                        Vector: vector,
-                    };
-                    let _ = unsafe {
-                        WHvRequestInterrupt(
-                            partition,
-                            &interrupt,
-                            std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
-                        )
-                    };
-                },
-            );
+            let vector = hw_interrupts::TIMER_VECTOR;
+            hw_interrupts::handle_pv_timer_config(&mut self.timer, data, move || {
+                let partition = WHV_PARTITION_HANDLE(partition_raw);
+                let interrupt = WHV_INTERRUPT_CONTROL {
+                    _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
+                    Destination: 0,
+                    Vector: vector,
+                };
+                let _ = unsafe {
+                    WHvRequestInterrupt(
+                        partition,
+                        &interrupt,
+                        std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
+                    )
+                };
+            });
             return true;
         }
         let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());
-        crate::hypervisor::virtual_machine::x86_64::hw_interrupts::handle_common_io_out(
-            port,
-            data,
-            timer_active,
-            || self.do_lapic_eoi(),
-        )
+        hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
     }
 }
 
