@@ -10,6 +10,8 @@
 
 use std::os::raw::c_void;
 use std::sync::atomic::Ordering;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use hyperlight_common::outb::VmAction;
 use windows::Win32::System::Hypervisor::*;
@@ -82,8 +84,52 @@ const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
 };
 
 const GICR_BASE_GPA: u64 = 0xeffee000;
+// Keep this process below WHP's observed limit of 64 GIC-backed partitions.
+const MAX_WHP_PARTITIONS: usize = 64;
+const PARTITION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 type WhvResetPartitionFn = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
+
+static WHP_PARTITION_COUNT: Mutex<usize> = Mutex::new(0);
+static WHP_PARTITION_AVAILABLE: Condvar = Condvar::new();
+
+#[derive(Debug)]
+struct WhpPartitionPermit;
+
+impl WhpPartitionPermit {
+    fn acquire() -> Result<Self, CreateVmError> {
+        let deadline = Instant::now() + PARTITION_WAIT_TIMEOUT;
+        let mut count = WHP_PARTITION_COUNT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        while *count >= MAX_WHP_PARTITIONS {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(CreateVmError::WhpPartitionLimit);
+            };
+            let (next_count, result) = WHP_PARTITION_AVAILABLE
+                .wait_timeout(count, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            count = next_count;
+            if result.timed_out() && *count >= MAX_WHP_PARTITIONS {
+                return Err(CreateVmError::WhpPartitionLimit);
+            }
+        }
+
+        *count += 1;
+        Ok(Self)
+    }
+}
+
+impl Drop for WhpPartitionPermit {
+    fn drop(&mut self) {
+        let mut count = WHP_PARTITION_COUNT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *count -= 1;
+        WHP_PARTITION_AVAILABLE.notify_one();
+    }
+}
 
 /// ARM64 WHP exit reasons (from the SDK header under `_ARM64_`).
 #[allow(dead_code)]
@@ -273,6 +319,7 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
 pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     reset_partition: WhvResetPartitionFn,
+    _partition_permit: WhpPartitionPermit,
     surrogate_process: Option<SurrogateProcess>,
     /// Tracks host-side file mappings for cleanup.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
@@ -289,6 +336,7 @@ impl WhpVm {
 
         let reset_partition = unsafe { try_load_whv_reset_partition() }
             .map_err(|error| CreateVmError::InitializeVm(error.into()))?;
+        let partition_permit = WhpPartitionPermit::acquire()?;
         let no_surrogate = surrogates_disabled();
         let no_surrogate_guard = if no_surrogate {
             Some(NoSurrogateGuard::acquire()?)
@@ -345,6 +393,7 @@ impl WhpVm {
         let mut vm = WhpVm {
             partition,
             reset_partition,
+            _partition_permit: partition_permit,
             surrogate_process: None,
             file_mappings: Vec::new(),
             _no_surrogate_guard: no_surrogate_guard,
