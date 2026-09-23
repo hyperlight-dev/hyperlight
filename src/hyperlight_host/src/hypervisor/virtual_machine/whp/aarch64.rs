@@ -46,6 +46,10 @@ const WHV_PARTITION_PROPERTY_CODE_ARM64_IC_PARAMETERS: WHV_PARTITION_PROPERTY_CO
     WHV_PARTITION_PROPERTY_CODE(0x00001012);
 const WHV_ARM64_REGISTER_GICR_BASE_GPA: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00063000);
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
+struct Align16<T>(T);
+
 #[repr(C)]
 struct Arm64IcGicV3Parameters {
     gicd_base_address: u64,
@@ -63,6 +67,16 @@ struct Arm64IcParameters {
     reserved: u32,
     gic_v3_parameters: Arm64IcGicV3Parameters,
 }
+
+const _: () = {
+    assert!(core::mem::size_of::<WHV_REGISTER_VALUE>() == 16);
+    assert!(core::mem::size_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
+    assert!(core::mem::align_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
+    assert!(core::mem::size_of::<Arm64IcGicV3Parameters>() == 56);
+    assert!(core::mem::align_of::<Arm64IcGicV3Parameters>() == 8);
+    assert!(core::mem::size_of::<Arm64IcParameters>() == 64);
+    assert!(core::mem::align_of::<Arm64IcParameters>() == 8);
+};
 
 const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
     emulation_mode: 1,
@@ -181,6 +195,11 @@ struct Arm64ExitContext {
     /// Raw payload — union of various context types. We interpret based on exit_reason.
     payload: [u64; 32],
 }
+
+const _: () = {
+    assert!(core::mem::size_of::<Arm64ExitContext>() == 272);
+    assert!(core::mem::align_of::<Arm64ExitContext>() == 8);
+};
 
 impl Default for Arm64ExitContext {
     fn default() -> Self {
@@ -366,10 +385,10 @@ impl WhpVm {
                 vcpu_created = true;
 
                 let names = [WHV_ARM64_REGISTER_GICR_BASE_GPA];
-                let values = [WHV_REGISTER_VALUE {
+                let values = [Align16(WHV_REGISTER_VALUE {
                     Reg64: GICR_BASE_GPA,
-                }];
-                WHvSetVirtualProcessorRegisters(p, 0, names.as_ptr(), 1, values.as_ptr())
+                })];
+                WHvSetVirtualProcessorRegisters(p, 0, names.as_ptr(), 1, values.as_ptr().cast())
                     .map_err(|e| CreateVmError::InitializeVm(e.into()))
             })();
 
@@ -408,27 +427,33 @@ impl WhpVm {
     /// Get a single 64-bit register value.
     fn get_reg64(&self, name: WHV_REGISTER_NAME) -> Result<u64, RegisterError> {
         let names = [name];
-        let mut values: [WHV_REGISTER_VALUE; 1] = unsafe { core::mem::zeroed() };
+        let mut values: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { core::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 names.as_ptr(),
                 1,
-                values.as_mut_ptr(),
+                values.as_mut_ptr().cast(),
             )
             .map_err(|e| RegisterError::GetRegs(e.into()))?;
         }
-        Ok(unsafe { values[0].Reg64 })
+        Ok(unsafe { values[0].0.Reg64 })
     }
 
     /// Set a single 64-bit register value.
     fn set_reg64(&self, name: WHV_REGISTER_NAME, value: u64) -> Result<(), RegisterError> {
         let names = [name];
-        let values = [WHV_REGISTER_VALUE { Reg64: value }];
+        let values = [Align16(WHV_REGISTER_VALUE { Reg64: value })];
         unsafe {
-            WHvSetVirtualProcessorRegisters(self.partition, 0, names.as_ptr(), 1, values.as_ptr())
-                .map_err(|e| RegisterError::SetRegs(e.into()))?;
+            WHvSetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                1,
+                values.as_ptr().cast(),
+            )
+            .map_err(|e| RegisterError::SetRegs(e.into()))?;
         }
         Ok(())
     }
@@ -436,35 +461,41 @@ impl WhpVm {
     /// Get a single 128-bit register value (for SIMD Q registers).
     fn get_reg128(&self, name: WHV_REGISTER_NAME) -> Result<u128, RegisterError> {
         let names = [name];
-        let mut values: [WHV_REGISTER_VALUE; 1] = unsafe { core::mem::zeroed() };
+        let mut values: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { core::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 names.as_ptr(),
                 1,
-                values.as_mut_ptr(),
+                values.as_mut_ptr().cast(),
             )
             .map_err(|e| RegisterError::GetFpu(e.into()))?;
         }
-        let v = unsafe { values[0].Reg128 };
+        let v = unsafe { values[0].0.Reg128 };
         Ok((unsafe { v.Anonymous.High64 } as u128) << 64 | unsafe { v.Anonymous.Low64 } as u128)
     }
 
     /// Set a single 128-bit register value (for SIMD Q registers).
     fn set_reg128(&self, name: WHV_REGISTER_NAME, value: u128) -> Result<(), RegisterError> {
         let names = [name];
-        let values = [WHV_REGISTER_VALUE {
+        let values = [Align16(WHV_REGISTER_VALUE {
             Reg128: WHV_UINT128 {
                 Anonymous: WHV_UINT128_0 {
                     Low64: value as u64,
                     High64: (value >> 64) as u64,
                 },
             },
-        }];
+        })];
         unsafe {
-            WHvSetVirtualProcessorRegisters(self.partition, 0, names.as_ptr(), 1, values.as_ptr())
-                .map_err(|e| RegisterError::SetFpu(e.into()))?;
+            WHvSetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                1,
+                values.as_ptr().cast(),
+            )
+            .map_err(|e| RegisterError::SetFpu(e.into()))?;
         }
         Ok(())
     }
@@ -714,28 +745,28 @@ impl VirtualMachine for WhpVm {
         names[32] = WHV_ARM64_REGISTER_SP_EL0;
         names[33] = WHV_ARM64_REGISTER_PSTATE;
 
-        let mut values: [WHV_REGISTER_VALUE; COUNT] = unsafe { core::mem::zeroed() };
+        let mut values: [Align16<WHV_REGISTER_VALUE>; COUNT] = unsafe { core::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 names.as_ptr(),
                 COUNT as u32,
-                values.as_mut_ptr(),
+                values.as_mut_ptr().cast(),
             )
             .map_err(|e| RegisterError::GetRegs(e.into()))?;
         }
 
         let mut x = [0u64; 31];
         for i in 0..31 {
-            x[i] = unsafe { values[i].Reg64 };
+            x[i] = unsafe { values[i].0.Reg64 };
         }
 
         Ok(CommonRegisters {
             x,
-            pc: unsafe { values[31].Reg64 },
-            sp: unsafe { values[32].Reg64 },
-            pstate: unsafe { values[33].Reg64 },
+            pc: unsafe { values[31].0.Reg64 },
+            sp: unsafe { values[32].0.Reg64 },
+            pstate: unsafe { values[33].0.Reg64 },
         })
     }
 
@@ -744,20 +775,20 @@ impl VirtualMachine for WhpVm {
 
         const COUNT: usize = 31 + 3;
         let mut names = [WHV_REGISTER_NAME(0); COUNT];
-        let mut values: [WHV_REGISTER_VALUE; COUNT] = unsafe { core::mem::zeroed() };
+        let mut values: [Align16<WHV_REGISTER_VALUE>; COUNT] = unsafe { core::mem::zeroed() };
 
         for i in 0..31u32 {
             names[i as usize] = xreg(i);
-            values[i as usize] = WHV_REGISTER_VALUE {
+            values[i as usize] = Align16(WHV_REGISTER_VALUE {
                 Reg64: regs.x[i as usize],
-            };
+            });
         }
         names[31] = WHV_ARM64_REGISTER_PC;
-        values[31] = WHV_REGISTER_VALUE { Reg64: regs.pc };
+        values[31] = Align16(WHV_REGISTER_VALUE { Reg64: regs.pc });
         names[32] = WHV_ARM64_REGISTER_SP_EL0;
-        values[32] = WHV_REGISTER_VALUE { Reg64: regs.sp };
+        values[32] = Align16(WHV_REGISTER_VALUE { Reg64: regs.sp });
         names[33] = WHV_ARM64_REGISTER_PSTATE;
-        values[33] = WHV_REGISTER_VALUE { Reg64: regs.pstate };
+        values[33] = Align16(WHV_REGISTER_VALUE { Reg64: regs.pstate });
 
         unsafe {
             WHvSetVirtualProcessorRegisters(
@@ -765,7 +796,7 @@ impl VirtualMachine for WhpVm {
                 0,
                 names.as_ptr(),
                 COUNT as u32,
-                values.as_ptr(),
+                values.as_ptr().cast(),
             )
             .map_err(|e| RegisterError::SetRegs(e.into()))?;
         }
@@ -863,11 +894,17 @@ impl VirtualMachine for WhpVm {
                 .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
 
             let names = [WHV_ARM64_REGISTER_GICR_BASE_GPA];
-            let values = [WHV_REGISTER_VALUE {
+            let values = [Align16(WHV_REGISTER_VALUE {
                 Reg64: GICR_BASE_GPA,
-            }];
-            WHvSetVirtualProcessorRegisters(self.partition, 0, names.as_ptr(), 1, values.as_ptr())
-                .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
+            })];
+            WHvSetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                1,
+                values.as_ptr().cast(),
+            )
+            .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
         }
         Ok(())
     }
