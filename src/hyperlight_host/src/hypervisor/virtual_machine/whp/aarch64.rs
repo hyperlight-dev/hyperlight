@@ -24,8 +24,8 @@ use crate::hypervisor::surrogate_process_manager::{
     get_surrogate_process_manager, surrogates_disabled,
 };
 use crate::hypervisor::virtual_machine::{
-    CreateVmError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError, UnmapMemoryError,
-    VirtualMachine, VmExit,
+    CreateVmError, HypervisorError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError,
+    UnmapMemoryError, VirtualMachine, VmExit,
 };
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -356,78 +356,38 @@ impl WhpVm {
         Ok(vm)
     }
 
-    /// Get a single 64-bit register value.
-    fn get_reg64(&self, name: WHV_REGISTER_NAME) -> Result<u64, RegisterError> {
-        let names = [name];
-        let mut values: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { core::mem::zeroed() };
+    fn get_registers<const N: usize>(
+        &self,
+        names: &[WHV_REGISTER_NAME; N],
+    ) -> Result<[Align16<WHV_REGISTER_VALUE>; N], HypervisorError> {
+        let mut values: [Align16<WHV_REGISTER_VALUE>; N] = unsafe { core::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 names.as_ptr(),
-                1,
+                N as u32,
                 values.as_mut_ptr().cast(),
             )
-            .map_err(|e| RegisterError::GetRegs(e.into()))?;
+            .map_err(HypervisorError::from)?;
         }
-        Ok(unsafe { values[0].0.Reg64 })
+        Ok(values)
     }
 
-    /// Set a single 64-bit register value.
-    fn set_reg64(&self, name: WHV_REGISTER_NAME, value: u64) -> Result<(), RegisterError> {
-        let names = [name];
-        let values = [Align16(WHV_REGISTER_VALUE { Reg64: value })];
+    fn set_registers<const N: usize>(
+        &self,
+        names: &[WHV_REGISTER_NAME; N],
+        values: &[Align16<WHV_REGISTER_VALUE>; N],
+    ) -> Result<(), HypervisorError> {
         unsafe {
             WHvSetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 names.as_ptr(),
-                1,
+                N as u32,
                 values.as_ptr().cast(),
             )
-            .map_err(|e| RegisterError::SetRegs(e.into()))?;
-        }
-        Ok(())
-    }
-
-    /// Get a single 128-bit register value (for SIMD Q registers).
-    fn get_reg128(&self, name: WHV_REGISTER_NAME) -> Result<u128, RegisterError> {
-        let names = [name];
-        let mut values: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { core::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                1,
-                values.as_mut_ptr().cast(),
-            )
-            .map_err(|e| RegisterError::GetFpu(e.into()))?;
-        }
-        let v = unsafe { values[0].0.Reg128 };
-        Ok((unsafe { v.Anonymous.High64 } as u128) << 64 | unsafe { v.Anonymous.Low64 } as u128)
-    }
-
-    /// Set a single 128-bit register value (for SIMD Q registers).
-    fn set_reg128(&self, name: WHV_REGISTER_NAME, value: u128) -> Result<(), RegisterError> {
-        let names = [name];
-        let values = [Align16(WHV_REGISTER_VALUE {
-            Reg128: WHV_UINT128 {
-                Anonymous: WHV_UINT128_0 {
-                    Low64: value as u64,
-                    High64: (value >> 64) as u64,
-                },
-            },
-        })];
-        unsafe {
-            WHvSetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                1,
-                values.as_ptr().cast(),
-            )
-            .map_err(|e| RegisterError::SetFpu(e.into()))?;
+            .map_err(HypervisorError::from)?;
         }
         Ok(())
     }
@@ -597,15 +557,11 @@ impl VirtualMachine for WhpVm {
                     // Advance PC past the faulting instruction.
                     // WHP ARM64 does not auto-advance PC on intercepts.
                     let next_pc = header.pc + header.instruction_length as u64;
-                    self.set_reg64(WHV_ARM64_REGISTER_PC, next_pc)
-                        .map_err(|e| match e {
-                            RegisterError::SetRegs(he) => RunVcpuError::IncrementRip(he),
-                            _ => {
-                                RunVcpuError::Unknown(super::super::HypervisorError::WindowsError(
-                                    windows_result::Error::from_hresult(HRESULT(0)),
-                                ))
-                            }
-                        })?;
+                    self.set_registers(
+                        &[WHV_ARM64_REGISTER_PC],
+                        &[Align16(WHV_REGISTER_VALUE { Reg64: next_pc })],
+                    )
+                    .map_err(RunVcpuError::IncrementRip)?;
 
                     if port == VmAction::Halt as usize {
                         Ok(VmExit::Halt())
@@ -621,10 +577,10 @@ impl VirtualMachine for WhpVm {
                         let value = if source_register == 31 {
                             0
                         } else {
-                            self.get_reg64(xreg(source_register)).map_err(|e| match e {
-                                RegisterError::GetRegs(error) => RunVcpuError::Unknown(error),
-                                _ => unreachable!("get_reg64 returned a non-get error"),
-                            })?
+                            let values = self
+                                .get_registers(&[xreg(source_register)])
+                                .map_err(RunVcpuError::Unknown)?;
+                            unsafe { values[0].0.Reg64 }
                         };
                         Ok(VmExit::IoOut(
                             port as u16,
@@ -670,17 +626,7 @@ impl VirtualMachine for WhpVm {
         names[32] = WHV_ARM64_REGISTER_SP_EL0;
         names[33] = WHV_ARM64_REGISTER_PSTATE;
 
-        let mut values: [Align16<WHV_REGISTER_VALUE>; COUNT] = unsafe { core::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                COUNT as u32,
-                values.as_mut_ptr().cast(),
-            )
-            .map_err(|e| RegisterError::GetRegs(e.into()))?;
-        }
+        let values = self.get_registers(&names).map_err(RegisterError::GetRegs)?;
 
         let mut x = [0u64; 31];
         for i in 0..31 {
@@ -713,78 +659,118 @@ impl VirtualMachine for WhpVm {
         names[33] = WHV_ARM64_REGISTER_PSTATE;
         values[33] = Align16(WHV_REGISTER_VALUE { Reg64: regs.pstate });
 
-        unsafe {
-            WHvSetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                COUNT as u32,
-                values.as_ptr().cast(),
-            )
-            .map_err(|e| RegisterError::SetRegs(e.into()))?;
-        }
-        Ok(())
+        self.set_registers(&names, &values)
+            .map_err(RegisterError::SetRegs)
     }
 
     fn fpu(&self) -> Result<CommonFpu, RegisterError> {
-        let mut v = [0u128; 32];
+        const COUNT: usize = 34;
+        let mut names = [WHV_REGISTER_NAME(0); COUNT];
         for i in 0..32u32 {
-            v[i as usize] = self.get_reg128(qreg(i))?;
+            names[i as usize] = qreg(i);
         }
-        let fpsr = self
-            .get_reg64(WHV_ARM64_REGISTER_FPSR)
-            .map_err(|e| match e {
-                RegisterError::GetRegs(error) => RegisterError::GetFpu(error),
-                _ => unreachable!("get_reg64 returned a non-get error"),
-            })? as u32;
-        let fpcr = self
-            .get_reg64(WHV_ARM64_REGISTER_FPCR)
-            .map_err(|e| match e {
-                RegisterError::GetRegs(error) => RegisterError::GetFpu(error),
-                _ => unreachable!("get_reg64 returned a non-get error"),
-            })? as u32;
+        names[32] = WHV_ARM64_REGISTER_FPSR;
+        names[33] = WHV_ARM64_REGISTER_FPCR;
+
+        let values = self.get_registers(&names).map_err(RegisterError::GetFpu)?;
+        let mut v = [0u128; 32];
+        for i in 0..32 {
+            let value = unsafe { values[i].0.Reg128 };
+            v[i] = (unsafe { value.Anonymous.High64 } as u128) << 64
+                | unsafe { value.Anonymous.Low64 } as u128;
+        }
+        let fpsr = unsafe { values[32].0.Reg64 } as u32;
+        let fpcr = unsafe { values[33].0.Reg64 } as u32;
 
         Ok(CommonFpu { v, fpsr, fpcr })
     }
 
     fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<(), RegisterError> {
+        const COUNT: usize = 34;
+        let mut names = [WHV_REGISTER_NAME(0); COUNT];
+        let mut values: [Align16<WHV_REGISTER_VALUE>; COUNT] = unsafe { core::mem::zeroed() };
         for i in 0..32u32 {
-            self.set_reg128(qreg(i), fpu.v[i as usize])?;
+            let value = fpu.v[i as usize];
+            names[i as usize] = qreg(i);
+            values[i as usize] = Align16(WHV_REGISTER_VALUE {
+                Reg128: WHV_UINT128 {
+                    Anonymous: WHV_UINT128_0 {
+                        Low64: value as u64,
+                        High64: (value >> 64) as u64,
+                    },
+                },
+            });
         }
-        self.set_reg64(WHV_ARM64_REGISTER_FPSR, fpu.fpsr as u64)
-            .map_err(|e| match e {
-                RegisterError::SetRegs(error) => RegisterError::SetFpu(error),
-                _ => unreachable!("set_reg64 returned a non-set error"),
-            })?;
-        self.set_reg64(WHV_ARM64_REGISTER_FPCR, fpu.fpcr as u64)
-            .map_err(|e| match e {
-                RegisterError::SetRegs(error) => RegisterError::SetFpu(error),
-                _ => unreachable!("set_reg64 returned a non-set error"),
-            })?;
-        Ok(())
+        names[32] = WHV_ARM64_REGISTER_FPSR;
+        values[32] = Align16(WHV_REGISTER_VALUE {
+            Reg64: fpu.fpsr as u64,
+        });
+        names[33] = WHV_ARM64_REGISTER_FPCR;
+        values[33] = Align16(WHV_REGISTER_VALUE {
+            Reg64: fpu.fpcr as u64,
+        });
+
+        self.set_registers(&names, &values)
+            .map_err(RegisterError::SetFpu)
     }
 
     fn sregs(&self) -> Result<CommonSpecialRegisters, RegisterError> {
+        let names = [
+            WHV_ARM64_REGISTER_TTBR0_EL1,
+            WHV_ARM64_REGISTER_TCR_EL1,
+            WHV_ARM64_REGISTER_MAIR_EL1,
+            WHV_ARM64_REGISTER_SCTLR_EL1,
+            WHV_ARM64_REGISTER_CPACR_EL1,
+            WHV_ARM64_REGISTER_VBAR_EL1,
+            WHV_ARM64_REGISTER_SP_EL1,
+        ];
+        let values = self.get_registers(&names).map_err(RegisterError::GetRegs)?;
         Ok(CommonSpecialRegisters {
-            ttbr0_el1: self.get_reg64(WHV_ARM64_REGISTER_TTBR0_EL1)?,
-            tcr_el1: self.get_reg64(WHV_ARM64_REGISTER_TCR_EL1)?,
-            mair_el1: self.get_reg64(WHV_ARM64_REGISTER_MAIR_EL1)?,
-            sctlr_el1: self.get_reg64(WHV_ARM64_REGISTER_SCTLR_EL1)?,
-            cpacr_el1: self.get_reg64(WHV_ARM64_REGISTER_CPACR_EL1)?,
-            vbar_el1: self.get_reg64(WHV_ARM64_REGISTER_VBAR_EL1)?,
-            sp_el1: self.get_reg64(WHV_ARM64_REGISTER_SP_EL1)?,
+            ttbr0_el1: unsafe { values[0].0.Reg64 },
+            tcr_el1: unsafe { values[1].0.Reg64 },
+            mair_el1: unsafe { values[2].0.Reg64 },
+            sctlr_el1: unsafe { values[3].0.Reg64 },
+            cpacr_el1: unsafe { values[4].0.Reg64 },
+            vbar_el1: unsafe { values[5].0.Reg64 },
+            sp_el1: unsafe { values[6].0.Reg64 },
         })
     }
 
     fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<(), RegisterError> {
-        self.set_reg64(WHV_ARM64_REGISTER_TTBR0_EL1, sregs.ttbr0_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_TCR_EL1, sregs.tcr_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_MAIR_EL1, sregs.mair_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_SCTLR_EL1, sregs.sctlr_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_CPACR_EL1, sregs.cpacr_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_VBAR_EL1, sregs.vbar_el1)?;
-        self.set_reg64(WHV_ARM64_REGISTER_SP_EL1, sregs.sp_el1)?;
-        Ok(())
+        let names = [
+            WHV_ARM64_REGISTER_TTBR0_EL1,
+            WHV_ARM64_REGISTER_TCR_EL1,
+            WHV_ARM64_REGISTER_MAIR_EL1,
+            WHV_ARM64_REGISTER_SCTLR_EL1,
+            WHV_ARM64_REGISTER_CPACR_EL1,
+            WHV_ARM64_REGISTER_VBAR_EL1,
+            WHV_ARM64_REGISTER_SP_EL1,
+        ];
+        let values = [
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.ttbr0_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.tcr_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.mair_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.sctlr_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.cpacr_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.vbar_el1,
+            }),
+            Align16(WHV_REGISTER_VALUE {
+                Reg64: sregs.sp_el1,
+            }),
+        ];
+        self.set_registers(&names, &values)
+            .map_err(RegisterError::SetRegs)
     }
 
     fn debug_regs(&self) -> Result<CommonDebugRegs, RegisterError> {
