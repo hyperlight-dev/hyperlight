@@ -12,10 +12,6 @@ use std::os::raw::c_void;
 use std::sync::atomic::Ordering;
 
 use hyperlight_common::outb::VmAction;
-#[cfg(feature = "trace_guest")]
-use tracing::Span;
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::System::Hypervisor::*;
 use windows_result::HRESULT;
 
@@ -631,15 +627,12 @@ impl VirtualMachine for WhpVm {
 
     fn run_vcpu(
         &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+        #[cfg(feature = "trace_guest")] _tc: &mut SandboxTraceContext,
     ) -> Result<VmExit, RunVcpuError> {
         use arm64_exit_reasons::*;
         use arm64_regs::*;
 
         let mut exit_context = Arm64ExitContext::default();
-
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
 
         unsafe {
             WHvRunVirtualProcessor(
