@@ -101,16 +101,19 @@ The macros are optional. A guest can define the underlying symbols directly,
 which is useful for advanced setup work or custom dispatch logic (for example
 the WIT-based guests in `src/tests/rust_guests/witguest`).
 
-The host expects two guest symbols:
+The runtime provides weak default definitions for two guest symbols. A guest
+can override either definition:
 
 * `pub extern "C" fn hyperlight_main()` runs once at guest startup. Use it to
   register functions or initialize global state.
-* `pub extern "Rust" fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>, HyperlightGuestError>`
-  is invoked when the host calls a function name that is not registered.
+* `pub extern "Rust" fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>`
+  handles calls that do not match a registered guest function. Its default
+  implementation returns `GuestFunctionNotFound`.
 
 `hyperlight-guest-bin` exposes `#[main]` and `#[dispatch]` macros that generate
 these symbols from a regular Rust function, so most "advanced" guests still use
-the macros rather than writing the raw `extern "C"` items themselves.
+the macros rather than defining the symbols directly. A generated or direct
+definition overrides the runtime's weak default.
 
 If you mix the manual form with `#[guest_function]`, registrations from the
 macro still happen automatically. Your `hyperlight_main` only needs to do
@@ -142,6 +145,19 @@ latest release page that contain: the `hyperlight_guest.h` header and the
 C API library.
 The `hyperlight_guest.h` header contains the corresponding APIs to register
 guest functions and call host functions from within the guest.
+
+Registered guest functions are checked first. When no registered function
+matches, the runtime calls:
+
+```c
+hl_ReturnValue *c_guest_dispatch_function(const hl_FunctionCall *function_call);
+```
+
+The C API provides a weak default implementation that returns `NULL`, which the
+runtime reports as `GuestFunctionNotFound`. Define this function only when the
+guest needs custom dynamic dispatch. The guest definition overrides the weak
+default and must return either `NULL` or a value created by an
+`hl_result_from_*` function.
 
 See [src/tests/c_guests/c_simpleguest/main.c](../src/tests/c_guests/c_simpleguest/main.c)
 for a complete example.
