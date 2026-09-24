@@ -232,6 +232,38 @@ fn rejects_h2g_snapshot_buffer_attributes() {
     }
 }
 
+/// Distinct descriptor IDs do not imply distinct receive slots.
+#[test]
+fn rejects_h2g_snapshot_duplicate_slots() {
+    let case = TestCase::new();
+    let first = case.h2g_desc(0);
+    let mut second = case.h2g_desc(1);
+
+    assert_ne!(first.id, second.id);
+
+    second.addr = first.addr;
+    case.set_h2g_desc(1, second);
+
+    let error = VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(error.to_string().contains("descriptor 1 buffer"), "{error}");
+}
+
+/// Slot alignment is relative to the pool, and free-list order may vary.
+#[test]
+fn accepts_h2g_snapshot_slot_permutations() {
+    let case = TestCase::new();
+    let mut first = case.h2g_desc(0);
+    let mut second = case.h2g_desc(1);
+
+    assert!(!case.h2g_pool_base.is_multiple_of(H2G_BUFFER_SIZE as u64));
+
+    std::mem::swap(&mut first.addr, &mut second.addr);
+    case.set_h2g_desc(0, first);
+    case.set_h2g_desc(1, second);
+
+    VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap();
+}
+
 #[test]
 fn rejects_h2g_snapshot_chain_shape() {
     let case = TestCase::new();
@@ -308,22 +340,24 @@ fn uses_scratch_payloads_outside_pools() {
     assert_eq!(bytes, [4, 5, 6]);
 }
 
+/// Snapshot admission does not replace checks after the guest resumes.
 #[test]
 fn payload_bounds_are_checked_on_use() {
     let case = TestCase::new();
     let layout = memory_layout();
     let end = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE) + SCRATCH_SIZE as u64;
-    let mut h2g_desc = case.h2g_desc(0);
-    h2g_desc.addr = end - 1;
-    case.set_h2g_desc(0, h2g_desc);
-
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
     let restored = host_scratch();
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
+    let mem = HostMemOps::new(&restored);
+
+    let mut h2g_desc = case.h2g_desc(0);
+    h2g_desc.addr = end - 1;
+    write_desc(&mem, case.h2g_layout, 0, h2g_desc);
 
     let mut g2h_desc = Descriptor::new(end, 1, 0, DescFlags::empty());
     g2h_desc.mark_avail(true);
-    write_desc(&HostMemOps::new(&restored), case.g2h_layout, 0, g2h_desc);
+    write_desc(&mem, case.g2h_layout, 0, g2h_desc);
     let (mut recv, reply) = g2h.poll(1).unwrap().unwrap();
     assert!(matches!(
         recv.read_exact(&mut [0]),

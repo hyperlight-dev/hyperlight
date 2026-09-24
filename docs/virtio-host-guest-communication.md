@@ -312,13 +312,13 @@ The host treats guest rings, descriptors, headers, FlatBuffers, and payload
 lengths as untrusted.
 
 * Rings and payloads use checked copies and atomics within mapped scratch.
-  Live guest-backed host slices are unsupported.
+  Runtime payloads may be outside the pools. Live guest-backed host slices
+  are unsupported.
 * H2G descriptors must be writable, single buffer chains of the configured
   size before the host writes to them.
 * G2H control and external values are copied into host owned storage before
   host code receives them.
-* Capture and load require canonical rings with the configured H2G prefill.
-  Payload accesses are bounded by scratch, without pool-membership checks.
+* Capture and load require the canonical transport state described below.
 
 ## Snapshot checkpoint
 
@@ -354,7 +354,8 @@ The canonical state is:
 
 * G2H is empty at cursor zero.
 * H2G starts at cursor zero with one writable descriptor per complete free
-  slot, bounded by queue size.
+  slot in the configured pool, bounded by queue size. Each descriptor names a
+  distinct, configured-size slot aligned relative to the pool start.
 * Guest producer and pool bookkeeping matches the rings.
 * Driver and device event suppression is normalized.
 * Host consumers start at cursor zero.
@@ -368,9 +369,8 @@ and host consumer cursors are not stored.
 
 ### Restore
 
-Capture and load validate scratch size, ring lengths, canonical state, and
-H2G descriptor shape against the transport layout. Admitted images and their
-layout remain immutable.
+Capture and load validate scratch size, ring lengths, and canonical transport
+state against the layout. Admitted images and their layout remain immutable.
 
 Transport admission precedes changes to sandbox status, the cached snapshot,
 and memory mappings.

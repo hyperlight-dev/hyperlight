@@ -11,12 +11,15 @@
 //! Shared wire framing lives in `hyperlight_common::transport`.
 //!
 //! Snapshots require canonical rings with empty G2H and the initial H2G prefill.
-//! H2G chains contain one writable descriptor of the configured buffer size.
+//! Each H2G chain contains one writable descriptor naming a distinct,
+//! configured-size slot aligned relative to the H2G pool start.
 
 mod codec;
 mod mem;
 #[cfg(test)]
 pub(crate) mod tests;
+
+use std::collections::HashSet;
 
 pub(crate) use codec::{
     get_host_function_call, read_guest_function_call_result, read_guest_log_data,
@@ -144,7 +147,7 @@ impl VirtqSnapshot {
         create_consumers(layout, scratch_mem)
     }
 
-    /// Check geometry, canonical state, and H2G receive-buffer shape at admission.
+    /// Check geometry, canonical rings, and distinct, aligned H2G pool slots.
     fn validate(&self, layout: &SandboxMemoryLayout) -> Result<()> {
         if self.scratch_size != layout.get_scratch_size() {
             return Err(new_error!(
@@ -174,8 +177,29 @@ impl VirtqSnapshot {
         let h2g_prefill = usize::from(h2g_dims.size().get()).min(h2g_dims.pool_len() / buffer_size);
         let h2g_mem = ImageMem::new(h2g.desc_table_addr(), &self.h2g_ring);
 
+        let (_, _, _, pool_offset, _) = layout.get_transport_arena().to_offsets();
+        let pool_start = g2h.desc_table_addr() + pool_offset as u64;
+        let pool_end = pool_start + h2g_dims.pool_len() as u64;
+        let mut seen_slots = HashSet::with_capacity(h2g_prefill);
+
         let chains = validate_canon_image(&h2g_mem, h2g, h2g_prefill, |_, elem| {
-            elem.writable && usize::try_from(elem.len).ok() == Some(buffer_size)
+            if !elem.writable || usize::try_from(elem.len).ok() != Some(buffer_size) {
+                return false;
+            }
+
+            let Some(offset) = elem.addr.checked_sub(pool_start) else {
+                return false;
+            };
+
+            let Some(end) = elem.addr.checked_add(u64::from(elem.len)) else {
+                return false;
+            };
+
+            if !offset.is_multiple_of(buffer_size as u64) || end > pool_end {
+                return false;
+            }
+
+            seen_slots.insert(offset)
         })
         .map_err(|error| new_error!("invalid canonical H2G image: {error}"))?;
 

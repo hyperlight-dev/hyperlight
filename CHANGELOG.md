@@ -33,7 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tables. Snapshots use ABI 5 and config schema v3. Existing snapshots must be
   regenerated.
 * Host virtqueue access uses checked copies and atomics across mapped scratch.
-  Snapshot admission checks geometry, canonical ring state, and H2G buffer shape.
+  Snapshot admission checks geometry, canonical rings, and distinct, aligned
+  H2G pool slots.
   Consumers validate descriptors and payload accesses during use.
 * Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
   ownership. `BufferMap` supplies complete owners exposing initialized bytes.

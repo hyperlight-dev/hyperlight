@@ -127,6 +127,8 @@ pub(super) fn decode(layout: &SandboxMemoryLayout, bytes: &[u8]) -> crate::Resul
 
 #[cfg(test)]
 mod tests {
+    use hyperlight_common::virtq::Descriptor;
+
     use super::*;
     use crate::mem::virtq::tests::{TestCase, memory_layout};
 
@@ -309,5 +311,36 @@ mod tests {
             error.to_string().contains("invalid canonical H2G image"),
             "{error}"
         );
+    }
+
+    /// Valid framing cannot admit metadata aliases or duplicate receive slots.
+    #[test]
+    fn transport_blob_rejects_h2g_buffer_addresses() {
+        let case = TestCase::new();
+        let layout = memory_layout();
+        let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+
+        let mut bytes = encode(&snapshot).unwrap();
+        let addr_offset = HEADER_LEN + snapshot.g2h_ring().len() + Descriptor::ADDR_OFFSET;
+
+        let ring_addr = case.g2h_layout.desc_table_addr();
+        bytes[addr_offset..addr_offset + size_of::<u64>()]
+            .copy_from_slice(&ring_addr.to_le_bytes());
+
+        let err = decode(&layout, &bytes).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("invalid canonical H2G image"), "{msg}");
+        assert!(err.to_string().contains("buffer"), "{err}");
+
+        let duplicate_addr = case.h2g_desc(1).addr;
+        bytes[addr_offset..addr_offset + size_of::<u64>()]
+            .copy_from_slice(&duplicate_addr.to_le_bytes());
+
+        let err = decode(&layout, &bytes).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("invalid canonical H2G image"), "{msg}");
+        assert!(msg.contains("buffer"), "{err}");
     }
 }
