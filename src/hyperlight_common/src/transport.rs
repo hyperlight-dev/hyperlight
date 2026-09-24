@@ -564,6 +564,24 @@ mod tests {
     }
 
     #[test]
+    fn segments_source_reads_fragmented_values_in_order() {
+        let mut source = Segments::new(
+            (0..1024).flat_map(|_| [Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]),
+        );
+
+        for _ in 0..1024 {
+            assert_eq!(source.take_bytes(1).unwrap(), b"a");
+            assert_eq!(
+                source.take_chunks(2).unwrap(),
+                [Bytes::from_static(b"b"), Bytes::from_static(b"c")]
+            );
+            assert_eq!(source.take_bytes(1).unwrap(), b"d");
+        }
+
+        source.finish().unwrap();
+    }
+
+    #[test]
     fn size_prefix_helpers_validate_length() {
         assert_eq!(size_prefix_payload_len(&4u32.to_le_bytes()), Some(4));
         assert_eq!(size_prefix_payload_len(&[0; 3]), None);

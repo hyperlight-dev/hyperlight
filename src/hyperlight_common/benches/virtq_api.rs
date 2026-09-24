@@ -3,8 +3,9 @@
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use hyperlight_common::virtq::UsedChain;
+use bytes::Bytes;
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use hyperlight_common::virtq::{Segments, UsedChain};
 
 mod common;
 use common::*;
@@ -92,6 +93,56 @@ fn bench_readwrite(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_readonly, bench_readwrite,);
+/// Measure fragmented prefixes and repeated single-segment consumption.
+fn bench_segment_splits(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtq_segments_split");
+
+    for count in [1024usize, 4096, 16384] {
+        let segments = Segments::new((0..count).map(|_| Bytes::from_static(b"x")));
+        group.throughput(Throughput::Elements(count as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("prefix", count),
+            &segments,
+            |b, segments| {
+                b.iter_batched(
+                    || segments.clone(),
+                    |mut segments| {
+                        let prefix = segments.split_to(black_box(count / 2)).unwrap();
+                        black_box((prefix, segments))
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("repeated", count),
+            &segments,
+            |b, segments| {
+                b.iter_batched(
+                    || segments.clone(),
+                    |mut segments| {
+                        for _ in 0..count {
+                            black_box(segments.split_to(black_box(1)).unwrap());
+                        }
+
+                        black_box(segments)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_readonly,
+    bench_readwrite,
+    bench_segment_splits,
+);
 
 criterion_main!(benches);

@@ -14,85 +14,120 @@ use super::{Allocation, SlotPool};
 ///
 /// This is the high-level counterpart to the descriptor-oriented
 /// [`BufferChain`](super::BufferChain).
-#[derive(Debug, Clone, Default)]
-pub struct Segments(SmallVec<[Bytes; 4]>);
+#[derive(Debug, Default)]
+pub struct Segments {
+    chunks: SmallVec<[Bytes; 4]>,
+    /// Earlier slots contain empty `Bytes` and retain no owners.
+    head: usize,
+}
 
 impl Segments {
     /// Build a segmented payload from ordered byte segments.
     pub fn new(segments: impl IntoIterator<Item = Bytes>) -> Self {
-        Self(segments.into_iter().collect())
+        Self::from_smallvec(segments.into_iter().collect())
     }
 
     /// Build a single-segment payload.
     pub fn single(segment: Bytes) -> Self {
-        Self(smallvec![segment])
+        Self::from_smallvec(smallvec![segment])
     }
 
+    /// Reuse an existing segment list.
     pub(crate) fn from_smallvec(segments: SmallVec<[Bytes; 4]>) -> Self {
-        Self(segments)
+        Self {
+            chunks: segments,
+            head: 0,
+        }
     }
 
     /// Total payload length across all segments.
     pub fn len(&self) -> usize {
-        self.0.iter().map(Bytes::len).sum()
+        self.iter().map(Bytes::len).sum()
     }
 
     /// Whether the payload contains zero bytes.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.iter().all(Bytes::is_empty)
     }
 
     /// Number of byte segments.
     pub fn segment_count(&self) -> usize {
-        self.0.len()
+        self.chunks.len() - self.head
     }
 
     /// Borrow all segments.
     pub fn as_slice(&self) -> &[Bytes] {
-        &self.0
+        &self.chunks[self.head..]
     }
 
     /// Iterate over segments.
     pub fn iter(&self) -> impl Iterator<Item = &Bytes> {
-        self.0.iter()
+        self.as_slice().iter()
     }
 
     /// Append another payload without copying its bytes.
+    ///
+    /// Compacts consumed slots before extending the segment list.
     pub fn append(&mut self, other: Self) {
-        self.0.extend(other.0);
+        if self.head != 0 {
+            drop(self.chunks.drain(..self.head));
+            self.head = 0;
+        }
+
+        self.chunks
+            .extend(other.chunks.into_iter().skip(other.head));
     }
 
     /// Split off an owned byte prefix without copying payload data.
     ///
+    /// Scans only the prefix, then transfers its segments without shifting the
+    /// remainder. A boundary segment shares its [`Bytes`] owner.
+    ///
     /// Returns `None` and leaves `self` unchanged when `len` exceeds the
-    /// remaining payload length. A split within a segment creates shared
-    /// [`Bytes`] slices backed by the same owner.
+    /// remaining payload length.
     pub fn split_to(&mut self, len: usize) -> Option<Self> {
-        if len > self.len() {
-            return None;
+        if len == 0 {
+            return Some(Self::default());
         }
 
-        let mut prefix = SmallVec::<[Bytes; 4]>::new();
+        let mut end = self.head;
         let mut remaining = len;
 
         while remaining != 0 {
-            let mut segment = self.0.remove(0);
-            if segment.len() <= remaining {
-                remaining -= segment.len();
-                prefix.push(segment);
-            } else {
-                prefix.push(segment.split_to(remaining));
-                self.0.insert(0, segment);
-                remaining = 0;
+            let segment = self.chunks.get(end)?;
+
+            if segment.len() > remaining {
+                break;
             }
+
+            remaining -= segment.len();
+            end += 1;
         }
 
-        Some(Self(prefix))
+        // Small suffixes must not inherit storage for consumed segments.
+        if self.head == 0 && end == self.chunks.len() {
+            return Some(core::mem::take(self));
+        }
+
+        let mut prefix =
+            SmallVec::<[Bytes; 4]>::with_capacity(end - self.head + usize::from(remaining != 0));
+
+        for segment in &mut self.chunks[self.head..end] {
+            prefix.push(core::mem::take(segment));
+        }
+
+        self.head = end;
+
+        if remaining != 0 {
+            prefix.push(self.chunks[end].split_to(remaining));
+        }
+
+        Some(Self::from_smallvec(prefix))
     }
 
     /// Borrow this payload as a [`Buf`] cursor.
     pub fn as_buf(&self) -> SegmentsBuf<'_> {
-        SegmentsBuf::new(&self.0, self.len())
+        SegmentsBuf::new(self.as_slice(), self.len())
     }
 
     /// Return this payload as contiguous bytes.
@@ -100,28 +135,31 @@ impl Segments {
     /// This is O(1) for zero or one segment, and allocates/copies for multiple
     /// segments.
     pub fn to_bytes(&self) -> Bytes {
-        match self.0.as_slice() {
+        match self.as_slice() {
             [] => Bytes::new(),
             [segment] => segment.clone(),
-            _ => self.collect(&self.0, self.len()),
+            _ => self.collect(self.as_slice(), self.len()),
         }
     }
 
     /// Consume this payload and return contiguous bytes.
     ///
-    /// This is O(1) for zero or one segment, and allocates/copies for multiple
-    /// segments.
+    /// Reuses a single segment's storage, and allocates/copies for multiple segments.
     pub fn into_bytes(mut self) -> Bytes {
-        match self.0.len() {
+        match self.segment_count() {
             0 => Bytes::new(),
-            1 => self.0.pop().unwrap_or_default(),
-            _ => self.collect(&self.0, self.len()),
+            1 => self.chunks.pop().unwrap_or_default(),
+            _ => self.collect(self.as_slice(), self.len()),
         }
     }
 
     /// Consume this payload without flattening its segments.
-    pub fn into_chunks(self) -> Vec<Bytes> {
-        self.0.into_vec()
+    pub fn into_chunks(mut self) -> Vec<Bytes> {
+        if self.head != 0 {
+            drop(self.chunks.drain(..self.head));
+        }
+
+        self.chunks.into_vec()
     }
 
     fn collect(&self, sgs: &[Bytes], len: usize) -> Bytes {
@@ -130,6 +168,13 @@ impl Segments {
             out.extend_from_slice(seg);
         }
         Bytes::from(out)
+    }
+}
+
+impl Clone for Segments {
+    /// Clone only unconsumed segment handles.
+    fn clone(&self) -> Self {
+        Self::new(self.iter().cloned())
     }
 }
 
@@ -367,11 +412,175 @@ mod tests {
     }
 
     #[test]
+    fn segments_split_to_preserves_empty_segments() {
+        let mut segments = Segments::new([
+            Bytes::new(),
+            Bytes::from_static(b"ab"),
+            Bytes::new(),
+            Bytes::from_static(b"cd"),
+            Bytes::new(),
+        ]);
+        let original = segments.as_slice().to_vec();
+
+        assert!(segments.split_to(5).is_none());
+        assert_eq!(segments.as_slice(), original);
+        assert_eq!(segments.split_to(0).unwrap().segment_count(), 0);
+        assert_eq!(segments.as_slice(), original);
+
+        let first = segments.split_to(2).unwrap();
+        assert_eq!(first.as_slice(), &[Bytes::new(), Bytes::from_static(b"ab")]);
+        assert_eq!(segments.segment_count(), 3);
+
+        let second = segments.split_to(2).unwrap();
+        assert_eq!(
+            second.as_slice(),
+            &[Bytes::new(), Bytes::from_static(b"cd")]
+        );
+        assert!(segments.is_empty());
+        assert_eq!(segments.segment_count(), 1);
+        assert_eq!(segments.split_to(0).unwrap().segment_count(), 0);
+        assert!(segments.split_to(1).is_none());
+        assert_eq!(segments.as_slice(), &[Bytes::new()]);
+    }
+
+    #[test]
+    fn segments_split_to_reuses_full_segment_list() {
+        let mut segments = Segments::new((0..8).map(|byte| Bytes::from(vec![byte])));
+        let storage = segments.chunks.as_ptr();
+
+        let prefix = segments.split_to(8).unwrap();
+
+        assert_eq!(prefix.chunks.as_ptr(), storage);
+        assert_eq!(prefix.segment_count(), 8);
+        assert_eq!(prefix.into_bytes().as_ref(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert!(segments.is_empty());
+        assert_eq!(segments.segment_count(), 0);
+    }
+
+    #[test]
+    fn segments_split_to_keeps_small_suffix_inline() {
+        let mut segments = Segments::new((0..8192).map(|_| Bytes::from_static(b"x")));
+        drop(segments.split_to(8191).unwrap());
+
+        let suffix = segments.split_to(1).unwrap();
+
+        assert!(!suffix.chunks.spilled());
+        assert_eq!(suffix.head, 0);
+        assert_eq!(suffix.into_bytes().as_ref(), b"x");
+        assert!(segments.is_empty());
+        assert_eq!(segments.segment_count(), 0);
+    }
+
+    #[test]
+    fn segments_split_to_keeps_large_remainder_in_place() {
+        let mut segments = Segments::new((0..8192).map(|_| Bytes::from_static(b"x")));
+        let storage = segments.chunks.as_ptr();
+
+        let prefix = segments.split_to(4096).unwrap();
+
+        assert_eq!(prefix.segment_count(), 4096);
+        assert!(prefix.iter().all(|segment| segment.as_ref() == b"x"));
+        assert_eq!(segments.segment_count(), 4096);
+        assert_eq!(segments.as_slice().as_ptr(), storage.wrapping_add(4096));
+        assert!(segments.chunks[..segments.head].iter().all(Bytes::is_empty));
+    }
+
+    #[test]
+    fn segments_split_to_repeatedly_consumes_fragments() {
+        let mut segments = Segments::new((0..4096).map(|_| Bytes::from_static(b"ab")));
+
+        for _ in 0..4096 {
+            assert_eq!(segments.split_to(1).unwrap().into_bytes().as_ref(), b"a");
+            assert_eq!(segments.split_to(1).unwrap().into_bytes().as_ref(), b"b");
+        }
+
+        assert!(segments.is_empty());
+        assert_eq!(segments.segment_count(), 0);
+        assert!(segments.split_to(1).is_none());
+    }
+
+    #[test]
+    fn segments_split_to_releases_owners_independently() {
+        let first: Arc<[u8]> = Arc::from(&b"abc"[..]);
+        let boundary: Arc<[u8]> = Arc::from(&b"def"[..]);
+        let last: Arc<[u8]> = Arc::from(&b"ghi"[..]);
+        let first_owner = Arc::downgrade(&first);
+        let boundary_owner = Arc::downgrade(&boundary);
+        let last_owner = Arc::downgrade(&last);
+        let mut segments = Segments::new([
+            Bytes::from_owner(first),
+            Bytes::from_owner(boundary),
+            Bytes::from_owner(last),
+        ]);
+
+        let prefix = segments.split_to(4).unwrap();
+        assert_eq!(prefix.to_bytes().as_ref(), b"abcd");
+        assert!(first_owner.upgrade().is_some());
+
+        drop(prefix);
+
+        assert!(first_owner.upgrade().is_none());
+        assert!(boundary_owner.upgrade().is_some());
+        assert!(last_owner.upgrade().is_some());
+        assert_eq!(segments.to_bytes().as_ref(), b"efghi");
+
+        drop(segments);
+
+        assert!(boundary_owner.upgrade().is_none());
+        assert!(last_owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn segments_views_ignore_consumed_segments() {
+        let mut segments = Segments::new([
+            Bytes::from_static(b"ab"),
+            Bytes::from_static(b"cd"),
+            Bytes::from_static(b"ef"),
+        ]);
+        drop(segments.split_to(3).unwrap());
+        let expected = [Bytes::from_static(b"d"), Bytes::from_static(b"ef")];
+
+        assert_eq!(segments.len(), 3);
+        assert!(!segments.is_empty());
+        assert_eq!(segments.segment_count(), 2);
+        assert_eq!(segments.as_slice(), &expected);
+        assert!(segments.iter().eq(expected.iter()));
+        assert_eq!(segments.to_bytes().as_ref(), b"def");
+
+        let mut cursor = segments.as_buf();
+        let mut bytes = [0; 3];
+        cursor.copy_to_slice(&mut bytes);
+        assert_eq!(&bytes, b"def");
+        assert_eq!(cursor.remaining(), 0);
+
+        let cloned = segments.clone();
+        assert_eq!(cloned.head, 0);
+        assert_eq!(cloned.chunks.len(), 2);
+        assert_eq!(cloned.into_bytes().as_ref(), b"def");
+        assert_eq!(segments.into_chunks(), expected);
+    }
+
+    #[test]
     fn segments_into_bytes_reuses_single_segment() {
         let segment = Bytes::from(vec![1, 2, 3, 4]);
         let ptr = segment.as_ptr();
 
         let collected = Segments::single(segment).into_bytes();
+
+        assert_eq!(collected.as_ptr(), ptr);
+        assert_eq!(collected.as_ref(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn segments_into_bytes_reuses_remaining_segment() {
+        let segment = Bytes::from(vec![1, 2, 3, 4]);
+        let ptr = segment.as_ptr();
+        let mut segments = Segments::new([Bytes::from_static(b"prefix"), segment]);
+        drop(segments.split_to(6).unwrap());
+
+        assert_eq!(segments.to_bytes().as_ptr(), ptr);
+
+        let collected = segments.into_bytes();
 
         assert_eq!(collected.as_ptr(), ptr);
         assert_eq!(collected.as_ref(), &[1, 2, 3, 4]);
@@ -405,7 +614,7 @@ mod tests {
 
         // Four segments fit in the inline storage.
         segments.append(Segments::new([third, fourth]));
-        assert!(!segments.0.spilled());
+        assert!(!segments.chunks.spilled());
         assert_eq!(segments.len(), 4);
         assert_eq!(segments.segment_count(), 4);
         assert_eq!(segments.to_bytes().as_ref(), &[1, 2, 3, 4]);
@@ -419,11 +628,11 @@ mod tests {
         let mut segments = Segments::new((0..4).map(|byte| Bytes::from(vec![byte])));
         let last = Bytes::from(vec![4]);
         let ptr = last.as_ptr();
-        assert!(!segments.0.spilled());
+        assert!(!segments.chunks.spilled());
 
         // The fifth segment requires heap storage for the segment list.
         segments.append(Segments::single(last));
-        assert!(segments.0.spilled());
+        assert!(segments.chunks.spilled());
         assert_eq!(segments.len(), 5);
         assert_eq!(segments.segment_count(), 5);
         assert_eq!(segments.to_bytes().as_ref(), &[0, 1, 2, 3, 4]);
@@ -456,6 +665,32 @@ mod tests {
         assert_eq!(segments.segment_count(), 1);
         assert_eq!(segments.as_slice()[0].as_ptr(), ptr);
         assert_eq!(segments.as_slice()[0].as_ref(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn segments_append_compacts_consumed_slots() {
+        let mut segments = Segments::new([
+            Bytes::from_static(b"a"),
+            Bytes::from_static(b"b"),
+            Bytes::from_static(b"c"),
+            Bytes::from_static(b"d"),
+        ]);
+
+        let mut other = Segments::new([
+            Bytes::from_static(b"x"),
+            Bytes::from_static(b"y"),
+            Bytes::from_static(b"z"),
+        ]);
+
+        drop(segments.split_to(2).unwrap());
+        drop(other.split_to(1).unwrap());
+
+        segments.append(other);
+
+        assert!(!segments.chunks.spilled());
+        assert_eq!(segments.head, 0);
+        assert_eq!(segments.segment_count(), 4);
+        assert_eq!(segments.to_bytes().as_ref(), b"cdyz");
     }
 
     #[test]
