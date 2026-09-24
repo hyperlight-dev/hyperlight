@@ -57,6 +57,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && rustup target add x86_64-unknown-linux-gnu \
     && rustup target add x86_64-unknown-linux-musl \
     && rustup target add x86_64-unknown-none      \
-    && rustup toolchain add nightly-x86_64-unknown-linux-gnu \
+    && rustup toolchain add nightly-2026-09-22-x86_64-unknown-linux-gnu \
     && cargo install just \
     && cargo install cross --locked --version 0.2.5
