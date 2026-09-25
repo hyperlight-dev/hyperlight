@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 * Namespaced application metadata on immutable snapshots.
+* Guest paging operations and AArch64 system-register macros in `hyperlight-guest`.
 * Per-direction virtqueue configuration through `SandboxConfiguration` and
   `SandboxBuilder`, with allocations included in scratch sizing.
 * Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.

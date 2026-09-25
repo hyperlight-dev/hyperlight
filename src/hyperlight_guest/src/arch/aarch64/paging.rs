@@ -2,9 +2,9 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use hyperlight_common::vmem;
-use hyperlight_guest::prim_alloc::alloc_phys_pages;
 
-use crate::arch::{mrs, msr};
+use crate::prim_alloc::alloc_phys_pages;
+use crate::{mrs, msr};
 // TODO: This is not at all thread-safe atm
 
 #[derive(Copy, Clone)]
@@ -15,8 +15,8 @@ struct GuestMappingOperations {
 impl GuestMappingOperations {
     fn new() -> Self {
         Self {
-            scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
-            scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
+            scratch_base_gpa: crate::layout::scratch_base_gpa(),
+            scratch_base_gva: crate::layout::scratch_base_gva(),
         }
     }
     fn try_phys_to_virt(&self, addr: u64) -> Option<*mut u8> {

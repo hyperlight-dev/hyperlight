@@ -81,8 +81,8 @@ Or skip setup entirely with a codespace:
 | Directory | Description |
 |---|---|
 | [src/hyperlight_host](./src/hyperlight_host) | Host library - creates and manages micro VMs |
-| [src/hyperlight_guest](./src/hyperlight_guest) | Core guest library - minimal building blocks for guest-host interaction |
-| [src/hyperlight_guest_bin](./src/hyperlight_guest_bin) | Extended guest library - entry point, panic handler, heap, logging, exceptions |
+| [src/hyperlight_guest](./src/hyperlight_guest) | Guest platform primitives for paging, physical allocation, and host communication |
+| [src/hyperlight_guest_bin](./src/hyperlight_guest_bin) | Default guest runtime with entry point, panic handler, heap, logging, and exceptions |
 | [src/hyperlight_guest_capi](./src/hyperlight_guest_capi) | C API wrapper around `hyperlight_guest_bin` for use via FFI |
 | [src/hyperlight_libc](./src/hyperlight_libc) | C standard library for guests, built from picolibc |
 | [src/hyperlight_guest_macro](./src/hyperlight_guest_macro) | Macros for registering guest and host functions |

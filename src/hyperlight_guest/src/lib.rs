@@ -8,9 +8,14 @@ compile_error!("trace_guest feature is only supported on x86_64 architecture");
 extern crate alloc;
 
 // Modules
+#[cfg(target_arch = "aarch64")]
+#[path = "arch/aarch64/mod.rs"]
+mod arch;
+
 pub mod error;
 pub mod exit;
 pub mod layout;
+pub mod paging;
 pub mod prim_alloc;
 pub mod transport;
 pub mod types;

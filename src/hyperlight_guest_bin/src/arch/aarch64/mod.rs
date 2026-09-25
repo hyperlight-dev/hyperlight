@@ -41,22 +41,7 @@ pub mod dispatch {
 
 mod exception;
 
-macro_rules! msr {
-    ($sysreg:ident, $expr:expr) => {
-        core::arch::asm!(concat!("msr ", core::stringify!($sysreg), ", {}"), in(reg) $expr);
-    }
-}
-pub(crate) use msr;
-macro_rules! mrs {
-    ($sysreg:ident) => {
-        {
-            let x: u64;
-            core::arch::asm!(concat!("mrs {}, ", core::stringify!($sysreg)), out(reg) x);
-            x
-        }
-    }
-}
-pub(crate) use mrs;
+pub(crate) use hyperlight_guest::mrs;
 
 unsafe fn init_vbar() {
     unsafe {
