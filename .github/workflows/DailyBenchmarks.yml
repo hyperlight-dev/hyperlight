@@ -20,9 +20,9 @@ jobs:
       arch: X64
       config: release
 
-  # Run benchmarks across all hypervisor/cpu combos. Artifacts are retained
-  # for 90 days, long enough to serve as a baseline for the pull requests that
-  # branch from the commits they measure.
+  # Run benchmarks across all hypervisor/cpu combos. The artifacts they leave
+  # are the baseline for the pull requests that branch from the commits they
+  # measure.
   benchmarks:
     needs: [build-guests]
     strategy:
@@ -37,7 +37,6 @@ jobs:
       hypervisor: ${{ matrix.hypervisor }}
       cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
-      retention_days: 90
 
   # File a GitHub issue if any job fails.
   notify-failure:

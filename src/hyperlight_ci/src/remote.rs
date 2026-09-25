@@ -14,12 +14,15 @@ use serde::Deserialize;
 const ARTIFACT_PREFIX: &str = "benchmarks_";
 
 /// How far back to look for a run that still has its benchmark artifacts.
-/// They outlive the workflow by days, but not forever.
-const RUNS_SEARCHED: usize = 15;
+/// A day of the default branch is one run, so this spans how long they are kept.
+const RUNS_SEARCHED: usize = 90;
 
 /// Where benchmarks of the default branch come from. Pull requests benchmark
 /// far more often, but never the branch they merge into.
 const BASELINE_WORKFLOW: &str = "DailyBenchmarks.yml";
+
+/// What a release calls the results it carries.
+const ARCHIVE_SUFFIX: &str = ".tar.gz";
 
 /// Marks a download that finished. Artifacts hold nothing every run is bound
 /// to leave behind, and an interrupted one leaves the directory half written.
@@ -247,4 +250,91 @@ pub(crate) fn fetch(repo: &str, run: u64, cache: &Path) -> Result<Vec<Results>> 
     }
 
     Ok(results)
+}
+
+/// Names of the benchmark archives a release carries.
+fn assets(repo: &str, tag: &str) -> Result<Vec<String>> {
+    let names = gh(&[
+        "release",
+        "view",
+        tag,
+        "--repo",
+        repo,
+        "--json",
+        "assets",
+        "--jq",
+        ".assets[].name",
+    ])
+    .with_context(|| format!("Failed to find release {tag}"))?;
+
+    Ok(String::from_utf8_lossy(&names)
+        .lines()
+        .filter(|name| name.starts_with(ARTIFACT_PREFIX) && name.ends_with(ARCHIVE_SUFFIX))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Fetch every configuration's results from the release tagged `tag`.
+///
+/// A release carries what it measured for as long as it exists, which is past
+/// the day the workflow artifacts of the same run are swept away.
+pub(crate) fn fetch_release(repo: &str, tag: &str, cache: &Path) -> Result<Vec<Results>> {
+    let names = assets(repo, tag)?;
+    if names.is_empty() {
+        bail!("Release {tag} carries no benchmark results");
+    }
+
+    let release_dir = cache.join(format!("release-{tag}"));
+    let mut results = Vec::new();
+
+    for name in names {
+        let label = name[ARTIFACT_PREFIX.len()..name.len() - ARCHIVE_SUFFIX.len()].to_string();
+        let dir = release_dir.join(&label);
+
+        if !dir.join(DOWNLOADED).exists() {
+            if dir.exists() {
+                fs::remove_dir_all(&dir)
+                    .with_context(|| format!("Failed to clear {}", dir.display()))?;
+            }
+            fs::create_dir_all(&dir)
+                .with_context(|| format!("Failed to create {}", dir.display()))?;
+
+            let out = dir.display().to_string();
+            gh(&[
+                "release", "download", tag, "--repo", repo, "-p", &name, "-D", &out,
+            ])
+            .with_context(|| format!("Failed to download {name}"))?;
+
+            // The archive holds the criterion directory under a name of its own.
+            let archive = dir.join(&name);
+            unpack(&archive, &dir)?;
+            fs::remove_file(&archive)
+                .with_context(|| format!("Failed to remove {}", archive.display()))?;
+
+            fs::write(dir.join(DOWNLOADED), [])
+                .with_context(|| format!("Failed to mark {} downloaded", dir.display()))?;
+        }
+
+        results.push(Results { label, dir });
+    }
+
+    Ok(results)
+}
+
+/// Unpack `archive` into `into`, dropping the directory it wraps everything in.
+fn unpack(archive: &Path, into: &Path) -> Result<()> {
+    let status = Command::new("tar")
+        .arg("-xzf")
+        .arg(archive)
+        .arg("-C")
+        .arg(into)
+        .arg("--strip-components=1")
+        .status()
+        .context("Failed to run tar. It unpacks the results a release carries")?;
+
+    if !status.success() {
+        bail!("Failed to unpack {}", archive.display());
+    }
+
+    Ok(())
 }

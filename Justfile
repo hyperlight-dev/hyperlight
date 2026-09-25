@@ -456,18 +456,6 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 ### BENCHMARKING ###
 ####################
 
-# Warning: can overwrite previous local benchmarks, so run this before running benchmarks
-# Downloads the benchmarks result from the given release tag.
-# If tag is not given, defaults to latest release
-# Options for os: "Windows", or "Linux"
-# Options for Linux hypervisor: "kvm", "mshv3"
-# Options for Windows hypervisor: "hyperv", "hyperv-ws2025"
-# Options for cpu_vendor: "amd", "intel"
-bench-download os hypervisor cpu_vendor tag="" dest="target/criterion":
-    gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz
-    mkdir -p {{ dest }} {{ if os() == "windows" { "-Force" } else { "" } }}
-    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu_vendor }}.tar.gz -C {{ dest }}/ --strip-components=1
-
 # Warning: compares to and then OVERWRITES the given baseline
 bench-ci baseline features="":
     cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --verbose --save-baseline {{ baseline }}

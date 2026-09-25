@@ -27,6 +27,8 @@ pub enum Source {
     Commit(String),
     /// Benchmarks of the default branch taken where a pull request branched.
     BaseOf(u64),
+    /// Benchmarks a release carries, which outlive the workflow artifacts.
+    Release(String),
 }
 
 impl FromStr for Source {
@@ -34,13 +36,16 @@ impl FromStr for Source {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         // Anything else is a path, so windows drive letters stay paths.
-        let Some((kind @ ("run" | "pr" | "commit" | "base-of"), rest)) = value.split_once(':')
+        let Some((kind @ ("run" | "pr" | "commit" | "base-of" | "release"), rest)) =
+            value.split_once(':')
         else {
             return Ok(Self::Dir(value.into()));
         };
 
-        if kind == "commit" {
-            return Ok(Self::Commit(rest.to_string()));
+        match kind {
+            "commit" => return Ok(Self::Commit(rest.to_string())),
+            "release" => return Ok(Self::Release(rest.to_string())),
+            _ => {}
         }
 
         let id = rest
@@ -130,7 +135,7 @@ pub struct BenchReportArgs {
     pub binary: Vec<PathBuf>,
 
     /// Results to report: a criterion directory, `run:<ID>`, `pr:<NUMBER>`,
-    /// `commit:<SHA>` or `base-of:<NUMBER>`
+    /// `commit:<SHA>`, `base-of:<NUMBER>` or `release:<TAG>`
     #[arg(long, value_name = "SOURCE", default_value = "target/criterion")]
     pub candidate: Source,
 
@@ -207,7 +212,7 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
 
 /// Locate the results `source` points at.
 fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
-    let run = match source {
+    let results = match source {
         Source::Dir(dir) => {
             return Ok(vec![Input {
                 label: None,
@@ -215,18 +220,23 @@ fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
                 dir: dir.clone(),
             }]);
         }
-        Source::Run(run) => *run,
-        Source::PullRequest(pull_request) => remote::latest_run_for(repo, *pull_request)?,
-        Source::Commit(commit) => remote::run_at(repo, commit)?,
+        Source::Run(run) => fetch(repo, *run)?,
+        Source::PullRequest(pull_request) => {
+            fetch(repo, remote::latest_run_for(repo, *pull_request)?)?
+        }
+        Source::Commit(commit) => fetch(repo, remote::run_at(repo, commit)?)?,
         Source::BaseOf(pull_request) => {
             let commit = remote::merge_base_of(repo, *pull_request)?;
             eprintln!("Pull request {pull_request} branched at {}", &commit[..12]);
-            remote::run_at(repo, &commit)?
+            fetch(repo, remote::run_at(repo, &commit)?)?
+        }
+        Source::Release(tag) => {
+            eprintln!("Fetching release {tag} of {repo}");
+            remote::fetch_release(repo, tag, Path::new(RUN_CACHE))?
         }
     };
 
-    eprintln!("Fetching run {run} of {repo}");
-    remote::fetch(repo, run, Path::new(RUN_CACHE))?
+    results
         .into_iter()
         .map(|results| {
             Ok(Input {
@@ -240,6 +250,12 @@ fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
             })
         })
         .collect()
+}
+
+/// Fetch every configuration a run measured.
+fn fetch(repo: &str, run: u64) -> Result<Vec<remote::Results>> {
+    eprintln!("Fetching run {run} of {repo}");
+    remote::fetch(repo, run, Path::new(RUN_CACHE))
 }
 
 /// What the run in `dir` recorded about the machine it ran on.
