@@ -59,9 +59,11 @@ impl HyperlightVm {
         let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
-            // TODO: mshv support
             #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            Some(HypervisorType::Mshv) => {
+                use crate::hypervisor::virtual_machine::mshv::MshvVm;
+                Box::new(MshvVm::new().map_err(VmError::CreateVm)?)
+            }
             #[cfg(hvf)]
             Some(HypervisorType::Hvf) => {
                 Box::new(HvfVm::new(interrupt_handle.clone()).map_err(VmError::CreateVm)?)
