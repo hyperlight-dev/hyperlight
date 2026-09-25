@@ -1,0 +1,46 @@
+# Benchmarks whose results appear in pull request comments, as regular
+# expressions matched against criterion ids. A benchmark is reported when it
+# matches `allowlist` and no `denylist` entry, and an allowlist entry matching
+# nothing fails the report.
+allowlist = [
+  "^function_call_codec/decode_vec_bytes_copy$",
+  "^function_call_codec/encode_control/byte_chunks$",
+  "^function_call_codec/encode_control/vec_bytes$",
+  "^payload_allocation/slot_pool_segmented/262144$",
+  "^payload_allocation/slot_pool_segmented/65536$",
+  "^sandboxes/create_initialized_and_drop/medium$",
+  "^slot_pool/alloc_dealloc_128$",
+  "^slot_pool/alloc_dealloc_1500$",
+  "^slot_pool/alloc_dealloc_4096$",
+  "^snapshot_files/load_snapshot_unverified/small$",
+  "^virtq_readonly/slot_pool_segmented/262144$",
+  "^virtq_readonly/slot_pool_segmented/65536$",
+  "^virtq_readonly/slot_pool_segmented_fragmented/262144$",
+  "^virtq_readonly/slot_pool_segmented_fragmented/65536$",
+  "^virtq_readwrite/slot_pool_segmented/262144$",
+  "^virtq_readwrite/slot_pool_segmented/65536$",
+  "^virtq_readwrite/slot_pool_segmented/8192$",
+  "^virtq_readwrite/slot_pool_segmented_fragmented/65536$",
+  "^virtq_readwrite/slot_pool_segmented_fragmented/8192$",
+]
+
+# Every entry names one benchmark, so nothing needs excluding.
+denylist = []
+
+# How far a result moves before a report calls it a change rather than noise.
+# The improvements are how many times faster, `regression` the fraction of the
+# baseline a result falls to.
+improvement = 1.5 # 1.5x faster
+strong_improvement = 1.8 # 1.8x faster
+regression = 0.67 # 1.5x slower
+
+# Whose runs `run:`, `pr:` and the rest read, `<owner>/<name>` or `remote:<name>`
+# for whichever repository a git remote points at.
+repo = "hyperlight-dev/hyperlight"
+
+# How many changes are called out before the tables, none at 0.
+summary_limit = 3
+
+# End a report with the command that asks for it again, as CI does for the
+# pull request comment.
+reproduce = false

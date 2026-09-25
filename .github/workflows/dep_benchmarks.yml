@@ -2,26 +2,12 @@
 
 # Reusable workflow to run benchmarks on a single hypervisor/cpu_vendor combination.
 #
-# Baseline comparison:
-#   The workflow supports two mutually exclusive ways to load a baseline for
-#   Criterion to compare against:
-#
-#   1. baseline_run_id — Downloads benchmark artifacts from a previous workflow
-#      run (by run ID). Used by DailyBenchmarks.yml for day-over-day comparison.
-#
-#   2. baseline_tag — Downloads benchmark tarballs from a GitHub Release (by tag).
-#      If empty (the default), `gh release download` fetches from the latest
-#      stable release. Used by CreateRelease.yml.
-#
-#   If baseline_run_id is set, baseline_tag is ignored.
-#   If neither is set, the latest stable release is used.
-#   Both downloads use continue-on-error so the first-ever run (no baseline
-#   available) succeeds without comparison.
-#
 # Artifact upload:
-#   Benchmark results are always uploaded as workflow artifacts named
-#   benchmarks_<OS>_<hypervisor>_<cpu_vendor>. The retention_days input controls
-#   how long they are kept (default: 5 days).
+#   Benchmark results are uploaded as workflow artifacts named
+#   benchmarks_<OS>_<hypervisor>_<cpu_vendor>, kept for as long as GitHub
+#   allows so that a later run can still be compared against them. Reading
+#   them is left to whoever wants a report, so that a comparison covers every
+#   configuration at once.
 
 name: Run Benchmarks
 
@@ -45,22 +31,6 @@ on:
         description: CPU architecture for the build, X64 or arm64 (passed from caller matrix)
         required: true
         type: string
-      baseline_tag:
-        description: Release tag to download baseline benchmarks from (e.g. dev-latest). Ignored if baseline_run_id is set. If empty, downloads from the latest stable release.
-        required: false
-        type: string
-        default: ""
-      baseline_run_id:
-        description: Workflow run ID to download baseline benchmark artifacts from. Takes precedence over baseline_tag.
-        required: false
-        type: string
-        default: ""
-      retention_days:
-        description: Number of days to retain benchmark artifacts
-        required: false
-        type: number
-        default: 5
-
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
@@ -123,23 +93,6 @@ jobs:
       - name: Build
         run: just build release
 
-      - name: Download baseline from previous run
-        if: ${{ inputs.baseline_run_id != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
-          path: ./target/criterion/
-          run-id: ${{ inputs.baseline_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
-      - name: Download baseline from release
-        if: ${{ inputs.baseline_run_id == '' }}
-        run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu_vendor }} ${{ inputs.baseline_tag }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
       - name: Run benchmarks
         run: just bench-ci main
 
@@ -148,4 +101,6 @@ jobs:
           name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
           path: ./target/criterion/
           if-no-files-found: error
-          retention-days: ${{ inputs.retention_days }}
+          # The longest GitHub keeps an artifact, so that a pull request can be
+          # compared against the branch point it was built from.
+          retention-days: 90
