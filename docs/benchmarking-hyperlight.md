@@ -14,7 +14,10 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
                         Change within noise threshold.*
     ```
    
-2. For each release
+2. For each pull request
+    - Benchmarks run on every hypervisor and cpu vendor in `ValidatePullRequest.yml`, which invokes `dep_benchmarks.yml`. The results are reported against the daily benchmarks of the commit the pull request branched from, and posted as a comment.
+
+3. For each release
     - For each release, benchmarks are run as part of the release pipeline in `CreateRelease.yml`, which invokes `dep_benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as part of the "Release assets" on the GitHub release page.
 
 Currently, benchmarks are run on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
@@ -72,7 +75,7 @@ Found 1 outliers among 100 measurements (1.00%)
 
 ## Running benchmarks locally
 
-Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] [dest]` to download and extract the GitHub release benchmarks. Pass a `dest` outside `target/criterion` and point `cargo ci bench-report --baseline-root` at it, since `just bench-ci main` overwrites the `main` baseline it runs against. Note that `main` is the name of the baselines stored in GitHub.
+Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] [dest]` to download and extract the GitHub release benchmarks. Pass a `dest` outside `target/criterion` and point `cargo ci bench-report --baseline` at it, since `just bench-ci main` overwrites the `main` baseline it runs against. Note that `main` is the name of the baselines stored in GitHub.
 
 `cargo ci bench-report` renders the comparison. `--candidate` and `--baseline` say where each side comes from: a criterion directory, `run:<ID>` for a CI run, `pr:<NUMBER>` for the latest run of a pull request, `commit:<SHA>` for the benchmarks of the default branch taken at or before a commit, or `base-of:<NUMBER>` for the ones taken where a pull request branched. Criterion keeps the last run of a directory in `new` and the one before it in `base`, so a directory on its own reports the last run against the previous one.
 

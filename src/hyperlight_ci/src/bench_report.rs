@@ -172,10 +172,15 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         _ => None,
     });
 
-    let mut baselines = match &source {
-        Some(source) => resolve(source, &args.repo)?,
-        None => Vec::new(),
-    };
+    let mut baselines = Vec::new();
+    if let Some(source) = &source {
+        match resolve(source, &args.repo) {
+            Ok(found) => baselines = found,
+            // What the results are worth on their own outlives the comparison,
+            // so a baseline out of reach costs the changes, not the report.
+            Err(error) => eprintln!("{error:#}"),
+        }
+    }
 
     // The first run of a configuration has nothing to compare against, and CI
     // carries on with the baseline it could not download.

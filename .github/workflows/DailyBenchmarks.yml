@@ -12,24 +12,6 @@ permissions:
   actions: read
 
 jobs:
-  # Find the most recent successful run of this workflow so we can download
-  # its benchmark artifacts as a baseline for day-over-day comparison.
-  find-baseline:
-    runs-on: ubuntu-latest
-    outputs:
-      run-id: ${{ steps.find-run.outputs.run_id }}
-    steps:
-      - name: Find latest successful run
-        id: find-run
-        # gh run list returns runs sorted by creation date descending (implicit).
-        # On the first-ever run, this outputs empty and dep_benchmarks.yml
-        # will skip the baseline download (continue-on-error).
-        run: |
-          run_id=$(gh run list --repo "${{ github.repository }}" --workflow DailyBenchmarks.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   # Build release guest binaries needed by the benchmark suite.
   build-guests:
     uses: ./.github/workflows/dep_build_guests.yml
@@ -38,10 +20,11 @@ jobs:
       arch: X64
       config: release
 
-  # Run benchmarks across all hypervisor/cpu combos, comparing against
-  # the previous day's results. Artifacts are retained for 90 days.
+  # Run benchmarks across all hypervisor/cpu combos. Artifacts are retained
+  # for 90 days, long enough to serve as a baseline for the pull requests that
+  # branch from the commits they measure.
   benchmarks:
-    needs: [build-guests, find-baseline]
+    needs: [build-guests]
     strategy:
       fail-fast: true
       matrix:
@@ -54,7 +37,6 @@ jobs:
       hypervisor: ${{ matrix.hypervisor }}
       cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
-      baseline_run_id: ${{ needs.find-baseline.outputs.run-id }}
       retention_days: 90
 
   # File a GitHub issue if any job fails.

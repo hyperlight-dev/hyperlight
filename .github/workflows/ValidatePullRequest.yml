@@ -249,8 +249,9 @@ jobs:
       cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
 
-  # Combine benchmark reports into a single artifact for the hyperlight-gh-bot
-  # to post as a PR comment. Only runs for PRs (not merge groups) with code changes.
+  # Report every configuration the run measured against the branch point the
+  # pull request was built from, for the hyperlight-gh-bot to post as a PR
+  # comment. Only runs for PRs (not merge groups) with code changes.
   benchmark-comment:
     name: post-benchmark-comment
     needs:
@@ -258,22 +259,28 @@ jobs:
       - benchmarks
     if: ${{ !cancelled() && !failure() && needs.docs-pr.outputs.docs-only == 'false' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
-      - name: Download benchmark reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          pattern: benchmark-report_*
-          path: reports/
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Combine benchmark reports
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create benchmarks report
         run: |
           echo '## Benchmark Results' > pr-comment.md
           echo '' >> pr-comment.md
-          for f in reports/benchmark-report_*/benchmark.md; do
-            [ -f "$f" ] || continue
-            cat "$f" >> pr-comment.md
-            echo '' >> pr-comment.md
-          done
+          cargo ci bench-report --config-file bench_report.toml \
+            --candidate run:${{ github.run_id }} \
+            --baseline base-of:${{ github.event.pull_request.number }} >> pr-comment.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload PR comment artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
