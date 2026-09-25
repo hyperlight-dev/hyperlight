@@ -16,6 +16,12 @@ struct ConfigFile {
     allowlist: Vec<String>,
     #[serde(default)]
     denylist: Vec<String>,
+    improvement: Option<f64>,
+    strong_improvement: Option<f64>,
+    regression: Option<f64>,
+    repo: Option<String>,
+    summary_limit: Option<usize>,
+    reproduce: Option<bool>,
 }
 
 /// Benchmark id patterns selecting which results are reported.
@@ -23,6 +29,16 @@ struct ConfigFile {
 pub struct BenchConfig {
     allow: RegexSet,
     deny: RegexSet,
+    /// Where a change is worth reporting, when the file says.
+    pub improvement: Option<f64>,
+    pub strong_improvement: Option<f64>,
+    pub regression: Option<f64>,
+    /// Which repository the runs belong to.
+    pub repo: Option<String>,
+    /// How many changes to call out before the tables.
+    pub summary_limit: Option<usize>,
+    /// Whether a report says how to ask for it again.
+    pub reproduce: Option<bool>,
 }
 
 impl BenchConfig {
@@ -40,6 +56,12 @@ impl BenchConfig {
         Ok(Self {
             allow: RegexSet::new(&file.allowlist)?,
             deny: RegexSet::new(&file.denylist)?,
+            improvement: file.improvement,
+            strong_improvement: file.strong_improvement,
+            regression: file.regression,
+            repo: file.repo,
+            summary_limit: file.summary_limit,
+            reproduce: file.reproduce,
         })
     }
 
@@ -98,6 +120,24 @@ mod tests {
 
     fn benchmarks(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn reads_the_thresholds_when_given() {
+        let config = BenchConfig::parse("improvement = 1.5\nregression = 0.5").unwrap();
+
+        assert_eq!(config.improvement, Some(1.5));
+        assert_eq!(config.regression, Some(0.5));
+        assert_eq!(config.strong_improvement, None);
+    }
+
+    #[test]
+    fn leaves_the_thresholds_alone_when_absent() {
+        let config = BenchConfig::parse(r#"allowlist = ["^sandboxes/"]"#).unwrap();
+
+        assert_eq!(config.improvement, None);
+        assert_eq!(config.strong_improvement, None);
+        assert_eq!(config.regression, None);
     }
 
     #[test]

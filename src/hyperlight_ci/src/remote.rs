@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 //! Benchmark results taken from a CI run rather than this machine.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -77,6 +78,42 @@ fn gh(args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Which repository to read, either `owner/name` or whichever one a git
+/// remote points at, `remote:origin`.
+pub(crate) fn repository(value: &str) -> Result<String> {
+    let Some(remote) = value.strip_prefix("remote:") else {
+        return Ok(value.to_string());
+    };
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", remote])
+        .output()
+        .context("Failed to run git")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to read the url of remote {remote}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout);
+    owner_and_name(&url)
+        .with_context(|| format!("Remote {remote} names no repository: {}", url.trim()))
+}
+
+/// The owner and name a clone url ends with, however it spells the host.
+fn owner_and_name(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    let mut parts = url.rsplit(['/', ':']);
+    let name = parts.next()?;
+    let owner = parts.next()?;
+
+    (!name.is_empty() && !owner.is_empty()).then(|| format!("{owner}/{name}"))
+}
+
 /// Names of the benchmark artifacts a run still holds.
 fn artifacts(repo: &str, run: u64) -> Result<Vec<String>> {
     let path = format!("repos/{repo}/actions/runs/{run}/artifacts");
@@ -141,27 +178,35 @@ fn runs(repo: &str, filter: &[&str]) -> Result<Vec<Run>> {
 /// the next push, or be recent enough that the benchmarks have not finished.
 pub(crate) fn latest_run_for(repo: &str, pull_request: u64) -> Result<u64> {
     let pr = pull_request.to_string();
-    let branch = gh(&[
+    let view = gh(&[
         "pr",
         "view",
         &pr,
         "--repo",
         repo,
         "--json",
-        "headRefName",
+        "headRefName,commits",
         "--jq",
-        ".headRefName",
+        ".headRefName, (.commits[].oid)",
     ])
     .with_context(|| format!("Failed to find pull request {pull_request}"))?;
-    let branch = String::from_utf8_lossy(&branch).trim().to_string();
 
-    for run in runs(repo, &["--branch", &branch])? {
-        if !artifacts(repo, run.id)?.is_empty() {
+    let view = String::from_utf8_lossy(&view);
+    let mut lines = view.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(branch) = lines.next() else {
+        bail!("Pull request {pull_request} names no branch");
+    };
+    // Branch names are not unique across forks, so a listing of them holds runs
+    // of other pull requests and of whatever branch they were taken from.
+    let commits: HashSet<&str> = lines.collect();
+
+    for run in runs(repo, &["--branch", branch])? {
+        if commits.contains(run.head_sha.as_str()) && !artifacts(repo, run.id)?.is_empty() {
             return Ok(run.id);
         }
     }
 
-    bail!("No run of {branch} still has benchmark artifacts")
+    bail!("No run of pull request {pull_request} still has benchmark artifacts")
 }
 
 /// Resolve a sha, tag or branch to the commit it names.
@@ -218,6 +263,8 @@ pub(crate) fn run_at(repo: &str, commit: &str) -> Result<u64> {
 /// Where `pull_request` branched off the branch it targets.
 pub(crate) fn merge_base_of(repo: &str, pull_request: u64) -> Result<String> {
     let pr = pull_request.to_string();
+    // Commits rather than the branch name, whose slashes would read as more
+    // path in the comparison that follows. `release/1.2` is a branch here.
     let refs = gh(&[
         "pr",
         "view",
@@ -225,9 +272,9 @@ pub(crate) fn merge_base_of(repo: &str, pull_request: u64) -> Result<String> {
         "--repo",
         repo,
         "--json",
-        "baseRefName,headRefOid",
+        "baseRefOid,headRefOid",
         "--jq",
-        ".baseRefName + \" \" + .headRefOid",
+        ".baseRefOid + \" \" + .headRefOid",
     ])
     .with_context(|| format!("Failed to find pull request {pull_request}"))?;
 
@@ -250,7 +297,7 @@ pub(crate) fn fetch(repo: &str, run: u64, cache: &Path) -> Result<Vec<Results>> 
         bail!("Run {run} has no benchmark artifacts. They may have expired");
     }
 
-    let run_dir = cache.join(run.to_string());
+    let run_dir = cache.join(repo).join(run.to_string());
     let mut results = Vec::new();
 
     for name in names {
@@ -316,7 +363,7 @@ pub(crate) fn fetch_release(repo: &str, tag: &str, cache: &Path) -> Result<Vec<R
         bail!("Release {tag} carries no benchmark results");
     }
 
-    let release_dir = cache.join(format!("release-{tag}"));
+    let release_dir = cache.join(repo).join(format!("release-{tag}"));
     let mut results = Vec::new();
 
     for name in names {
@@ -369,4 +416,34 @@ fn unpack(archive: &Path, into: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_repository_a_clone_url_ends_with() {
+        for url in [
+            "git@github.com:hyperlight-dev/hyperlight.git",
+            "https://github.com/hyperlight-dev/hyperlight.git",
+            "https://github.com/hyperlight-dev/hyperlight",
+            "ssh://git@github.com/hyperlight-dev/hyperlight.git",
+            "  git@github.com:hyperlight-dev/hyperlight.git\n",
+        ] {
+            assert_eq!(
+                owner_and_name(url).as_deref(),
+                Some("hyperlight-dev/hyperlight"),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_a_repository_named_outright() {
+        assert_eq!(
+            repository("hyperlight-dev/hyperlight").unwrap(),
+            "hyperlight-dev/hyperlight"
+        );
+    }
 }

@@ -17,6 +17,9 @@ use crate::{manifest, remote};
 /// Where downloaded runs are kept.
 const RUN_CACHE: &str = "target/ci-runs";
 
+/// Whose runs a report reads, when nothing else says.
+const DEFAULT_REPO: &str = "hyperlight-dev/hyperlight";
+
 /// Where results come from, either a criterion directory or CI.
 #[derive(Clone)]
 pub enum Source {
@@ -153,13 +156,10 @@ pub struct BenchReportArgs {
     #[arg(long, value_name = "SOURCE")]
     pub baseline: Option<Source>,
 
-    /// Repository holding the CI runs
-    #[arg(
-        long,
-        value_name = "OWNER/NAME",
-        default_value = "hyperlight-dev/hyperlight"
-    )]
-    pub repo: String,
+    /// Repository holding the CI runs, `<OWNER>/<NAME>` or `remote:<NAME>` for
+    /// whichever one a git remote points at [default: hyperlight-dev/hyperlight]
+    #[arg(long, value_name = "REPO")]
+    pub repo: Option<String>,
 
     /// Wrap the output in a collapsible <details> tag with the given summary text.
     #[arg(long)]
@@ -169,9 +169,25 @@ pub struct BenchReportArgs {
     #[arg(long, value_name = "PATH")]
     pub config_file: Option<PathBuf>,
 
+    /// Call a result improved once it is this many times faster [default: 1.1]
+    #[arg(long, value_name = "RATIO")]
+    pub improvement: Option<f64>,
+
+    /// Call an improvement strong once it is this many times faster [default: 1.8]
+    #[arg(long, value_name = "RATIO")]
+    pub strong_improvement: Option<f64>,
+
+    /// Call a result regressed once it is this fraction of the baseline [default: 0.9]
+    #[arg(long, value_name = "RATIO")]
+    pub regression: Option<f64>,
+
+    /// How many changes to call out before the tables, none at 0 [default: 3]
+    #[arg(long, value_name = "COUNT")]
+    pub summary_limit: Option<usize>,
+
     /// End the report with the command that asks for it again
-    #[arg(long)]
-    pub reproduce: bool,
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub reproduce: Option<bool>,
 
     /// Additional arguments to forward to criterion benchmarks (e.g. filter, --exact)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -180,7 +196,27 @@ pub struct BenchReportArgs {
 
 /// Entry point for the bench-report subcommand.
 pub async fn run(args: BenchReportArgs) -> Result<()> {
-    let candidate = resolve(&args.candidate, &args.repo)?;
+    let config = args
+        .config_file
+        .as_deref()
+        .map(BenchConfig::load)
+        .transpose()?;
+    let thresholds = thresholds(&args, config.as_ref());
+    let repo = args
+        .repo
+        .clone()
+        .or_else(|| config.as_ref().and_then(|c| c.repo.clone()))
+        .unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let repo = remote::repository(&repo)?;
+    let summary_limit = args
+        .summary_limit
+        .or_else(|| config.as_ref().and_then(|c| c.summary_limit));
+    let reproduce_wanted = args
+        .reproduce
+        .or_else(|| config.as_ref().and_then(|c| c.reproduce))
+        .unwrap_or(false);
+
+    let candidate = resolve(&args.candidate, &repo)?;
 
     // Nothing within a pull request's results says what they mean, so they are
     // measured against the branch point they were built from.
@@ -195,7 +231,7 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         inputs: Vec::new(),
     };
     if let Some(source) = &source {
-        match resolve(source, &args.repo) {
+        match resolve(source, &repo) {
             Ok(found) => baseline = found,
             // What the results are worth on their own outlives the comparison,
             // so a baseline out of reach costs the changes, not the report.
@@ -215,7 +251,7 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         }
     }
 
-    if let Some(measured) = measured(&args.repo, &candidate, &baseline) {
+    if let Some(measured) = measured(&repo, &candidate, &baseline) {
         print!("{measured}");
     }
 
@@ -224,6 +260,9 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         let label = candidate.label.as_deref();
         let markdown = report(
             &args,
+            config.as_ref(),
+            thresholds,
+            summary_limit,
             &candidate.dir,
             baseline_for(&baseline.inputs, candidate),
             title(args.collapsible.as_deref(), label),
@@ -232,8 +271,8 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         print!("{markdown}");
     }
 
-    if args.reproduce {
-        print!("{}", reproduce(&args, &candidate, &baseline));
+    if reproduce_wanted {
+        print!("{}", reproduce(&args, &repo, &candidate, &baseline));
     }
 
     Ok(())
@@ -244,11 +283,17 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
 /// What was asked for moves: the last run of a pull request is whichever ran
 /// most recently, and where it branched changes when it is rebased. Naming the
 /// runs that answered holds the report still.
-fn reproduce(args: &BenchReportArgs, candidate: &Origin, baseline: &Origin) -> String {
+fn reproduce(args: &BenchReportArgs, repo: &str, candidate: &Origin, baseline: &Origin) -> String {
     let mut command = format!("cargo ci bench-report --candidate {}", candidate.pinned);
 
     if !baseline.inputs.is_empty() {
         command.push_str(&format!(" --baseline {}", baseline.pinned));
+    }
+
+    // Named outright, so the command reads the same repository wherever it runs
+    // and whatever the reader's remotes point at.
+    if args.repo.is_some() {
+        command.push_str(&format!(" --repo {repo}"));
     }
 
     if let Some(config) = &args.config_file {
@@ -256,6 +301,31 @@ fn reproduce(args: &BenchReportArgs, candidate: &Origin, baseline: &Origin) -> S
     }
 
     format!("\n<sub>Reported by `{command}`.</sub>\n")
+}
+
+/// Where a change is worth reporting. The command line answers first, then the
+/// config file, then the renderer.
+fn thresholds(
+    args: &BenchReportArgs,
+    config: Option<&BenchConfig>,
+) -> criterion_markdown::ChangeThresholds {
+    let from_config = |read: fn(&BenchConfig) -> Option<f64>| config.and_then(read);
+    let mut thresholds = criterion_markdown::ChangeThresholds::default();
+
+    if let Some(ratio) = args.improvement.or_else(|| from_config(|c| c.improvement)) {
+        thresholds = thresholds.improvement_ratio(ratio);
+    }
+    if let Some(ratio) = args
+        .strong_improvement
+        .or_else(|| from_config(|c| c.strong_improvement))
+    {
+        thresholds = thresholds.strong_improvement_ratio(ratio);
+    }
+    if let Some(ratio) = args.regression.or_else(|| from_config(|c| c.regression)) {
+        thresholds = thresholds.regression_ratio(ratio);
+    }
+
+    thresholds
 }
 
 /// Say which commits the report covers, so a reader can tell what they are
@@ -407,17 +477,26 @@ fn describe(label: &str) -> String {
 /// Render the results in `dir`.
 async fn report(
     args: &BenchReportArgs,
+    config: Option<&BenchConfig>,
+    thresholds: criterion_markdown::ChangeThresholds,
+    summary_limit: Option<usize>,
     dir: &Path,
     baseline_root: Option<&Path>,
     title: Option<String>,
 ) -> Result<String> {
     let mut benchmarks = discover_benchmarks(args, dir).await?;
 
-    if let Some(path) = &args.config_file {
-        benchmarks = BenchConfig::load(path)?.select(benchmarks)?;
+    if let Some(config) = config {
+        benchmarks = config.select(benchmarks)?;
     }
 
-    let mut renderer = criterion_markdown::Renderer::new(dir).benchmarks(benchmarks);
+    let mut renderer = criterion_markdown::Renderer::new(dir)
+        .benchmarks(benchmarks)
+        .change_thresholds(thresholds);
+
+    if let Some(limit) = summary_limit {
+        renderer = renderer.summary_limit(limit);
+    }
 
     // Criterion keeps the last run of a directory in `new` and the one before
     // it in `base`, so another directory is compared through its own last run.

@@ -27,3 +27,20 @@ allowlist = [
 # Every entry names one benchmark, so nothing needs excluding.
 denylist = []
 
+# How far a result moves before a report calls it a change rather than noise.
+# The improvements are how many times faster, `regression` the fraction of the
+# baseline a result falls to.
+improvement = 1.5 # 1.5x faster
+strong_improvement = 1.8 # 1.8x faster
+regression = 0.67 # 1.5x slower
+
+# Whose runs `run:`, `pr:` and the rest read, `<owner>/<name>` or `remote:<name>`
+# for whichever repository a git remote points at.
+repo = "hyperlight-dev/hyperlight"
+
+# How many changes are called out before the tables, none at 0.
+summary_limit = 3
+
+# End a report with the command that asks for it again, as CI does for the
+# pull request comment.
+reproduce = false
