@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 //! Benchmark results taken from a CI run rather than this machine.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,6 +16,14 @@ const ARTIFACT_PREFIX: &str = "benchmarks_";
 /// How far back to look for a run that still has its benchmark artifacts.
 /// They outlive the workflow by days, but not forever.
 const RUNS_SEARCHED: usize = 15;
+
+/// Where benchmarks of the default branch come from. Pull requests benchmark
+/// far more often, but never the branch they merge into.
+const BASELINE_WORKFLOW: &str = "DailyBenchmarks.yml";
+
+/// Marks a download that finished. Artifacts hold nothing every run is bound
+/// to leave behind, and an interrupted one leaves the directory half written.
+const DOWNLOADED: &str = ".downloaded";
 
 /// One configuration's results, and where they were unpacked.
 pub(crate) struct Results {
@@ -38,6 +47,8 @@ struct ArtifactList {
 struct Run {
     #[serde(rename = "databaseId")]
     id: u64,
+    #[serde(rename = "headSha")]
+    head_sha: String,
 }
 
 /// Run `gh` and hand back its stdout.
@@ -106,7 +117,7 @@ pub(crate) fn latest_run_for(repo: &str, pull_request: u64) -> Result<u64> {
         "--limit",
         &limit,
         "--json",
-        "databaseId",
+        "databaseId,headSha",
     ])?)
     .context("Failed to list the workflow runs of the branch")?;
 
@@ -117,6 +128,86 @@ pub(crate) fn latest_run_for(repo: &str, pull_request: u64) -> Result<u64> {
     }
 
     bail!("No run of {branch} still has benchmark artifacts")
+}
+
+/// Resolve a sha, tag or branch to the commit it names.
+fn commit_sha(repo: &str, commit: &str) -> Result<String> {
+    let path = format!("repos/{repo}/commits/{commit}");
+    let sha = gh(&["api", &path, "--jq", ".sha"])
+        .with_context(|| format!("Failed to find commit {commit}"))?;
+    Ok(String::from_utf8_lossy(&sha).trim().to_string())
+}
+
+/// Whether `commit` is `ancestor` or was built on top of it.
+fn descends_from(repo: &str, commit: &str, ancestor: &str) -> Result<bool> {
+    let path = format!("repos/{repo}/compare/{ancestor}...{commit}");
+    let status = gh(&["api", &path, "--jq", ".status"])?;
+    Ok(matches!(
+        String::from_utf8_lossy(&status).trim(),
+        "identical" | "ahead"
+    ))
+}
+
+/// The most recent benchmarks of the default branch taken at or before
+/// `commit`.
+///
+/// The branch is benchmarked daily rather than per commit, so the run that
+/// measured `commit` itself rarely exists. Anything measured after it carries
+/// changes the commit never had.
+pub(crate) fn run_at(repo: &str, commit: &str) -> Result<u64> {
+    let commit = commit_sha(repo, commit)?;
+    let limit = RUNS_SEARCHED.to_string();
+    let runs: Vec<Run> = serde_json::from_slice(&gh(&[
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--workflow",
+        BASELINE_WORKFLOW,
+        // A cancelled run leaves some configurations unmeasured.
+        "--status",
+        "success",
+        "--limit",
+        &limit,
+        "--json",
+        "databaseId,headSha",
+    ])?)
+    .context("Failed to list the benchmark runs of the default branch")?;
+
+    for run in &runs {
+        if descends_from(repo, &commit, &run.head_sha)? && !artifacts(repo, run.id)?.is_empty() {
+            return Ok(run.id);
+        }
+    }
+
+    bail!("No benchmarks taken at or before {commit} still have their artifacts")
+}
+
+/// Where `pull_request` branched off the branch it targets.
+pub(crate) fn merge_base_of(repo: &str, pull_request: u64) -> Result<String> {
+    let pr = pull_request.to_string();
+    let refs = gh(&[
+        "pr",
+        "view",
+        &pr,
+        "--repo",
+        repo,
+        "--json",
+        "baseRefName,headRefOid",
+        "--jq",
+        ".baseRefName + \" \" + .headRefOid",
+    ])
+    .with_context(|| format!("Failed to find pull request {pull_request}"))?;
+
+    let refs = String::from_utf8_lossy(&refs);
+    let Some((base, head)) = refs.trim().split_once(' ') else {
+        bail!("Pull request {pull_request} has no branch to compare against");
+    };
+
+    let path = format!("repos/{repo}/compare/{base}...{head}");
+    let sha = gh(&["api", &path, "--jq", ".merge_base_commit.sha"])
+        .with_context(|| format!("Failed to find where pull request {pull_request} branched"))?;
+    Ok(String::from_utf8_lossy(&sha).trim().to_string())
 }
 
 /// Fetch every configuration's results from `run`, reusing what is already on
@@ -134,14 +225,22 @@ pub(crate) fn fetch(repo: &str, run: u64, cache: &Path) -> Result<Vec<Results>> 
         let label = name[ARTIFACT_PREFIX.len()..].to_string();
         let dir = run_dir.join(&label);
 
-        if !dir.join("benchmarks.json").exists() {
-            std::fs::create_dir_all(&dir)
+        if !dir.join(DOWNLOADED).exists() {
+            if dir.exists() {
+                fs::remove_dir_all(&dir)
+                    .with_context(|| format!("Failed to clear {}", dir.display()))?;
+            }
+            fs::create_dir_all(&dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
+
             let (id, out) = (run.to_string(), dir.display().to_string());
             gh(&[
                 "run", "download", &id, "--repo", repo, "-n", &name, "-D", &out,
             ])
             .with_context(|| format!("Failed to download {name}"))?;
+
+            fs::write(dir.join(DOWNLOADED), [])
+                .with_context(|| format!("Failed to mark {} downloaded", dir.display()))?;
         }
 
         results.push(Results { label, dir });

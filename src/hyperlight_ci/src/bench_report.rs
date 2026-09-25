@@ -23,6 +23,10 @@ pub enum Source {
     Dir(PathBuf),
     Run(u64),
     PullRequest(u64),
+    /// Benchmarks of the default branch taken at or before a commit.
+    Commit(String),
+    /// Benchmarks of the default branch taken where a pull request branched.
+    BaseOf(u64),
 }
 
 impl FromStr for Source {
@@ -30,15 +34,22 @@ impl FromStr for Source {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         // Anything else is a path, so windows drive letters stay paths.
-        let Some((kind @ ("run" | "pr"), id)) = value.split_once(':') else {
+        let Some((kind @ ("run" | "pr" | "commit" | "base-of"), rest)) = value.split_once(':')
+        else {
             return Ok(Self::Dir(value.into()));
         };
-        let id = id
+
+        if kind == "commit" {
+            return Ok(Self::Commit(rest.to_string()));
+        }
+
+        let id = rest
             .parse()
-            .map_err(|_| format!("`{id}` is not a {kind} number"))?;
+            .map_err(|_| format!("`{rest}` is not a {kind} number"))?;
         Ok(match kind {
             "run" => Self::Run(id),
-            _ => Self::PullRequest(id),
+            "pr" => Self::PullRequest(id),
+            _ => Self::BaseOf(id),
         })
     }
 }
@@ -118,12 +129,14 @@ pub struct BenchReportArgs {
     #[arg(long)]
     pub binary: Vec<PathBuf>,
 
-    /// Results to report: a criterion directory, `run:<ID>` or `pr:<NUMBER>`
+    /// Results to report: a criterion directory, `run:<ID>`, `pr:<NUMBER>`,
+    /// `commit:<SHA>` or `base-of:<NUMBER>`
     #[arg(long, value_name = "SOURCE", default_value = "target/criterion")]
     pub candidate: Source,
 
-    /// Results to compare against: a criterion directory, `run:<ID>` or `pr:<NUMBER>`.
-    /// Defaults to the previous run held in the reported directory.
+    /// Results to compare against, in the same forms as the candidate. Defaults
+    /// to where a pull request branched, and otherwise to the previous run held
+    /// in the reported directory.
     #[arg(long, value_name = "SOURCE")]
     pub baseline: Option<Source>,
 
@@ -151,7 +164,15 @@ pub struct BenchReportArgs {
 /// Entry point for the bench-report subcommand.
 pub async fn run(args: BenchReportArgs) -> Result<()> {
     let candidates = resolve(&args.candidate, &args.repo)?;
-    let mut baselines = match &args.baseline {
+
+    // Nothing within a pull request's results says what they mean, so they are
+    // measured against the branch point they were built from.
+    let source = args.baseline.clone().or(match &args.candidate {
+        Source::PullRequest(pull_request) => Some(Source::BaseOf(*pull_request)),
+        _ => None,
+    });
+
+    let mut baselines = match &source {
         Some(source) => resolve(source, &args.repo)?,
         None => Vec::new(),
     };
@@ -159,7 +180,7 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
     // The first run of a configuration has nothing to compare against, and CI
     // carries on with the baseline it could not download.
     baselines.retain(|baseline| has_results(&baseline.dir));
-    if baselines.is_empty() && args.baseline.is_some() {
+    if baselines.is_empty() && source.is_some() {
         eprintln!("No baseline results found, reporting without a comparison");
     }
 
@@ -191,6 +212,12 @@ fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
         }
         Source::Run(run) => *run,
         Source::PullRequest(pull_request) => remote::latest_run_for(repo, *pull_request)?,
+        Source::Commit(commit) => remote::run_at(repo, commit)?,
+        Source::BaseOf(pull_request) => {
+            let commit = remote::merge_base_of(repo, *pull_request)?;
+            eprintln!("Pull request {pull_request} branched at {}", &commit[..12]);
+            remote::run_at(repo, &commit)?
+        }
     };
 
     eprintln!("Fetching run {run} of {repo}");
@@ -230,7 +257,10 @@ fn baseline_for<'a>(baselines: &'a [Input], candidate: &Input) -> Option<&'a Pat
         [only] if only.host.is_none() || candidate.host.is_none() => Some(&only.dir),
         _ => {
             let host = candidate.host.as_ref()?;
-            let what = candidate.label.as_deref().unwrap_or("these results");
+            let what = candidate
+                .label
+                .as_deref()
+                .map_or_else(|| "these results".to_string(), describe);
             let mut found = baselines.iter().filter(|baseline| {
                 baseline
                     .host
@@ -257,9 +287,23 @@ fn baseline_for<'a>(baselines: &'a [Input], candidate: &Input) -> Option<&'a Pat
 
 /// Name the report after the configuration it covers.
 fn title(summary: Option<&str>, label: Option<&str>) -> Option<String> {
-    match (summary, label) {
+    match (summary, label.map(describe)) {
         (Some(summary), Some(label)) => Some(format!("{summary} {label}")),
-        (summary, label) => summary.or(label).map(str::to_string),
+        (Some(summary), None) => Some(summary.to_string()),
+        (None, label) => label,
+    }
+}
+
+/// Name a configuration the way the workflow that measured it does, turning
+/// `Linux_kvm_amd` into `kvm / amd (Linux)`.
+fn describe(label: &str) -> String {
+    let named = label
+        .split_once('_')
+        .and_then(|(os, rest)| Some((os, rest.rsplit_once('_')?)));
+
+    match named {
+        Some((os, (hypervisor, vendor))) => format!("{hypervisor} / {vendor} ({os})"),
+        None => label.to_string(),
     }
 }
 
@@ -326,4 +370,38 @@ async fn discover_benchmarks(args: &BenchReportArgs, dir: &Path) -> Result<Vec<S
         .into_iter()
         .map(str::to_string)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_a_configuration_after_its_artifact() {
+        assert_eq!(describe("Linux_kvm_amd"), "kvm / amd (Linux)");
+        assert_eq!(
+            describe("Windows_hyperv-ws2025_intel"),
+            "hyperv-ws2025 / intel (Windows)"
+        );
+    }
+
+    #[test]
+    fn keeps_a_name_it_cannot_read() {
+        assert_eq!(describe("whatever"), "whatever");
+        assert_eq!(describe("Linux_kvm"), "Linux_kvm");
+    }
+
+    #[test]
+    fn titles_carry_both_the_summary_and_the_configuration() {
+        assert_eq!(title(None, None), None);
+        assert_eq!(title(Some("PR 1529"), None).as_deref(), Some("PR 1529"));
+        assert_eq!(
+            title(None, Some("Linux_kvm_amd")).as_deref(),
+            Some("kvm / amd (Linux)")
+        );
+        assert_eq!(
+            title(Some("PR 1529"), Some("Linux_kvm_amd")).as_deref(),
+            Some("PR 1529 kvm / amd (Linux)")
+        );
+    }
 }

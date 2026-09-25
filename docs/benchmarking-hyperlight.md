@@ -74,13 +74,15 @@ Found 1 outliers among 100 measurements (1.00%)
 
 Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to GitHub-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor cpu_vendor [tag] [dest]` to download and extract the GitHub release benchmarks. Pass a `dest` outside `target/criterion` and point `cargo ci bench-report --baseline-root` at it, since `just bench-ci main` overwrites the `main` baseline it runs against. Note that `main` is the name of the baselines stored in GitHub.
 
-`cargo ci bench-report` renders the comparison. `--candidate` and `--baseline` say where each side comes from: a criterion directory, `run:<ID>` for a CI run, or `pr:<NUMBER>` for the latest run of a pull request. Criterion keeps the last run of a directory in `new` and the one before it in `base`, so a directory on its own reports the last run against the previous one.
+`cargo ci bench-report` renders the comparison. `--candidate` and `--baseline` say where each side comes from: a criterion directory, `run:<ID>` for a CI run, `pr:<NUMBER>` for the latest run of a pull request, `commit:<SHA>` for the benchmarks of the default branch taken at or before a commit, or `base-of:<NUMBER>` for the ones taken where a pull request branched. Criterion keeps the last run of a directory in `new` and the one before it in `base`, so a directory on its own reports the last run against the previous one.
 
-CI results cover every hypervisor and cpu vendor, so results are paired with the ones measured on the same kind of machine. A run records its own operating system, cpu vendor and hypervisor, and CI artifacts are named after the configuration that produced them. Results that fit no counterpart, or several, are reported without a comparison.
+The default branch is benchmarked daily rather than per commit, so `commit:` and `base-of:` take the closest run that does not carry changes the commit never had. A pull request defaults to the branch point it was built from, since nothing within its own results says what they mean. CI results cover every hypervisor and cpu vendor, so results are paired with the ones measured on the same kind of machine. A run records its own operating system, cpu vendor and hypervisor, and CI artifacts are named after the configuration that produced them. Results that fit no counterpart, or several, are reported without a comparison.
 
 ```sh
 # a local run against results downloaded into their own directory
 cargo ci bench-report --baseline target/criterion-baseline
+# a pull request against the branch point it was built from
+cargo ci bench-report --candidate pr:1529
 # this machine against the configuration in CI that matches it
 cargo ci bench-report --baseline pr:1529
 ```
