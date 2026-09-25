@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Windows ARM64 Smoke Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  smoke:
+    runs-on: ["self-hosted", "Windows", "ARM64", "1ES.Pool=hl-windows-arm"]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+        with:
+          rust-toolchain: "1.94"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check environment
+        run: |
+          rustc --version
+          cargo --version
+          systeminfo | Select-String "OS Name","OS Version","System Type"
+
+      - name: Configure ARM64 libclang
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -property installationPath
+          $libclang = Join-Path $installPath "VC\Tools\Llvm\ARM64\bin\libclang.dll"
+          if (-not (Test-Path $libclang)) {
+            throw "ARM64 libclang not found at '$libclang'"
+          }
+          $llvmPath = Split-Path $libclang
+          "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+          $llvmPath >> $env:GITHUB_PATH
+
+      - name: Build hyperlight-host
+        run: cargo build -p hyperlight-host
+
+      - name: Build guests
+        run: just guests
+        env:
+          HYPERLIGHT_TARGET: aarch64
+
+      - name: Run hyperlight-host tests
+        run: cargo test -p hyperlight-host -- --test-threads=1
