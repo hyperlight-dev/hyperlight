@@ -24,6 +24,9 @@ const BASELINE_WORKFLOW: &str = "DailyBenchmarks.yml";
 /// What a release calls the results it carries.
 const ARCHIVE_SUFFIX: &str = ".tar.gz";
 
+/// How many times to ask for a listing before taking it at its word.
+const LISTINGS: usize = 5;
+
 /// Marks a download that finished. Artifacts hold nothing every run is bound
 /// to leave behind, and an interrupted one leaves the directory half written.
 const DOWNLOADED: &str = ".downloaded";
@@ -52,6 +55,8 @@ struct Run {
     id: u64,
     #[serde(rename = "headSha")]
     head_sha: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
 }
 
 /// Run `gh` and hand back its stdout.
@@ -89,6 +94,47 @@ fn artifacts(repo: &str, run: u64) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Runs matching `filter`, newest first.
+///
+/// GitHub answers out of an index that takes a moment to warm, leaving the
+/// most recent runs out of the first replies. Taking one at its word picks a
+/// baseline months older than the one asked for, so ask until two replies
+/// agree on the newest run and keep everything either of them saw.
+fn runs(repo: &str, filter: &[&str]) -> Result<Vec<Run>> {
+    let limit = RUNS_SEARCHED.to_string();
+    let mut seen: Vec<Run> = Vec::new();
+    let mut newest = None;
+
+    for _ in 0..LISTINGS {
+        let mut args = vec![
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--limit",
+            &limit,
+            "--json",
+            "databaseId,headSha,createdAt",
+        ];
+        args.extend_from_slice(filter);
+
+        let listed: Vec<Run> =
+            serde_json::from_slice(&gh(&args)?).context("Failed to list the workflow runs")?;
+
+        let latest = listed.first().map(|run| run.id);
+        seen.extend(listed);
+
+        if latest.is_some() && latest == newest {
+            break;
+        }
+        newest = latest;
+    }
+
+    seen.sort_by(|left, right| (&right.created_at, right.id).cmp(&(&left.created_at, left.id)));
+    seen.dedup_by_key(|run| run.id);
+    Ok(seen)
+}
+
 /// The most recent run of `pull_request` that still has benchmark artifacts.
 ///
 /// The newest run is not always the one to report: a run can be cancelled by
@@ -109,22 +155,7 @@ pub(crate) fn latest_run_for(repo: &str, pull_request: u64) -> Result<u64> {
     .with_context(|| format!("Failed to find pull request {pull_request}"))?;
     let branch = String::from_utf8_lossy(&branch).trim().to_string();
 
-    let limit = RUNS_SEARCHED.to_string();
-    let runs: Vec<Run> = serde_json::from_slice(&gh(&[
-        "run",
-        "list",
-        "--repo",
-        repo,
-        "--branch",
-        &branch,
-        "--limit",
-        &limit,
-        "--json",
-        "databaseId,headSha",
-    ])?)
-    .context("Failed to list the workflow runs of the branch")?;
-
-    for run in &runs {
+    for run in runs(repo, &["--branch", &branch])? {
         if !artifacts(repo, run.id)?.is_empty() {
             return Ok(run.id);
         }
@@ -134,10 +165,20 @@ pub(crate) fn latest_run_for(repo: &str, pull_request: u64) -> Result<u64> {
 }
 
 /// Resolve a sha, tag or branch to the commit it names.
-fn commit_sha(repo: &str, commit: &str) -> Result<String> {
+pub(crate) fn commit_sha(repo: &str, commit: &str) -> Result<String> {
     let path = format!("repos/{repo}/commits/{commit}");
     let sha = gh(&["api", &path, "--jq", ".sha"])
         .with_context(|| format!("Failed to find commit {commit}"))?;
+    Ok(String::from_utf8_lossy(&sha).trim().to_string())
+}
+
+/// The commit a run measured.
+pub(crate) fn run_commit(repo: &str, run: u64) -> Result<String> {
+    let id = run.to_string();
+    let sha = gh(&[
+        "run", "view", &id, "--repo", repo, "--json", "headSha", "--jq", ".headSha",
+    ])
+    .with_context(|| format!("Failed to find what run {run} measured"))?;
     Ok(String::from_utf8_lossy(&sha).trim().to_string())
 }
 
@@ -159,23 +200,11 @@ fn descends_from(repo: &str, commit: &str, ancestor: &str) -> Result<bool> {
 /// changes the commit never had.
 pub(crate) fn run_at(repo: &str, commit: &str) -> Result<u64> {
     let commit = commit_sha(repo, commit)?;
-    let limit = RUNS_SEARCHED.to_string();
-    let runs: Vec<Run> = serde_json::from_slice(&gh(&[
-        "run",
-        "list",
-        "--repo",
+    // A cancelled run leaves some configurations unmeasured.
+    let runs = runs(
         repo,
-        "--workflow",
-        BASELINE_WORKFLOW,
-        // A cancelled run leaves some configurations unmeasured.
-        "--status",
-        "success",
-        "--limit",
-        &limit,
-        "--json",
-        "databaseId,headSha",
-    ])?)
-    .context("Failed to list the benchmark runs of the default branch")?;
+        &["--workflow", BASELINE_WORKFLOW, "--status", "success"],
+    )?;
 
     for run in &runs {
         if descends_from(repo, &commit, &run.head_sha)? && !artifacts(repo, run.id)?.is_empty() {
@@ -267,11 +296,14 @@ fn assets(repo: &str, tag: &str) -> Result<Vec<String>> {
     ])
     .with_context(|| format!("Failed to find release {tag}"))?;
 
-    Ok(String::from_utf8_lossy(&names)
+    let mut names: Vec<String> = String::from_utf8_lossy(&names)
         .lines()
         .filter(|name| name.starts_with(ARTIFACT_PREFIX) && name.ends_with(ARCHIVE_SUFFIX))
         .map(str::to_string)
-        .collect())
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 /// Fetch every configuration's results from the release tagged `tag`.

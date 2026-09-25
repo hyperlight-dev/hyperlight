@@ -66,6 +66,14 @@ struct Input {
     host: Option<Identity>,
 }
 
+/// A set of results and the commit they were taken at.
+struct Origin {
+    commit: Option<String>,
+    /// How to ask for these same results again, whatever was asked for here.
+    pinned: String,
+    inputs: Vec<Input>,
+}
+
 /// What distinguishes one set of benchmark results from another.
 #[derive(PartialEq)]
 struct Identity {
@@ -161,6 +169,10 @@ pub struct BenchReportArgs {
     #[arg(long, value_name = "PATH")]
     pub config_file: Option<PathBuf>,
 
+    /// End the report with the command that asks for it again
+    #[arg(long)]
+    pub reproduce: bool,
+
     /// Additional arguments to forward to criterion benchmarks (e.g. filter, --exact)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub bench_args: Vec<String>,
@@ -168,7 +180,7 @@ pub struct BenchReportArgs {
 
 /// Entry point for the bench-report subcommand.
 pub async fn run(args: BenchReportArgs) -> Result<()> {
-    let candidates = resolve(&args.candidate, &args.repo)?;
+    let candidate = resolve(&args.candidate, &args.repo)?;
 
     // Nothing within a pull request's results says what they mean, so they are
     // measured against the branch point they were built from.
@@ -177,10 +189,14 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
         _ => None,
     });
 
-    let mut baselines = Vec::new();
+    let mut baseline = Origin {
+        commit: None,
+        pinned: String::new(),
+        inputs: Vec::new(),
+    };
     if let Some(source) = &source {
         match resolve(source, &args.repo) {
-            Ok(found) => baselines = found,
+            Ok(found) => baseline = found,
             // What the results are worth on their own outlives the comparison,
             // so a baseline out of reach costs the changes, not the report.
             Err(error) => eprintln!("{error:#}"),
@@ -189,53 +205,119 @@ pub async fn run(args: BenchReportArgs) -> Result<()> {
 
     // The first run of a configuration has nothing to compare against, and CI
     // carries on with the baseline it could not download.
-    baselines.retain(|baseline| has_results(&baseline.dir));
-    if baselines.is_empty() && source.is_some() {
-        eprintln!("No baseline results found, reporting without a comparison");
+    baseline
+        .inputs
+        .retain(|baseline| has_results(&baseline.dir));
+    if baseline.inputs.is_empty() {
+        baseline.commit = None;
+        if source.is_some() {
+            eprintln!("No baseline results found, reporting without a comparison");
+        }
+    }
+
+    if let Some(measured) = measured(&args.repo, &candidate, &baseline) {
+        print!("{measured}");
     }
 
     // A CI run covers every hypervisor and cpu vendor, one section each.
-    for candidate in &candidates {
+    for candidate in &candidate.inputs {
         let label = candidate.label.as_deref();
         let markdown = report(
             &args,
             &candidate.dir,
-            baseline_for(&baselines, candidate),
+            baseline_for(&baseline.inputs, candidate),
             title(args.collapsible.as_deref(), label),
         )
         .await?;
         print!("{markdown}");
     }
 
+    if args.reproduce {
+        print!("{}", reproduce(&args, &candidate, &baseline));
+    }
+
     Ok(())
 }
 
+/// The command that reports these same results again.
+///
+/// What was asked for moves: the last run of a pull request is whichever ran
+/// most recently, and where it branched changes when it is rebased. Naming the
+/// runs that answered holds the report still.
+fn reproduce(args: &BenchReportArgs, candidate: &Origin, baseline: &Origin) -> String {
+    let mut command = format!("cargo ci bench-report --candidate {}", candidate.pinned);
+
+    if !baseline.inputs.is_empty() {
+        command.push_str(&format!(" --baseline {}", baseline.pinned));
+    }
+
+    if let Some(config) = &args.config_file {
+        command.push_str(&format!(" --config-file {}", config.display()));
+    }
+
+    format!("\n<sub>Reported by `{command}`.</sub>\n")
+}
+
+/// Say which commits the report covers, so a reader can tell what they are
+/// looking at without knowing how it was asked for.
+fn measured(repo: &str, candidate: &Origin, baseline: &Origin) -> Option<String> {
+    let link = |sha: &String| {
+        let short = sha.get(..12).unwrap_or(sha);
+        format!("[`{short}`](https://github.com/{repo}/commit/{sha})")
+    };
+
+    let mut lines = format!("Measured commit: {}", candidate.commit.as_ref().map(link)?);
+    if let Some(baseline) = baseline.commit.as_ref().map(link) {
+        lines.push_str(&format!("\nBaseline commit: {baseline}"));
+    }
+    lines.push_str("\n\n");
+
+    Some(lines)
+}
+
 /// Locate the results `source` points at.
-fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
-    let results = match source {
+fn resolve(source: &Source, repo: &str) -> Result<Origin> {
+    let run = match source {
         Source::Dir(dir) => {
-            return Ok(vec![Input {
-                label: None,
-                host: host_of(dir)?,
-                dir: dir.clone(),
-            }]);
-        }
-        Source::Run(run) => fetch(repo, *run)?,
-        Source::PullRequest(pull_request) => {
-            fetch(repo, remote::latest_run_for(repo, *pull_request)?)?
-        }
-        Source::Commit(commit) => fetch(repo, remote::run_at(repo, commit)?)?,
-        Source::BaseOf(pull_request) => {
-            let commit = remote::merge_base_of(repo, *pull_request)?;
-            eprintln!("Pull request {pull_request} branched at {}", &commit[..12]);
-            fetch(repo, remote::run_at(repo, &commit)?)?
+            return Ok(Origin {
+                commit: None,
+                pinned: dir.display().to_string(),
+                inputs: vec![Input {
+                    label: None,
+                    host: host_of(dir)?,
+                    dir: dir.clone(),
+                }],
+            });
         }
         Source::Release(tag) => {
             eprintln!("Fetching release {tag} of {repo}");
-            remote::fetch_release(repo, tag, Path::new(RUN_CACHE))?
+            return Ok(Origin {
+                commit: remote::commit_sha(repo, tag).ok(),
+                pinned: format!("release:{tag}"),
+                inputs: inputs(remote::fetch_release(repo, tag, Path::new(RUN_CACHE))?)?,
+            });
+        }
+        Source::Run(run) => *run,
+        Source::PullRequest(pull_request) => remote::latest_run_for(repo, *pull_request)?,
+        Source::Commit(commit) => remote::run_at(repo, commit)?,
+        Source::BaseOf(pull_request) => {
+            let commit = remote::merge_base_of(repo, *pull_request)?;
+            eprintln!("Pull request {pull_request} branched at {}", &commit[..12]);
+            remote::run_at(repo, &commit)?
         }
     };
 
+    eprintln!("Fetching run {run} of {repo}");
+    Ok(Origin {
+        // A report reads the same without it, so it is not worth failing over.
+        commit: remote::run_commit(repo, run).ok(),
+        pinned: format!("run:{run}"),
+        inputs: inputs(remote::fetch(repo, run, Path::new(RUN_CACHE))?)?,
+    })
+}
+
+/// Read what each set of results says about the machine that took them.
+fn inputs(results: Vec<remote::Results>) -> Result<Vec<Input>> {
     results
         .into_iter()
         .map(|results| {
@@ -250,12 +332,6 @@ fn resolve(source: &Source, repo: &str) -> Result<Vec<Input>> {
             })
         })
         .collect()
-}
-
-/// Fetch every configuration a run measured.
-fn fetch(repo: &str, run: u64) -> Result<Vec<remote::Results>> {
-    eprintln!("Fetching run {run} of {repo}");
-    remote::fetch(repo, run, Path::new(RUN_CACHE))
 }
 
 /// What the run in `dir` recorded about the machine it ran on.

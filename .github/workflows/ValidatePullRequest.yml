@@ -276,7 +276,7 @@ jobs:
         run: |
           echo '## Benchmark Results' > pr-comment.md
           echo '' >> pr-comment.md
-          cargo ci bench-report --config-file bench_report.toml \
+          cargo ci bench-report --config-file bench_report.toml --reproduce \
             --candidate run:${{ github.run_id }} \
             --baseline base-of:${{ github.event.pull_request.number }} >> pr-comment.md
         env:
