@@ -4,8 +4,8 @@ name: Daily aarch64
 
 # Full aarch64 coverage runs here on a schedule rather than on every PR, because
 # there are only limited aarch64 runners. PRs run a reduced aarch64
-# build-test (build + default Rust tests only) and skip aarch64 examples; this
-# workflow restores Miri, the single-driver tests, and the examples once a day.
+# build-test (build, Miri and default Rust tests) and skip aarch64 examples;
+# this workflow restores the single-driver tests and the examples once a day.
 
 on:
   schedule:
@@ -37,7 +37,7 @@ jobs:
       arch: arm64
       config: ${{ matrix.config }}
 
-  # Full aarch64 build-and-test. full_aarch64: "true" re-enables the Miri and
+  # Full aarch64 build-and-test. full_aarch64: "true" re-enables the
   # single-driver steps that are skipped on PRs.
   build-test:
     needs: build-guests
