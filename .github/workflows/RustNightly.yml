@@ -92,6 +92,11 @@ jobs:
       - name: Build
         run: just build ${{ matrix.config }}
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
+        with:
+          tool: cargo-nextest
+
       - name: Run Miri tests
         run: env -u RUSTC_WRAPPER just miri-tests
 

@@ -113,6 +113,14 @@ jobs:
       - name: Build
         run: just build ${{ inputs.config }}
 
+      - name: Install cargo-nextest
+        # Same condition as the Miri step below, so the download is skipped
+        # wherever Miri does not run.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
+        with:
+          tool: cargo-nextest
+
       - name: Run Miri tests
         # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
         # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux

@@ -313,11 +313,21 @@ test-rust-tracing target=default-target features="":
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
-miri-tests:
+# Nextest runs one Miri process per job, each with its own interpreter, so
+# memory grows with the job count at roughly 0.4GB per job. Lower MIRI_JOBS on
+# a machine with many cores but little RAM.
+miri-jobs := env('MIRI_JOBS', num_cpus())
+
+ensure-cargo-nextest:
+    {{ if os() == "windows" { "if (-not (cargo nextest --version 2>$null)) { cargo install --locked cargo-nextest }" } else { "cargo nextest --version >/dev/null 2>&1 || cargo install --locked cargo-nextest" } }}
+
+miri-tests: (ensure-cargo-nextest)
+    @# A Miri interpreter is single-threaded, so libtest's --test-threads cannot
+    @# use more than one core. Nextest spawns one Miri process per test.
     rustup +nightly component list | grep -q "miri.*installed" || rustup component add miri --toolchain nightly
     # We can add more as needed
-    cargo +nightly miri test -p hyperlight-common -F trace_guest
-    cargo +nightly miri test -p hyperlight-host --lib -- mem::shared_mem::tests
+    cargo +nightly miri nextest run -p hyperlight-common -F trace_guest -j {{miri-jobs}}
+    cargo +nightly miri nextest run -p hyperlight-host --lib -E 'test(/mem::shared_mem::tests/)' -j {{miri-jobs}}
 
 ################
 ### LINTING ####
