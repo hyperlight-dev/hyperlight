@@ -29,7 +29,7 @@ on:
       full_aarch64:
         description: >-
           When "true", also run the single-driver tests on aarch64. PRs leave
-          this "false" so the aarch64 runner only builds and runs the default
+          this "false" so the aarch64 runner builds and runs Miri and the default
           Rust tests; the daily schedule (DailyArm64.yml) sets it "true". This
           input only affects aarch64: it does not change X64, where those tests
           already run on Linux and are skipped on Windows regardless.
