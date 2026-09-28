@@ -565,11 +565,16 @@ mod tests {
 
     #[test]
     fn segments_source_reads_fragmented_values_in_order() {
+        #[cfg(miri)]
+        let count = 64;
+        #[cfg(not(miri))]
+        let count = 1024;
+
         let mut source = Segments::new(
-            (0..1024).flat_map(|_| [Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]),
+            (0..count).flat_map(|_| [Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]),
         );
 
-        for _ in 0..1024 {
+        for _ in 0..count {
             assert_eq!(source.take_bytes(1).unwrap(), b"a");
             assert_eq!(
                 source.take_chunks(2).unwrap(),

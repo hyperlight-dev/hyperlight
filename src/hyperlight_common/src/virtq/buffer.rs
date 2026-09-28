@@ -459,8 +459,13 @@ mod tests {
 
     #[test]
     fn segments_split_to_keeps_small_suffix_inline() {
-        let mut segments = Segments::new((0..8192).map(|_| Bytes::from_static(b"x")));
-        drop(segments.split_to(8191).unwrap());
+        #[cfg(miri)]
+        let count = 64;
+        #[cfg(not(miri))]
+        let count = 8192;
+
+        let mut segments = Segments::new((0..count).map(|_| Bytes::from_static(b"x")));
+        drop(segments.split_to(count - 1).unwrap());
 
         let suffix = segments.split_to(1).unwrap();
 
@@ -473,23 +478,34 @@ mod tests {
 
     #[test]
     fn segments_split_to_keeps_large_remainder_in_place() {
-        let mut segments = Segments::new((0..8192).map(|_| Bytes::from_static(b"x")));
+        #[cfg(miri)]
+        let count = 64;
+        #[cfg(not(miri))]
+        let count = 8192;
+        let half = count / 2;
+
+        let mut segments = Segments::new((0..count).map(|_| Bytes::from_static(b"x")));
         let storage = segments.chunks.as_ptr();
 
-        let prefix = segments.split_to(4096).unwrap();
+        let prefix = segments.split_to(half).unwrap();
 
-        assert_eq!(prefix.segment_count(), 4096);
+        assert_eq!(prefix.segment_count(), half);
         assert!(prefix.iter().all(|segment| segment.as_ref() == b"x"));
-        assert_eq!(segments.segment_count(), 4096);
-        assert_eq!(segments.as_slice().as_ptr(), storage.wrapping_add(4096));
+        assert_eq!(segments.segment_count(), half);
+        assert_eq!(segments.as_slice().as_ptr(), storage.wrapping_add(half));
         assert!(segments.chunks[..segments.head].iter().all(Bytes::is_empty));
     }
 
     #[test]
     fn segments_split_to_repeatedly_consumes_fragments() {
-        let mut segments = Segments::new((0..4096).map(|_| Bytes::from_static(b"ab")));
+        #[cfg(miri)]
+        let count = 64;
+        #[cfg(not(miri))]
+        let count = 4096;
 
-        for _ in 0..4096 {
+        let mut segments = Segments::new((0..count).map(|_| Bytes::from_static(b"ab")));
+
+        for _ in 0..count {
             assert_eq!(segments.split_to(1).unwrap().into_bytes().as_ref(), b"a");
             assert_eq!(segments.split_to(1).unwrap().into_bytes().as_ref(), b"b");
         }
