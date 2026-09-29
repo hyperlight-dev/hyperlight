@@ -1671,50 +1671,53 @@ fn exception_handler_installation_and_validation() {
 /// This validates that the exception handling path does not require heap allocations.
 #[test]
 fn fill_heap_and_cause_exception() {
-    with_rust_sandbox(|mut sandbox| {
-        let result = sandbox.call::<()>("FillHeapAndCauseException", ());
-
-        // The call should fail with an exception error since there's no handler installed
-        assert!(result.is_err(), "Expected an error from ud2 exception");
-
-        let err = result.unwrap_err();
-        match &err {
-            HyperlightError::GuestAborted(code, message) => {
-                assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
-
-                // Verify the message was properly formatted (proves no-allocation path worked)
-                // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
-                #[cfg(target_arch = "x86_64")]
-                let vector = "Exception vector: 6";
-                #[cfg(target_arch = "aarch64")]
-                let vector = "Exception vector: CurrentSP0 Synchronous";
-                assert!(
-                    message.contains(vector),
-                    "Message should contain '{}'\nFull error: {:?}",
-                    vector,
-                    err
-                );
-                assert!(
-                    message.contains("Faulting Instruction:"),
-                    "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "x86_64")]
-                assert!(
-                    message.contains("Stack Pointer:"),
-                    "Message should contain 'Stack Pointer:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "aarch64")]
-                assert!(
-                    message.contains("Exception Syndrome:"),
-                    "Message should contain 'Exception Syndrome:'\nFull error: {:?}",
-                    err
-                );
-            }
-            _ => panic!("Expected GuestAborted error, got: {:?}", err),
-        }
+    let mut sandbox = build_rust_sandbox(|builder| {
+        builder.scratch_size(
+            SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 4 * hyperlight_common::vmem::PAGE_SIZE,
+        )
     });
+    let result = sandbox.call::<()>("FillHeapAndCauseException", ());
+
+    // The call should fail with an exception error since there's no handler installed
+    assert!(result.is_err(), "Expected an error from ud2 exception");
+
+    let err = result.unwrap_err();
+    match &err {
+        HyperlightError::GuestAborted(code, message) => {
+            assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
+
+            // Verify the message was properly formatted (proves no-allocation path worked)
+            // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
+            #[cfg(target_arch = "x86_64")]
+            let vector = "Exception vector: 6";
+            #[cfg(target_arch = "aarch64")]
+            let vector = "Exception vector: CurrentSP0 Synchronous";
+            assert!(
+                message.contains(vector),
+                "Message should contain '{}'\nFull error: {:?}",
+                vector,
+                err
+            );
+            assert!(
+                message.contains("Faulting Instruction:"),
+                "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
+                err
+            );
+            #[cfg(target_arch = "x86_64")]
+            assert!(
+                message.contains("Stack Pointer:"),
+                "Message should contain 'Stack Pointer:'\nFull error: {:?}",
+                err
+            );
+            #[cfg(target_arch = "aarch64")]
+            assert!(
+                message.contains("Exception Syndrome:"),
+                "Message should contain 'Exception Syndrome:'\nFull error: {:?}",
+                err
+            );
+        }
+        _ => panic!("Expected GuestAborted error, got: {:?}", err),
+    }
 }
 
 /// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
