@@ -6,13 +6,19 @@ is not a discoverable VIRTIO device. Queue configuration, arena placement, and
 notification behavior are part of the Hyperlight ABI.
 
 This document describes the fixed-pool runtime, which rejects snapshots with
-retained buffers. The [future design](#future-guest-allocated-pools-and-retained-snapshots)
-describes planned retained-buffer support.
+retained buffers.
 
 ## Architecture
 
 The guest is the driver (producer) for both queues. The host is the device
 (consumer) for both queues.
+
+A **descriptor** is a 16-byte queue entry that points to a shared-memory
+buffer and records its length and flags. The payload lives in the buffer.
+
+**Readable** means the host can read it. **Writable** means the host can
+write it. Multiple descriptors can form a **descriptor chain** for one
+transfer.
 
 ```text
  Guest                                                    Host
@@ -70,28 +76,37 @@ Offsets after the G2H ring depend on configured queue sizes and pool pages.
 `TransportArena` addresses are GPAs. The guest converts them to scratch GVAs
 when constructing rings and pools. Descriptor buffer addresses are GVAs.
 
-The configured upper buffer size is 4 KiB by default. The G2H pool uses two
-slot tiers:
+### Buffer pools
 
-* The first page contains sixteen 256 byte slots for control messages and
-  logs.
-* Complete configured size slots occupy the remaining pages.
+* **H2G** provides equal-sized buffers for host requests. The guest makes
+  them available before it knows the next message size.
+* **G2H** allocates buffers for guest requests, results, and logs. Small
+  control messages can use 256-byte buffers, leaving larger buffers free
+  for data.
 
-The lower tier is a memory efficiency optimization. Most control messages,
-scalar function arguments, and scalar results fit in a small slot. Giving each
-of them a full upper slot would waste most of that slot and reduce the number
-of concurrent allocations the pool can hold.
+**Why do guest replies use G2H rather than H2G?** The guest publishes buffer
+descriptors for both queues. H2G is prefilled with writable buffers for host
+messages, consumed in queue order. A guest reply appended there would sit
+behind those unused receive buffers. G2H lets the host receive guest replies
+without first handling the pending H2G buffers.
 
-G2H senders allocate the header and control prefix separately when the external
-byte stream aligns to the upper slot size. A small prefix uses a lower slot
-while the external payload fills complete upper slots. Unaligned streams stay
-combined to avoid adding a descriptor.
+```text
+H2G pool
+[ h2g_buffer_size ][ h2g_buffer_size ] ...
 
-The H2G pool contains uniform configured size slots. The same tier selection
-does not fit its preposted receive model. The guest publishes writable buffers
-before it knows the size of the next host written payload. Uniform slots let
-the host calculate how many buffers it needs without negotiating a size class
-or searching the ring.
+G2H pool
+[ 16 x 256 B small buffers ][ g2h_buffer_size ][ g2h_buffer_size ] ...
+  first 4 KiB page           remaining pages
+```
+
+Both configurable buffer sizes default to 4 KiB. G2H's small buffers stay
+256 bytes even when the data buffers grow.
+
+When a guest-sent G2H payload exactly fills one or more data buffers, its
+metadata is allocated separately. Metadata of at most 256 bytes can use a
+small buffer. Other messages keep metadata and payload together.
+
+### Configuration
 
 Configure queue sizes, buffer sizes, and pool page counts through
 `SandboxBuilder` or `SandboxConfiguration`:
@@ -112,6 +127,37 @@ let sandbox = SandboxBuilder::from_file("guest.bin")
 
 Both APIs use the same normalization. Larger queues or pools may need more
 scratch memory. Snapshot restores use the saved transport layout.
+
+### Capacity and latency
+
+Pool size sets the transport budget. Buffer size determines how many buffers
+share that budget.
+
+The guest cannot know the size of a `String`, `VecBytes`, or `ByteChunks` reply
+in advance. It reserves as many reply buffers as the pool and queue allow.
+Even a small reply can therefore require many buffers to be managed.
+
+Consider a 4 KiB request and a 4 KiB reply, each fitting in one buffer.
+With enough queue entries, the same call can have these layouts:
+
+```text
+Space for message buffers   Buffer size   Buffers used or reserved
+32 KiB                      16 KiB        [request][reply]
+ 4 MiB                      16 KiB        [request][reply][254 unused]
+ 4 MiB                     256 KiB        [request][reply][ 14 unused]
+```
+
+Unused reply buffers still need descriptors to be prepared, read, and
+reclaimed. The second row adds that work without carrying more data.
+
+**Tune pool size and buffer size together:**
+
+* **Only small messages:** use a small pool.
+* **Small and large messages:** allow space for the largest request and reply
+  together. Use larger buffers to avoid managing hundreds of small ones.
+
+Larger buffers reduce chunking, but each small message occupies more space.
+Measure the mix of message sizes your application actually uses.
 
 ### Initialization
 
@@ -168,9 +214,21 @@ The guest reads control data directly when it occupies one segment. It copies
 fragmented control data into one contiguous buffer. Host decoding always copies
 control data out of guest writable scratch.
 
+### Choosing a value type
+
+* `String`: UTF-8 text, encoded inside the FlatBuffer.
+* `VecBytes`: small binary values, or a receiver that needs a contiguous `Vec<u8>`.
+* `ByteChunks`: large binary data or data already held in chunks.
+
+For small `String` or `VecBytes` values, aim to fit the complete guest-sent G2H
+message in 256 bytes. The payload budget is `256 - 12 - envelope_overhead`.
+The 12-byte header is fixed. FlatBuffer overhead includes its size prefix
+and metadata, and varies with the call. This is a sizing guideline, not a
+limit on the value types.
+
 ### External byte values
 
-`ByteChunks` values stay outside the FlatBuffer. The FlatBuffer contains the
+`VecBytes` and `ByteChunks` payloads stay outside the FlatBuffer. It contains the
 total logical value length and whether the value is chunked. The encoder can
 then reference the caller's byte slices directly without first copying them into
 one contiguous FlatBuffer.
@@ -178,14 +236,16 @@ one contiguous FlatBuffer.
 `ExternalValueSource` is implemented by `RecvChain` for host decoding and by
 `Segments` for guest decoding.
 
-On the guest, completed shared memory allocations can become
-`Bytes::from_owner` values. `ByteChunks` can therefore map transport storage
-directly and keep its pool slots allocated until the final `Bytes` owner
-drops. `VecBytes` deliberately copies into one contiguous `Vec<u8>`. The host
-also copies every G2H external value before passing it to host code because
-guest writable scratch is untrusted. External values remove intermediate
-serialization copies. They do not guarantee that every direction is
-end-to-end zero copy.
+Payload copying for `ByteChunks` follows the receiver's ownership model:
+
+```text
+ H2G request / G2H reply: host  --copy--> pool slots --borrow--> guest ByteChunks
+ G2H request / result:   guest --copy--> pool slots --copy----> host ByteChunks
+```
+
+Guest views use `Bytes::from_owner` and keep each slot allocated until its
+final owner drops. Host copies isolate host code from guest writable scratch.
+`VecBytes` copies external data into one contiguous `Vec<u8>`.
 
 C guest function parameters expose `ByteChunks` as a borrowed
 `hl_ByteChunks` array. Each `hl_ByteChunk` contains a pointer and length. The
@@ -197,18 +257,36 @@ copied by `hl_result_from_ByteChunks`.
 
 The wire format does not preserve the sender's `Vec<Bytes>` boundaries. It
 records one total length, not each source chunk length. The receiver sees the
-logical byte sequence split where it intersects transport buffers:
+logical byte sequence split where it intersects transport buffers.
+
+Each payload letter represents 1 KiB. Metadata size varies with the call.
+It combines the fixed 12-byte message header and the size-prefixed
+FlatBuffer. This example uses 1 KiB of metadata.
 
 ```text
- sender chunks:       [------][----------][----]
- logical byte stream: [------------------------]
- transport buffers:   [--][--------][--------][--------]
- receiver chunks:     [--][--------][--------][--------]
+Sender chunks:      [AB] [CDEFG] [HIJ]    2 + 5 + 3 KiB
+H2G slots (4 KiB):  [metadata: 1 KiB | ABC] [DEFG] [HIJ | unused: 1 KiB]
+Guest ByteChunks:                     [ABC] [DEFG] [HIJ]    3 + 4 + 3 KiB
 ```
+
+Guest chunks exclude the metadata and unused space.
 
 H2G chunking follows the preposted H2G slot size. G2H responses returned to
 the guest follow the G2H writable slot size. The message header and FlatBuffer
 can consume part of the first slot. The final slot can also be partial.
+
+#### Example: keeping a payload in one chunk
+
+An application can keep a payload in one piece while using the guest's
+zero-copy receive path through `ByteChunks`. For example, consider one
+8 KiB payload with at most 256 bytes of metadata:
+
+* **Host to guest:** allow space for both payload and metadata.
+  Use `h2g_buffer_size(8 * 1024 + 256)` for host requests.
+  For host replies on G2H, apply that size to `g2h_buffer_size`.
+* **Guest to host:** `g2h_buffer_size(8 * 1024)` fits the payload exactly,
+  so metadata travels separately. If host replies must also arrive in one
+  piece, use the larger G2H size described above.
 
 ## Host calls a guest function
 
@@ -410,6 +488,12 @@ The count only answers whether retained slots exist. It does not contain pool
 identity, addresses, or initialized lengths. Retained pool payloads cannot be
 restored because pool bytes are absent from the snapshot.
 
+To preserve transport-backed data across snapshots, copy it into
+guest-heap-owned storage, such as a `Vec<u8>`, and release all transport-backed
+views before capture. This preserves the data at the cost of a payload copy.
+Cloning `Bytes` only shares the original buffer and does not remove the
+restriction.
+
 ## Placement and relocation limitations
 
 The fixed-pool runtime places both rings, the mailbox, and both pools in one
@@ -424,130 +508,11 @@ even when the target sandbox was created with a different layout.
 Transport capacity is fixed when the sandbox is created. Runtime queue resize
 and VIRTIO feature negotiation are not supported.
 
-## Future guest allocated pools and retained snapshots
+## Future work
 
-The planned design preserves retained `Bytes` and `ByteChunks` across capture,
-restore, and cloning. It keeps the existing producer, consumer, and public byte
-APIs. Retained-buffer rejection stays until alias mapping, ownership cleanup,
-sanitization, and restore bootstrap are all connected.
-
-Only rings and the mailbox occupy the fixed control arena. The guest allocates
-whole pool backings with `alloc_phys_pages` after paging is ready. Pool capacity
-still contributes to the scratch budget.
-
-### Retained virtual addresses
-
-Each pool generation reserves one page-aligned alias range. A completed buffer
-uses `alias_base + pool_offset`. A monotonic cursor in `GuestContext` assigns
-reservations. They are never reassigned to another pool in that timeline.
-
-The alias cursor is ordinary snapshotted guest state. Restore replaces the
-discarded timeline's mappings and owners together. Physical scratch allocation
-uses its separate host-reset cursor.
-
-`Bytes::from_owner` and pointers derived from it use stable alias GVAs.
-Restore must preserve those addresses. Fresh scratch pools and physical backing
-may have different placement. Separate sandboxes can use the same alias GVAs
-with independent writable backing.
-
-### Ownership and sanitization
-
-`GuestMemOps` and `GuestMapping` share one backing record per pool. It holds the
-pool extent, alias range, page pins, and active or retired state. `SlotPool`
-remains the authority for slot allocation.
-
-Only pages intersecting an owner's initialized prefix are pinned and mapped.
-Owners on the same page share its alias mapping. `Bytes` clones and slices
-share the existing owner and pins. The owner's full initialized prefix remains
-retained even when a slice exposes fewer bytes.
-
-Sanitization follows these rules:
-
-* Zero each whole pool backing at creation, including padding outside slots.
-* Clear an allocation's unused tail before exposing its mapping owner.
-* At checkpoint, reset transport-owned allocations and clear free slots in
-  active pools with retained pages.
-* On final owner release, clear its initialized bytes on pages with other pins.
-  Unmap pages whose pin count reaches zero. Complete translation invalidation
-  before returning the lease to its original pool.
-
-Retired backings accept no new allocations. Release cleanup keeps their shared
-pages clean without a retired-pool registry or checkpoint sweep. Retired owners
-access payloads only through stable aliases. Their old allocation addresses
-remain metadata keys for lease release.
-
-Unmapping removes aliases but does not free physical frames. Snapshot
-compaction and physical-allocator reset recover space from omitted mappings.
-
-### Host validation
-
-Ring access stays bounded to fixed control storage. Payload bounds come from
-the host's layout-derived guest-allocator scratch range. They exclude rings,
-the mailbox, reserved page-table storage, scratch-top metadata, and exception
-stacks. The guest-writable allocator cursor does not define these bounds.
-Stable aliases are retention addresses, not transport descriptor addresses.
-
-Validate complete payload ranges, direction, flags, chain limits, unique IDs,
-configured H2G lengths, and overlap across simultaneously owned buffers.
-Dynamic pools have no host-known base for slot-relative alignment checks.
-
-Canonical validation distinguishes these H2G states:
-
-| State | Available descriptors |
-|---|---|
-| Live checkpoint | Bounded by configured capacity. Retained owners can reduce prefill. |
-| Fresh bootstrap | Full configured prefill. |
-| Proposed persisted bootstrap image | Zero. |
-
-### Checkpoint
-
-The mailbox reports completion of checkpoint and restore preparation.
-`u64::MAX` means pending and zero means ready. Unexpected values or an
-incomplete guest exit are errors.
-
-1. The host stops application traffic, writes pending, and publishes the
-   header-only `SnapshotCheckpoint`.
-2. Guest dispatch drops temporary request views, reclaims completed work,
-   resets both producers, and sanitizes active pools.
-3. The guest prefills H2G for continued source-sandbox execution, writes ready,
-   and halts.
-4. The host requires successful completion, resets its consumers, validates
-   live canonical transport, and captures memory.
-
-### Restore bootstrap
-
-Initialized restore and snapshot-based construction share this path.
-Pre-initialization snapshots use normal guest startup.
-
-1. Preflight format and geometry before unmapping current regions.
-2. Restore guest memory, alias mappings, and captured registers. Recreate
-   scratch, publish the host snapshot generation, and reset physical allocation.
-3. Keep H2G publication disabled, write pending, and enter the dispatch
-   entrypoint without a request.
-4. Before H2G receive or transport-dependent tracing, the guest checks the
-   generation, resets old producers, and retires their backing. Reset may touch
-   fixed rings but must not access old pool bytes.
-5. Allocate and zero fresh pools, reserve fresh alias ranges, construct both
-   producers, and prefill H2G.
-6. Record the generation, write ready, and halt without an application call.
-7. The host validates fresh rings and payload bounds, attaches or resets its
-   consumers, and enables normal traffic.
-
-The sandbox stays poisoned or internally unavailable until bootstrap succeeds.
-Cancellation and abort cleanup use the same guest-entry lifecycle as calls and
-checkpoints. An H2G checkpoint message requires a usable queue, so it cannot
-initiate this bootstrap.
-
-### Persistence
-
-Retained payloads enter the ordinary memory snapshot through alias mappings.
-The snapshot walker preserves their GVAs and copies each mapped physical page
-once. The transport layer stores control state, not retained payloads.
-
-The preferred representation keeps the existing transport container with
-canonical empty bootstrap rings. This representation requires confirmation
-before implementation. Captured ring images could also serve as structural
-metadata. In either case, normal traffic requires freshly rebuilt queues.
+The current runtime rejects snapshots with retained transport-backed buffers.
+Planned work aims to preserve guest-held `Bytes` and `ByteChunks` across capture,
+restore, and cloning using guest-allocated pools.
 
 ## Source map
 
