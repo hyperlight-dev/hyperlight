@@ -63,6 +63,9 @@
 
 pub mod canonical;
 
+#[cfg(kani)]
+mod verification;
+
 use core::fmt;
 use core::marker::PhantomData;
 use core::sync::atomic::{Ordering, fence};
@@ -876,10 +879,20 @@ impl<M: MemOps> RingProducer<M> {
     ///
     /// This is used for batching: record cursor before first submit, then after all
     /// submits call this to determine if notification is needed based on event suppression.
+    /// The cursor must come from this producer, and no more than one ring of descriptors
+    /// may be submitted between taking the snapshot and calling this method.
     ///
     /// # Arguments
     /// * `old` - Cursor position snapshot taken before batch started
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RingError::InvalidState`] if the cursor uses a different ring size.
     pub fn should_notify_since(&self, old: RingCursor) -> Result<bool, RingError> {
+        if old.size != self.avail_cursor.size {
+            return Err(RingError::InvalidState);
+        }
+
         self.should_notify_device(old, self.avail_cursor)
     }
 
@@ -1467,12 +1480,12 @@ fn should_notify_evt<M: MemOps>(
     Ok(should_notify(evt, ring_len, old, new))
 }
 
-/// Common packed-ring notification decision:
-/// - `old` and `new` are the ring indices (head) before/after publishing a batch
-/// - `new.wrap()` is the wrap counter corresponding to `new.head()`
-/// - `evt.desc_event_wrap()` is compared against `new.wrap()`
+/// Decide whether a packed-ring batch crossed the peer's requested event.
 ///
-/// This is compatible with Linux `virtqueue_kick_prepare_packed` logic
+/// `old` and `new` are the complete cursors before and after publishing the
+/// batch. The event and old cursor are each shifted back by `ring_len` when
+/// their wrap counter differs from `new.wrap()`, placing all three in the same
+/// wrapping `u16` window for comparison.
 #[inline]
 fn should_notify(evt: EventSuppression, ring_len: u16, old: RingCursor, new: RingCursor) -> bool {
     match evt.flags() {
@@ -1490,7 +1503,14 @@ fn should_notify(evt: EventSuppression, ring_len: u16, old: RingCursor, new: Rin
                 off = off.wrapping_sub(ring_len);
             }
 
-            ring_need_event(off, new.head(), old.head())
+            // Keep the old cursor in the same logical window as the adjusted event.
+            let old_head = if old.wrap() != new.wrap() {
+                old.head().wrapping_sub(ring_len)
+            } else {
+                old.head()
+            };
+
+            ring_need_event(off, new.head(), old_head)
         }
         // treat as disabled if invalid
         _ => false,
@@ -3259,6 +3279,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn should_notify_desc_after_full_ring_advance() {
+        let ring_len = 8;
+        let old = RingCursor::new(ring_len as usize);
+        let mut new = old;
+        new.advance_by(ring_len);
+
+        let mut evt = EventSuppression::zeroed();
+        evt.set_desc_event(old.head(), old.wrap());
+        evt.set_flags(EventFlags::DESC);
+
+        assert!(should_notify(evt, ring_len, old, new));
+    }
+
+    #[test]
+    fn should_not_notify_desc_already_passed_before_wrap() {
+        let ring_len = 8;
+        let mut old = RingCursor::new(ring_len as usize);
+        old.advance_by(7);
+        let mut new = old;
+        new.advance_by(2);
+
+        let mut evt = EventSuppression::zeroed();
+        evt.set_desc_event(6, old.wrap());
+        evt.set_flags(EventFlags::DESC);
+
+        assert!(!should_notify(evt, ring_len, old, new));
+    }
+
+    #[test]
     fn ring_need_event_basic_cases() {
         // If event_idx == new-1, should be true
         assert!(ring_need_event(4, 5, 2));
@@ -3487,6 +3536,19 @@ pub(crate) mod tests {
         // Default is ENABLE mode, so should notify
         let should_notify = producer.should_notify_since(before).unwrap();
         assert!(should_notify);
+    }
+
+    #[test]
+    fn test_should_notify_since_rejects_different_ring_size() {
+        let ring = make_ring(8);
+        let producer = make_producer(&ring);
+        let other_ring = make_ring(16);
+        let other_producer = make_producer(&other_ring);
+
+        assert!(matches!(
+            producer.should_notify_since(other_producer.avail_cursor()),
+            Err(RingError::InvalidState)
+        ));
     }
 
     #[test]
