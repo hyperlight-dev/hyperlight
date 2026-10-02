@@ -166,6 +166,15 @@ jobs:
           arch: arm64
         - cpu_vendor: apple
           arch: X64
+        include:
+        - hypervisor: hyperv-ws2025
+          cpu_vendor: arm
+          arch: arm64
+          config: debug
+        - hypervisor: hyperv-ws2025
+          cpu_vendor: arm
+          arch: arm64
+          config: release
     uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
     with:
