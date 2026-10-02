@@ -207,8 +207,7 @@ impl Sandbox {
     /// From a snapshot taken on another sandbox:
     ///
     /// ```no_run
-    /// # use std::sync::Arc;
-    /// # use hyperlight_host::{HostFunctions, Sandbox, SandboxBuilder};
+    /// # use hyperlight_host::SandboxBuilder;
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// // Create and initialize a sandbox the normal way
     /// let mut sandbox = SandboxBuilder::from_file("guest.bin").build()?;
@@ -217,7 +216,7 @@ impl Sandbox {
     /// let snapshot = sandbox.snapshot()?;
     ///
     /// // Create a new sandbox directly from the snapshot
-    /// let mut sandbox2 = Sandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let mut sandbox2 = SandboxBuilder::from_snapshot(snapshot).build()?;
     /// let result: i32 = sandbox2.call("GetValue", ())?;
     /// # Ok(())
     /// # }
@@ -227,16 +226,21 @@ impl Sandbox {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use hyperlight_host::{HostFunctions, Sandbox};
+    /// # use hyperlight_host::SandboxBuilder;
     /// # use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let tag = OciTag::new("latest")?;
     /// let snapshot = Arc::new(Snapshot::load("./guest_snapshot", tag)?);
-    /// let mut sandbox = Sandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let mut sandbox = SandboxBuilder::from_snapshot(snapshot).build()?;
     /// let result: String = sandbox.call("Echo", "hello".to_string())?;
     /// # Ok(())
     /// # }
     /// ```
+    #[deprecated(
+        since = "0.18.0",
+        note = "use SandboxBuilder::from_snapshot to create and configure sandboxes"
+    )]
+    #[allow(deprecated)]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn from_snapshot(
         snapshot: Arc<Snapshot>,
@@ -1184,6 +1188,7 @@ impl std::fmt::Debug for Sandbox {
 /// disagrees with `snapshot`. Used by [`Sandbox::from_snapshot`]
 /// to surface ignored caller-supplied layout values, since those
 /// fields are always taken from the snapshot.
+#[allow(deprecated)]
 fn warn_on_layout_override(
     caller: &crate::sandbox::SandboxConfiguration,
     snapshot: &crate::mem::layout::SandboxMemoryLayout,
@@ -1243,6 +1248,7 @@ fn warn_on_layout_override(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;

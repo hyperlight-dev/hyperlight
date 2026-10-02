@@ -17,6 +17,7 @@
 mod codec;
 mod mem;
 #[cfg(test)]
+#[allow(deprecated)]
 pub(crate) mod tests;
 
 use std::collections::HashSet;

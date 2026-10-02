@@ -57,7 +57,7 @@ guest scratch memory.
  +----------+-----+----------+-----+-----+-----+----------+----------+
 ```
 
-The host derives this layout from `SandboxConfiguration`. Ring starts follow
+The host derives this layout from the sandbox configuration. Ring starts follow
 packed ring alignment rules. The mailbox is `u64` aligned. Pools are page
 aligned.
 
@@ -109,7 +109,7 @@ small buffer. Other messages keep metadata and payload together.
 ### Configuration
 
 Configure queue sizes, buffer sizes, and pool page counts through
-`SandboxBuilder` or `SandboxConfiguration`:
+`SandboxBuilder`:
 
 ```rust
 use hyperlight_host::SandboxBuilder;

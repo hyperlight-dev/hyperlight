@@ -403,6 +403,7 @@ impl OciSnapshotConfig {
         Ok(())
     }
 
+    #[allow(deprecated)]
     pub(super) fn validate_for_load(&self) -> crate::Result<()> {
         if self.arch != Arch::current() {
             return Err(crate::new_error!(

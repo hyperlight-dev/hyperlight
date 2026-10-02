@@ -3,6 +3,7 @@
 use rand::RngExt;
 use tracing::{Span, instrument};
 
+#[allow(deprecated)]
 use super::SandboxConfiguration;
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
@@ -17,8 +18,10 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
+#[allow(deprecated)]
 use crate::{Result, Sandbox, UninitializedSandbox};
 
+#[allow(deprecated)]
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
     let max_guest_log_level = u_sbox.config.get_max_guest_log_level();
@@ -95,6 +98,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     Ok(sbox)
 }
 
+#[allow(deprecated)]
 pub(crate) fn set_up_hypervisor_partition(
     mgr: SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
@@ -161,6 +165,7 @@ pub(crate) fn set_up_hypervisor_partition(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use hyperlight_testing::simple_guest_as_pathbuf;
 

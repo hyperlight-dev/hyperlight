@@ -248,6 +248,7 @@ pub(super) type LinuxInterruptHandle = RetryingInterruptHandle<LinuxInterruptHan
 
 #[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
+    #[allow(deprecated)]
     fn new(config: &crate::sandbox::SandboxConfiguration) -> Self {
         RetryingInterruptHandle {
             retry_delay: config.get_interrupt_retry_delay(),
@@ -464,6 +465,7 @@ impl HvfInterruptHandle {
 }
 
 #[cfg(all(test, any(target_os = "windows", kvm)))]
+#[allow(deprecated)]
 pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 

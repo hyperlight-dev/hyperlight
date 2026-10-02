@@ -3,8 +3,10 @@
 
 use libc::c_int;
 
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 
+#[allow(deprecated)]
 pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Result<()> {
     // This is unsafe because signal handlers only allow a very restrictive set of
     // functions (i.e., async-signal-safe functions) to be executed inside them.

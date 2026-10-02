@@ -12,6 +12,25 @@ use libc::c_int;
 use tracing::{Span, instrument};
 use tracing_core::LevelFilter;
 
+pub(crate) mod defaults {
+    use std::time::Duration;
+
+    use hyperlight_common::vmem::PAGE_SIZE;
+
+    pub(crate) const INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
+    pub(crate) const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
+    pub(crate) const HEAP_SIZE: u64 = 131072;
+    pub(crate) const SCRATCH_SIZE: usize = 0x58000;
+    pub(crate) const G2H_QUEUE_SIZE: usize = 64;
+    pub(crate) const H2G_QUEUE_SIZE: usize = 32;
+    pub(crate) const G2H_BUFFER_SIZE: usize = PAGE_SIZE;
+    pub(crate) const H2G_BUFFER_SIZE: usize = PAGE_SIZE;
+    pub(crate) const G2H_POOL_PAGES: usize = 12;
+    pub(crate) const H2G_POOL_PAGES: usize = 8;
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) const MAX_GUEST_MSRS: usize = 16;
+}
+
 /// Used for passing debug configuration to a sandbox
 #[cfg(gdb)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,6 +52,10 @@ pub enum GuestMsrError {
 }
 
 /// The complete set of configuration needed to create a Sandbox
+#[deprecated(
+    since = "0.18.0",
+    note = "use SandboxBuilder to create and configure sandboxes"
+)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct SandboxConfiguration {
@@ -98,29 +121,30 @@ pub struct SandboxConfiguration {
     guest_msrs_count: usize,
 }
 
+#[allow(deprecated)]
 impl SandboxConfiguration {
     /// The default interrupt retry delay
-    pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
+    pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = defaults::INTERRUPT_RETRY_DELAY;
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
-    pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
+    pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = defaults::INTERRUPT_VCPU_SIGRTMIN_OFFSET;
     /// The default heap size of a hyperlight sandbox
-    pub const DEFAULT_HEAP_SIZE: u64 = 131072;
+    pub const DEFAULT_HEAP_SIZE: u64 = defaults::HEAP_SIZE;
     // TODO: Reassess the scratch budget and runtime headroom.
     /// Scratch backs the default heap after reserving the arena and page tables.
     /// The size is 16 KiB aligned for macOS hosts.
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x58000;
+    pub const DEFAULT_SCRATCH_SIZE: usize = defaults::SCRATCH_SIZE;
     /// The default G2H virtqueue descriptor count.
-    pub const DEFAULT_G2H_QUEUE_SIZE: usize = 64;
+    pub const DEFAULT_G2H_QUEUE_SIZE: usize = defaults::G2H_QUEUE_SIZE;
     /// The default H2G virtqueue descriptor count.
-    pub const DEFAULT_H2G_QUEUE_SIZE: usize = 32;
+    pub const DEFAULT_H2G_QUEUE_SIZE: usize = defaults::H2G_QUEUE_SIZE;
     /// The default G2H upper-tier buffer size.
-    pub const DEFAULT_G2H_BUFFER_SIZE: usize = PAGE_SIZE;
+    pub const DEFAULT_G2H_BUFFER_SIZE: usize = defaults::G2H_BUFFER_SIZE;
     /// The default H2G buffer size.
-    pub const DEFAULT_H2G_BUFFER_SIZE: usize = PAGE_SIZE;
+    pub const DEFAULT_H2G_BUFFER_SIZE: usize = defaults::H2G_BUFFER_SIZE;
     /// The default total number of G2H pool pages.
-    pub const DEFAULT_G2H_POOL_PAGES: usize = 12;
+    pub const DEFAULT_G2H_POOL_PAGES: usize = defaults::G2H_POOL_PAGES;
     /// The default total number of H2G pool pages.
-    pub const DEFAULT_H2G_POOL_PAGES: usize = 8;
+    pub const DEFAULT_H2G_POOL_PAGES: usize = defaults::H2G_POOL_PAGES;
     /// The minimum G2H virtqueue descriptor count.
     const MIN_QUEUE_SIZE: usize = 2;
     /// The maximum G2H virtqueue descriptor count.
@@ -133,7 +157,7 @@ impl SandboxConfiguration {
     /// KVM supports at most 16 MSR filter ranges. Each index may require its
     /// own range, so 16 is the portable limit across backends.
     #[cfg(target_arch = "x86_64")]
-    pub const MAX_GUEST_MSRS: usize = 16;
+    pub const MAX_GUEST_MSRS: usize = defaults::MAX_GUEST_MSRS;
     const MAX_GUEST_LOG_LEVEL_UNSET: u64 = u64::MAX;
 
     /// Create a new configuration for a sandbox with the given sizes.
@@ -446,6 +470,7 @@ impl SandboxConfiguration {
     }
 }
 
+#[allow(deprecated)]
 impl Default for SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn default() -> Self {
@@ -463,6 +488,7 @@ impl Default for SandboxConfiguration {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use hyperlight_common::vmem::PAGE_SIZE;
     use tracing_core::LevelFilter;

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
+#[allow(deprecated)]
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, Result, SandboxBuilder, new_error};
 use hyperlight_testing::simple_guest_as_pathbuf;
@@ -34,6 +35,7 @@ fn pass_byte_array() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn fragmented_control_round_trip_releases_buffers() {
     // The control body exceeds the four inline segment slots.
     let input = "x".repeat(5 * SandboxConfiguration::DEFAULT_H2G_BUFFER_SIZE);
@@ -582,6 +584,7 @@ fn guest_external_bytes_round_trip_and_retention() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn h2g_capacity_failure_does_not_poison_sandbox() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_h2g_pool_pages(4);
@@ -608,6 +611,7 @@ fn h2g_capacity_failure_does_not_poison_sandbox() {
     });
 }
 
+#[allow(deprecated)]
 fn assert_g2h_reply_capacity_failure_is_recoverable(queue_size: usize, pool_pages: usize) {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_buffer_size(4096);
@@ -659,6 +663,7 @@ fn g2h_reply_capacity_descriptor_exhaustion_is_recoverable() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn g2h_reply_capacity_retained_buffers_are_recoverable() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_buffer_size(4096);
@@ -704,6 +709,7 @@ fn g2h_reply_capacity_retained_buffers_are_recoverable() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn g2h_reply_capacity_uses_available_upper_buffers() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_buffer_size(4096);
@@ -752,6 +758,7 @@ fn oversized_host_response_returns_transport_error() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn log_then_host_call_with_small_rings() {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_queue_size(4);

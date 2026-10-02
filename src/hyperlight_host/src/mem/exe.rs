@@ -114,6 +114,7 @@ impl ExeInfo {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use hyperlight_testing::{dummy_guest_as_pathbuf, simple_guest_as_pathbuf};
 

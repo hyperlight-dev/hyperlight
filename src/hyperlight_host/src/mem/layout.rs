@@ -64,6 +64,7 @@ use super::memory_region::{
 use super::shared_mem::HostSharedMemory;
 use super::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
 use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
 
@@ -325,6 +326,7 @@ impl SandboxMemoryLayout {
 
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
+    #[allow(deprecated)]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         cfg: SandboxConfiguration,
@@ -778,6 +780,7 @@ impl SandboxMemoryLayout {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

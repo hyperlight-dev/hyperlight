@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::component::{Negative, Positive};
 use hyperlight_common::resource::BorrowedResourceGuard;
+#[allow(deprecated)]
 use hyperlight_host::{GuestBinary, Sandbox, UninitializedSandbox};
 use hyperlight_testing::{
     c_simple_guest_as_pathbuf, simple_guest_as_pathbuf, wit_guest_as_pathbuf,
@@ -279,6 +279,7 @@ fn sb() -> TestSandbox<Host, Sandbox> {
     sb_from_guest(wit_guest_as_pathbuf())
 }
 
+#[allow(deprecated)]
 fn sb_from_guest(path: PathBuf) -> TestSandbox<Host, Sandbox> {
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None).unwrap();
@@ -293,6 +294,7 @@ mod wit_test {
     use crate::bindings::test::wit::{
         Failable, Roundtrip, TestExports, TestHostResource, roundtrip,
     };
+    #[allow(deprecated)]
     use crate::{
         GuestBinary, UninitializedSandbox, c_simple_guest_as_pathbuf, sb, sb_from_guest,
         simple_guest_as_pathbuf,
@@ -354,6 +356,7 @@ mod wit_test {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn restore_rust_and_c_snapshots_replace_wit_guest() {
         let mut rust_source =
             UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
@@ -398,6 +401,7 @@ mod wit_test {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn restore_chain_replaces_each_guest() {
         let mut rust_source =
             UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)

@@ -713,12 +713,12 @@ impl Snapshot {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use hyperlight_host::{HostFunctions, Sandbox};
+    /// # use hyperlight_host::SandboxBuilder;
     /// # use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let tag = OciTag::new("latest")?;
     /// let snapshot = Arc::new(Snapshot::load("./guest_snapshot", tag)?);
-    /// let mut sandbox = Sandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let mut sandbox = SandboxBuilder::from_snapshot(snapshot).build()?;
     /// let result: String = sandbox.call("Echo", "hello".to_string())?;
     /// # Ok(())
     /// # }
@@ -746,6 +746,7 @@ impl Snapshot {
         Self::load_inner(path.as_ref(), &reference.into(), true)
     }
 
+    #[allow(deprecated)]
     fn load_inner(
         path: &Path,
         reference: &OciReference,

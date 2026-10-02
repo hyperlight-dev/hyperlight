@@ -19,6 +19,7 @@ use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, Sandbox, new_error};
 
@@ -52,6 +53,8 @@ pub(crate) struct SandboxRuntimeConfig {
 ///
 /// The virtual machine is not created until you call [`evolve`](Self::evolve) to transform
 /// this into an initialized [`Sandbox`].
+#[deprecated(since = "0.18.0", note = "use SandboxBuilder to create sandboxes")]
+#[allow(deprecated)]
 pub struct UninitializedSandbox {
     /// Registered host functions
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
@@ -69,6 +72,7 @@ pub struct UninitializedSandbox {
     pub(crate) pending_file_mappings: Vec<super::file_mapping::PreparedFileMapping>,
 }
 
+#[allow(deprecated)]
 impl Debug for UninitializedSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UninitializedSandbox")
@@ -155,6 +159,7 @@ impl From<GuestBinary> for GuestEnvironment<'_> {
     }
 }
 
+#[allow(deprecated)]
 impl UninitializedSandbox {
     // Creates a new uninitialized sandbox from a pre-built snapshot.
     // Note that since memory configuration is part of the snapshot the only configuration
@@ -390,6 +395,7 @@ fn check_windows_version() -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
     use std::sync::mpsc::channel;

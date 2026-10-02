@@ -28,6 +28,7 @@ use crate::hypervisor::virtual_machine::{
 };
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::snapshot::NextAction;
@@ -37,7 +38,7 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 impl HyperlightVm {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, deprecated)]
     #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,

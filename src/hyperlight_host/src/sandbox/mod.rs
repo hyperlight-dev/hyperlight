@@ -40,6 +40,7 @@ pub(crate) mod trace;
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
+#[allow(deprecated)]
 pub use config::SandboxConfiguration;
 /// Re-export for the deprecated `MultiUseSandbox` name
 #[allow(deprecated)]
@@ -49,9 +50,11 @@ pub use initialized::{PtRootFinder, Sandbox, SandboxStatus};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
+#[allow(deprecated)]
 pub use uninitialized::UninitializedSandbox;
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
     use std::thread;

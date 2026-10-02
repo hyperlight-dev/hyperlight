@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 mod file;
+#[allow(deprecated)]
 mod file_tests;
 mod tripwires;
 
@@ -28,6 +29,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::mem::virtq::VirtqSnapshot;
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
@@ -299,63 +301,33 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
 }
 
 impl Snapshot {
-    /// Create a new snapshot from the guest binary identified by `env`. With the configuration
-    /// specified in `cfg`.
-    pub(crate) fn from_env<'b>(
-        env: impl Into<GuestEnvironment<'b>>,
+    /// Lay out guest memory for `exe_info` and build the page tables that
+    /// follow it, without allocating the snapshot image itself.
+    ///
+    /// [`Self::from_env`] fills that image in. [`Self::mem_size_for_env`]
+    /// only needs its size.
+    #[allow(deprecated)]
+    fn layout_and_page_tables(
+        exe_info: &ExeInfo,
         cfg: SandboxConfiguration,
-    ) -> Result<Self> {
-        let env = env.into();
-        let mut bin = env.guest_binary;
-        bin.canonicalize()?;
-        let blob = env.init_data;
-
-        let exe_info = match bin {
-            GuestBinary::FilePath(bin_path) => ExeInfo::from_file(&bin_path)?,
-            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
-        };
-
-        // Check guest/host version compatibility.
-        let host_version = env!("CARGO_PKG_VERSION");
-        if let Some(v) = exe_info.guest_bin_version()
-            && v != host_version
-        {
-            return Err(crate::HyperlightError::GuestBinVersionMismatch {
-                guest_bin_version: v.to_string(),
-                host_version: host_version.to_string(),
-            });
-        }
-
-        let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
-        let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
-
+        init_data_size: usize,
+        init_data_flags: Option<MemoryRegionFlags>,
+    ) -> Result<(crate::mem::layout::SandboxMemoryLayout, Box<[u8]>)> {
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            guest_blob_size,
-            guest_blob_mem_flags,
+            init_data_size,
+            init_data_flags,
         )?;
 
         let load_addr = layout.get_guest_code_gpa() as u64;
-        let base_va = exe_info.base_va();
-        let entrypoint_va: u64 = exe_info.entrypoint().into();
-        let is_pie = exe_info.is_pie();
-
-        let code_gva = if is_pie { load_addr } else { base_va };
+        let code_gva = if exe_info.is_pie() {
+            load_addr
+        } else {
+            exe_info.base_va()
+        };
         layout.set_code_gva(code_gva)?;
         let regions = layout.get_memory_regions()?;
-
-        let mut memory = vec![0; layout.get_memory_size()?];
-
-        let load_info = exe_info.load(
-            layout.get_guest_code_gva() as u64,
-            &mut memory[layout.guest_code_offset()..],
-        )?;
-
-        layout.write_peb(&mut memory)?;
-
-        blob.map(|x| layout.write_init_data(&mut memory, x.data))
-            .transpose()?;
 
         // Set up page table entries for the snapshot
         let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
@@ -392,6 +364,80 @@ impl Snapshot {
 
         let pt_bytes = pt_buf.into_bytes();
         layout.set_pt_size(pt_bytes.len())?;
+
+        Ok((layout, pt_bytes))
+    }
+
+    /// The host allocation size of the memory region a sandbox built from
+    /// `env` would use, matching `ReadonlySharedMemory::mem_size`.
+    #[allow(deprecated)]
+    pub(crate) fn mem_size_for_env(
+        env: GuestEnvironment<'_>,
+        cfg: SandboxConfiguration,
+    ) -> Result<usize> {
+        let exe_info = match &env.guest_binary {
+            GuestBinary::FilePath(bin_path) => ExeInfo::from_file(bin_path)?,
+            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer.as_slice())?,
+        };
+
+        let init_data_size = env.init_data.as_ref().map(|b| b.data.len()).unwrap_or(0);
+        let init_data_flags = env.init_data.as_ref().map(|b| b.permissions);
+
+        let (layout, pt_bytes) =
+            Self::layout_and_page_tables(&exe_info, cfg, init_data_size, init_data_flags)?;
+
+        Ok((layout.get_memory_size()? + pt_bytes.len()).next_multiple_of(page_size::get()))
+    }
+
+    /// Create a new snapshot from the guest binary identified by `env`. With the configuration
+    /// specified in `cfg`.
+    #[allow(deprecated)]
+    pub(crate) fn from_env<'b>(
+        env: impl Into<GuestEnvironment<'b>>,
+        cfg: SandboxConfiguration,
+    ) -> Result<Self> {
+        let env = env.into();
+        let mut bin = env.guest_binary;
+        bin.canonicalize()?;
+        let blob = env.init_data;
+
+        let exe_info = match bin {
+            GuestBinary::FilePath(bin_path) => ExeInfo::from_file(&bin_path)?,
+            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
+        };
+
+        // Check guest/host version compatibility.
+        let host_version = env!("CARGO_PKG_VERSION");
+        if let Some(v) = exe_info.guest_bin_version()
+            && v != host_version
+        {
+            return Err(crate::HyperlightError::GuestBinVersionMismatch {
+                guest_bin_version: v.to_string(),
+                host_version: host_version.to_string(),
+            });
+        }
+
+        let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
+        let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
+
+        let (layout, pt_bytes) =
+            Self::layout_and_page_tables(&exe_info, cfg, guest_blob_size, guest_blob_mem_flags)?;
+
+        let base_va = exe_info.base_va();
+        let entrypoint_va: u64 = exe_info.entrypoint().into();
+
+        let mut memory = vec![0; layout.get_memory_size()?];
+
+        let load_info = exe_info.load(
+            layout.get_guest_code_gva() as u64,
+            &mut memory[layout.guest_code_offset()..],
+        )?;
+
+        layout.write_peb(&mut memory)?;
+
+        blob.map(|x| layout.write_init_data(&mut memory, x.data))
+            .transpose()?;
+
         memory.extend(&pt_bytes);
 
         let exn_stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
@@ -832,6 +878,7 @@ impl Snapshot {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};

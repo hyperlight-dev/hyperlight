@@ -333,6 +333,7 @@ pub(crate) fn create_gdb_thread(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

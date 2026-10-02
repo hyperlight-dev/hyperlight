@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hyperlight_host::func::Registerable;
+#[allow(deprecated)]
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox::snapshot::Snapshot;
+#[allow(deprecated)]
 use hyperlight_host::{GuestBinary, Sandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
@@ -26,6 +28,7 @@ pub(crate) const CALL_COUNTER_BUMP: i32 = 42;
 /// Layout knobs are deliberately bumped away from defaults so any
 /// silent arithmetic change in `SandboxMemoryLayout::new` shifts at
 /// least one region between generate-time and load-time.
+#[allow(deprecated)]
 fn golden_config() -> SandboxConfiguration {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(256 * 1024);
@@ -39,6 +42,7 @@ fn simpleguest_path() -> PathBuf {
     simple_guest_as_pathbuf()
 }
 
+#[allow(deprecated)]
 pub(crate) fn generate() -> Arc<Snapshot> {
     let mut sandbox = UninitializedSandbox::new(
         GuestBinary::FilePath(simpleguest_path()),

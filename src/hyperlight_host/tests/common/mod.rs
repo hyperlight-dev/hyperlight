@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
+#[allow(deprecated)]
 use hyperlight_host::sandbox::SandboxConfiguration;
+#[allow(deprecated)]
 use hyperlight_host::{GuestBinary, Sandbox, SandboxBuilder, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
@@ -54,6 +56,7 @@ where
 }
 
 /// Runs a test with a Rust guest UninitializedSandbox.
+#[allow(deprecated)]
 pub fn with_rust_uninit_sandbox<F>(f: F)
 where
     F: FnOnce(UninitializedSandbox),
@@ -62,6 +65,7 @@ where
 }
 
 /// Runs a test with a Rust guest UninitializedSandbox using custom configuration.
+#[allow(deprecated)]
 pub fn with_rust_uninit_sandbox_cfg<F>(cfg: SandboxConfiguration, f: F)
 where
     F: FnOnce(UninitializedSandbox),

@@ -407,6 +407,9 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         impl<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send, S: ::hyperlight_host::sandbox::Callable> #ns::#export_trait<::hyperlight_common::component::Positive, I> for #wrapper_name<I, S> {
             #(#exports)*
         }
+        // The allow is emitted into the caller's crate so that users of the
+        // bindgen macros are not warned about generated code they did not write.
+        #[allow(deprecated)]
         impl #ns::#r#trait<::hyperlight_common::component::Positive> for ::hyperlight_host::sandbox::UninitializedSandbox {
             type Exports<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::Sandbox>;
             fn instantiate<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send + 'static>(mut self, i: I) -> <::hyperlight_common::component::Positive as ::hyperlight_common::component::Positivity>::CallResult<Self::Exports<I>> {

@@ -39,6 +39,7 @@ use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
+#[allow(deprecated)]
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::snapshot::NextAction;
@@ -55,7 +56,7 @@ type BoxedVm = Box<dyn VirtualMachine>;
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, deprecated)]
     pub(crate) fn new(
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
@@ -861,7 +862,7 @@ pub(super) mod debug {
 }
 
 #[cfg(test)]
-#[allow(clippy::needless_range_loop)]
+#[allow(clippy::needless_range_loop, deprecated)]
 mod tests {
     use std::sync::{Arc, Mutex};
 

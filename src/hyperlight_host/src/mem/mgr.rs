@@ -1006,6 +1006,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};

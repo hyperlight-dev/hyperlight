@@ -81,7 +81,8 @@ pub use sandbox::MultiUseSandbox;
 pub use sandbox::Sandbox;
 /// The lifecycle state of a [`Sandbox`].
 pub use sandbox::SandboxStatus;
-/// The re-export for the `UninitializedSandbox` type
+/// The re-export for the deprecated `UninitializedSandbox` type.
+#[allow(deprecated)]
 pub use sandbox::UninitializedSandbox;
 /// The re-export for the `SandboxBuilder` type
 pub use sandbox::builder::SandboxBuilder;

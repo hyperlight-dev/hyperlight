@@ -8,6 +8,7 @@ use hyperlight_common::for_each_tuple;
 use hyperlight_common::func::{Error as FuncError, Function, ResultType};
 
 use super::{ParameterTuple, SupportedReturnType};
+#[allow(deprecated)]
 use crate::sandbox::UninitializedSandbox;
 use crate::sandbox::host_funcs::FunctionEntry;
 use crate::{HyperlightError, Result, new_error};
@@ -22,6 +23,7 @@ pub trait Registerable {
         hf: impl Into<HostFunction<Output, Args>>,
     ) -> Result<()>;
 }
+#[allow(deprecated)]
 impl Registerable for UninitializedSandbox {
     fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
@@ -231,6 +233,7 @@ macro_rules! impl_host_function {
 
 for_each_tuple!(impl_host_function);
 
+#[allow(deprecated)]
 pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
     func: impl Into<HostFunction<Output, Args>>,
     sandbox: &mut UninitializedSandbox,

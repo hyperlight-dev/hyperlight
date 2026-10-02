@@ -8,7 +8,9 @@ use std::time::Duration;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
 use hyperlight_common::log_level::GuestLogFilter;
+#[allow(deprecated)]
 use hyperlight_host::sandbox::SandboxConfiguration;
+#[allow(deprecated)]
 use hyperlight_host::{HyperlightError, Sandbox, SandboxBuilder, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
@@ -798,6 +800,7 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
 
 #[test]
 #[ignore]
+#[allow(deprecated)]
 fn virtq_repeated_log_delivery_small_ring() {
     SimpleLogger::initialize_test_logger();
     LOGGER.clear_log_calls();
@@ -1898,6 +1901,7 @@ fn hw_timer_interrupts() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn non_pie_guest_hello_world() {
     let path =
         hyperlight_testing::simple_guest_non_pie_as_string().expect("non-PIE guest not found");
