@@ -57,7 +57,7 @@ jobs:
         run: command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz
 
       - name: Run Fuzzing
-        run: just fuzz-timed ${{ inputs.target }} ${{ inputs.max_total_time }}
+        run: just fuzz-timed ${{ inputs.target }} ${{ inputs.max_total_time }} > /dev/null
         working-directory: src/hyperlight_host
 
       - name: Upload Crash Artifacts
