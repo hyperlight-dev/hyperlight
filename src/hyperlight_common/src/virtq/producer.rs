@@ -2869,6 +2869,31 @@ mod tests {
     }
 
     #[test]
+    fn test_full_ring_batch_notifies_from_batch_start_cursor() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let cursor = consumer.avail_cursor();
+        consumer
+            .set_avail_suppression(SuppressionKind::Descriptor(cursor))
+            .unwrap();
+
+        let mut batch = producer.batch();
+        for value in b"full" {
+            let mut chain = batch.chain().readable(1).build().unwrap();
+            chain.write_all(core::slice::from_ref(value)).unwrap();
+            batch.submit(chain).unwrap();
+        }
+
+        assert_eq!(notifier.notification_count(), 0);
+        assert!(batch.finish().unwrap());
+        assert_eq!(notifier.notification_count(), 1);
+
+        // SAFETY: The consumer has never polled the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
+    }
+
+    #[test]
     fn test_empty_batch_finish_does_not_notify() {
         let ring = make_ring(16);
         let (mut producer, _consumer, notifier) = make_test_producer(&ring);
