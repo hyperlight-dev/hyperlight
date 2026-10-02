@@ -90,6 +90,7 @@ jobs:
       target: ${{ matrix.target }}
       arch: arm64
       max_total_time: 300 # 5 minutes in seconds
+      timeout_minutes: 35 # 5 minutes fuzzing plus setup and build on slower arm64 runners
 
   # File (or update) a release-blocking GitHub issue if any job fails. The first
   # label (area/ci-periodics-aarch64) is the de-duplication key used by

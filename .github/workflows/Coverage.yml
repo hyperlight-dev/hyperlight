@@ -29,7 +29,8 @@ jobs:
       fail-fast: false
       matrix:
         hypervisor: [kvm]
-        cpu: [amd]
+        # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
+        cpu: ${{ fromJSON((endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && '["amd"]' || '["intel"]') }}
     runs-on: ${{ fromJson(
         format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}"]',
           matrix.hypervisor,

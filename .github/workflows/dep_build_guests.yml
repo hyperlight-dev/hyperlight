@@ -33,8 +33,10 @@ jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: ${{ fromJSON(vars.BUILD_GUESTS_JOB_TIMEOUT || '15') }}
+    # Spread load across vendor pools: AMD when run_id ends in 0,2,4,6,8, Intel otherwise.
     runs-on: ${{ fromJson(inputs.arch == 'X64'
-        && format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=build-guests-{0}-{1}-{2}-{3}"]',
+        && format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-{0}", "JobId=build-guests-{1}-{2}-{3}-{4}"]',
+            (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && 'amd' || 'intel',
             inputs.config,
             github.run_id,
             github.run_number,
