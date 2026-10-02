@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
+use windows::Win32::System::Hypervisor::{WHV_REGISTER_NAME, WHV_REGISTER_VALUE};
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Align16<T>(pub(crate) T);
+
+const _: () = {
+    assert!(core::mem::size_of::<WHV_REGISTER_VALUE>() == 16);
+    assert!(core::mem::size_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
+    assert!(core::mem::align_of::<Align16<WHV_REGISTER_VALUE>>() == 16);
+};
+
+pub(crate) const WHV_ARM64_REGISTER_X0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020000);
+pub(crate) const WHV_ARM64_REGISTER_FP: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0002001D);
+pub(crate) const WHV_ARM64_REGISTER_LR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0002001E);
+pub(crate) const WHV_ARM64_REGISTER_SP_EL0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020020);
+pub(crate) const WHV_ARM64_REGISTER_SP_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020021);
+pub(crate) const WHV_ARM64_REGISTER_PC: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020022);
+pub(crate) const WHV_ARM64_REGISTER_PSTATE: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00020023);
+
+pub(crate) const WHV_ARM64_REGISTER_Q0: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00030000);
+
+pub(crate) const WHV_ARM64_REGISTER_SCTLR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040002);
+pub(crate) const WHV_ARM64_REGISTER_CPACR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040004);
+pub(crate) const WHV_ARM64_REGISTER_TTBR0_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040005);
+pub(crate) const WHV_ARM64_REGISTER_TCR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040007);
+pub(crate) const WHV_ARM64_REGISTER_MAIR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0004000B);
+pub(crate) const WHV_ARM64_REGISTER_VBAR_EL1: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x0004000C);
+pub(crate) const WHV_ARM64_REGISTER_FPCR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040012);
+pub(crate) const WHV_ARM64_REGISTER_FPSR: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00040013);
+pub(crate) const WHV_ARM64_REGISTER_GICR_BASE_GPA: WHV_REGISTER_NAME =
+    WHV_REGISTER_NAME(0x00063000);
+
+pub(crate) fn xreg(index: u32) -> WHV_REGISTER_NAME {
+    match index {
+        0..=28 => WHV_REGISTER_NAME(WHV_ARM64_REGISTER_X0.0 + index as i32),
+        29 => WHV_ARM64_REGISTER_FP,
+        30 => WHV_ARM64_REGISTER_LR,
+        _ => panic!("Invalid ARM64 GP register index: {index}"),
+    }
+}
+
+pub(crate) fn qreg(index: u32) -> WHV_REGISTER_NAME {
+    debug_assert!(index < 32, "Invalid ARM64 SIMD register index: {index}");
+    WHV_REGISTER_NAME(WHV_ARM64_REGISTER_Q0.0 + index as i32)
+}

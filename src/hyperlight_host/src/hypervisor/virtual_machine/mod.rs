@@ -225,6 +225,9 @@ pub enum CreateVmError {
     #[cfg(target_os = "windows")]
     #[error("Surrogate process creation failed: {0}")]
     SurrogateProcess(String),
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    #[error("Timed out waiting for an ARM64 WHP partition slot")]
+    WhpPartitionLimit,
 }
 
 /// RunVCPU error

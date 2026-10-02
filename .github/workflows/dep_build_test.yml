@@ -67,6 +67,12 @@ jobs:
             github.run_id,
             github.run_number,
             github.run_attempt)
+        || inputs.hypervisor == 'hyperv-ws2025'
+        && format('["self-hosted", "Windows", "ARM64", "1ES.Pool=hl-windows-arm", "JobId=build-and-test-{0}-{1}-{2}-{3}"]',
+            inputs.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
         || format('["self-hosted", "{0}", "arm64", "{1}"]',
             inputs.hypervisor == 'hvf' && 'macos' || 'Linux',
             inputs.hypervisor)) }}
@@ -78,6 +84,21 @@ jobs:
           rust-toolchain: "1.94"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure ARM64 libclang
+        if: runner.os == 'Windows' && inputs.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (-not $env:VSINSTALLDIR) {
+            throw "Visual Studio developer environment did not set VSINSTALLDIR"
+          }
+          $libclang = Join-Path $env:VSINSTALLDIR "VC\Tools\Llvm\ARM64\bin\libclang.dll"
+          if (-not (Test-Path $libclang)) {
+            throw "ARM64 libclang not found at '$libclang'"
+          }
+          $llvmPath = Split-Path $libclang
+          "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+          $llvmPath >> $env:GITHUB_PATH
 
       - name: Fix cargo home permissions
         if: runner.os == 'Linux'
@@ -140,7 +161,7 @@ jobs:
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
       - name: Run no-surrogate VM tests (WHP only)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.arch == 'X64'
         env:
           HYPERLIGHT_MAX_SURROGATES: "0"
           HYPERLIGHT_INITIAL_SURROGATES: "0"
@@ -173,35 +194,37 @@ jobs:
           assert_ran "$OUT" snapshot_evolve_restore_handles_state_correctly restore_from_loaded_snapshot
 
       - name: Run Rust tests with hw-interrupts
-        if: runner.arch == 'X64'
+        if: inputs.arch == 'X64'
         run: |
           # with hw-interrupts feature enabled (+ explicit driver on Linux)
           just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
 
       - name: Run Rust Gdb tests
-        if: runner.arch == 'X64'
+        if: inputs.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
 
       - name: Run Rust Crashdump tests
-        if: runner.arch == 'X64'
+        if: inputs.arch == 'X64'
         env:
           RUST_LOG: debug
         run: just test-rust-crashdump ${{ inputs.config }}
 
       - name: Run Rust Tracing tests
-        if: runner.arch == 'X64' && runner.os == 'Linux'
+        if: inputs.arch == 'X64' && runner.os == 'Linux'
         env:
           RUST_LOG: debug
         run: just test-rust-tracing ${{ inputs.config }}
 
       - name: Install oras
+        if: runner.os != 'Windows' || inputs.arch != 'arm64'
         uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2.0.1
         with:
           version: 1.3.1
 
       - name: Log in to GHCR
+        if: runner.os != 'Windows' || inputs.arch != 'arm64'
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -210,13 +233,13 @@ jobs:
           echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
 
       - name: Snapshot goldens (pull and verify)
-        if: ${{ inputs.should_regen_goldens != 'true' }}
+        if: ${{ inputs.should_regen_goldens != 'true' && (runner.os != 'Windows' || inputs.arch != 'arm64') }}
         run: |
           just snapshot-goldens-pull ${{ inputs.config }}
           just snapshot-goldens-verify ${{ inputs.config }}
 
       - name: Snapshot goldens (regenerate and verify)
-        if: ${{ inputs.should_regen_goldens == 'true' }}
+        if: ${{ inputs.should_regen_goldens == 'true' && (runner.os != 'Windows' || inputs.arch != 'arm64') }}
         run: |
           # regenerate goldens from current branch
           just snapshot-goldens-regenerate ${{ inputs.config }}
