@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use core::fmt::Write;
+use core::sync::atomic::Ordering;
 
 use hyperlight_common::outb::Exception;
 use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE, PhysAddr, VirtAddr};
@@ -167,6 +168,31 @@ fn try_handle_internal_pagefault(
     false
 }
 
+unsafe fn setup_user_exn_handler(
+    info: *mut ExceptionInfo,
+    ctx: *mut Context,
+    handler: usize,
+    params: &[u64],
+) {
+    unsafe {
+        let orig_rip = (&raw mut (*info).rip).read_volatile();
+        (&raw mut (*info).rip).write_volatile(handler as u64);
+        // TODO: This only works on amd64 sysv & with a small number
+        // of params
+        (&raw mut (*ctx).gprs[9]).write_volatile(orig_rip);
+        let orig_rbp = (&raw mut (*ctx).gprs[8]).read_volatile();
+        (&raw mut (*ctx).gprs[10]).write_volatile(orig_rbp);
+        for (i, val) in params.iter().enumerate() {
+            (&raw mut (*ctx).gprs[11 + i]).write_volatile(*val);
+        }
+
+        // make sure the stack pointer is aligned
+        let orig_sp = (&raw mut (*info).rsp).read_volatile();
+        let sp = orig_sp - ((orig_sp - 8) % 16);
+        (&raw mut (*info).rsp).write_volatile(sp);
+    }
+}
+
 /// Internal exception handler invoked by the low-level exception entry code.
 ///
 /// This function is called from assembly when an exception occurs. It checks for
@@ -184,6 +210,26 @@ pub(crate) extern "C" fn hl_exception_handler(
 
     // Check if it is a page fault that needs to be handled for normal Hyperlight operation
     if exception_number == 14 && try_handle_internal_pagefault(exn_info, ctx, page_fault_address) {
+        return;
+    }
+
+    if exception_number == 14 // #PF
+        && let handler = crate::exception::PAGE_FAULT_HANDLER.load(Ordering::Relaxed)
+        && handler != 0
+    {
+        unsafe {
+            setup_user_exn_handler(exn_info, ctx, handler, &[page_fault_address]);
+        }
+        return;
+    }
+
+    if exception_number == 6 // #UD
+        && let handler = crate::exception::UNDEFINED_INSTRUCTION_HANDLER.load(Ordering::Relaxed)
+        && handler != 0
+    {
+        unsafe {
+            setup_user_exn_handler(exn_info, ctx, handler, &[]);
+        }
         return;
     }
 

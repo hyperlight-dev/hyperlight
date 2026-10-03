@@ -1686,6 +1686,48 @@ fn exception_handler_installation_and_validation() {
     });
 }
 
+#[test]
+fn undef_instr_handler() {
+    with_rust_sandbox(|mut sandbox| {
+        // Install handler
+        sandbox.call::<()>("InstallUndefInstrHandler", ()).unwrap();
+
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallUndefInstrHandler", ()).unwrap();
+
+        // Trigger exception
+        let err = sandbox.call::<()>("TriggerException", ()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("undefined instruction")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
+#[test]
+fn page_fault_handler() {
+    with_rust_sandbox(|mut sandbox| {
+        // Install handler
+        sandbox.call::<()>("InstallPageFaultHandler", ()).unwrap();
+
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallPageFaultHandler", ()).unwrap();
+
+        // Trigger exception
+        let err = sandbox.call::<()>("TriggerPageFault", ()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("page fault") && msg.contains("12884901888")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
 /// Tests that an exception can be properly handled even when the heap is exhausted.
 /// The guest function fills the heap completely, then triggers a ud2 exception.
 /// This validates that the exception handling path does not require heap allocations.

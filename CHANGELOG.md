@@ -62,6 +62,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Reject snapshot capture while guest-owned transport buffers are retained.
 * Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
   and 8 pages.
+* `hyperlight_guest_bin::exception::arch`, previously available on
+  amd64 only, has been deprecated in favour of new
+  architecture-independent exception handling hooks. The new
+  interfaces are significantly more liminited, but more portable; they
+  will be extended in the future.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.

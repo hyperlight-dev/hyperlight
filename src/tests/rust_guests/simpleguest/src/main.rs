@@ -186,6 +186,38 @@ fn trigger_int3() -> i32 {
     0
 }
 
+// Currently, these structured handlers are only allowed to longjmp
+// away or to panic. Longjmp is difficult to call from Rust at the
+// moment, so just panic for now.
+#[guest_function("InstallUndefInstrHandler")]
+fn install_undef_instr_handler() {
+    extern "C" fn handle(pc: u64, fp: u64) -> ! {
+        panic!("undefined instruction {pc} {fp}");
+    }
+    hyperlight_guest_bin::exception::register_undefined_instruction_handler(handle);
+}
+
+const UNMAPPED_VA: usize = 0x3_0000_0000;
+// Currently, these structured handlers are only allowed to longjmp
+// away or to panic. Longjmp is difficult to call from Rust at the
+// moment, so just panic for now.#[guest_function("InstallPageFaultHandler")]
+#[guest_function("InstallPageFaultHandler")]
+fn install_page_fault_handler() {
+    extern "C" fn handle(pc: u64, fp: u64, far: u64) -> ! {
+        if far == UNMAPPED_VA as u64 {
+            panic!("page fault {pc} {fp} {far}");
+        }
+        panic!("unexpected page fault");
+    }
+    hyperlight_guest_bin::exception::register_page_fault_handler(handle);
+}
+#[guest_function("TriggerPageFault")]
+fn trigger_page_fault() {
+    unsafe {
+        (UNMAPPED_VA as *const u8).read_volatile();
+    }
+}
+
 #[guest_function("EchoFloat")]
 fn echo_float(value: f32) -> f32 {
     value

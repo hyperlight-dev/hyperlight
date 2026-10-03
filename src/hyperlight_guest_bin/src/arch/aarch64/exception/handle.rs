@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 use core::fmt::Write;
+use core::sync::atomic::Ordering;
 
-use hyperlight_common::arch::exn::{DataFault, DataFaultKind, Exception, decode_syndrome};
+use hyperlight_common::arch::exn::{
+    DataFault, DataFaultKind, Exception, InsnFault, InsnFaultKind, decode_syndrome,
+};
 use hyperlight_common::vmem::{BasicMapping, Mapping, MappingKind, PAGE_SIZE, PhysAddr, VirtAddr};
 use hyperlight_guest::error::ErrorCode;
 use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::layout::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
 
-use super::super::mrs;
+use super::super::{mrs, msr};
 use super::types::*;
 use crate::HyperlightAbortWriter;
 
@@ -134,10 +137,70 @@ fn handle_internal_fault(exn: Exception, far: u64, orig_mapping: Option<Mapping>
     }
 }
 
+unsafe fn setup_user_exn_handler(regs: *mut ExceptionContext, handler: usize, params: &[u64]) {
+    unsafe {
+        // common params to all exn handler types
+        let pc = mrs!(ELR_EL1);
+        let fp = (&raw mut (*regs).x[29]).read_volatile();
+        (&raw mut (*regs).x[0]).write_volatile(pc);
+        (&raw mut (*regs).x[1]).write_volatile(fp);
+
+        // extra params
+        for (i, val) in params.iter().enumerate() {
+            (&raw mut (*regs).x[2 + i]).write_volatile(*val);
+        }
+
+        // make sure the stack pointer is aligned
+        let sp = mrs!(SP_EL0);
+        let sp = sp - (sp % 16);
+        msr!(SP_EL0, sp);
+
+        // pc
+        msr!(ELR_EL1, handler as u64);
+    }
+}
+
+fn handle_user_fault(exn: Exception, far: u64, regs: *mut ExceptionContext) -> bool {
+    match exn {
+        Exception::DataFault(DataFault {
+            from_lower_el: false,
+            kind: DataFaultKind::TranslationFault(_) | DataFaultKind::PermissionFault(_),
+            ..
+        })
+        | Exception::InsnFault(InsnFault {
+            from_lower_el: false,
+            kind: InsnFaultKind::TranslationFault(_) | InsnFaultKind::PermissionFault(_),
+            ..
+        }) => {
+            let handler = crate::exception::PAGE_FAULT_HANDLER.load(Ordering::Relaxed);
+            if handler != 0 {
+                unsafe {
+                    setup_user_exn_handler(regs, handler, &[far]);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        Exception::Unknown => {
+            let handler = crate::exception::UNDEFINED_INSTRUCTION_HANDLER.load(Ordering::Relaxed);
+            if handler != 0 {
+                unsafe {
+                    setup_user_exn_handler(regs, handler, &[]);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 pub(super) extern "C" fn handle_exception(
     typ: ExceptionType,
     from: ExceptionFrom,
-    _regs: *mut ExceptionContext,
+    regs: *mut ExceptionContext,
 ) {
     let esr = unsafe { mrs!(ESR_EL1) };
     let far = unsafe { mrs!(FAR_EL1) };
@@ -147,6 +210,9 @@ pub(super) extern "C" fn handle_exception(
         let mut orig_mappings = crate::paging::virt_to_phys(far);
         let orig_mapping = orig_mappings.next();
         if handle_internal_fault(exn, far, orig_mapping) {
+            return;
+        }
+        if handle_user_fault(exn, far, regs) {
             return;
         }
     }
