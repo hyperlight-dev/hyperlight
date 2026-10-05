@@ -37,15 +37,18 @@ fn pass_byte_array() {
 fn fragmented_control_round_trip_releases_buffers() {
     // The control body exceeds the four inline segment slots.
     let input = "x".repeat(5 * SandboxConfiguration::DEFAULT_H2G_BUFFER_SIZE);
+
     with_all_guests(|path| {
         let mut sbox = SandboxBuilder::from_file(path)
             .heap_size(256 * 1024)
             .build()
             .unwrap();
-        let output: String = sbox.call("Echo", input.clone()).unwrap();
-        assert_eq!(output, input);
 
-        // Snapshot preparation rejects retained transport buffers.
+        for _ in 0..3 {
+            let output: String = sbox.call("Echo", input.clone()).unwrap();
+            assert_eq!(output, input);
+        }
+
         sbox.snapshot().unwrap();
     });
 }
@@ -612,6 +615,48 @@ fn h2g_capacity_failure_does_not_poison_sandbox() {
     });
 }
 
+#[test]
+fn retained_sub_page_h2g_slot_keeps_neighbors_available() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_buffer_size(256);
+    cfg.set_h2g_pool_pages(1);
+
+    with_rust_uninit_sandbox_cfg(cfg, |sandbox| {
+        let mut sandbox = sandbox.evolve().unwrap();
+        let expected = vec![0x5a; 16];
+
+        // Every H2G slot shares the retained slot's page.
+        let retained: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+        assert_eq!(retained as usize, expected.len());
+
+        let snapshot = sandbox.snapshot().unwrap();
+        let echo: String = sandbox.call("Echo", "source".to_string()).unwrap();
+        assert_eq!(echo, "source");
+
+        let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(released, retained);
+
+        for _ in 0..2 {
+            sandbox.restore(snapshot.clone()).unwrap();
+
+            // The host writes this request beside the retained slot before guest entry.
+            let echo: String = sandbox.call("Echo", "restored".to_string()).unwrap();
+            assert_eq!(echo, "restored");
+
+            let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+            assert_eq!(actual.concat(), expected);
+
+            let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+            assert_eq!(released, retained);
+        }
+    });
+}
+
 fn assert_g2h_reply_capacity_failure_is_recoverable(queue_size: usize, pool_pages: usize) {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_buffer_size(4096);
@@ -704,6 +749,43 @@ fn g2h_reply_capacity_retained_buffers_are_recoverable() {
             .call("RoundTripHostVecBytes", expected.clone())
             .unwrap();
         assert_eq!(result, expected);
+    });
+}
+
+#[test]
+fn retained_g2h_reply_on_every_page_keeps_neighbors_available() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_buffer_size(256);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::OFF);
+
+        // The retained reply touches both pool pages.
+        sandbox
+            .register("HostEchoByteChunks", |_: Vec<Bytes>| {
+                vec![Bytes::from(vec![0xa5; 6000])]
+            })
+            .unwrap();
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let retained: i32 = sandbox
+            .call("RetainHostByteChunks", Vec::<Bytes>::new())
+            .unwrap();
+        assert_eq!(retained, 6000);
+
+        let snapshot = sandbox.snapshot().unwrap();
+
+        for restore in [false, true] {
+            if restore {
+                sandbox.restore(snapshot.clone()).unwrap();
+            }
+
+            sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+            let released: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
+            assert_eq!(released, retained);
+        }
     });
 }
 

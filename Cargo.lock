@@ -1699,6 +1699,7 @@ name = "hyperlight-guest"
 version = "0.17.0"
 dependencies = [
  "anyhow",
+ "fixedbitset",
  "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",

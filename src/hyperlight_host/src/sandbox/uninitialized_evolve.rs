@@ -4,6 +4,7 @@ use rand::RngExt;
 use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
+use super::snapshot::NextAction;
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
@@ -77,6 +78,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         prepared.mark_consumed();
     }
 
+    let initialise_guest = matches!(vm.get_next_action(), NextAction::Initialise(_));
     vm.initialise(
         peb_addr,
         seed,
@@ -85,6 +87,10 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         max_guest_log_level,
     )
     .map_err(HyperlightVmError::Initialize)?;
+
+    if initialise_guest {
+        hshm.finish_snapshot_checkpoint()?;
+    }
 
     let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
 
