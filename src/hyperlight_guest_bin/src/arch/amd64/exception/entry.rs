@@ -123,6 +123,8 @@ macro_rules! generate_exceptions {
             // bottom of the context struct, which happens to be the
             // stack pointer just before it was called.
             "    mov rdi, rsp\n",
+            // Rust requires DF clear. IRETQ restores the interrupted flags.
+            "    cld\n",
             "    call {hl_exception_handler}\n",
             context::restore!(),
             "    add rsp, 8\n", // error code

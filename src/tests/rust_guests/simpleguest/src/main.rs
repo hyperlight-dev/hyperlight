@@ -58,6 +58,8 @@ const TEST_R9_VALUE: u64 = 0x1234567890ABCDEF;
 const TEST_R9_MODIFIED_VALUE: u64 = 0xBADC0FFEE;
 #[cfg(target_arch = "x86_64")]
 const TEST_R10_VALUE: u64 = 0xDEADBEEF;
+#[cfg(target_arch = "x86_64")]
+const RFLAGS_DF: u64 = 1 << 10;
 
 #[guest_function("SetStatic")]
 fn set_static() -> i32 {
@@ -74,7 +76,7 @@ fn echo_double(value: f64) -> f64 {
     value
 }
 
-// Test exception handler that validates stack layout and records invocation
+// Test exception handler that validates DF, stack layout and records invocation
 // It is designed to interact with the trigger_int3 breakpoint exception function below
 #[cfg(target_arch = "x86_64")]
 fn test_exception_handler(
@@ -83,6 +85,15 @@ fn test_exception_handler(
     context: *mut Context,
     _page_fault_address: u64,
 ) -> bool {
+    let flags: u64;
+
+    // SAFETY: Read DF and clear it so a failed assertion can call Rust safely.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {flags}", "cld", flags = out(reg) flags);
+    }
+
+    assert_eq!(flags & RFLAGS_DF, 0, "exception handler requires DF clear");
+
     // Record invocation
     HANDLER_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
 
@@ -145,44 +156,42 @@ fn get_exception_handler_call_count() -> i32 {
     count as i32
 }
 
-/// Trigger an INT3 breakpoint exception (vector 3)
+/// Check the exception-entry ABI and preservation of interrupted state.
 #[guest_function("TriggerInt3")]
 #[cfg(target_arch = "x86_64")]
 fn trigger_int3() -> i32 {
-    // Set up test value in R9 before triggering exception
-    let test_value: u64 = TEST_R9_VALUE;
+    let r9_result: u64;
+    let r10_result: u64;
+    let flags: u64;
 
+    // SAFETY: The installed handler resumes at the next instruction. DF is
+    // cleared before Rust resumes, after reading the flags restored by IRETQ.
     unsafe {
-        // Store test value in R9 register
         core::arch::asm!(
-            "mov r9, {0}",
-            in(reg) test_value
-        );
-
-        // This will trigger exception vector 3 (#BP - Breakpoint)
-        core::arch::asm!("int3");
-
-        // After returning from exception handler, verify registers
-        let r9_result: u64;
-        let r10_result: u64;
-        core::arch::asm!(
-            "mov {0}, r9",
-            "mov {1}, r10",
-            out(reg) r9_result,
-            out(reg) r10_result
-        );
-
-        // R9 should be restored to original value (context restore working)
-        assert_eq!(
-            r9_result, test_value,
-            "R9 register was not properly restored by exception handler"
-        );
-        // R10 should have the value written to context
-        assert_eq!(
-            r10_result, TEST_R10_VALUE,
-            "R10 register was not modified via context by exception handler"
+            "std",
+            "int3",
+            "pushfq",
+            "pop {flags}",
+            "cld",
+            flags = lateout(reg) flags,
+            inout("r9") TEST_R9_VALUE => r9_result,
+            lateout("r10") r10_result,
         );
     }
+
+    assert_eq!(
+        flags & RFLAGS_DF,
+        RFLAGS_DF,
+        "interrupted DF was not restored"
+    );
+    assert_eq!(
+        r9_result, TEST_R9_VALUE,
+        "R9 register was not properly restored by exception handler"
+    );
+    assert_eq!(
+        r10_result, TEST_R10_VALUE,
+        "R10 register was not modified via context by exception handler"
+    );
     0
 }
 
