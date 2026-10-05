@@ -2091,7 +2091,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 5");
+        assert_err_contains(err, "incompatible with snapshot ABI 6");
     }
 }
 

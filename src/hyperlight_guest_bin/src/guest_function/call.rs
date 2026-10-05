@@ -71,6 +71,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnV
 }
 
 pub(crate) fn internal_dispatch_function() {
+    transport::maybe_refresh();
     crate::refresh_guest_log_level();
 
     // Read the current TSC to report it to the host with the spans/events
@@ -120,13 +121,15 @@ pub(crate) fn internal_dispatch_function() {
     }
 
     match result {
-        Some((cid, result)) => transport::with_ctx(|ctx| ctx.send_h2g_result(cid, result))
-            .expect("Failed to send function call result"),
-        None => transport::with_ctx(|ctx| {
+        Some((cid, result)) => transport::with_ctx(|ctx| {
+            ctx.send_h2g_result(cid, result)
+                .expect("Failed to send function call result");
+        }),
+        None => {
             // SAFETY: Host chain accesses are complete. The checkpoint protocol
             // keeps consumers stopped until the host resets them.
-            unsafe { ctx.prepare_snapshot() }
-        })
-        .expect("Failed to prepare snapshot transport"),
+            unsafe { transport::prepare_snapshot() }
+                .expect("Failed to prepare transport for snapshot");
+        }
     }
 }

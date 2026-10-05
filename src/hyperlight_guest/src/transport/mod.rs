@@ -3,8 +3,10 @@
 
 //! Guest transport context and memory access.
 //!
-//! Global context is installed once via [`set_global_context`] and accessed via [`with_context`].
+//! Global context is installed once via [`set_global_context`].
+//! Dispatch starts with [`maybe_refresh`]. Checkpointing uses [`prepare_snapshot`].
 
+mod backing;
 mod codec;
 pub mod context;
 pub mod mem;
@@ -14,6 +16,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 pub use context::{DispatchAction, GuestContext, QueueConfig};
 pub(crate) use mem::GuestMemOps;
+
+use crate::error::Result;
 
 const UNINITIALIZED: u8 = 0;
 const INITIALIZED: u8 = 1;
@@ -60,4 +64,23 @@ pub fn set_global_context(context: GuestContext) {
         "virtqueue context already initialized"
     );
     *GLOBAL_CONTEXT.0.borrow_mut() = Some(context);
+}
+
+/// Prepare pool aliases before dispatch, logging, or tracing.
+#[inline]
+pub fn maybe_refresh() {
+    with_ctx(GuestContext::maybe_refresh);
+}
+
+/// Reset stopped queues and publish snapshot readiness.
+///
+/// # Safety
+///
+/// The caller must satisfy [`GuestContext::prepare_snapshot`]'s requirements.
+#[inline]
+pub unsafe fn prepare_snapshot() -> Result<()> {
+    with_ctx(|ctx| {
+        // SAFETY: The caller upholds the checkpoint preconditions.
+        unsafe { ctx.prepare_snapshot() }
+    })
 }

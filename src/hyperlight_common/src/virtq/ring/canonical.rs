@@ -61,12 +61,12 @@ pub enum ImageError {
     /// Reading the shared ring image failed.
     #[error(transparent)]
     Ring(#[from] RingError),
-    /// The caller supplied an impossible available-descriptor prefix length.
-    #[error("available descriptor count {available} exceeds ring capacity {capacity}")]
+    /// The available-descriptor prefix exceeds its allowed limit.
+    #[error("available descriptor count {available} exceeds limit {capacity}")]
     DescCount {
-        /// Number of descriptors expected to be available.
+        /// Number of descriptors supplied or discovered as available.
         available: usize,
-        /// Descriptor-table capacity.
+        /// Maximum allowed number of available descriptors.
         capacity: usize,
     },
     /// An event-suppression structure is not the canonical enabled value.
@@ -258,6 +258,51 @@ where
     }
 
     Ok(chains)
+}
+
+/// Validate a canonical image with at most `max_avail_descs` available descriptors.
+///
+/// The first zero descriptor ends the prefix. [`validate_canon_image`] then
+/// checks the prefix and zero tail. Keep the image unchanged during both passes.
+///
+/// # Errors
+///
+/// Returns [`ImageError`] if the prefix exceeds the limit, a descriptor cannot
+/// be read, or [`validate_canon_image`] rejects the image or its buffers.
+pub fn validate_canon_prefix<M, F>(
+    mem: &M,
+    layout: Layout,
+    max_avail_descs: usize,
+    validate_buf: F,
+) -> Result<Vec<CanonChain>, ImageError>
+where
+    M: MemOps,
+    F: FnMut(u16, BufferElement) -> bool,
+{
+    let cap = layout.desc_table_len() as usize;
+    // SAFETY: `Layout` validates the table base, alignment, and descriptor count.
+    let table = unsafe { DescTable::from_raw_parts(layout.desc_table_addr(), cap) };
+    let empty = Descriptor::zeroed();
+    let mut avail_descs = cap;
+
+    for pos in 0..cap {
+        let idx = u16::try_from(pos).map_err(|_| RingError::InvalidState)?;
+        let addr = table.desc_addr(idx).ok_or(RingError::InvalidState)?;
+        let desc = mem
+            .read_val::<Descriptor>(addr)
+            .map_err(|_| RingError::mem_err(MemOp::ReadDesc, addr))?;
+
+        if desc == empty {
+            avail_descs = pos;
+            break;
+        }
+    }
+
+    if avail_descs > max_avail_descs {
+        return Err(ImageError::desc_count(avail_descs, max_avail_descs));
+    }
+
+    validate_canon_image(mem, layout, avail_descs, validate_buf)
 }
 
 fn read_canon_avail_desc<M: MemOps>(
@@ -594,5 +639,45 @@ mod tests {
                 capacity: 4,
             })
         ));
+    }
+
+    #[test]
+    fn canon_prefix_rejects_incomplete_chains_and_gaps() {
+        let ring = make_ring(4);
+        let mut producer = make_producer(&ring);
+        producer
+            .submit_available(&writable_chain(0x1000, &[64, 64]))
+            .unwrap();
+
+        ring.write_desc(1, Descriptor::zeroed());
+        let err = validate_canon_prefix(&ring.mem(), ring.layout(), ring.len(), |_, _| true);
+
+        assert!(matches!(
+            err,
+            Err(ImageError::Desc {
+                index: 0,
+                reason: DescError::ChainContinues,
+            })
+        ));
+
+        for avail in 0..=1 {
+            let ring = make_ring(4);
+            let mut producer = make_producer(&ring);
+
+            for _ in 0..avail {
+                producer.submit_one(0x1000, 64, true).unwrap();
+            }
+
+            ring.write_desc(3, Descriptor::new(0x2000, 64, 0, DescFlags::empty()));
+            let err = validate_canon_prefix(&ring.mem(), ring.layout(), ring.len(), |_, _| true);
+
+            assert!(matches!(
+                err,
+                Err(ImageError::Desc {
+                    index: 3,
+                    reason: DescError::ExpectedZero,
+                })
+            ));
+        }
     }
 }

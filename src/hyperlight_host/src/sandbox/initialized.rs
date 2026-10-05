@@ -324,6 +324,12 @@ impl Sandbox {
         // delivered through the scratch-memory request below.
         vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, max_guest_log_level)
             .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
+        if matches!(
+            snapshot.next_action(),
+            super::snapshot::NextAction::Initialise(_)
+        ) {
+            hshm.finish_snapshot_checkpoint()?;
+        }
 
         if matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_)) {
             hshm.request_libc_rng_reseed(seed as u32)?;
@@ -473,13 +479,7 @@ impl Sandbox {
             sbox.mem_mgr.begin_snapshot_checkpoint()?;
             sbox.dispatch_guest_call()?;
 
-            let guest_owned = sbox.mem_mgr.finish_snapshot_checkpoint()?;
-            if guest_owned != 0 {
-                // Fixed-pool payloads are outside the ordinary memory snapshot.
-                return Err(HyperlightError::Error(format!(
-                    "Cannot snapshot while {guest_owned} transport buffers are retained"
-                )));
-            }
+            sbox.mem_mgr.finish_snapshot_checkpoint()?;
 
             sbox.transport_dirty = false;
             Ok(())
@@ -1247,8 +1247,10 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
+    use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-    use hyperlight_common::func::Bytes;
+    use hyperlight_common::func::{Bytes, SupportedReturnType};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
@@ -1565,6 +1567,12 @@ mod tests {
         );
         assert_eq!(sandbox.mem_mgr.snapshot_count, generation);
         assert!(sandbox.snapshot.is_none());
+
+        // Restore the canonical descriptor before continuing the source.
+        sandbox.mem_mgr.scratch_mem.write::<u64>(offset, 0).unwrap();
+        let expected = vec![0x5a; 2 * hyperlight_common::vmem::PAGE_SIZE + 137];
+        let actual: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1620,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_reject_retained_transport_buffers_without_poisoning() {
+    fn snapshots_preserve_retained_transport_and_clear_abort_state() {
         let path = simple_guest_as_pathbuf();
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         sandbox
@@ -1630,56 +1638,72 @@ mod tests {
         let mut sandbox = sandbox.evolve().unwrap();
         let retained = vec![Bytes::from(vec![0xa5; 6 * 1024])];
 
-        let retained_len: i32 = sandbox
-            .call("RetainGuestByteChunks", retained.clone())
+        for (retain, release) in [
+            ("RetainGuestByteChunks", "ReleaseGuestByteChunks"),
+            ("RetainHostByteChunks", "ReleaseHostByteChunks"),
+        ] {
+            let retained_len: i32 = sandbox.call(retain, retained.clone()).unwrap();
+            assert_eq!(retained_len, 6 * 1024);
+            sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
+
+            let snapshot = sandbox.snapshot().unwrap();
+            assert!(!sandbox.status().is_poisoned());
+            assert!(!sandbox.transport_dirty);
+            assert!(sandbox.mem_mgr.abort_buffer.is_empty());
+
+            assert_eq!(sandbox.call::<i32>(release, ()).unwrap(), retained_len);
+
+            sandbox.restore(snapshot).unwrap();
+            assert_eq!(sandbox.call::<i32>(release, ()).unwrap(), retained_len);
+            sandbox.snapshot().unwrap();
+            assert!(!sandbox.transport_dirty);
+        }
+    }
+
+    #[test]
+    fn retained_restore_is_ready_for_first_request() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
             .unwrap();
+        sandbox
+            .call::<i32>(
+                "RetainGuestByteChunks",
+                vec![Bytes::from(vec![0x5a; 6 * 1024])],
+            )
+            .unwrap();
+        sandbox.checkpoint_transport_for_snapshot().unwrap();
+        let source_root = sandbox.vm.get_root_pt().unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+        assert_eq!(sandbox.vm.get_root_pt().unwrap(), source_root);
 
-        assert_eq!(retained_len, 6 * 1024);
-        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
+        sandbox.restore(snapshot.clone()).unwrap();
+        let mut clone =
+            Sandbox::from_snapshot(snapshot, crate::HostFunctions::default(), None).unwrap();
+        let expected = vec![0x3c; 3 * hyperlight_common::vmem::PAGE_SIZE + 117];
+        let call = FunctionCall::new(
+            "EchoGuestVecBytes".into(),
+            Some(vec![ParameterValue::VecBytes(expected.clone())]),
+            FunctionCallType::Guest,
+            Vec::<u8>::TYPE,
+        );
 
-        let Err(error) = sandbox.snapshot() else {
-            panic!("snapshot with retained H2G buffers succeeded");
-        };
-
-        match error {
-            HyperlightError::Error(message) => {
-                assert!(message.contains("transport buffers are retained"))
-            }
-            err => unreachable!("unexpected snapshot error: {err:#}"),
+        for restored in [&mut sandbox, &mut clone] {
+            restored.transport_dirty = true;
+            let cid = restored.mem_mgr.write_guest_function_call(&call).unwrap();
+            restored.dispatch_guest_call().unwrap();
+            let value = restored
+                .mem_mgr
+                .read_h2g_result_from_g2h(cid)
+                .unwrap()
+                .into_inner()
+                .unwrap();
+            assert_eq!(Vec::<u8>::from_value(value).unwrap(), expected);
         }
-        assert!(!sandbox.status().is_poisoned());
-        assert!(sandbox.transport_dirty);
-        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
 
-        let released_len: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
-        assert_eq!(released_len, retained_len);
-
-        sandbox.snapshot().unwrap();
-        assert!(!sandbox.transport_dirty);
-
-        let retained_len: i32 = sandbox.call("RetainHostByteChunks", retained).unwrap();
-        assert_eq!(retained_len, 6 * 1024);
-        sandbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 8]);
-
-        let Err(error) = sandbox.snapshot() else {
-            panic!("snapshot with retained G2H buffers succeeded");
-        };
-
-        match error {
-            HyperlightError::Error(message) => {
-                assert!(message.contains("transport buffers are retained"))
-            }
-            err => unreachable!("unexpected snapshot error: {err:#}"),
-        }
-        assert!(!sandbox.status().is_poisoned());
-        assert!(sandbox.transport_dirty);
-        assert!(sandbox.mem_mgr.abort_buffer.is_empty());
-
-        let released_len: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
-        assert_eq!(released_len, retained_len);
-
-        sandbox.snapshot().unwrap();
-        assert!(!sandbox.transport_dirty);
+        assert_eq!(
+            clone.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+            6 * 1024
+        );
     }
 
     #[test]

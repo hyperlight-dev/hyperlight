@@ -147,26 +147,6 @@ fn check_slot_pool_invariants(
         return Err("free + live != total slots");
     }
 
-    // Free-slot enumeration must match the reported count and be strictly ordered.
-    let mut free = Vec::new();
-    pool.for_each_free(|allocation| free.push(allocation));
-
-    if free.len() != pool.num_free() {
-        return Err("free-slot visitation is inconsistent");
-    }
-
-    if free.windows(2).any(|pair| pair[0].addr >= pair[1].addr) {
-        return Err("free-slot visitation is inconsistent");
-    }
-
-    // Free slots cannot also be live and must report their tier's full capacity.
-    if free.iter().any(|allocation| {
-        expected_live.contains_key(&allocation.addr)
-            || slot_capacity(pool, allocation.addr) != Some(allocation.len as usize)
-    }) {
-        return Err("free-slot visitation is inconsistent");
-    }
-
     // Reported geometry must agree with the stored tier layouts.
     let (lower, upper) = pool.layouts();
     let expected_base = lower.map_or(upper.base_addr(), SlotLayout::base_addr);

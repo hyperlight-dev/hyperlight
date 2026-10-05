@@ -5,8 +5,8 @@
 
 use hyperlight_common::layout::{QueueDims, TransportArena};
 use hyperlight_common::virtq::Layout;
-use hyperlight_guest::transport::{GuestContext, QueueConfig};
-use hyperlight_guest::{layout, transport as guest_transport};
+use hyperlight_guest::layout;
+use hyperlight_guest::transport::{self, GuestContext, QueueConfig};
 
 use crate::paging::phys_to_virt;
 
@@ -62,7 +62,7 @@ pub(crate) fn initialize() {
     }
     .expect("failed to create guest context");
 
-    guest_transport::set_global_context(context);
+    transport::set_global_context(context);
 }
 
 fn scratch_gva(gpa: u64) -> u64 {

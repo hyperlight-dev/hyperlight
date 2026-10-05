@@ -55,6 +55,40 @@ impl TryFrom<u8> for MsgKind {
     }
 }
 
+/// Allowed values in the transport mailbox.
+#[repr(u64)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
+pub enum MailboxValue {
+    /// Guest preparation is outstanding.
+    CheckpointPending = 0,
+    /// Both queues are reset and free H2G slots are prefilled.
+    CheckpointComplete = 1,
+}
+
+impl MailboxValue {
+    /// Return the mailbox wire representation.
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+
+    /// Return wire representation as a raw integer.
+    pub fn raw(self) -> u64 {
+        self as u64
+    }
+}
+
+impl TryFrom<u64> for MailboxValue {
+    type Error = u64;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::CheckpointPending),
+            1 => Ok(Self::CheckpointComplete),
+            other => Err(other),
+        }
+    }
+}
+
 /// Wire header for all virtqueue messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
 #[repr(C)]
@@ -428,8 +462,31 @@ pub const fn size_prefixed_len(payload_len: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::checked::try_pod_read_unaligned;
+
     use super::*;
     use crate::flatbuffer_wrappers::ExternalValueSink;
+
+    /// Mailbox words have fixed encodings and reject undefined values.
+    #[test]
+    fn mailbox_value_wire_contract() {
+        for (value, raw) in [
+            (MailboxValue::CheckpointPending, 0u64),
+            (MailboxValue::CheckpointComplete, 1),
+        ] {
+            assert_eq!(value.raw(), raw);
+            assert_eq!(value.as_bytes(), raw.to_ne_bytes());
+            assert_eq!(MailboxValue::try_from(raw), Ok(value));
+
+            let bits = try_pod_read_unaligned::<MailboxValue>(value.as_bytes()).unwrap();
+            assert_eq!(bits, value);
+        }
+
+        for raw in [2u64, 3, 0xa000, u64::MAX] {
+            assert_eq!(MailboxValue::try_from(raw), Err(raw));
+            assert!(try_pod_read_unaligned::<MailboxValue>(&raw.to_ne_bytes()).is_err());
+        }
+    }
 
     #[test]
     fn header_contains_framing_fields() {

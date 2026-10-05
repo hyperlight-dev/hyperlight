@@ -10,7 +10,7 @@
 //! untrusted guest requests and results into host-owned values before use.
 //! Shared wire framing lives in `hyperlight_common::transport`.
 //!
-//! Snapshots require canonical rings with empty G2H and the initial H2G prefill.
+//! Snapshots require canonical rings with empty G2H and H2G free-slot prefill.
 //! Each H2G chain contains one writable descriptor naming a distinct,
 //! configured-size slot aligned relative to the H2G pool start.
 
@@ -25,7 +25,8 @@ pub(crate) use codec::{
     get_host_function_call, read_guest_function_call_result, read_guest_log_data,
     read_message_header, try_write_response,
 };
-use hyperlight_common::virtq::canonical::validate_canon_image;
+use hyperlight_common::transport::MailboxValue;
+use hyperlight_common::virtq::canonical::{validate_canon_image, validate_canon_prefix};
 use hyperlight_common::virtq::{Layout as VirtqLayout, Notifier, QueueStats, VirtqConsumer};
 use mem::{HostMemOps, ImageMem};
 
@@ -139,11 +140,14 @@ impl VirtqSnapshot {
         scratch_mem: &HostSharedMemory,
     ) -> Result<(G2hConsumer, H2gConsumer)> {
         let (g2h_offset, h2g_offset) = ring_offsets(layout);
+        let mbx_offset = layout.get_transport_arena().mbx_offset();
+        let cp = MailboxValue::CheckpointComplete.as_bytes();
 
         write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
 
         scratch_mem.copy_from_slice(&self.g2h_ring, g2h_offset)?;
         scratch_mem.copy_from_slice(&self.h2g_ring, h2g_offset)?;
+        scratch_mem.copy_from_slice(cp, mbx_offset)?;
         create_consumers(layout, scratch_mem)
     }
 
@@ -174,15 +178,15 @@ impl VirtqSnapshot {
         let buffer_size = layout.get_h2g_buffer_size();
         let h2g_dims = layout.get_h2g_queue_dims();
 
-        let h2g_prefill = usize::from(h2g_dims.size().get()).min(h2g_dims.pool_len() / buffer_size);
+        let max_prefill = usize::from(h2g_dims.size().get()).min(h2g_dims.pool_len() / buffer_size);
         let h2g_mem = ImageMem::new(h2g.desc_table_addr(), &self.h2g_ring);
 
         let (_, _, _, pool_offset, _) = layout.get_transport_arena().to_offsets();
         let pool_start = g2h.desc_table_addr() + pool_offset as u64;
         let pool_end = pool_start + h2g_dims.pool_len() as u64;
-        let mut seen_slots = HashSet::with_capacity(h2g_prefill);
+        let mut seen_slots = HashSet::with_capacity(max_prefill);
 
-        let chains = validate_canon_image(&h2g_mem, h2g, h2g_prefill, |_, elem| {
+        let chains = validate_canon_prefix(&h2g_mem, h2g, max_prefill, |_, elem| {
             if !elem.writable || usize::try_from(elem.len).ok() != Some(buffer_size) {
                 return false;
             }
@@ -203,7 +207,7 @@ impl VirtqSnapshot {
         })
         .map_err(|error| new_error!("invalid canonical H2G image: {error}"))?;
 
-        if chains.len() != h2g_prefill {
+        if chains.iter().any(|chain| chain.buffers().len() != 1) {
             return Err(new_error!(
                 "H2G snapshot chains must contain one descriptor"
             ));

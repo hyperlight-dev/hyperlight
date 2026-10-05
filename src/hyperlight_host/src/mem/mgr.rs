@@ -7,7 +7,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::log_level::GuestLogFilter;
-use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MsgKind};
+use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MailboxValue, MsgKind};
 use hyperlight_common::virtq::ReplyChain;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
@@ -388,6 +388,10 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         host_mgr.update_scratch_bookkeeping()?;
 
         if matches!(host_mgr.next_action, NextAction::Initialise(_)) {
+            let cp = MailboxValue::CheckpointPending.as_bytes();
+            let mbx = host_mgr.layout.get_transport_arena().mbx_offset();
+
+            host_mgr.scratch_mem.copy_from_slice(cp, mbx)?;
             host_mgr.create_virtq_consumers()?;
         }
 
@@ -630,21 +634,18 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Publish an internal request for guest-side snapshot canonicalization.
     ///
-    /// The pending marker distinguishes a completed checkpoint with no retained
-    /// buffers from a guest that halted without publishing mailbox status.
+    /// The pending marker distinguishes a completed checkpoint from an early halt.
     pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
         let offset = self.layout.get_transport_arena().mbx_offset();
-        self.scratch_mem.write(offset, u64::MAX.to_le_bytes())?;
+        let cp = MailboxValue::CheckpointPending.as_bytes();
+        self.scratch_mem.copy_from_slice(cp, offset)?;
 
         let message = EncodedMessage::new_snapshot_cp();
         self.write_h2g_message(&message)
     }
 
-    /// Reset consumers before reading the retained count to keep rejected captures usable.
-    ///
-    /// Retained-buffer support will use the mailbox only for checkpoint and restore
-    /// completion (`u64::MAX` pending, zero ready after all preparation succeeds).
-    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<u64> {
+    /// Reset consumers and require the guest's completion status.
+    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<()> {
         let Some(g2h) = self.g2h_consumer.as_mut() else {
             return Err(new_error!("G2H consumer is not attached"));
         };
@@ -656,16 +657,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         g2h.reset()?;
         h2g.reset()?;
 
-        let offset = self.layout.get_transport_arena().mbx_offset();
-        let guest_owned = u64::from_le_bytes(self.scratch_mem.read(offset)?);
+        let status = self
+            .scratch_mem
+            .read::<u64>(self.layout.get_transport_arena().mbx_offset())
+            .map_err(|error| HyperlightError::TransportError(error.to_string()))?;
 
-        if guest_owned == u64::MAX {
-            return Err(HyperlightError::TransportError(
-                "Guest did not publish snapshot checkpoint status".to_string(),
-            ));
+        match MailboxValue::try_from(status) {
+            Ok(MailboxValue::CheckpointComplete) => Ok(()),
+            Ok(MailboxValue::CheckpointPending) => Err(HyperlightError::TransportError(
+                "Guest did not publish snapshot checkpoint status".into(),
+            )),
+            Err(_) => Err(HyperlightError::TransportError(format!(
+                "Guest published invalid snapshot checkpoint status {status:#x}"
+            ))),
         }
-
-        Ok(guest_owned)
     }
 
     /// Restore base memory after the caller checks snapshot compatibility.
@@ -731,6 +736,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
         if let Some(virtq) = virtq {
             self.restore_virtq(virtq)?;
         } else if matches!(snapshot.next_action(), NextAction::Initialise(_)) {
+            self.scratch_mem.copy_from_slice(
+                MailboxValue::CheckpointPending.as_bytes(),
+                self.layout.get_transport_arena().mbx_offset(),
+            )?;
             self.create_virtq_consumers()?;
         }
         Ok((gsnapshot, gscratch))
@@ -1191,6 +1200,10 @@ mod tests {
         let mut mgr = manager(&case);
         let buffer = case.h2g_desc(0).addr;
 
+        let mbx = mgr.layout.get_transport_arena().mbx_offset();
+        let cp = MailboxValue::CheckpointComplete.as_bytes();
+
+        mgr.scratch_mem.copy_from_slice(cp, mbx).unwrap();
         mgr.begin_snapshot_checkpoint().unwrap();
 
         let wire = case.h2g_buffer(0, buffer);
@@ -1202,11 +1215,9 @@ mod tests {
         assert_eq!(header.payload_len, 0);
         assert_eq!(mgr.next_guest_cid, 1);
 
-        let mbx = mgr.layout.get_transport_arena().mbx_offset();
-
         assert_eq!(
-            mgr.scratch_mem.read::<[u8; 8]>(mbx).unwrap(),
-            u64::MAX.to_le_bytes()
+            MailboxValue::try_from(mgr.scratch_mem.read::<u64>(mbx).unwrap()).unwrap(),
+            MailboxValue::CheckpointPending
         );
     }
 
@@ -1225,18 +1236,33 @@ mod tests {
 
     #[test]
     fn reads_completed_snapshot_checkpoint_status() {
-        for retained in [0u64, 3] {
-            let case = TestCase::new();
-            let mut mgr = manager(&case);
-            mgr.g2h_consumer = Some(case.g2h_consumer());
-            mgr.begin_snapshot_checkpoint().unwrap();
-            let mbx = mgr.layout.get_transport_arena().mbx_offset();
-            mgr.scratch_mem.write(mbx, retained.to_le_bytes()).unwrap();
+        let case = TestCase::new();
+        let mut mgr = manager(&case);
+        mgr.g2h_consumer = Some(case.g2h_consumer());
+        mgr.begin_snapshot_checkpoint().unwrap();
+        let mbx = mgr.layout.get_transport_arena().mbx_offset();
+        mgr.scratch_mem
+            .copy_from_slice(MailboxValue::CheckpointComplete.as_bytes(), mbx)
+            .unwrap();
 
-            assert_eq!(mgr.finish_snapshot_checkpoint().unwrap(), retained);
-            let consumer = mgr.h2g_consumer.as_ref().unwrap();
-            assert_eq!(consumer.avail_cursor().head(), 0);
-            assert_eq!(consumer.used_cursor().head(), 0);
+        mgr.finish_snapshot_checkpoint().unwrap();
+        let consumer = mgr.h2g_consumer.as_ref().unwrap();
+        assert_eq!(consumer.avail_cursor().head(), 0);
+        assert_eq!(consumer.used_cursor().head(), 0);
+    }
+
+    #[test]
+    fn invalid_checkpoint_status_is_fatal() {
+        for status in [2, 3, 0xa000, u64::MAX - 1, u64::MAX] {
+            let queue = TestCase::new();
+            let mut mgr = manager(&queue);
+            mgr.g2h_consumer = Some(queue.g2h_consumer());
+            let mbx = mgr.layout.get_transport_arena().mbx_offset();
+            mgr.scratch_mem.write::<u64>(mbx, status).unwrap();
+            let error = mgr.finish_snapshot_checkpoint().unwrap_err();
+
+            assert!(matches!(error, HyperlightError::TransportError(_)));
+            assert!(error.is_poison_error(), "{error}");
         }
     }
 

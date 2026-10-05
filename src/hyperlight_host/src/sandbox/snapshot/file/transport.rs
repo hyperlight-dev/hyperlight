@@ -305,6 +305,7 @@ mod tests {
         bytes[HEADER_LEN] = 0;
         let h2g_offset = HEADER_LEN + snapshot.g2h_ring().len();
         bytes[h2g_offset..].fill(0);
+        bytes[h2g_offset] = 1;
 
         let error = decode(&layout, &bytes).unwrap_err();
         assert!(

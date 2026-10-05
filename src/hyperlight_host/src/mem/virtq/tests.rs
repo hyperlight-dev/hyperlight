@@ -138,7 +138,11 @@ fn snapshots_and_restores_rings() {
     let allocator = layout.get_first_free_scratch_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
+    let mbx_offset = layout.get_transport_arena().mbx_offset();
+    let cp = MailboxValue::CheckpointPending.as_bytes();
+
     restored.write::<u64>(allocator_offset, allocator).unwrap();
+    restored.copy_from_slice(cp, mbx_offset).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
     let restored_snapshot = VirtqSnapshot::capture(&layout, &restored).unwrap();
@@ -152,6 +156,13 @@ fn snapshots_and_restores_rings() {
     assert_eq!(restored.read::<u64>(allocator_offset).unwrap(), allocator);
     assert_eq!(restored.read::<[u8; 16]>(spare_offset).unwrap(), [0; 16]);
     assert_eq!(pool_bytes, [0; 16]);
+
+    let mbx = restored.read::<u64>(mbx_offset).unwrap();
+    assert_eq!(
+        MailboxValue::try_from(mbx).unwrap(),
+        MailboxValue::CheckpointComplete
+    );
+
     assert!(g2h.poll(0).unwrap().is_none());
     let (recv, reply) = h2g.poll(0).unwrap().unwrap();
     h2g.complete(recv, reply).unwrap();
@@ -388,4 +399,27 @@ fn malformed_descriptors_fail_when_polled() {
         h2g.poll(0),
         Err(VirtqError::RingError(RingError::BadChain))
     ));
+}
+
+#[test]
+fn restores_partially_prefilled_h2g_ring() {
+    for prefill in 0..=4 {
+        let case = TestCase::new();
+
+        for index in prefill..4 {
+            case.set_h2g_desc(index, Descriptor::new(0, 0, 0, DescFlags::empty()));
+        }
+
+        let layout = memory_layout();
+        let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+        let restored = host_scratch();
+        let (_, mut consumer) = captured.restore(&layout, &restored).unwrap();
+
+        for _ in 0..prefill {
+            let (request, reply) = consumer.poll(0).unwrap().unwrap();
+            consumer.complete(request, reply).unwrap();
+        }
+
+        assert!(consumer.poll(0).unwrap().is_none());
+    }
 }

@@ -26,6 +26,7 @@ fn test_slot_pool_preserves_exact_base() {
     let pool = SlotPool::new(layout).unwrap();
 
     assert_eq!(pool.base_addr(), 0x80001);
+    assert_eq!(pool.byte_len(), 8192);
     assert_eq!(pool.count(), 2);
     assert_eq!(pool.slot_addr(0), Some(0x80001));
     assert_eq!(pool.slot_addr(1), Some(0x81001));
@@ -41,6 +42,7 @@ fn test_tiered_slot_pool_reports_layouts() {
     assert_eq!(lower, Some(SlotLayout::new(0x80001, 0x100, 2).unwrap()));
     assert_eq!(upper, SlotLayout::new(0x90001, 0x1000, 2).unwrap());
     assert_eq!(pool.base_addr(), 0x80001);
+    assert_eq!(pool.byte_len(), 0x12000);
     assert_eq!(pool.slot_size(), 0x1000);
     assert_eq!(pool.count(), 4);
     assert_eq!(pool.slot_addr(0), Some(0x80001));
@@ -61,6 +63,7 @@ fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
         (None, SlotLayout::new(0x80000, 0x100, 5).unwrap())
     );
     assert_eq!(pool.base_addr(), 0x80000);
+    assert_eq!(pool.byte_len(), 0x500);
     assert_eq!(pool.slot_size(), 0x100);
     assert_eq!(pool.count(), 5);
     assert_eq!(pool.num_free_lower(), 0);
@@ -132,6 +135,9 @@ fn test_slot_layout_rejects_overflowing_ranges() {
 
     let layout = SlotLayout::new(u64::MAX - 8, 4, 2).unwrap();
     assert_eq!(layout.end_addr(), u64::MAX);
+
+    let pool = SlotPool::new(layout).unwrap();
+    assert_eq!(pool.byte_len(), 8);
 }
 
 #[test]
@@ -243,34 +249,6 @@ fn test_tiered_slot_pool_live_addrs_are_deterministic() {
     assert_eq!(
         pool.live_addrs(),
         vec![lower_low.addr, lower_high.addr, upper_high.addr]
-    );
-}
-
-#[test]
-fn free_slots_include_full_capacities_and_preserve_allocation_order() {
-    let pool = make_tiered_slot_pool(2, 2);
-    let lower = pool.alloc(128).unwrap();
-    let upper = pool.alloc(1024).unwrap();
-    let mut free = Vec::new();
-    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
-    assert_eq!(free, [(0x80000, 256), (0x90000, 4096)]);
-    assert_eq!(pool.live_addrs(), [lower.addr, upper.addr]);
-
-    pool.dealloc(lower.addr).unwrap();
-    let repeated = pool.alloc(128).unwrap();
-    assert_eq!(repeated.addr, lower.addr);
-    pool.dealloc(repeated.addr).unwrap();
-    pool.dealloc(upper.addr).unwrap();
-    free.clear();
-    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
-    assert_eq!(
-        free,
-        [
-            (0x80000, 256),
-            (0x80100, 256),
-            (0x90000, 4096),
-            (0x91000, 4096)
-        ]
     );
 }
 

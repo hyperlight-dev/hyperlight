@@ -38,6 +38,9 @@ A snapshot carries four independently evolvable version markers:
   and requires a transport layer. Config v1 and v2 are incompatible with
   the current ABI.
 
+ABI 6 requires checkpoint readiness after guest initialization and permits
+H2G prefill to omit retained slots. Earlier snapshots must be regenerated.
+
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
 

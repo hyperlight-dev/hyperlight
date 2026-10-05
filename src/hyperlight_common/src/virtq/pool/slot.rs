@@ -207,15 +207,6 @@ impl Tier {
         );
     }
 
-    fn for_each_free(&self, f: &mut impl FnMut(Allocation)) {
-        for slot in self.allocated.zeroes() {
-            f(Allocation {
-                addr: self.base_addr + slot as u64 * u64::from(self.slot_size),
-                len: self.slot_size,
-            });
-        }
-    }
-
     fn layout(&self) -> SlotLayout {
         SlotLayout {
             base_addr: self.base_addr,
@@ -343,6 +334,11 @@ impl Inner {
     fn layouts(&self) -> (Option<SlotLayout>, SlotLayout) {
         (self.lower.as_ref().map(Tier::layout), self.upper.layout())
     }
+
+    /// Byte span of both tiers, including any gap.
+    fn byte_len(&self) -> usize {
+        (self.upper.layout().end_addr() - self.base_addr()) as usize
+    }
 }
 
 /// A buffer pool with one or two fixed-slot tiers.
@@ -380,17 +376,6 @@ impl SlotPool {
     /// Return every live slot address in deterministic tier and index order.
     pub fn live_addrs(&self) -> Vec<u64> {
         self.inner.borrow().live_addrs()
-    }
-
-    /// Visit every free slot in lower-then-upper index order.
-    ///
-    /// The callback must not allocate or free slots in this pool.
-    pub fn for_each_free(&self, mut f: impl FnMut(Allocation)) {
-        let inner = self.inner.borrow();
-        if let Some(lower) = &inner.lower {
-            lower.for_each_free(&mut f);
-        }
-        inner.upper.for_each_free(&mut f);
     }
 
     /// Return the lower and upper tier layouts.
@@ -467,6 +452,11 @@ impl SlotPool {
     /// Allocate one slot holding at least `len` bytes.
     pub fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         self.inner.borrow_mut().alloc(len)
+    }
+
+    /// Byte span from the first slot to the last, including any gap between tiers.
+    pub fn byte_len(&self) -> usize {
+        self.inner.borrow().byte_len()
     }
 
     #[cfg(test)]
