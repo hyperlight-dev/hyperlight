@@ -343,6 +343,11 @@ pub(crate) extern "C" fn generic_init(
         hyperlight_guest_tracing::flush();
     }
 
+    // SAFETY: Host calls have returned with no live chain handles. The host
+    // resets consumers before the next dispatch refreshes aliases.
+    unsafe { hyperlight_guest::transport::prepare_snapshot() }
+        .expect("failed to prepare initial transport snapshot");
+
     dispatch_function as *const () as usize as u64
 }
 

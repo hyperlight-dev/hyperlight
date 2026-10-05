@@ -10,9 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Per-direction virtqueue configuration through `SandboxConfiguration` and
   `SandboxBuilder`, with allocations included in scratch sizing.
 * Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.
+* `MailboxValue` defines the transport mailbox's allowed wire values.
+* `virtq::canonical::validate_canon_prefix` validates a bounded available
+  descriptor prefix.
 * `ExternalValueSource` implementations for `RecvChain` and `Segments`.
 * Producer batch completion without notification and segmented payload
   assembly and extraction without flattening.
+* Retained guest `Bytes` and `ByteChunks` preserve contents and pointers across
+  snapshot capture, restore, and cloning.
 
 ### Changed
 * `Sandbox` is the primary initialized sandbox type. `MultiUseSandbox` remains
@@ -32,8 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured level is above `OFF` rather than whether the tracing state was
   allocated.
 * **Breaking:** Virtqueue rings and pools occupy host-owned scratch before page
-  tables. Snapshots use ABI 5 and config schema v3. Existing snapshots must be
-  regenerated.
+  tables. Retained-buffer checkpoints use ABI 6 and config schema v3. Existing
+  snapshots must be regenerated.
 * Host virtqueue access uses checked copies and atomics across mapped scratch.
   Snapshot admission checks geometry, canonical rings, and distinct, aligned
   H2G pool slots.
@@ -53,7 +58,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects snapshots without transport state.
 * Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
   keep their deferred result path.
-* Reject snapshot capture while guest-owned transport buffers are retained.
 * Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
   and 8 pages.
 
