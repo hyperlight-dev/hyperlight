@@ -7,7 +7,7 @@
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/paging.rs")]
 mod arch;
 
-pub use arch::{map_region, modify_mapping, phys_to_virt, virt_to_phys};
+pub use arch::{map_region, modify_mapping, phys_to_virt, unmap_page, virt_to_phys};
 /// Barriers that other code may need to use when updating page tables
 pub mod barrier {
     /// Call this function when a virtual address has had its

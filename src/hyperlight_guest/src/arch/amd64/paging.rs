@@ -144,6 +144,45 @@ pub unsafe fn modify_mapping(
     }
 }
 
+/// Unmap one page and invalidate its translations.
+/// An absent page is skipped without allocating page tables.
+///
+/// # Safety
+/// `virt` must name an aligned 4 KiB page with no live views.
+/// Use initialized four-level guest tables and serialize all page-table access.
+/// Keep paging controls stable. Every root accessing the page must share its leaf.
+pub unsafe fn unmap_page(virt: *mut u8) {
+    if virt_to_phys(virt as u64).next().is_none() {
+        return;
+    }
+
+    // SAFETY: The caller permits removing this present leaf.
+    unsafe { map_region(0, virt, vmem::PAGE_SIZE as u64, vmem::MappingKind::Unmapped) };
+
+    let cr4: u64;
+
+    // SAFETY: The initialized guest runs at CPL0 with stable paging controls.
+    unsafe { asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags)) };
+
+    if cr4 & (1 << 17) == 0 {
+        // SAFETY: INVLPG invalidates the page without dereferencing its address.
+        unsafe { asm!("invlpg [{}]", in(reg) virt, options(nostack, preserves_flags)) };
+    } else {
+        // A PGE transition invalidates all PCIDs and globals.
+        // Intel SDM 5.10.4.1 and AMD APM 5.5.3 specify this.
+        // SAFETY: Only PGE changes, and CR4 is restored before guest code resumes.
+        unsafe {
+            asm!(
+                "mov cr4, {toggled}",
+                "mov cr4, {original}",
+                toggled = in(reg) (cr4 ^ (1 << 7)),
+                original = in(reg) cr4,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+}
+
 pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> {
     unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
 }

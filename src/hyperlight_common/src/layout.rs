@@ -9,7 +9,8 @@ use core::num::{NonZeroU16, NonZeroUsize};
 mod arch;
 
 pub use arch::{
-    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
+    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN,
+    VIRTQ_BUFFER_GVA_END, VIRTQ_BUFFER_GVA_START, io_page,
 };
 
 use crate::virtq;
@@ -100,6 +101,21 @@ const _: () = {
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x60);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x68);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
+
+    assert!(VIRTQ_BUFFER_GVA_START < VIRTQ_BUFFER_GVA_END);
+    assert!((VIRTQ_BUFFER_GVA_START as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!((VIRTQ_BUFFER_GVA_END as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!(VIRTQ_BUFFER_GVA_START > SNAPSHOT_PT_GVA_MAX as u64);
+
+    #[cfg(target_arch = "x86_64")]
+    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
+    #[cfg(target_arch = "x86_64")]
+    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
+    #[cfg(target_arch = "aarch64")]
+    assert!(VIRTQ_BUFFER_GVA_END <= 1 << 48);
+
+    assert!(VIRTQ_BUFFER_GVA_END < scratch_base_gva(16 * 1024 * 1024 * 1024));
+    assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };
 
 /// Exclusive upper GPA boundary for dynamic scratch allocations.
@@ -110,7 +126,7 @@ pub const fn scratch_allocator_limit_gpa() -> u64 {
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (SCRATCH_TOP_GPA - size + 1) as u64
 }
-pub fn scratch_base_gva(size: usize) -> u64 {
+pub const fn scratch_base_gva(size: usize) -> u64 {
     (SCRATCH_TOP_GVA - size + 1) as u64
 }
 

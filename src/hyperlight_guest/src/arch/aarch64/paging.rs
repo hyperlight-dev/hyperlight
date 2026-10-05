@@ -129,6 +129,33 @@ pub unsafe fn modify_mapping(
     }
 }
 
+/// Unmap one page and invalidate its translations.
+/// An absent page is skipped without allocating page tables.
+///
+/// # Safety
+/// `virt` must name an aligned 4 KiB page with no live views.
+/// Use initialized guest tables without contiguous hints and serialize table access.
+/// Keep paging controls stable. Every root accessing the page must share its leaf.
+pub unsafe fn unmap_page(virt: *mut u8) {
+    if virt_to_phys(virt as u64).next().is_none() {
+        return;
+    }
+
+    // SAFETY: The caller permits removing this present leaf across all accessing roots.
+    unsafe {
+        map_region(0, virt, vmem::PAGE_SIZE as u64, vmem::MappingKind::Unmapped);
+
+        core::arch::asm!(
+            "dsb ishst",
+            "tlbi vaae1is, {}",
+            "dsb ish",
+            "isb",
+            in(reg) (virt as u64 >> 12),
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> {
     unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
 }

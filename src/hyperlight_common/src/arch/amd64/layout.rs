@@ -11,6 +11,8 @@
 pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff_ffff_efff;
 pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
+pub const VIRTQ_BUFFER_GVA_START: u64 = 0xffff_fc00_0000_0000;
+pub const VIRTQ_BUFFER_GVA_END: u64 = 0xffff_fd00_0000_0000;
 
 /// We assume 36-bit IPAs for now, since every amd64 processor
 /// supports at least 36 bits.  Almost all of them support at least 40
