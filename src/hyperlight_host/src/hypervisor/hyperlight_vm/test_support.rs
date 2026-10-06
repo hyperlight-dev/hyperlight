@@ -294,11 +294,12 @@ impl HyperlightVm {
     }
 
     #[allow(clippy::type_complexity, reason = "test-only mapping state")]
-    pub(crate) fn base_mapping_state(&self) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+    pub(crate) fn base_mapping_state(&self) -> (Vec<(u32, MemoryRegion)>, Option<(usize, usize)>) {
         let snapshot = self
-            .snapshot_memory
-            .as_ref()
-            .map(|memory| (memory.base_addr(), memory.mem_size()));
+            .snapshot_mappings
+            .iter()
+            .map(|(slot, mapping)| (*slot, mapping.clone()))
+            .collect();
         let scratch = self
             .scratch_memory
             .as_ref()
