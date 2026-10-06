@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
   sandbox and removes `map_region` and `map_file_cow` regions. Pages of these
   regions that the guest has not mapped into its page tables are lost.
+* `vmem::walk_va_spaces` merges adjacent mappings of the same kind into one
+  mapping.
 
 ### Removed
 
