@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Related snapshots share immutable memory layers. This reduces capture time
   and memory use. A guest can read data it overwrote before a snapshot from the
   older layers of that snapshot.
+* **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
+  sandbox and removes `map_region` and `map_file_cow` regions. Pages of these
+  regions that the guest has not mapped into its page tables are lost.
 
 ### Removed
 

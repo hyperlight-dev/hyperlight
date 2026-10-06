@@ -920,6 +920,60 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
     }
 
+    fn replace_snapshot_memory(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+        let new_snapshot_mem =
+            SnapshotMemoryBacking::from_snapshot(snapshot.snapshot_memory().clone())?;
+        let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+        self.shared_mem = hsnapshot;
+        Ok(gsnapshot)
+    }
+
+    fn apply_snapshot_metadata(&mut self, snapshot: &Snapshot) {
+        self.layout = *snapshot.layout();
+        // Inherit the snapshot's own generation number — the
+        // guest-visible counter reflects "which snapshot is the
+        // sandbox currently a clone of", not "how many restores have
+        // happened into this (possibly-reused) partition".
+        self.snapshot_count = snapshot.snapshot_generation();
+        // Carry the guest ELF entry point across restore so crashdumps
+        // report the restored image's entry.
+        self.original_entrypoint = snapshot.original_entrypoint();
+    }
+
+    /// Installs memory produced by a capture without restoring runtime state.
+    pub(crate) fn install_captured_snapshot(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+        let allocator_offset = self.scratch_mem.mem_size()
+            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let used_scratch_end = self.scratch_mem.read::<u64>(allocator_offset)?;
+        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
+        self.apply_snapshot_metadata(snapshot);
+        self.update_snapshot_scratch_bookkeeping()?;
+        self.zero_freed_scratch(used_scratch_end)?;
+        Ok(gsnapshot)
+    }
+
+    /// Zeroes the scratch pages freed by resetting the allocator.
+    fn zero_freed_scratch(&mut self, used_end_gpa: u64) -> Result<()> {
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_mem.mem_size());
+        // The guest controls the allocator value.
+        let end = used_end_gpa.min(hyperlight_common::layout::scratch_allocator_limit_gpa());
+        let start = self.first_free_scratch_gpa();
+        if end <= start {
+            return Ok(());
+        }
+        let start = usize::try_from(start - scratch_base)?;
+        let end = usize::try_from(end - scratch_base)?;
+        self.scratch_mem
+            .with_exclusivity(|scratch| scratch.as_mut_slice()[start..end].fill(0))?;
+        Ok(())
+    }
+
     /// Restore base memory after the caller checks snapshot compatibility.
     pub(crate) fn restore_snapshot(
         &mut self,
@@ -943,10 +997,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // A panic during restricted dispatch can skip the mode reset.
         self.execution_mode = ExecutionMode::Unrestricted;
 
-        let new_snapshot_mem =
-            SnapshotMemoryBacking::from_snapshot(snapshot.snapshot_memory().clone())?;
-        let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
-        self.shared_mem = hsnapshot;
+        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             // zero_or_replace picks the fastest zeroing strategy for
@@ -963,15 +1014,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.scratch_mem = hscratch;
             Some(gscratch)
         };
-        self.layout = *snapshot.layout();
-        // Inherit the snapshot's own generation number — the
-        // guest-visible counter reflects "which snapshot is the
-        // sandbox currently a clone of", not "how many restores have
-        // happened into this (possibly-reused) partition".
-        self.snapshot_count = snapshot.snapshot_generation();
-        // Carry the guest ELF entry point across restore so crashdumps
-        // report the restored image's entry.
-        self.original_entrypoint = snapshot.original_entrypoint();
+        self.apply_snapshot_metadata(snapshot);
         self.update_scratch_bookkeeping()?;
         if let Some(virtq) = virtq {
             self.restore_virtq(virtq)?;
@@ -1018,6 +1061,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         use hyperlight_common::layout::*;
         let scratch_size = self.scratch_mem.mem_size();
         self.update_scratch_bookkeeping_item(SCRATCH_TOP_SIZE_OFFSET, scratch_size as u64)?;
+        self.update_snapshot_scratch_bookkeeping()?;
+
+        Ok(())
+    }
+
+    fn update_snapshot_scratch_bookkeeping(&mut self) -> Result<()> {
+        use hyperlight_common::layout::*;
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_ALLOCATOR_OFFSET,
             self.first_free_scratch_gpa(),
