@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
 
 * **Breaking:** Generated libc bindings use `usize` for `size_t` arguments and return values, including `strlen` and `memcpy`. Rust callers that use `u64` or `c_ulong` need explicit conversions. The C ABI is unchanged.
+* **Breaking:** Snapshots use ABI 8 and config schema v4. Existing snapshots
+  must be regenerated.
+* **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
+  `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read(gpa, buffer)?`
+  and return roots with `Ok(roots)`.
+* Related snapshots share immutable memory layers. This reduces capture time
+  and memory use. A guest can read data it overwrote before a snapshot from the
+  older layers of that snapshot.
 
 * **Breaking:** The transport arena sits one unmapped guard page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that guard page. Snapshot ABI 7: existing snapshots must be regenerated.
 

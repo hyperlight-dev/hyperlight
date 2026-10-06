@@ -60,183 +60,12 @@ use tracing::{Span, instrument};
 
 use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion, MemoryRegion_,
-    MemoryRegionFlags, MemoryRegionVecBuilder,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion_, MemoryRegionFlags,
+    MemoryRegionVecBuilder,
 };
-#[cfg(readable_shared_mem)]
-use super::shared_mem::HostSharedMemory;
-use super::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
 use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
-
-pub(crate) enum BaseGpaRegion<Sn, Sc> {
-    Snapshot(Sn),
-    Scratch(Sc),
-    Mmap(MemoryRegion),
-}
-
-// It's an invariant of this type, checked on creation, that the
-// offset is in bounds for the base region.
-pub(crate) struct ResolvedGpa<Sn, Sc> {
-    pub(crate) offset: usize,
-    pub(crate) base: BaseGpaRegion<Sn, Sc>,
-}
-
-impl AsRef<[u8]> for ExclusiveSharedMemory {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-impl AsRef<[u8]> for ReadonlySharedMemory {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-
-impl<Sn, Sc> ResolvedGpa<Sn, Sc> {
-    pub(crate) fn with_memories<Sn2, Sc2>(self, sn: Sn2, sc: Sc2) -> ResolvedGpa<Sn2, Sc2> {
-        ResolvedGpa {
-            offset: self.offset,
-            base: match self.base {
-                BaseGpaRegion::Snapshot(_) => BaseGpaRegion::Snapshot(sn),
-                BaseGpaRegion::Scratch(_) => BaseGpaRegion::Scratch(sc),
-                BaseGpaRegion::Mmap(r) => BaseGpaRegion::Mmap(r),
-            },
-        }
-    }
-}
-impl<'a> BaseGpaRegion<&'a [u8], &'a [u8]> {
-    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
-        match self {
-            BaseGpaRegion::Snapshot(sn) => sn,
-            BaseGpaRegion::Scratch(sc) => sc,
-            BaseGpaRegion::Mmap(r) => unsafe {
-                #[allow(clippy::useless_conversion)]
-                let host_region_base: usize = r.host_region.start.into();
-                #[allow(clippy::useless_conversion)]
-                let host_region_end: usize = r.host_region.end.into();
-                let len = host_region_end - host_region_base;
-                std::slice::from_raw_parts(host_region_base as *const u8, len)
-            },
-        }
-    }
-}
-impl<'a> ResolvedGpa<&'a [u8], &'a [u8]> {
-    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
-        let base = self.base.as_ref();
-        if self.offset > base.len() {
-            return &[];
-        }
-        &self.base.as_ref()[self.offset..]
-    }
-}
-/// A read-only abstraction over the different kinds of backing memory
-/// a [`ResolvedGpa`] can point at (the host snapshot mapping, the
-/// scratch mapping, or a raw `&[u8]` view of either), letting callers
-/// copy guest bytes out without caring which concrete memory type they
-/// hold.
-///
-/// This trait only exists in builds that actually read guest memory
-/// through it — see the `readable_shared_mem` cfg alias in `build.rs`
-/// for the exact conditions (the `gdb` debug path and the
-/// shared-snapshot `mem_profile` path). In every other configuration it
-/// is compiled out entirely, so there is no dead code to `#[allow]`.
-#[cfg(readable_shared_mem)]
-pub(crate) trait ReadableSharedMemory {
-    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()>;
-}
-#[cfg(readable_shared_mem)]
-impl ReadableSharedMemory for &HostSharedMemory {
-    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
-        Ok(HostSharedMemory::copy_to_slice(self, slice, offset)?)
-    }
-}
-/// Coherence workaround for the blanket impl below.
-///
-/// We want `ReadableSharedMemory` for both `&HostSharedMemory` (above)
-/// and for any `T: AsRef<[u8]>` (so that `ExclusiveSharedMemory` /
-/// `ReadonlySharedMemory` and their references are covered by a single
-/// impl). A naive `impl<T: AsRef<[u8]>> ReadableSharedMemory for T`
-/// would *overlap* the `&HostSharedMemory` impl — the compiler can't
-/// prove `&HostSharedMemory` never implements `AsRef<[u8]>` — and is
-/// rejected with E0119.
-///
-/// To break the overlap we introduce a private marker trait and
-/// implement it *only* for the specific types we want the blanket impl
-/// to cover (deliberately excluding `&HostSharedMemory`). The blanket
-/// impl is then bounded on this marker rather than on `AsRef<[u8]>`
-/// directly, so the two impls provably never overlap.
-#[cfg(readable_shared_mem)]
-mod coherence_hack {
-    use super::{ExclusiveSharedMemory, ReadonlySharedMemory};
-    // Used only as a bound on the blanket impl below, so the name reads
-    // as unused even though removing it breaks compilation.
-    #[allow(unused)]
-    pub(super) trait SharedMemoryAsRefMarker: AsRef<[u8]> {}
-    impl SharedMemoryAsRefMarker for ExclusiveSharedMemory {}
-    impl SharedMemoryAsRefMarker for &ExclusiveSharedMemory {}
-    impl SharedMemoryAsRefMarker for ReadonlySharedMemory {}
-    impl SharedMemoryAsRefMarker for &ReadonlySharedMemory {}
-}
-#[cfg(readable_shared_mem)]
-impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
-    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
-        let ss: &[u8] = self.as_ref();
-        let end = offset + slice.len();
-        if end > ss.len() {
-            return Err(new_error!(
-                "Attempt to read up to {} in memory of size {}",
-                offset + slice.len(),
-                self.as_ref().len()
-            ));
-        }
-        slice.copy_from_slice(&ss[offset..end]);
-        Ok(())
-    }
-}
-/// Copy `slice.len()` bytes out of the resolved guest region.
-///
-/// Only the `gdb` debug path uses this one-argument convenience (it
-/// already carries the offset inside `self`); `mem_profile` reads via
-/// the two-argument inherent methods instead. Hence it is gated on the
-/// `gdb` cfg alone, even though the [`ReadableSharedMemory`] trait it
-/// relies on is available slightly more widely.
-#[cfg(gdb)]
-impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
-    pub(crate) fn copy_to_slice(&self, slice: &mut [u8]) -> Result<()> {
-        match &self.base {
-            BaseGpaRegion::Snapshot(sn) => sn.copy_to_slice(slice, self.offset),
-            BaseGpaRegion::Scratch(sc) => sc.copy_to_slice(slice, self.offset),
-            BaseGpaRegion::Mmap(r) => unsafe {
-                #[allow(clippy::useless_conversion)]
-                let host_region_base: usize = r.host_region.start.into();
-                #[allow(clippy::useless_conversion)]
-                let host_region_end: usize = r.host_region.end.into();
-                let len = host_region_end - host_region_base;
-                // Safety: it's a documented invariant of MemoryRegion
-                // that the memory must remain alive as long as the
-                // sandbox is alive, and the way this code is used,
-                // the lifetimes of the snapshot and scratch memories
-                // ensure that the sandbox is still alive. This could
-                // perhaps be cleaned up/improved/made harder to
-                // misuse significantly, but it would require a much
-                // larger rework.
-                let ss = std::slice::from_raw_parts(host_region_base as *const u8, len);
-                let end = self.offset + slice.len();
-                if end > ss.len() {
-                    return Err(new_error!(
-                        "Attempt to read up to {} in memory of size {}",
-                        self.offset + slice.len(),
-                        ss.len()
-                    ));
-                }
-                slice.copy_from_slice(&ss[self.offset..end]);
-                Ok(())
-            },
-        }
-    }
-}
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
@@ -262,16 +91,6 @@ pub(crate) struct SandboxMemoryLayout {
     h2g_buffer_size: usize,
     /// Fixed ring and pool placement within scratch.
     transport_arena: TransportArena,
-    /// Size of the primary guest memory region at `BASE_ADDRESS`
-    /// (code, PEB, heap, init data). For a snapshot-backed layout
-    /// this is also the guest-visible prefix of the host snapshot
-    /// mapping.
-    snapshot_size: usize,
-    /// Size of the page-table region. Sits at the tail of the host
-    /// snapshot mapping but is never mapped to the guest from there.
-    /// On restore the host copies it into scratch, where the guest
-    /// sees it at `SNAPSHOT_PT_GVA`. `None` until page tables are built.
-    pt_size: Option<usize>,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -295,8 +114,6 @@ impl Debug for SandboxMemoryLayout {
         .field("H2G Buffer Size", &self.h2g_buffer_size)
         .field("G2H Pool Pages", &self.get_g2h_pool_pages())
         .field("H2G Pool Pages", &self.get_h2g_pool_pages())
-        .field("Snapshot Size", &format_args!("{:#x}", self.snapshot_size))
-        .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
         .field(
             "Guest Code Offset",
             &format_args!("{:#x}", self.guest_code_offset()),
@@ -366,22 +183,20 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        let mut ret = Self {
+        let ret = Self {
             heap_size,
             code_size,
             code_gva: Self::BASE_ADDRESS,
             init_data_size,
             init_data_permissions,
-            pt_size: None,
             scratch_size,
             g2h_dims,
             h2g_dims,
             g2h_buffer_size,
             h2g_buffer_size,
             transport_arena,
-            snapshot_size: 0,
         };
-        ret.set_snapshot_size(ret.get_memory_size()?);
+        ret.get_memory_size()?;
         Ok(ret)
     }
 
@@ -414,9 +229,9 @@ impl SandboxMemoryLayout {
         TransportArena::new(base, g2h, h2g)
     }
 
-    /// This layout with another scratch size and no page tables yet. Room
-    /// for the page tables is checked when they are built (`set_pt_size`),
-    /// since their size depends on the guest's mappings.
+    /// This layout with another scratch size. Room for the page tables is
+    /// checked when they are built (`ensure_page_tables_fit`), since their
+    /// size depends on the guest's mappings.
     pub(crate) fn with_scratch_size(&self, scratch_size: usize) -> Result<Self> {
         if scratch_size > Self::MAX_MEMORY_SIZE {
             return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
@@ -435,7 +250,6 @@ impl SandboxMemoryLayout {
         }
         let mut ret = *self;
         ret.scratch_size = scratch_size;
-        ret.pt_size = None;
         Ok(ret)
     }
 
@@ -507,29 +321,8 @@ impl SandboxMemoryLayout {
         self.h2g_dims
     }
 
-    /// Guest-visible prefix size of the snapshot blob.
-    pub(crate) fn snapshot_size(&self) -> usize {
-        self.snapshot_size
-    }
-
-    /// Recorded page-table tail size, `None` until page tables are built.
-    pub(crate) fn pt_size(&self) -> Option<usize> {
-        self.pt_size
-    }
-
-    /// Page-table tail size, or 0 if page tables are not yet built.
-    pub(crate) fn get_pt_size(&self) -> usize {
-        self.pt_size.unwrap_or(0)
-    }
-
-    /// Record the size of the page-table tail appended to the
-    /// snapshot blob. The PT bytes live at the end of the blob and
-    /// the host mapping, outside the guest mapping of the snapshot
-    /// region, and are copied into the scratch region on restore.
-    /// `snapshot_size` (the guest-visible prefix of the blob) is an
-    /// independent field and must be set separately.
-    pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
-        let min_scratch = self.min_scratch().saturating_add(size);
+    pub(crate) fn ensure_page_tables_fit(&self, page_table_len: usize) -> Result<()> {
+        let min_scratch = self.min_scratch().saturating_add(page_table_len);
         if self.scratch_size < min_scratch {
             // Report a size the host can map.
             let page = Self::host_page_size();
@@ -538,12 +331,7 @@ impl SandboxMemoryLayout {
                 min_scratch.next_multiple_of(page),
             ));
         }
-        self.pt_size = Some(size);
         Ok(())
-    }
-
-    pub(crate) fn set_snapshot_size(&mut self, new_size: usize) {
-        self.snapshot_size = new_size;
     }
 
     /// Returns the memory regions associated with this memory layout,
@@ -734,37 +522,6 @@ impl SandboxMemoryLayout {
 
         Ok(())
     }
-
-    /// Determine what region this gpa is in, and its offset into that region
-    pub(crate) fn resolve_gpa(
-        &self,
-        gpa: u64,
-        mmap_regions: &[MemoryRegion],
-    ) -> Option<ResolvedGpa<(), ()>> {
-        let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_size);
-        if gpa >= scratch_base && gpa < scratch_base + self.scratch_size as u64 {
-            return Some(ResolvedGpa {
-                offset: (gpa - scratch_base) as usize,
-                base: BaseGpaRegion::Scratch(()),
-            });
-        } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64
-            && gpa < SandboxMemoryLayout::BASE_ADDRESS as u64 + self.snapshot_size as u64
-        {
-            return Some(ResolvedGpa {
-                offset: gpa as usize - SandboxMemoryLayout::BASE_ADDRESS,
-                base: BaseGpaRegion::Snapshot(()),
-            });
-        }
-        for rgn in mmap_regions {
-            if gpa >= rgn.guest_region.start as u64 && gpa < rgn.guest_region.end as u64 {
-                return Some(ResolvedGpa {
-                    offset: gpa as usize - rgn.guest_region.start,
-                    base: BaseGpaRegion::Mmap(rgn.clone()),
-                });
-            }
-        }
-        None
-    }
 }
 
 /// Changes to the below methods is part of Snapshot ABI, and
@@ -817,11 +574,6 @@ impl SandboxMemoryLayout {
     /// Base GPA to which the page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_gpa(&self) -> u64 {
         hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
-    }
-
-    /// First GPA available to the guest scratch allocator.
-    pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
-        self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
     }
 
     /// Exact transport placement below the reserved scratch-top pages.
@@ -887,7 +639,7 @@ mod tests {
     #[test]
     fn transport_arena_sits_below_the_reserved_top() {
         let cfg = SandboxConfiguration::default();
-        let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
         let arena = layout.get_transport_arena();
         let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
 
@@ -899,13 +651,9 @@ mod tests {
         assert_eq!(layout.get_pt_base_gpa(), scratch_base);
         assert_eq!(layout.get_pt_base_scratch_offset(), 0);
 
-        layout.set_pt_size(PAGE_SIZE).unwrap();
+        layout.ensure_page_tables_fit(PAGE_SIZE).unwrap();
 
         assert_eq!(layout.get_transport_arena(), arena);
-        assert_eq!(
-            layout.get_first_free_scratch_gpa(),
-            scratch_base + PAGE_SIZE as u64
-        );
     }
 
     /// A different scratch size keeps the arena where it is, so a guest's
@@ -957,10 +705,10 @@ mod tests {
         let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
         let minimum = layout.min_scratch();
         cfg.set_scratch_size(minimum);
-        let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
 
         assert!(matches!(
-            layout.set_pt_size(PAGE_SIZE),
+            layout.ensure_page_tables_fit(PAGE_SIZE),
             Err(MemoryRequestTooSmall(..))
         ));
     }
@@ -1104,8 +852,6 @@ mod tests {
         pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
 
         pin_eq!(layout.get_scratch_size(), 0x30000);
-        pin_eq!(layout.get_pt_size(), 0);
-
         pin_eq!(layout.get_pt_base_scratch_offset(), 0);
 
         // The transport arena sits below the reserved top pages, at an
@@ -1124,13 +870,6 @@ mod tests {
             layout.get_pt_base_gpa(),
             hyperlight_common::layout::scratch_base_gpa(0x30000)
         );
-        // pt_size is zero here, so the first free scratch GPA equals
-        // the page table base.
-        pin_eq!(
-            layout.get_first_free_scratch_gpa(),
-            layout.get_pt_base_gpa()
-        );
-
         // A second snapshot layout, with a different scratch size, keeps
         // the transport arena at the same address.
         let mut cfg = SandboxConfiguration::default();
@@ -1149,8 +888,6 @@ mod tests {
         );
 
         pin_eq!(layout.get_scratch_size(), 0x40000);
-        pin_eq!(layout.get_pt_size(), 0);
-
         pin_eq!(layout.get_pt_base_scratch_offset(), 0);
 
         let arena = layout.get_transport_arena();
@@ -1165,10 +902,6 @@ mod tests {
         pin_eq!(
             layout.get_pt_base_gpa(),
             hyperlight_common::layout::scratch_base_gpa(0x40000)
-        );
-        pin_eq!(
-            layout.get_first_free_scratch_gpa(),
-            layout.get_pt_base_gpa()
         );
     }
 }

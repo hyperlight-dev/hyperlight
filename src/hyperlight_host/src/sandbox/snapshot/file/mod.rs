@@ -12,26 +12,29 @@ pub(crate) mod reference;
 mod transport;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-use hyperlight_common::vmem::PAGE_SIZE;
 use oci_spec::image::{
     Descriptor, DescriptorBuilder, ImageIndex, ImageIndexBuilder, ImageManifest,
     ImageManifestBuilder, MediaType, SCHEMA_VERSION,
 };
 
-use self::config::{Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig};
+use self::config::{
+    Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig, OciSnapshotLayer,
+};
 use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
 };
 pub(super) use self::media_types::{
-    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_SNAPSHOT_CURRENT,
-    MT_SNAPSHOT_V1, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_SNAPSHOT_CURRENT,
+    MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
-use super::{NextAction, Snapshot};
+use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
+use super::{NextAction, Snapshot, SnapshotBlob, SnapshotMemory};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
@@ -227,28 +230,16 @@ fn load_config(
     Ok(cfg)
 }
 
-fn open_snapshot_blob(
-    blobs_dir: &Path,
-    snap_desc: &Descriptor,
-    expected_blob_len: u64,
-    verify_blobs: bool,
-) -> crate::Result<std::fs::File> {
+fn open_snapshot_blob(blobs_dir: &Path, snap_desc: &Descriptor) -> crate::Result<std::fs::File> {
     let snap_hex = parse_oci_digest(snap_desc.digest())?;
     let snap_path = blobs_dir.join(&snap_hex);
 
-    let mut snap_file = self::fsutil::open_no_follow(&snap_path)?;
+    let snap_file = self::fsutil::open_no_follow(&snap_path)?;
 
     let snap_file_len = snap_file
         .metadata()
         .map_err(|e| crate::new_error!("failed to stat snapshot blob: {}", e))?
         .len();
-    if snap_file_len != expected_blob_len {
-        return Err(crate::new_error!(
-            "snapshot blob size mismatch: file is {} bytes, expected {} (memory_size)",
-            snap_file_len,
-            expected_blob_len,
-        ));
-    }
     if snap_file_len != snap_desc.size() {
         return Err(crate::new_error!(
             "snapshot blob size {} disagrees with OCI descriptor size {}",
@@ -256,10 +247,28 @@ fn open_snapshot_blob(
             snap_desc.size()
         ));
     }
-    if verify_blobs {
-        verify_blob_file("snapshot", &mut snap_file, &snap_hex)?;
-    }
     Ok(snap_file)
+}
+
+/// The size validation in `open_snapshot_blob` stats the file before
+/// mapping. Nothing prevents the file from being truncated between that
+/// stat and the mmap, which would leave the mapping shorter than the
+/// descriptor claims and make restore read past the end. Compare the mapped
+/// length against the descriptor to reject a file mutated under us.
+fn map_snapshot_blob(
+    snap_file: &std::fs::File,
+    snap_desc: &Descriptor,
+    data_len: usize,
+) -> crate::Result<ReadonlySharedMemory> {
+    let memory = ReadonlySharedMemory::from_file(snap_file, data_len)?;
+    if memory.mem_size() as u64 != snap_desc.size() {
+        return Err(crate::new_error!(
+            "mapped snapshot size ({}) does not match descriptor size ({}); the blob may have changed during loading",
+            memory.mem_size(),
+            snap_desc.size()
+        ));
+    }
+    Ok(memory)
 }
 
 /// Read a bounded OCI blob and check its descriptor size and optional digest.
@@ -283,6 +292,15 @@ fn load_blob(
         verify_blob_bytes(label, &bytes, &hex)?;
     }
     Ok(bytes)
+}
+
+fn blob_descriptor(media_type: &str, digest: &Digest256, size: usize) -> crate::Result<Descriptor> {
+    DescriptorBuilder::default()
+        .media_type(MediaType::Other(media_type.to_string()))
+        .digest(oci_digest(digest)?)
+        .size(size as u64)
+        .build()
+        .map_err(|e| crate::new_error!("failed to build {media_type} descriptor: {e}"))
 }
 
 impl Snapshot {
@@ -497,23 +515,22 @@ impl Snapshot {
         cfg: &OciSnapshotConfig,
         cfg_bytes: &[u8],
     ) -> crate::Result<Descriptor> {
-        let memory_bytes = self.state.memory.as_slice();
-        let memory_size = memory_bytes.len();
-        if memory_size == 0 || !memory_size.is_multiple_of(PAGE_SIZE) {
-            return Err(crate::new_error!(
-                "snapshot memory size {} must be a non-zero multiple of PAGE_SIZE",
-                memory_size
-            ));
-        }
-
         let blobs_dir = dir.join("blobs").join("sha256");
         std::fs::create_dir_all(&blobs_dir).map_err(|e| {
             crate::new_error!("failed to create OCI blobs dir {:?}: {}", blobs_dir, e)
         })?;
 
-        // Snapshot blob: the raw memory bytes.
-        let snapshot_digest = Digest256::from_bytes(memory_bytes);
-        put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
+        let mut descriptors = self
+            .state
+            .memory
+            .blobs()
+            .map(|blob| {
+                let bytes = blob.memory().as_slice();
+                let digest = Digest256::from_bytes(bytes);
+                put_blob_if_absent(&blobs_dir, &digest, bytes)?;
+                blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
 
         // Transport blob: the canonical ring image omitted from memory.
         let transport = self.state.virtq.as_ref().ok_or_else(|| {
@@ -522,30 +539,18 @@ impl Snapshot {
         let transport_bytes = transport::encode(&self.state.layout, transport)?;
         let transport_digest = Digest256::from_bytes(&transport_bytes);
         put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
+        descriptors.push(blob_descriptor(
+            MT_TRANSPORT_CURRENT,
+            &transport_digest,
+            transport_bytes.len(),
+        )?);
 
         // Config blob.
         let cfg_digest = Digest256::from_bytes(cfg_bytes);
         put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
 
         // Manifest blob.
-        let config_descriptor = DescriptorBuilder::default()
-            .media_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
-            .digest(oci_digest(&cfg_digest)?)
-            .size(cfg_bytes.len() as u64)
-            .build()
-            .map_err(|e| crate::new_error!("failed to build config descriptor: {}", e))?;
-        let snapshot_descriptor = DescriptorBuilder::default()
-            .media_type(MediaType::Other(MT_SNAPSHOT_CURRENT.to_string()))
-            .digest(oci_digest(&snapshot_digest)?)
-            .size(memory_size as u64)
-            .build()
-            .map_err(|e| crate::new_error!("failed to build snapshot descriptor: {}", e))?;
-        let transport_descriptor = DescriptorBuilder::default()
-            .media_type(MediaType::Other(MT_TRANSPORT_CURRENT.to_string()))
-            .digest(oci_digest(&transport_digest)?)
-            .size(transport_bytes.len() as u64)
-            .build()
-            .map_err(|e| crate::new_error!("failed to build transport descriptor: {}", e))?;
+        let config_descriptor = blob_descriptor(MT_CONFIG_CURRENT, &cfg_digest, cfg_bytes.len())?;
         // `artifactType` is set equal to `config.mediaType` per OCI
         // image-spec "Guidelines for Artifact Usage". Registries
         // surface this on the distribution-spec referrers API. Tools
@@ -555,7 +560,7 @@ impl Snapshot {
             .media_type(MediaType::ImageManifest)
             .artifact_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
             .config(config_descriptor)
-            .layers(vec![snapshot_descriptor, transport_descriptor])
+            .layers(descriptors)
             .build()
             .map_err(|e| crate::new_error!("failed to build OCI manifest: {}", e))?;
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -624,6 +629,7 @@ impl Snapshot {
             hypervisor: Hypervisor::current()
                 .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
             cpu_vendor: CpuVendor::current(),
+            host_page_size: page_size::get(),
             stack_top_gva: self.state.stack_top_gva,
             entrypoint_addr,
             original_entrypoint_addr: self.state.original_entrypoint,
@@ -648,10 +654,19 @@ impl Snapshot {
                 h2g_buffer_size: l.get_h2g_buffer_size(),
                 g2h_pool_pages: l.get_g2h_pool_pages(),
                 h2g_pool_pages: l.get_h2g_pool_pages(),
-                snapshot_size: l.snapshot_size(),
-                pt_size: l.pt_size(),
             },
-            memory_size: self.state.memory.mem_size() as u64,
+            layers: self
+                .state
+                .memory
+                .blobs()
+                .map(OciSnapshotLayer::from)
+                .collect(),
+            page_table_layer: self
+                .state
+                .memory
+                .blobs()
+                .position(|blob| Arc::ptr_eq(blob, self.state.memory.page_table_blob()))
+                .ok_or_else(|| crate::new_error!("snapshot page-table blob is missing"))?,
             host_functions,
             snapshot_generation: self.state.snapshot_generation,
             metadata: self.metadata.clone(),
@@ -774,8 +789,8 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V3 => {}
-            MT_CONFIG_V1 | MT_CONFIG_V2 => {
+            MT_CONFIG_V4 => {}
+            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 => {
                 return Err(crate::new_error!(
                     "snapshot config media type {:?} is incompatible with snapshot ABI {}",
                     cfg_media,
@@ -786,7 +801,7 @@ impl Snapshot {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V3
+                    MT_CONFIG_V4
                 ));
             }
         }
@@ -813,25 +828,26 @@ impl Snapshot {
             }
         }
         let layers = manifest.layers();
-        if layers.len() != 2 {
+        let (data_descs, tail) = layers.split_at(layers.len().saturating_sub(1));
+        let [transport_desc] = tail else {
             return Err(crate::new_error!(
-                "expected exactly two OCI layers (memory and transport), found {}",
+                "expected snapshot layers and one transport layer, found {} layers",
                 layers.len()
             ));
-        }
-        let snap_desc = &layers[0];
-        let snap_media = snap_desc.media_type().to_string();
-        match snap_media.as_str() {
-            MT_SNAPSHOT_V1 => {}
-            other => {
-                return Err(crate::new_error!(
-                    "unexpected snapshot layer media type {:?} (supported: {:?})",
-                    other,
-                    MT_SNAPSHOT_V1
-                ));
+        };
+        for snap_desc in data_descs {
+            let snap_media = snap_desc.media_type().to_string();
+            match snap_media.as_str() {
+                MT_SNAPSHOT_V2 => {}
+                other => {
+                    return Err(crate::new_error!(
+                        "unexpected snapshot layer media type {:?} (supported: {:?})",
+                        other,
+                        MT_SNAPSHOT_V2
+                    ));
+                }
             }
         }
-        let transport_desc = &layers[1];
         let transport_media = transport_desc.media_type().to_string();
         match transport_media.as_str() {
             MT_TRANSPORT_V1 => {}
@@ -855,11 +871,70 @@ impl Snapshot {
                 cfg.layout.scratch_size
             ));
         }
+        // Each data layer has one mapping, and one more blob may hold only page
+        // tables. Reject before opening blobs.
+        if cfg.layers.len() > MAX_SNAPSHOT_LAYERS + 1 {
+            return Err(crate::new_error!(
+                "snapshot has {} data layers, limit is {}",
+                cfg.layers.len(),
+                MAX_SNAPSHOT_LAYERS + 1
+            ));
+        }
+        if data_descs.len() != cfg.layers.len() {
+            return Err(crate::new_error!(
+                "expected {} snapshot layers and one transport layer, found {} layers",
+                cfg.layers.len(),
+                layers.len()
+            ));
+        }
+        if cfg.page_table_layer >= cfg.layers.len() {
+            return Err(crate::new_error!(
+                "snapshot page_table_layer {} is out of range",
+                cfg.page_table_layer
+            ));
+        }
 
-        // 5. snapshot blob: open once, hash and mmap the same
+        // Reject blob sizes no valid snapshot has before opening any blob.
+        // Guest data must fit between BASE_ADDRESS and scratch without
+        // overlapping. Page tables must fit in scratch, which is at most
+        // MAX_MEMORY_SIZE.
+        let data_space = hyperlight_common::layout::scratch_base_gpa(cfg.layout.scratch_size)
+            .saturating_sub(SandboxMemoryLayout::BASE_ADDRESS as u64);
+        let mut data_bytes = 0u64;
+        for (index, (layer, desc)) in cfg.layers.iter().zip(data_descs).enumerate() {
+            if layer.data_len == 0 && index != cfg.page_table_layer {
+                return Err(crate::new_error!("snapshot layer {} has no data", index));
+            }
+            let blob_len = layer
+                .data_len
+                .checked_add(layer.page_table_len)
+                .filter(|_| layer.page_table_len <= SandboxMemoryLayout::MAX_MEMORY_SIZE)
+                .and_then(|len| len.checked_next_multiple_of(host_page_size()));
+            if blob_len.is_none_or(|len| len as u64 != desc.size()) {
+                return Err(crate::new_error!(
+                    "snapshot layer {} size {} does not match its data and page-table lengths",
+                    index,
+                    desc.size()
+                ));
+            }
+            data_bytes = data_bytes
+                .checked_add(layer.data_len as u64)
+                .filter(|bytes| *bytes <= data_space)
+                .ok_or_else(|| {
+                    crate::new_error!(
+                        "snapshot data exceeds the {} bytes below scratch",
+                        data_space
+                    )
+                })?;
+        }
+
+        // 5. snapshot blobs: open each once, hash and mmap the same
         //    handle so an attacker cannot swap the file between
         //    verification and mapping.
-        let snap_file = open_snapshot_blob(&blobs_dir, snap_desc, cfg.memory_size, verify_blobs)?;
+        let mut snap_files = data_descs
+            .iter()
+            .map(|desc| open_snapshot_blob(&blobs_dir, desc))
+            .collect::<crate::Result<Vec<_>>>()?;
         let transport_bytes = load_blob(
             "transport",
             &blobs_dir,
@@ -899,53 +974,58 @@ impl Snapshot {
             cfg.layout.code_virt_base
         };
         layout.set_code_gva(code_gva)?;
-        // `snapshot_size` and `pt_size` are independent fields.
-        if let Some(pt) = cfg.layout.pt_size {
-            layout.set_pt_size(pt)?;
-        }
-        layout.set_snapshot_size(cfg.layout.snapshot_size);
-
-        // `snapshot_size` is the guest-visible prefix mapped into the
-        // snapshot region. It must cover at least the regions the
-        // layout fields describe (code, PEB, heap, init data),
-        // otherwise the guest mapping is too short to back them. The
-        // `snapshot_size + pt_size == memory_size` invariant alone
-        // does not bound `snapshot_size` from below, since a smaller
-        // `snapshot_size` can be offset by a larger `pt_size`.
-        let required_memory_size = layout.get_memory_size()? as u64;
-        if (layout.snapshot_size() as u64) < required_memory_size {
-            return Err(crate::new_error!(
-                "snapshot snapshot_size ({}) is smaller than the layout size ({})",
-                layout.snapshot_size(),
-                required_memory_size
-            ));
-        }
+        layout.ensure_page_tables_fit(cfg.layers[cfg.page_table_layer].page_table_len)?;
 
         let virtq = transport::decode(&layout, &transport_bytes)?;
 
-        // 7. mmap the snapshot blob (file-backed CoW). The blob is
-        //    the raw memory image. `ReadonlySharedMemory::from_file`
+        // 7. mmap the snapshot blobs (file-backed CoW). Each blob is
+        //    a raw memory image. `ReadonlySharedMemory::from_file`
         //    surrounds it with host guard pages. The guest mapping
-        //    of the snapshot region covers only the data prefix
-        //    (`snapshot_size`). The PT tail sits past that prefix
-        //    in the host mapping and is copied into the scratch
-        //    region on restore. Keeping it out of the guest mapping
-        //    of the snapshot region avoids overlap with
-        //    `map_file_cow` regions installed immediately after the
-        //    snapshot in guest PA space.
-        let memory = ReadonlySharedMemory::from_file(&snap_file, layout.snapshot_size())?;
+        //    of each blob covers only the data prefix (`data_len`)
+        //    at its layer's GPA. The PT tail sits past that prefix
+        //    in the host mapping. Restore copies the tail of the
+        //    page-table layer into the scratch region. Keeping PT
+        //    tails out of the guest mapping avoids overlap with the
+        //    next layer and with `map_file_cow` regions installed
+        //    immediately after the snapshot in guest PA space.
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+        let blobs = cfg
+            .layers
+            .iter()
+            .zip(data_descs)
+            .zip(&snap_files)
+            .map(|((layer, desc), file)| {
+                Ok(Arc::new(SnapshotBlob::new(
+                    map_snapshot_blob(file, desc, layer.data_len)?,
+                    layer.gpa_start,
+                    layer.page_table_len,
+                    scratch_base,
+                )?))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        let page_tables = blobs[cfg.page_table_layer].clone();
+        let data_layers = blobs
+            .into_iter()
+            .filter(|blob| blob.data_len() > 0)
+            .collect();
+        let memory = Arc::new(SnapshotMemory::new(data_layers, page_tables)?);
+        // Hash after validating the layers so malformed snapshots fail
+        // cheaply.
+        if verify_blobs {
+            for (desc, file) in data_descs.iter().zip(&mut snap_files) {
+                verify_blob_file("snapshot", file, &parse_oci_digest(desc.digest())?)?;
+            }
+        }
 
-        // The size validation in `open_snapshot_blob` stats the file
-        // before mapping. Nothing prevents the file from being
-        // truncated between that stat and the mmap, which would leave
-        // the mapping shorter than the config claims and make restore
-        // read past the end. Compare the mapped length against
-        // `memory_size` to reject a file mutated under us.
-        if memory.mem_size() as u64 != cfg.memory_size {
+        // The snapshot GPA span must cover at least the regions the
+        // layout fields describe (code, PEB, heap, init data),
+        // otherwise the guest mapping is too short to back them.
+        let required_memory_size = layout.get_memory_size()?;
+        if memory.gpa_span_len() < required_memory_size {
             return Err(crate::new_error!(
-                "mapped snapshot size ({}) does not match config memory_size ({}); the blob may have changed during loading",
-                memory.mem_size(),
-                cfg.memory_size
+                "snapshot GPA span ({}) is smaller than the layout size ({})",
+                memory.gpa_span_len(),
+                required_memory_size
             ));
         }
 
