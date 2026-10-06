@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Related snapshots share immutable memory layers. This reduces capture time
   and memory use. A guest can read data it overwrote before a snapshot from the
   older layers of that snapshot.
+* **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
+  sandbox and removes `map_region` and `map_file_cow` regions, which only
+  `restore` removed before. Region pages the guest has not mapped into its page
+  tables become unreachable at the snapshot instead of at the next restore.
 
 * **Breaking:** The transport arena sits one unmapped guard page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that guard page. Snapshot ABI 7: existing snapshots must be regenerated.
 
