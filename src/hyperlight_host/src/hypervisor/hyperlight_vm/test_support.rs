@@ -23,7 +23,6 @@ pub(crate) enum VmOperation {
     SetDebugRegs,
     #[cfg(target_arch = "x86_64")]
     ResetXsave,
-    #[cfg(target_arch = "x86_64")]
     SetSregs,
     #[cfg(target_arch = "x86_64")]
     SetMsrs,
@@ -163,7 +162,6 @@ impl VirtualMachine for FaultInjectingVirtualMachine {
         &mut self,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
-        #[cfg(target_arch = "x86_64")]
         if self.should_fail(VmOperation::SetSregs) {
             return Err(RegisterError::SetSregs(Self::injected_error()));
         }

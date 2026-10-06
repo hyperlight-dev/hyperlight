@@ -108,6 +108,16 @@ them. Blobs are read-only. Capture builds the tables for their scratch address.
 4. Make the list of layers. The new blob is one layer when it holds new pages.
    This snapshot keeps each parent layer that still gives at least one page,
    whole. This snapshot drops a parent layer that gives no page.
+5. Install the snapshot into the sandbox. A later snapshot saves only the pages
+   changed after this one. A page the guest wrote before this snapshot faults
+   again on its next write.
+
+### Regions from `map_region` and `map_file_cow`
+
+A snapshot saves the pages of these regions that the guest page tables map.
+Step 5 removes the regions, and the sandbox stops using their memory. A page
+the guest has not mapped is lost. A later snapshot can place a blob at its
+guest physical address.
 
 ### Restoring a Sandbox to a Snapshot
 
@@ -140,9 +150,11 @@ snapshot does not remove it from the snapshot.
 
 ### API
 
-No public API changes, except `PtRootFinder`. It received the flat snapshot
+No public API changes, except `PtRootFinder` and `Sandbox::snapshot`.
+`PtRootFinder` received the flat snapshot
 buffer, which no longer exists, so it now receives a reader that takes a guest
-physical address.
+physical address. `Sandbox::snapshot` installs the snapshot into the sandbox
+and removes the regions of `map_region` and `map_file_cow`.
 
 ### Snapshots on Disk
 

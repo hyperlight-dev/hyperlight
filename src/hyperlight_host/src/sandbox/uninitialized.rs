@@ -269,6 +269,10 @@ impl UninitializedSandbox {
     /// the sandbox's primary shared memory region (`BASE_ADDRESS` to
     /// `BASE_ADDRESS + shared_mem_size`).
     ///
+    /// [`Sandbox::snapshot`] copies only the pages of this region that the
+    /// guest has mapped into its page tables, during initialization or a later
+    /// call, then removes the region. Pages the guest has not mapped are lost.
+    ///
     /// Returns the length of the mapping in bytes.
     #[instrument(err(Debug), skip(self, file_path, guest_base), parent = Span::current())]
     pub fn map_file_cow(
