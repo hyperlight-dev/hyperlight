@@ -6,7 +6,7 @@ mod file_tests;
 pub(crate) mod memory;
 mod tripwires;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -173,6 +173,9 @@ pub(crate) struct PageTableReader<'a> {
     memory: &'a GuestPhysicalMemoryView<'a>,
     root: u64,
     failure: Cell<Option<&'static str>>,
+    /// Address and copy of the last table page read. A walk reads the
+    /// entries of one table in sequence.
+    cache: RefCell<(u64, [u8; PAGE_SIZE])>,
 }
 impl<'a> PageTableReader<'a> {
     pub(crate) fn new(memory: &'a GuestPhysicalMemoryView<'a>, root: u64) -> Self {
@@ -180,6 +183,8 @@ impl<'a> PageTableReader<'a> {
             memory,
             root,
             failure: Cell::new(None),
+            // An unaligned address never matches a table page.
+            cache: RefCell::new((u64::MAX, [0; PAGE_SIZE])),
         }
     }
 
@@ -190,6 +195,19 @@ impl<'a> PageTableReader<'a> {
             None => Ok(()),
         }
     }
+
+    fn read_cached(&self, addr: u64) -> Option<vmem::PageTableEntry> {
+        let page = addr & !(PAGE_SIZE as u64 - 1);
+        let offset = usize::try_from(addr - page).ok()?;
+        let mut cache = self.cache.borrow_mut();
+        if cache.0 != page {
+            cache.0 = u64::MAX;
+            self.memory.read(page, &mut cache.1).ok()?;
+            cache.0 = page;
+        }
+        let entry = cache.1.get(offset..offset + PTE_SIZE)?;
+        Some(vmem::PageTableEntry::from_le_bytes(entry.try_into().ok()?))
+    }
 }
 impl<'a> hyperlight_common::vmem::TableReadOps for PageTableReader<'a> {
     type TableAddr = u64;
@@ -197,6 +215,9 @@ impl<'a> hyperlight_common::vmem::TableReadOps for PageTableReader<'a> {
         addr + offset
     }
     unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
+        if let Some(entry) = self.read_cached(addr) {
+            return entry;
+        }
         let mut pte_bytes = [0u8; PTE_SIZE];
         if self.memory.read(addr, &mut pte_bytes).is_err() {
             // Attacker-controlled data pointed out-of-bounds. We'll
@@ -1550,6 +1571,35 @@ mod tests {
         assert_eq!(entry, 0);
         let error = reader.finish().unwrap_err().to_string();
         assert!(error.contains("accessed unbacked memory"), "{error}");
+    }
+
+    #[test]
+    fn page_table_reader_switches_cached_table_pages() {
+        let (manager, pt_base) = make_simple_pt_mgr();
+        let first = 8;
+        let second = PAGE_SIZE + 16;
+        manager.scratch_mem.write::<u64>(first, 0x1111).unwrap();
+        manager.scratch_mem.write::<u64>(second, 0x2222).unwrap();
+        let scratch_base =
+            hyperlight_common::layout::scratch_base_gpa(manager.layout.get_scratch_size());
+        let memory = crate::mem::mgr::GuestPhysicalMemoryView::new(
+            &manager.shared_mem,
+            &manager.scratch_mem,
+            manager.layout,
+        );
+        let reader = super::PageTableReader::new(&memory, pt_base);
+        // SAFETY: the reader borrows `memory`, which outlives these calls.
+        let read = |offset: usize| unsafe {
+            <super::PageTableReader as vmem::TableReadOps>::read_entry(
+                &reader,
+                scratch_base + offset as u64,
+            )
+        };
+
+        assert_eq!(read(first), 0x1111);
+        assert_eq!(read(second), 0x2222);
+        assert_eq!(read(first), 0x1111);
+        assert!(reader.finish().is_ok());
     }
 
     #[test]
