@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* **Breaking:** Snapshots use ABI 7 and config schema v4. Existing snapshots
+  must be regenerated.
+* **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
+  `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read(gpa, buffer)?`
+  and return roots with `Ok(roots)`.
+* Related snapshots share immutable memory layers. This reduces capture time
+  and memory use. A guest can read data it overwrote before a snapshot from the
+  older layers of that snapshot.
 
 ### Removed
 
