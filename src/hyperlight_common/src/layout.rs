@@ -11,6 +11,8 @@ mod arch;
 pub use arch::{
     SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
 };
+#[cfg(target_arch = "aarch64")]
+pub use arch::{WHP_GICD_BASE_GPA, WHP_GICR_BASE_GPA, WHP_GITS_TRANSLATOR_BASE_GPA};
 
 use crate::virtq;
 

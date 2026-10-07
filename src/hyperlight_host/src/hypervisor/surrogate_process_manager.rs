@@ -41,19 +41,21 @@ struct Asset;
 /// The name of the embedded surrogate asset (used as the key for `Asset::get`).
 const EMBEDDED_SURROGATE_NAME: &str = "hyperlight_surrogate.exe";
 
-/// The absolute hard limit on surrogate processes imposed by the
-/// `WHvMapGpaRange2` API (512 process handles per calling process).
-const HARD_MAX_SURROGATE_PROCESSES: usize = 512;
+/// The maximum number of concurrent WHP partitions supported by this target.
+#[cfg(target_arch = "aarch64")]
+pub(super) const MAX_WHP_PARTITIONS: usize = 64;
+#[cfg(not(target_arch = "aarch64"))]
+pub(super) const MAX_WHP_PARTITIONS: usize = 512;
 
 /// Environment variable controlling how many surrogate processes are
-/// pre-created when the manager starts. Must be between 1 and
-/// `HARD_MAX_SURROGATE_PROCESSES` (512). Defaults to 512 if unset.
+/// pre-created when the manager starts. Must be between 0 and
+/// `MAX_WHP_PARTITIONS`. Defaults to that limit if unset.
 const INITIAL_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_INITIAL_SURROGATES";
 
 /// Environment variable controlling the maximum number of surrogate processes
 /// that can exist (including those created on demand). Must be >=
-/// `HYPERLIGHT_INITIAL_SURROGATES` and <= `HARD_MAX_SURROGATE_PROCESSES`
-/// (512). Defaults to 512 if unset.
+/// `HYPERLIGHT_INITIAL_SURROGATES` and <= `MAX_WHP_PARTITIONS`.
+/// Defaults to that limit if unset.
 const MAX_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_MAX_SURROGATES";
 
 /// Returns the on-disk filename for the surrogate binary, incorporating the
@@ -74,17 +76,17 @@ fn surrogate_binary_name() -> Result<String> {
 /// (or `None` when the variable is unset or unparsable).
 ///
 /// Resolution order:
-/// 1. `max` is clamped to `0..=HARD_MAX_SURROGATE_PROCESSES`, defaulting
-///    to `HARD_MAX_SURROGATE_PROCESSES` when `None`.
+/// 1. `max` is clamped to `0..=MAX_WHP_PARTITIONS`, defaulting
+///    to `MAX_WHP_PARTITIONS` when `None`.
 /// 2. `initial` is clamped to `0..=max`, defaulting to `max` when `None`.
 ///    This guarantees `initial <= max` without an extra conditional.
 ///
 /// When `max == 0`, surrogates are disabled entirely and the system
-/// falls back to `WHvMapGpaRange` (single-VM-per-process mode).
+/// maps from the current process (single-VM-per-process mode).
 fn compute_surrogate_counts(raw_initial: Option<usize>, raw_max: Option<usize>) -> (usize, usize) {
     let max = raw_max
-        .map(|n| n.clamp(0, HARD_MAX_SURROGATE_PROCESSES))
-        .unwrap_or(HARD_MAX_SURROGATE_PROCESSES);
+        .map(|n| n.clamp(0, MAX_WHP_PARTITIONS))
+        .unwrap_or(MAX_WHP_PARTITIONS);
 
     // Clamp initial to 0..=max so it can never exceed the authoritative limit.
     let initial = raw_initial.map(|n| n.clamp(0, max)).unwrap_or(max);
@@ -96,7 +98,7 @@ fn compute_surrogate_counts(raw_initial: Option<usize>, raw_max: Option<usize>) 
 /// variables, applying validation and clamping.
 ///
 /// - `HYPERLIGHT_INITIAL_SURROGATES`: clamped to `0..=max`, default `max`.
-/// - `HYPERLIGHT_MAX_SURROGATES`: clamped to `0..=512`, default 512.
+/// - `HYPERLIGHT_MAX_SURROGATES`: clamped to the target's WHP partition limit.
 fn surrogate_process_counts() -> (usize, usize) {
     let raw_initial = std::env::var(INITIAL_SURROGATES_ENV_VAR)
         .ok()
@@ -151,12 +153,12 @@ fn surrogate_process_counts() -> (usize, usize) {
 /// on allocation/return to/from a Sandbox instance.
 /// It is intended to be used as a singleton and is thread safe.
 ///
-/// There is a limit of 512 partitions per process. By default 512 processes
-/// are pre-created at startup, but this can be reduced via
+/// Surrogate counts are capped at the target's WHP partition limit. The
+/// processes are pre-created at startup, but this can be reduced via
 /// `HYPERLIGHT_INITIAL_SURROGATES`. Additional processes are created on
 /// demand up to the limit set by `HYPERLIGHT_MAX_SURROGATES` (also
-/// defaulting to 512). If the pool is empty and the max has been reached,
-/// callers will block until a process is returned.
+/// defaulting to the partition limit). If the pool is empty and the max has
+/// been reached, callers will block until a process is returned.
 ///
 /// This class is `Send + Sync`, and internally manages the pool of
 /// surrogate processes in a concurrency-safe way.
@@ -862,21 +864,18 @@ mod tests {
         // --- Both unset (or unparsable) → defaults ---
         let (initial, max) = compute_surrogate_counts(None, None);
         assert_eq!(
-            initial, HARD_MAX_SURROGATE_PROCESSES,
-            "default initial should be {HARD_MAX_SURROGATE_PROCESSES}"
+            initial, MAX_WHP_PARTITIONS,
+            "default initial should be {MAX_WHP_PARTITIONS}"
         );
         assert_eq!(
-            max, HARD_MAX_SURROGATE_PROCESSES,
-            "default max should be {HARD_MAX_SURROGATE_PROCESSES}"
+            max, MAX_WHP_PARTITIONS,
+            "default max should be {MAX_WHP_PARTITIONS}"
         );
 
         // --- Only initial set ---
         let (initial, max) = compute_surrogate_counts(Some(32), None);
         assert_eq!(initial, 32, "initial should honour provided value");
-        assert_eq!(
-            max, HARD_MAX_SURROGATE_PROCESSES,
-            "max should default when unset"
-        );
+        assert_eq!(max, MAX_WHP_PARTITIONS, "max should default when unset");
 
         // --- Both set, max > initial ---
         let (initial, max) = compute_surrogate_counts(Some(8), Some(64));
@@ -894,24 +893,21 @@ mod tests {
         // --- initial at zero → allowed (surrogates disabled when max is also 0) ---
         let (initial, max) = compute_surrogate_counts(Some(0), None);
         assert_eq!(initial, 0, "initial of 0 should be allowed");
-        assert_eq!(
-            max, HARD_MAX_SURROGATE_PROCESSES,
-            "max should default when unset"
-        );
+        assert_eq!(max, MAX_WHP_PARTITIONS, "max should default when unset");
 
-        // --- initial above hard limit → clamped to 512 ---
+        // --- initial above the target limit → clamped ---
         let (initial, max) = compute_surrogate_counts(Some(9999), None);
         assert_eq!(
-            initial, HARD_MAX_SURROGATE_PROCESSES,
-            "initial should be clamped to {HARD_MAX_SURROGATE_PROCESSES}"
+            initial, MAX_WHP_PARTITIONS,
+            "initial should be clamped to {MAX_WHP_PARTITIONS}"
         );
-        assert_eq!(max, HARD_MAX_SURROGATE_PROCESSES);
+        assert_eq!(max, MAX_WHP_PARTITIONS);
 
         // --- Only max set → initial defaults then clamped down to max ---
-        let (initial, max) = compute_surrogate_counts(None, Some(256));
-        assert_eq!(max, 256, "max should honour provided value");
+        let (initial, max) = compute_surrogate_counts(None, Some(32));
+        assert_eq!(max, 32, "max should honour provided value");
         assert_eq!(
-            initial, 256,
+            initial, 32,
             "initial should be clamped down to max when it defaults above it"
         );
 
@@ -920,25 +916,23 @@ mod tests {
         assert_eq!(max, 0, "max of 0 should be allowed");
         assert_eq!(initial, 0, "initial should be clamped down to max");
 
-        // --- max above hard limit → clamped to 512 ---
+        // --- max above the target limit → clamped ---
         let (initial, max) = compute_surrogate_counts(None, Some(9999));
         assert_eq!(
-            max, HARD_MAX_SURROGATE_PROCESSES,
-            "max should be clamped to {HARD_MAX_SURROGATE_PROCESSES}"
+            max, MAX_WHP_PARTITIONS,
+            "max should be clamped to {MAX_WHP_PARTITIONS}"
         );
-        assert_eq!(initial, HARD_MAX_SURROGATE_PROCESSES);
+        assert_eq!(initial, MAX_WHP_PARTITIONS);
 
         // --- Both at boundary values ---
         let (initial, max) = compute_surrogate_counts(Some(1), Some(1));
         assert_eq!(initial, 1);
         assert_eq!(max, 1);
 
-        let (initial, max) = compute_surrogate_counts(
-            Some(HARD_MAX_SURROGATE_PROCESSES),
-            Some(HARD_MAX_SURROGATE_PROCESSES),
-        );
-        assert_eq!(initial, HARD_MAX_SURROGATE_PROCESSES);
-        assert_eq!(max, HARD_MAX_SURROGATE_PROCESSES);
+        let (initial, max) =
+            compute_surrogate_counts(Some(MAX_WHP_PARTITIONS), Some(MAX_WHP_PARTITIONS));
+        assert_eq!(initial, MAX_WHP_PARTITIONS);
+        assert_eq!(max, MAX_WHP_PARTITIONS);
     }
 
     /// Smoke-tests `surrogate_process_counts()` with the default test
@@ -950,15 +944,15 @@ mod tests {
         // In the standard CI / dev environment, neither HYPERLIGHT_INITIAL_SURROGATES
         // nor HYPERLIGHT_MAX_SURROGATES is set, so we expect the hard-max defaults.
         // If the env vars ARE set externally (e.g. a developer's shell), this test
-        // gracefully adapts: it only asserts the invariant initial <= max <= 512.
+        // gracefully adapts: it only asserts the target limit.
         let (initial, max) = surrogate_process_counts();
         assert!(
-            (0..=HARD_MAX_SURROGATE_PROCESSES).contains(&initial),
-            "initial {initial} should be in 0..={HARD_MAX_SURROGATE_PROCESSES}"
+            (0..=MAX_WHP_PARTITIONS).contains(&initial),
+            "initial {initial} should be in 0..={MAX_WHP_PARTITIONS}"
         );
         assert!(
-            (0..=HARD_MAX_SURROGATE_PROCESSES).contains(&max),
-            "max {max} should be in 0..={HARD_MAX_SURROGATE_PROCESSES}"
+            (0..=MAX_WHP_PARTITIONS).contains(&max),
+            "max {max} should be in 0..={MAX_WHP_PARTITIONS}"
         );
         assert!(initial <= max, "initial ({initial}) must be <= max ({max})");
     }

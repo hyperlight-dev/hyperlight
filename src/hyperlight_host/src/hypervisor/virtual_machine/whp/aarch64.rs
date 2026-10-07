@@ -13,8 +13,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use hyperlight_common::layout::{
+    WHP_GICD_BASE_GPA, WHP_GICR_BASE_GPA, WHP_GITS_TRANSLATOR_BASE_GPA,
+};
 use hyperlight_common::outb::VmAction;
 use windows::Win32::System::Hypervisor::*;
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows_result::HRESULT;
 
 use super::release_file_mapping;
@@ -24,7 +28,7 @@ use crate::hypervisor::regs::{
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::{
-    get_surrogate_process_manager, surrogates_disabled,
+    MAX_WHP_PARTITIONS, get_surrogate_process_manager, surrogates_disabled,
 };
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError,
@@ -74,8 +78,8 @@ const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
     emulation_mode: 1,
     reserved: 0,
     gic_v3_parameters: Arm64IcGicV3Parameters {
-        gicd_base_address: 0xffff0000,
-        gits_translator_base_address: 0xeff68000,
+        gicd_base_address: WHP_GICD_BASE_GPA,
+        gits_translator_base_address: WHP_GITS_TRANSLATOR_BASE_GPA,
         reserved: 0,
         gic_lpi_int_id_bits: 1,
         gic_ppi_overflow_interrupt_from_cntv: 0x1b,
@@ -84,9 +88,6 @@ const ARM64_IC_PARAMETERS: Arm64IcParameters = Arm64IcParameters {
     },
 };
 
-const GICR_BASE_GPA: u64 = 0xeffee000;
-// Keep this process below WHP's observed limit of 64 GIC-backed partitions.
-const MAX_WHP_PARTITIONS: usize = 64;
 const PARTITION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 type WhvResetPartitionFn = unsafe extern "system" fn(WHV_PARTITION_HANDLE) -> HRESULT;
@@ -281,20 +282,38 @@ impl Drop for NoSurrogateGuard {
 /// Determine whether the WHP hypervisor API is available.
 #[allow(dead_code)]
 pub(crate) fn is_hypervisor_present() -> bool {
-    let mut capability: WHV_CAPABILITY = Default::default();
-    let written_size: Option<*mut u32> = None;
+    const ARM64_SUPPORT_BIT: u64 = 1 << 11;
 
-    match unsafe {
+    let mut capability: WHV_CAPABILITY = Default::default();
+    let hypervisor_present = match unsafe {
         WHvGetCapability(
             WHvCapabilityCodeHypervisorPresent,
             &mut capability as *mut _ as *mut c_void,
             std::mem::size_of::<WHV_CAPABILITY>() as u32,
-            written_size,
+            None,
         )
     } {
         Ok(_) => unsafe { capability.HypervisorPresent.as_bool() },
         Err(_) => {
             tracing::info!("Windows Hypervisor Platform is not available on this system");
+            false
+        }
+    };
+    if !hypervisor_present {
+        return false;
+    }
+
+    match unsafe {
+        WHvGetCapability(
+            WHvCapabilityCodeFeatures,
+            &mut capability as *mut _ as *mut c_void,
+            std::mem::size_of::<WHV_CAPABILITY>() as u32,
+            None,
+        )
+    } {
+        Ok(_) => unsafe { capability.Features.AsUINT64 & ARM64_SUPPORT_BIT != 0 },
+        Err(error) => {
+            tracing::info!("Failed to query Windows Hypervisor Platform features: {error}");
             false
         }
     }
@@ -305,6 +324,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     reset_partition: WhvResetPartitionFn,
+    map_gpa_range2: WhvMapGpaRange2Fn,
     _partition_permit: WhpPartitionPermit,
     surrogate_process: Option<SurrogateProcess>,
     /// Tracks host-side file mappings for cleanup.
@@ -321,6 +341,8 @@ impl WhpVm {
         const NUM_CPU: u32 = 1;
 
         let reset_partition = unsafe { try_load_whv_reset_partition() }
+            .map_err(|error| CreateVmError::InitializeVm(error.into()))?;
+        let map_gpa_range2 = unsafe { try_load_whv_map_gpa_range2() }
             .map_err(|error| CreateVmError::InitializeVm(error.into()))?;
         let partition_permit = WhpPartitionPermit::acquire()?;
         let no_surrogate = surrogates_disabled();
@@ -357,7 +379,7 @@ impl WhpVm {
 
                 let names = [WHV_ARM64_REGISTER_GICR_BASE_GPA];
                 let values = [Align16(WHV_REGISTER_VALUE {
-                    Reg64: GICR_BASE_GPA,
+                    Reg64: WHP_GICR_BASE_GPA,
                 })];
                 WHvSetVirtualProcessorRegisters(p, 0, names.as_ptr(), 1, values.as_ptr().cast())
                     .map_err(|e| CreateVmError::InitializeVm(e.into()))
@@ -379,6 +401,7 @@ impl WhpVm {
         let mut vm = WhpVm {
             partition,
             reset_partition,
+            map_gpa_range2,
             _partition_permit: partition_permit,
             surrogate_process: None,
             file_mappings: Vec::new(),
@@ -456,26 +479,12 @@ impl VirtualMachine for WhpVm {
             .iter()
             .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
 
-        match &mut self.surrogate_process {
-            None => {
-                let host_addr = (region.host_region.start.handle_base
-                    + region.host_region.start.offset)
-                    as *const c_void;
-                let res = unsafe {
-                    WHvMapGpaRange(
-                        self.partition,
-                        host_addr,
-                        region.guest_region.start as u64,
-                        region.guest_region.len() as u64,
-                        flags,
-                    )
-                };
-                if let Err(e) = res {
-                    return Err(MapMemoryError::Hypervisor(
-                        super::super::HypervisorError::WindowsError(e),
-                    ));
-                }
-            }
+        let (process_handle, host_addr) = match &mut self.surrogate_process {
+            None => (
+                unsafe { GetCurrentProcess() },
+                (region.host_region.start.handle_base + region.host_region.start.offset)
+                    as *const c_void,
+            ),
             Some(surrogate) => {
                 let surrogate_base = surrogate
                     .map(
@@ -486,37 +495,29 @@ impl VirtualMachine for WhpVm {
                     )
                     .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
                 let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
-
-                let whvmapgparange2_func = unsafe {
-                    match try_load_whv_map_gpa_range2() {
-                        Ok(func) => func,
-                        Err(e) => {
-                            return Err(MapMemoryError::LoadApi {
-                                api_name: "WHvMapGpaRange2",
-                                source: e,
-                            });
-                        }
-                    }
-                };
-
-                let res = unsafe {
-                    whvmapgparange2_func(
-                        self.partition,
-                        surrogate.process_handle.into(),
-                        surrogate_addr,
-                        region.guest_region.start as u64,
-                        region.guest_region.len() as u64,
-                        flags,
-                    )
-                };
-                if res.is_err() {
-                    return Err(MapMemoryError::Hypervisor(
-                        super::super::HypervisorError::WindowsError(
-                            windows_result::Error::from_hresult(res),
-                        ),
-                    ));
-                }
+                (
+                    surrogate.process_handle.into(),
+                    surrogate_addr as *const c_void,
+                )
             }
+        };
+
+        let result = unsafe {
+            (self.map_gpa_range2)(
+                self.partition,
+                process_handle,
+                host_addr,
+                region.guest_region.start as u64,
+                region.guest_region.len() as u64,
+                flags,
+            )
+        };
+        if result.is_err() {
+            return Err(MapMemoryError::Hypervisor(
+                super::super::HypervisorError::WindowsError(windows_result::Error::from_hresult(
+                    result,
+                )),
+            ));
         }
 
         if region.region_type == MemoryRegionType::MappedFile {
@@ -586,7 +587,7 @@ impl VirtualMachine for WhpVm {
 
                 // On ARM64, I/O is performed via MMIO writes to the I/O page.
                 let io_page_gpa = const { hyperlight_common::layout::io_page().unwrap().0 };
-                let is_write = header.intercept_access_type != 0;
+                let is_write = header.intercept_access_type == 1;
 
                 if is_write
                     && gpa >= io_page_gpa
@@ -839,7 +840,7 @@ impl VirtualMachine for WhpVm {
 
             let names = [WHV_ARM64_REGISTER_GICR_BASE_GPA];
             let values = [Align16(WHV_REGISTER_VALUE {
-                Reg64: GICR_BASE_GPA,
+                Reg64: WHP_GICR_BASE_GPA,
             })];
             WHvSetVirtualProcessorRegisters(
                 self.partition,
@@ -907,29 +908,18 @@ type WhvMapGpaRange2Fn = unsafe extern "system" fn(
 ) -> HRESULT;
 
 unsafe fn try_load_whv_map_gpa_range2() -> Result<WhvMapGpaRange2Fn, windows_result::Error> {
-    use windows::Win32::System::LibraryLoader::*;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     use windows::core::s;
 
-    let module = unsafe {
-        LoadLibraryExA(
-            s!("winhvplatform.dll"),
-            None,
-            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-        )
-    }?;
+    let module = unsafe { GetModuleHandleA(s!("winhvplatform.dll")) }?;
     let proc = unsafe { GetProcAddress(module, s!("WHvMapGpaRange2")) };
-    match proc {
-        Some(f) => Ok(unsafe {
-            std::mem::transmute::<unsafe extern "system" fn() -> isize, WhvMapGpaRange2Fn>(f)
-        }),
-        None => {
-            unsafe {
-                windows::Win32::Foundation::FreeLibrary(module).ok();
-            }
-            Err(windows_result::Error::new(
-                HRESULT::from_win32(127), // ERROR_PROC_NOT_FOUND
-                "Failed to find WHvMapGpaRange2 in winhvplatform.dll",
-            ))
-        }
-    }
+    proc.map(|function| unsafe {
+        std::mem::transmute::<unsafe extern "system" fn() -> isize, WhvMapGpaRange2Fn>(function)
+    })
+    .ok_or_else(|| {
+        windows_result::Error::new(
+            HRESULT::from_win32(127),
+            "Failed to find WHvMapGpaRange2 in winhvplatform.dll",
+        )
+    })
 }

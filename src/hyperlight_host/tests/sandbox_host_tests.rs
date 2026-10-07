@@ -790,9 +790,9 @@ fn oversized_fixed_host_error_returns_transport_error() {
 
 #[test]
 fn callback_test_parallel() {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
     const THREADS: usize = 64;
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(all(target_arch = "aarch64", target_os = "windows")))]
     const THREADS: usize = 100;
 
     let handles: Vec<_> = (0..THREADS)
