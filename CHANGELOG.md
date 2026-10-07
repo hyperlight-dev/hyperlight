@@ -24,13 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fallback dispatch.
 * Support overriding the guest log level when building or restoring initialized
   snapshots.
-* `Snapshot::save` now writes the guest memory blob sparsely, skipping all-zero
-  blocks instead of writing them. A guest memory image is mostly untouched
-  pages, so this cuts the bytes actually written by roughly the proportion of
-  the guest's memory it never touched. The saved layout is byte-for-byte
-  identical and its digest is unchanged, so this is transparent to readers and
-  to previously saved snapshots. Filesystems that do not support sparse files
-  store the blob as before.
 * Expose C guest `ByteChunks` values as pointer and length arrays.
 * Return typed `hl_ReturnValue` objects from C guest functions through
   `hl_result_from_*` constructors.
