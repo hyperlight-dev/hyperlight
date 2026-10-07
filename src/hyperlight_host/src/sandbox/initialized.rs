@@ -21,7 +21,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::mgr::{ExecutionMode, SandboxMemoryManager};
 use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
@@ -477,7 +477,7 @@ impl Sandbox {
     fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
         self.with_guest_execution(|sbox| {
             sbox.mem_mgr.begin_snapshot_checkpoint()?;
-            sbox.dispatch_guest_call()?;
+            sbox.dispatch_guest_call_restricted()?;
 
             sbox.mem_mgr.finish_snapshot_checkpoint()?;
 
@@ -1028,6 +1028,15 @@ impl Sandbox {
             })
     }
 
+    /// Dispatch in restricted mode, then restore the previous mode.
+    fn dispatch_guest_call_restricted(&mut self) -> Result<()> {
+        let mode = std::mem::replace(&mut self.mem_mgr.execution_mode, ExecutionMode::Restricted);
+        let res = self.dispatch_guest_call();
+        self.mem_mgr.execution_mode = mode;
+
+        res
+    }
+
     /// Returns a handle for interrupting guest execution.
     ///
     /// # Examples
@@ -1258,6 +1267,7 @@ mod tests {
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+    use crate::mem::mgr::ExecutionMode;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
@@ -1604,6 +1614,46 @@ mod tests {
 
         assert!(sandbox.mem_mgr.abort_buffer.is_empty());
         assert_eq!(sandbox.status(), SandboxStatus::Ready);
+    }
+
+    #[test]
+    fn restricted_dispatch_rejects_host_calls() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        let call = FunctionCall::new(
+            "PrintOutput".into(),
+            Some(vec![ParameterValue::String("checkpoint".into())]),
+            FunctionCallType::Guest,
+            i32::TYPE,
+        );
+        sandbox.mem_mgr.write_guest_function_call(&call).unwrap();
+
+        let error = sandbox.dispatch_guest_call_restricted().unwrap_err();
+
+        assert!(
+            error.to_string().contains("during a snapshot checkpoint"),
+            "{error}"
+        );
+        assert_eq!(sandbox.status(), SandboxStatus::Poisoned);
+        assert_eq!(sandbox.mem_mgr.execution_mode, ExecutionMode::Unrestricted);
+    }
+
+    #[test]
+    fn restore_resets_execution_mode() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+
+        // A panic during restricted dispatch skips the mode reset.
+        sandbox.mem_mgr.execution_mode = ExecutionMode::Restricted;
+        sandbox.restore(snapshot).unwrap();
+
+        sandbox
+            .call::<i32>("PrintOutput", "restored".to_string())
+            .unwrap();
     }
 
     #[test]

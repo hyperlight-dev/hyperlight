@@ -133,6 +133,15 @@ impl ReadonlySharedMemory {
 }
 pub(crate) use unused_hack::SnapshotSharedMemory;
 
+/// Guest operations the host accepts during a VM entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionMode {
+    /// Guest initialization and guest function calls.
+    Unrestricted,
+    /// Snapshot checkpoint preparation. Host function calls are rejected.
+    Restricted,
+}
+
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
@@ -151,6 +160,8 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) original_entrypoint: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
+    /// Guest operations the host accepts during the current VM entry.
+    pub(crate) execution_mode: ExecutionMode,
     /// Generation counter: how many snapshots have been taken from
     /// this sandbox's execution path from init to here. Incremented
     /// on each `snapshot` call; on `restore_snapshot` we inherit the
@@ -174,6 +185,7 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer.clone(),
+            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -314,6 +326,7 @@ where
             next_action,
             original_entrypoint: 0,
             abort_buffer: Vec::new(),
+            execution_mode: ExecutionMode::Unrestricted,
             snapshot_count: 0,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -368,6 +381,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer,
+            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -380,6 +394,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
+            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -691,6 +706,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.g2h_consumer = None;
         self.h2g_consumer = None;
+
+        // A panic during restricted dispatch can skip the mode reset.
+        self.execution_mode = ExecutionMode::Unrestricted;
 
         let gsnapshot = if *snapshot.memory() == self.shared_mem {
             // If the snapshot memory is already the correct memory,
