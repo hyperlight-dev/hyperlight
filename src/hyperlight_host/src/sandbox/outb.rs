@@ -16,7 +16,7 @@ use tracing::{Span, instrument};
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "mem_profile")]
 use crate::hypervisor::regs::CommonRegisters;
-use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::mgr::{ExecutionMode, SandboxMemoryManager};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::mem::virtq;
 #[cfg(feature = "mem_profile")]
@@ -36,6 +36,8 @@ pub enum HandleOutbError {
     InvalidPort(String),
     #[error("Failed to read host function call: {0}")]
     ReadHostFunctionCall(String),
+    #[error("Guest called a host function during a snapshot checkpoint")]
+    HostCallDuringCheckpoint,
     #[error("Failed to acquire lock at {0}:{1} - {2}")]
     LockFailed(&'static str, u32, String),
     #[error("Failed to write host function response: {0}")]
@@ -212,6 +214,7 @@ fn outb_virtq_call(
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
 ) -> Result<(), HandleOutbError> {
     let max_recv_len = mem_mgr.layout.get_g2h_queue_dims().pool_len();
+    let mode = mem_mgr.execution_mode;
 
     let Some(consumer) = mem_mgr.g2h_consumer.as_mut() else {
         return Err(HandleOutbError::ReadHostFunctionCall(
@@ -232,6 +235,10 @@ fn outb_virtq_call(
 
         let header = virtq::read_message_header(&mut request)
             .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
+
+        if mode == ExecutionMode::Restricted && header.kind == MsgKind::Request {
+            return Err(HandleOutbError::HostCallDuringCheckpoint);
+        }
 
         match header.kind {
             MsgKind::Request => break (request, reply, header),
