@@ -150,7 +150,8 @@ fn main() -> Result<()> {
     // Essentially the kvm and mshv3 features are ignored on windows as long as you use #[cfg(kvm)] and not #[cfg(feature = "kvm")].
     // You should never use #[cfg(feature = "kvm")] or #[cfg(feature = "mshv3")] in the codebase.
     cfg_aliases::cfg_aliases! {
-        gdb: { all(feature = "gdb", debug_assertions, target_arch = "x86_64") },
+        gdb_platform: { any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "windows")) },
+        gdb: { all(feature = "gdb", debug_assertions, gdb_platform) },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv3: { all(feature = "mshv3", target_os = "linux") },
         hvf: { all(feature = "hvf", target_os = "macos") },
