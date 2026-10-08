@@ -109,13 +109,6 @@ const _: () = {
     assert!((VIRTQ_BUFFER_GVA_END as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
     assert!(VIRTQ_BUFFER_GVA_START > SNAPSHOT_PT_GVA_MAX as u64);
 
-    #[cfg(target_arch = "x86_64")]
-    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
-    #[cfg(target_arch = "x86_64")]
-    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
-    #[cfg(target_arch = "aarch64")]
-    assert!(VIRTQ_BUFFER_GVA_END <= 1 << 48);
-
     assert!(VIRTQ_BUFFER_GVA_END < scratch_base_gva(16 * 1024 * 1024 * 1024));
     assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };
@@ -132,31 +125,14 @@ pub const fn scratch_base_gva(size: usize) -> u64 {
     (SCRATCH_TOP_GVA - size + 1) as u64
 }
 
-/// Compute the minimum scratch region size needed for a sandbox.
+/// Compute fixed scratch overhead for a sandbox, saturating at [`usize::MAX`].
 ///
-/// `transport_len` includes both rings and buffer pools. The result covers
-/// page tables for the pool aliases and saturates at [`usize::MAX`].
+/// `transport_len` covers rings and buffer pools. Snapshot page tables and
+/// runtime allocations need additional scratch.
 pub fn min_scratch_size(transport_len: usize) -> usize {
     arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))
-        .and_then(|size| size.checked_add(alias_table_len(transport_len)?))
         .unwrap_or(usize::MAX)
-}
-
-/// Upper bound on page-table bytes the guest allocates to alias `len` bytes.
-///
-/// Each of the three non-root levels needs one table per span the range
-/// covers, plus one when the range straddles a span boundary.
-fn alias_table_len(len: usize) -> Option<usize> {
-    let mut span = crate::vmem::PAGE_SIZE;
-    let mut tables = 0usize;
-
-    for _ in 0..3 {
-        span = span.checked_mul(crate::vmem::PAGE_TABLE_ENTRIES_PER_TABLE)?;
-        tables = tables.checked_add(len.div_ceil(span) + 1)?;
-    }
-
-    tables.checked_mul(crate::vmem::PAGE_TABLE_SIZE)
 }
 
 /// Validated address independent dimensions for one transport queue.
@@ -429,22 +405,12 @@ mod tests {
     }
 
     #[test]
-    fn minimum_scratch_includes_transport_and_alias_tables() {
+    fn minimum_scratch_includes_transport() {
         let fixed = arch::min_scratch_size().unwrap();
-        let table = crate::vmem::PAGE_TABLE_SIZE;
 
-        let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
-        assert_eq!(
-            fixed + transport_len + 6 * table,
-            min_scratch_size(transport_len)
-        );
-
-        // Each additional 2 MiB span needs another leaf table.
-        let transport_len = 5 << 20;
-        assert_eq!(
-            fixed + transport_len + (4 + 2 + 2) * table,
-            min_scratch_size(transport_len)
-        );
+        for transport_len in [0, (1 + 8 + 4) * crate::vmem::PAGE_SIZE, 5 << 20] {
+            assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
+        }
     }
 
     #[test]

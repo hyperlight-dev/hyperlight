@@ -364,8 +364,8 @@ drains and acknowledges them during the same VM exit.
 Guest `SlotPool` instances own all transport buffers. Pool clones share one
 allocation bitmap with each producer.
 Each producer pairs its backend with that pool. Completion leases carry the
-original slot addresses and full capacities. Backing owns fixed scratch-to-alias
-translation and paging. The backend holds only scratch bounds.
+original slot addresses and full capacities. Backing owns alias allocation and
+paging. The backend holds only scratch bounds.
 Guest completion mapping checks scratch bounds. Allocation ownership and
 initialized lengths follow the `BufferMap` safety contract.
 
@@ -381,8 +381,8 @@ external `ByteChunks`:
 * G2H host responses can become owner-backed guest `Bytes`.
 * `VecBytes` values copy into a contiguous `Vec<u8>`.
 * Multiple `Bytes` clones or slices backed by one owner keep one slot live.
-* The final owner returns its original `BufferLease`. Active pool mappings
-  remain available across ordinary calls.
+* The final owner unmaps its alias and returns the virtual range for reuse.
+  Its lease releases the scratch slot only in the slot's current generation.
 
 Producer reset releases allocations still owned by queue bookkeeping. After
 both producers reset and before H2G prefill, every live pool slot belongs to
@@ -393,14 +393,16 @@ handles. The host resets both consumers before processing more queue traffic.
 
 ### Retained virtual addresses
 
-Each pool has a stable virtual alias range, mapped eagerly at initialization.
-Completed `GuestMapping` owners keep their original leases.
-Capture, restore, and cloning preserve their pointers and contents.
+Both pools share one guest-global alias allocator. Its state is captured with
+the mappings and keeps retained ranges reserved across pool generations.
+Each completed `GuestMapping` owns a separate page-aligned range. Mapping occurs
+when the guest receives the buffer. Capture, restore, and cloning preserve its
+pointer and contents.
 
-Checkpoint preparation records the live slots. After restore, aliases of their
-pages reach captured data. The first transport entry copies the recorded slots
-into scratch and maps every pool alias to scratch. Only recorded slots are
-copied, so neighboring slots keep host writes such as the first request.
+Retained aliases reach captured memory after restore. The first transport
+entry advances the pool generations and recycles slots outside posted chains.
+Retained values keep their aliases until their final owner drops. Reusing
+freed virtual ranges bounds page-table growth by the alias high-water mark.
 
 ### Trust boundary
 
@@ -437,8 +439,6 @@ snapshot uses this flow:
   |                                     | reclaim completed G2H work
   |                                     | reset G2H producer
   |                                     | reset H2G producer
-  |                                     | record live slots
-  |                                     | unmap pages outside live slots
   |                                     | prefill free H2G slots
   |                                     | mailbox = CheckpointComplete
   |<------------------------------------| halt
@@ -459,7 +459,7 @@ The canonical state is:
   bounded by queue size. Each descriptor names a distinct, configured-size
   slot aligned relative to the pool start. Available descriptors form a prefix
   followed by zeroed descriptors.
-* Guest producer and pool bookkeeping matches the rings and retained leases.
+* Guest producer and pool bookkeeping matches the rings and current leases.
 * Driver and device event suppression is normalized.
 * Host consumers start at cursor zero.
 
@@ -490,11 +490,13 @@ The first request fits the H2G capacity posted at checkpoint. Retained slots
 reduce pool capacity but hold no ring descriptors. Framing, slot rounding, ring
 size, and the external-byte control reserve still apply.
 
-The first transport entry after checkpoint maps missing pool pages to scratch.
-After restore, it also copies recorded slots from captured aliases into scratch
-and remaps their pages. This applies to logs and host callbacks before request
-dispatch as well as ordinary H2G calls. Pool ownership, descriptors, and
-cursors stay unchanged, preserving the submitted request.
+The first transport entry after restore recycles slots held by captured
+leases. Posted chains keep their reservations, preserving the submitted
+request. Descriptors and cursors stay unchanged. Retained aliases keep their
+captured mappings without payload copying.
+
+Source continuation keeps the pool generation and live scratch leases intact.
+Checkpointing alone does not detach retained payloads from scratch.
 
 Result completion prefills free H2G slots. This requires no preparatory guest
 entry or application warmup for the checkpoint-posted capacity.

@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Fixed scratch aliases and page-table operations.
+//! Reusable virtual ranges for owner-backed transport aliases.
 
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::ops::Range;
 
-use fixedbitset::FixedBitSet;
-use hyperlight_common::layout::{SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, VIRTQ_BUFFER_GVA_END};
-use hyperlight_common::virtq::SlotPool;
-use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
+use hyperlight_common::layout::{VIRTQ_BUFFER_GVA_END, VIRTQ_BUFFER_GVA_START};
+use hyperlight_common::virtq::AllocError;
+use hyperlight_common::vmem::{BasicMapping, Mapping, MappingKind, PAGE_SIZE};
+use itertools::Itertools;
 
+use super::SyncWrap;
 use crate::paging;
 
-// Upper bounds stay fixed across scratch sizes.
-pub(crate) const ALIAS_OFFSET: u64 = SCRATCH_TOP_GVA as u64 + 1 - VIRTQ_BUFFER_GVA_END;
+/// Reservations are captured with their aliases and survive pool generations.
+static ALLOCATOR: SyncWrap<RefCell<AliasAllocator>> = SyncWrap(RefCell::new(AliasAllocator::new()));
 // Permissions for transport alias mappings.
 const PERMISSIONS: BasicMapping = BasicMapping {
     readable: true,
@@ -22,189 +24,319 @@ const PERMISSIONS: BasicMapping = BasicMapping {
     executable: false,
 };
 
-/// Translate a scratch address into its fixed alias.
-pub(crate) const fn alias(addr: u64) -> u64 {
-    addr - ALIAS_OFFSET
+/// First-fit free ranges followed by a page-aligned bump frontier.
+struct AliasAllocator {
+    /// Sorted, disjoint free ranges with adjacent ranges coalesced.
+    free: Vec<Range<u64>>,
+    next: u64,
 }
 
-/// Translate a scratch address into its guest physical address.
-const fn scratch_gpa(addr: u64) -> u64 {
-    addr - (SCRATCH_TOP_GVA - SCRATCH_TOP_GPA) as u64
+impl AliasAllocator {
+    /// Reserve addresses in the dedicated transport alias arena.
+    const fn new() -> Self {
+        Self {
+            free: Vec::new(),
+            next: VIRTQ_BUFFER_GVA_START,
+        }
+    }
+
+    /// Reuse freed addresses before extending the page-table footprint.
+    fn alloc(&mut self, len: u64) -> Result<Range<u64>, AllocError> {
+        if len == 0 || !len.is_multiple_of(PAGE_SIZE as u64) {
+            return Err(AllocError::InvalidArg);
+        }
+
+        if let Some(index) = self
+            .free
+            .iter()
+            .position(|range| range.end - range.start >= len)
+        {
+            let start = self.free[index].start;
+            let end = start + len;
+            self.free[index].start = end;
+
+            if end == self.free[index].end {
+                self.free.remove(index);
+            }
+
+            return Ok(start..end);
+        }
+
+        let end = self.next.checked_add(len).ok_or(AllocError::Overflow)?;
+
+        if end > VIRTQ_BUFFER_GVA_END {
+            return Err(AllocError::NoSpace);
+        }
+
+        let range = self.next..end;
+        self.next = end;
+        Ok(range)
+    }
+
+    /// Validate an owned, unmapped range and merge it with adjacent free ranges.
+    fn dealloc(&mut self, range: Range<u64>) {
+        assert!(range.start >= VIRTQ_BUFFER_GVA_START && range.end <= self.next);
+        assert!(range.start < range.end);
+        assert!(range.start.is_multiple_of(PAGE_SIZE as u64));
+        assert!(range.end.is_multiple_of(PAGE_SIZE as u64));
+
+        // Only the insertion point's neighbors can overlap the returned range.
+        let index = self.free.partition_point(|free| free.start < range.start);
+        assert!(index == 0 || self.free[index - 1].end <= range.start);
+        assert!(index == self.free.len() || range.end <= self.free[index].start);
+
+        let join_prev = index > 0 && self.free[index - 1].end == range.start;
+        let join_next = index < self.free.len() && range.end == self.free[index].start;
+
+        match (join_prev, join_next) {
+            (true, true) => self.free[index - 1].end = self.free.remove(index).end,
+            (true, false) => self.free[index - 1].end = range.end,
+            (false, true) => self.free[index].start = range.start,
+            (false, false) => self.free.insert(index, range),
+        }
+    }
 }
 
-/// Indices of the pool pages that `slot` touches.
-fn slot_pages(base: u64, slot: &Range<u64>) -> Range<usize> {
-    let start = (slot.start - base) as usize;
-    let end = (slot.end - base) as usize;
+/// Require complete source coverage by readable, writable basic pages.
+fn validate_source_pages(
+    source: Range<u64>,
+    pages: impl Iterator<Item = Mapping>,
+) -> Result<(), AllocError> {
+    let mut next_source = source.start;
 
-    start / PAGE_SIZE..end.div_ceil(PAGE_SIZE)
+    for page in pages {
+        let writable = matches!(
+            page.kind,
+            MappingKind::Basic(perm) if perm.readable && perm.writable
+        );
+
+        if !writable
+            || page.virt_base != next_source
+            || page.len != PAGE_SIZE as u64
+            || page.len > source.end.saturating_sub(next_source)
+        {
+            return Err(AllocError::InvalidArg);
+        }
+
+        next_source += page.len;
+    }
+
+    if next_source != source.end {
+        return Err(AllocError::InvalidArg);
+    }
+
+    Ok(())
 }
 
-/// Map the alias of one scratch page.
+/// Yield coalesced aliases for the same pages checked by [`validate_source_pages`].
+fn coalesce_mappings(
+    source: u64,
+    start: u64,
+    pages: impl Iterator<Item = Mapping>,
+) -> impl Iterator<Item = Mapping> {
+    let runs = pages.coalesce(|mut run, page| {
+        if run.phys_base.checked_add(run.len) != Some(page.phys_base) {
+            return Err((run, page));
+        }
+
+        run.len += page.len;
+        Ok(run)
+    });
+
+    runs.map(move |run| Mapping {
+        virt_base: start + (run.virt_base - source),
+        kind: MappingKind::Basic(PERMISSIONS),
+        ..run
+    })
+}
+
+/// Update owned alias entries and invalidate cleared translations.
 ///
 /// # Safety
 ///
-/// The scratch page must be aligned and owned by the caller. No view may
-/// access its alias until any replaced translation is invalidated.
-unsafe fn map_alias(page: u64) {
-    // SAFETY: The caller owns this scratch page and keeps its alias unused.
+/// The caller must own the alias range and exclude all views during updates.
+/// Mapped backing must remain live for later views.
+/// Serialize paging and share alias leaves across accessing roots.
+unsafe fn update_alias(mapping: Mapping) {
+    // SAFETY: The caller owns these entries and provides valid backing.
     unsafe {
         paging::map_region(
-            scratch_gpa(page),
-            alias(page) as *mut u8,
-            PAGE_SIZE as u64,
-            MappingKind::Basic(PERMISSIONS),
+            mapping.phys_base,
+            mapping.virt_base as *mut u8,
+            mapping.len,
+            mapping.kind,
         );
+    }
+
+    if mapping.kind == MappingKind::Unmapped {
+        paging::barrier::downgrade_in_place(mapping.virt_base..mapping.virt_base + mapping.len);
     }
 }
 
-/// Map pool aliases to scratch and recover retained slots after restore.
-///
-/// Restore zeroes scratch and leaves aliases of retained slots on captured
-/// memory. The host may already have written a request into neighboring
-/// slots, so only retained bytes are copied.
-///
-/// 1. Map missing aliases and record aliases of other memory as captured.
-/// 2. Copy retained bytes on captured pages from their aliases into scratch.
-/// 3. Remap captured pages to scratch and invalidate their old translations.
+/// Reserve an alias and map it to initialized scratch pages.
 ///
 /// # Safety
 ///
-/// The pool must own live scratch and its fixed alias pages. `retained` must
-/// hold the pool's slots that were live at the last checkpoint. Their views
-/// must stay unused during this call. Serialize paging and share alias leaves
-/// across accessing roots.
-pub(crate) unsafe fn map_pool(pool: &SlotPool, retained: &[Range<u64>]) {
-    let base = pool.base_addr();
-    let pages = pool.byte_len().div_ceil(PAGE_SIZE);
-    let mut captured = FixedBitSet::with_capacity(pages);
-
-    for index in 0..pages {
-        let page = base + (index * PAGE_SIZE) as u64;
-
-        match paging::virt_to_phys(alias(page)).next() {
-            // SAFETY: The caller owns this scratch page and its unmapped alias.
-            None => unsafe { map_alias(page) },
-            Some(mapping) if mapping.phys_base == scratch_gpa(page) => {}
-            Some(_) => captured.insert(index),
-        }
+/// The scratch range must be page-aligned, live, and initialized.
+pub(crate) unsafe fn map(scratch: u64, len: u64) -> Result<Range<u64>, AllocError> {
+    if !scratch.is_multiple_of(PAGE_SIZE as u64) {
+        return Err(AllocError::InvalidArg);
     }
 
-    if !captured.is_clear() {
-        for slot in retained {
-            for index in slot_pages(base, slot) {
-                if !captured.contains(index) {
-                    continue;
-                }
+    let mut allocator = ALLOCATOR.0.borrow_mut();
+    let alias = allocator.alloc(len)?;
+    let end = scratch.checked_add(len).ok_or(AllocError::Overflow)?;
 
-                let page = base + (index * PAGE_SIZE) as u64;
-                let start = slot.start.max(page);
-                let end = slot.end.min(page + PAGE_SIZE as u64);
-                let src = alias(start) as *const u8;
+    let pages = paging::virt_to_phys_range(scratch, len);
+    let res = validate_source_pages(scratch..end, pages);
 
-                // SAFETY: The alias maps captured memory, disjoint from this
-                // pool's scratch. No view accesses the slot meanwhile.
-                unsafe { src.copy_to_nonoverlapping(start as *mut u8, (end - start) as usize) };
-            }
-        }
+    if let Err(error) = res {
+        allocator.dealloc(alias);
+        return Err(error);
+    }
 
-        for index in captured.ones() {
-            let page = base + (index * PAGE_SIZE) as u64;
-            let aliased = alias(page);
+    let pages = paging::virt_to_phys_range(scratch, len);
+    let start = alias.start;
 
-            // SAFETY: No view accesses this page meanwhile.
-            unsafe { map_alias(page) };
-
-            // The alias changed output address, so drop its captured translation.
-            paging::barrier::downgrade_in_place(aliased..aliased + PAGE_SIZE as u64);
-        }
+    for mapping in coalesce_mappings(scratch, start, pages) {
+        // SAFETY: The reservation is unused and source pages have valid backing.
+        unsafe { update_alias(mapping) };
     }
 
     paging::barrier::first_valid_same_ctx();
+    Ok(alias)
 }
 
-/// Unmap pool aliases outside live slots and return the live slot ranges.
-///
-/// Live slots keep their aliases, so capture copies their pages. Pass the
-/// returned ranges to [`map_pool`] so a restored guest can recover them.
+/// Unmap an owned alias and return its virtual range for reuse.
 ///
 /// # Safety
 ///
-/// The pool must own its scratch and alias pages. Stop the peer and release
-/// queue-owned allocations before this sweep. Serialize guest paging.
-pub(crate) unsafe fn prune_pool(pool: &SlotPool) -> Vec<Range<u64>> {
-    let base = pool.base_addr();
-
-    let live: Vec<Range<u64>> = pool
-        .live_addrs()
-        .into_iter()
-        .map(|addr| {
-            let len = pool.allocation_len(addr).expect("live slot length");
-            addr..addr + len as u64
-        })
-        .collect();
-
-    let pages = pool.byte_len().div_ceil(PAGE_SIZE);
-    let mut keep = FixedBitSet::with_capacity(pages);
-
-    for slot in &live {
-        keep.insert_range(slot_pages(base, slot));
+/// The caller must own a range returned by [`map`] and exclude all remaining
+/// views. Run on the serialized guest vCPU.
+/// Serialize paging and share alias leaves across accessing roots.
+pub(crate) unsafe fn unmap(alias: &Range<u64>) {
+    // SAFETY: The caller exclusively owns these leaves and has released views.
+    unsafe {
+        update_alias(Mapping {
+            phys_base: 0,
+            virt_base: alias.start,
+            len: alias.end - alias.start,
+            kind: MappingKind::Unmapped,
+        });
     }
 
-    // Unmap unused alias pages so snapshots omit transient pool contents.
-    for index in keep.zeroes() {
-        let page = alias(base + (index * PAGE_SIZE) as u64);
-
-        // SAFETY: Views own live slots, so none reaches this page. The caller
-        // serializes paging and preserves the alias leaves across accessing roots.
-        unsafe {
-            paging::map_region(0, page as *mut u8, PAGE_SIZE as u64, MappingKind::Unmapped);
-        }
-    }
-
-    let aliases = alias(base)..alias(base) + (pages * PAGE_SIZE) as u64;
-    paging::barrier::downgrade_in_place(aliases);
-
-    live
+    ALLOCATOR.0.borrow_mut().dealloc(alias.clone());
 }
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::layout::{VIRTQ_BUFFER_GVA_START, scratch_base_gva};
-
-    use crate::transport::backing::{
-        PAGE_SIZE, SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, VIRTQ_BUFFER_GVA_END, alias, slot_pages,
-    };
+    use super::*;
 
     #[test]
-    fn slot_pages_cover_every_touched_page() {
-        let base = 0x10_0000;
+    fn alias_walk_coalesces_contiguous_physical_pages() {
         let page = PAGE_SIZE as u64;
+        let source = 0x10_0000;
+        let alias = VIRTQ_BUFFER_GVA_START;
 
-        assert_eq!(slot_pages(base, &(base..base + 256)), 0..1);
-        assert_eq!(slot_pages(base, &(base + 256..base + page)), 0..1);
-        assert_eq!(slot_pages(base, &(base + page - 1..base + page + 1)), 0..2);
-        assert_eq!(slot_pages(base, &(base + page..base + 3 * page)), 1..3);
+        let kind = MappingKind::Basic(PERMISSIONS);
+        let first = Mapping {
+            phys_base: page,
+            virt_base: source,
+            len: page,
+            kind,
+        };
+
+        let pages = [
+            first,
+            Mapping {
+                phys_base: 2 * page,
+                virt_base: source + page,
+                ..first
+            },
+            Mapping {
+                phys_base: 8 * page,
+                virt_base: source + 2 * page,
+                ..first
+            },
+        ];
+
+        validate_source_pages(source..source + 3 * page, pages.iter().copied()).unwrap();
+
+        let updates: Vec<_> = coalesce_mappings(source, alias, pages.iter().copied())
+            .map(|m| (m.virt_base, m.phys_base, m.len, m.kind))
+            .collect();
+
+        assert_eq!(
+            updates,
+            [
+                (alias, page, 2 * page, kind),
+                (alias + 2 * page, 8 * page, page, kind),
+            ]
+        );
     }
 
     #[test]
-    fn aliases_cover_the_full_scratch_address_space() {
-        let lowest = (SCRATCH_TOP_GVA - SCRATCH_TOP_GPA) as u64;
-        assert!(alias(lowest) >= VIRTQ_BUFFER_GVA_START);
-        assert!(alias(lowest).is_multiple_of(PAGE_SIZE as u64));
-        assert_eq!(alias(SCRATCH_TOP_GVA as u64), VIRTQ_BUFFER_GVA_END - 1);
+    fn aliases_reuse_and_coalesce_freed_ranges() {
+        let mut allocator = AliasAllocator::new();
+        let page = PAGE_SIZE as u64;
+        let first = allocator.alloc(page).unwrap();
+        let middle = allocator.alloc(2 * page).unwrap();
+        let last = allocator.alloc(page).unwrap();
+        let frontier = allocator.next;
+
+        allocator.dealloc(middle.clone());
+        let reused = allocator.alloc(page).unwrap();
+
+        assert_eq!(reused, middle.start..middle.start + page);
+
+        allocator.dealloc(first.clone());
+        allocator.dealloc(last.clone());
+        allocator.dealloc(reused);
+
+        assert_eq!(allocator.alloc(4 * page).unwrap(), first.start..last.end);
+        assert_eq!(allocator.next, frontier);
     }
 
     #[test]
-    fn aliases_preserve_byte_offsets_and_gaps() {
-        for size in [16 * PAGE_SIZE, 0x58000, 16 * 1024 * 1024 * 1024] {
-            let base = scratch_base_gva(size);
-            let alias_base = VIRTQ_BUFFER_GVA_END - size as u64;
-            assert_eq!(alias(base), alias_base);
+    fn exhausted_alias_space_still_reuses_freed_ranges() {
+        let mut allocator = AliasAllocator::new();
+        let whole = allocator
+            .alloc(VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START)
+            .unwrap();
 
-            for offset in [0, 1, PAGE_SIZE - 1, PAGE_SIZE, 7 * PAGE_SIZE + 3, size - 1] {
-                assert_eq!(alias(base + offset as u64), alias_base + offset as u64);
-            }
+        let err = allocator.alloc(PAGE_SIZE as u64);
+        assert!(matches!(err, Err(AllocError::NoSpace)));
+
+        allocator.dealloc(whole.clone());
+
+        let reused = allocator.alloc(PAGE_SIZE as u64).unwrap();
+        assert_eq!(reused.start, whole.start);
+    }
+
+    /// Failed reservations preserve both reusable ranges and the frontier.
+    #[test]
+    fn invalid_alias_lengths_preserve_allocator_state() {
+        let mut allocator = AliasAllocator::new();
+        let page = PAGE_SIZE as u64;
+        let first = allocator.alloc(page).unwrap();
+        let _retained = allocator.alloc(page).unwrap();
+
+        allocator.dealloc(first.clone());
+        let free = allocator.free.clone();
+        let frontier = allocator.next;
+
+        for len in [0, page - 1, page + 1] {
+            let err = allocator.alloc(len);
+            assert!(matches!(err, Err(AllocError::InvalidArg)));
         }
+
+        let ov = allocator.alloc(u64::MAX / page * page);
+        assert!(matches!(ov, Err(AllocError::Overflow)));
+
+        let ns = allocator.alloc(VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
+        assert!(matches!(ns, Err(AllocError::NoSpace)));
+        assert_eq!(allocator.free, free);
+        assert_eq!(allocator.next, frontier);
+        assert_eq!(allocator.alloc(page).unwrap(), first);
     }
 }

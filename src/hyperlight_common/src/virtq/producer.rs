@@ -240,6 +240,30 @@ where
         self.inner.mem()
     }
 
+    /// Reclaim retained scratch slots while preserving in-flight chains.
+    ///
+    /// # Safety
+    ///
+    /// Every live allocation outside this producer's in-flight chains must
+    /// belong to a returned view with backing independent of reused scratch.
+    /// No unsent chains or builders may remain. Peer accesses must be stopped.
+    pub unsafe fn reclaim_slots(&mut self) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        let reserved = self
+            .inflight
+            .live
+            .iter()
+            .flat_map(|inflight| inflight.chain.buffers.iter().map(|buffer| buffer.addr));
+
+        // SAFETY: In-flight records preserve all non-retired allocations.
+        // The caller guarantees independent backing and excludes untracked chains.
+        unsafe { self.pool.retire_generation(reserved)? };
+        Ok(())
+    }
+
     /// Begin building a descriptor chain for submission.
     ///
     /// The builder captures the current free-descriptor budget.

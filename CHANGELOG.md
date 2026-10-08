@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   snapshot capture, restore, and cloning.
 
 ### Changed
+* Guest transport aliases follow buffer ownership. Restored buffers keep
+  captured backing while their scratch slots become reusable.
 * `Sandbox` is the primary initialized sandbox type. `MultiUseSandbox` remains
   as a deprecated alias.
 * `Sandbox` lives in the private `sandbox::initialized` module and is reached

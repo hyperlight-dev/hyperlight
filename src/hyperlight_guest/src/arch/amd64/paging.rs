@@ -144,8 +144,15 @@ pub unsafe fn modify_mapping(
     }
 }
 
+/// Walk the page containing `gva`.
 pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> {
-    unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
+    virt_to_phys_range(gva, 1)
+}
+
+/// Walk page mappings intersecting the range, skipping unmapped pages.
+pub fn virt_to_phys_range(gva: vmem::VirtAddr, len: u64) -> impl Iterator<Item = vmem::Mapping> {
+    // SAFETY: The operations read valid page tables in the current guest context.
+    unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, len) }
 }
 
 pub fn phys_to_virt(gpa: vmem::PhysAddr) -> Option<*mut u8> {

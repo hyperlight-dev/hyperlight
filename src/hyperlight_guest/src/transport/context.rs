@@ -4,7 +4,6 @@
 //! Guest virtqueue context.
 
 use alloc::vec::Vec;
-use core::ops::Range;
 use core::result;
 
 use flatbuffers::FlatBufferBuilder;
@@ -24,7 +23,7 @@ use hyperlight_common::virtq::{
 };
 use hyperlight_common::vmem::PAGE_SIZE;
 
-use super::{GuestMemOps, backing, codec};
+use super::{GuestMemOps, codec};
 use crate::error::{GuestErrorContext, Result};
 use crate::exit::out32;
 use crate::{bail, layout};
@@ -102,12 +101,8 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     /// Host-to-guest driver.
     h2g_producer: H2gProducer,
-    /// Generation with prepared aliases. Checkpoint pruning clears it.
-    generation: Option<u64>,
-    /// G2H slots live at the last checkpoint, recovered by the next refresh.
-    g2h_retained: Vec<Range<u64>>,
-    /// H2G slots live at the last checkpoint, recovered by the next refresh.
-    h2g_retained: Vec<Range<u64>>,
+    /// Snapshot lineage whose scratch slots belong to the current pool generation.
+    generation: u64,
     /// Size of each prefilled H2G buffer.
     h2g_slot_size: usize,
     /// Transport mailbox GVA.
@@ -132,14 +127,14 @@ impl GuestContext {
 
         let g2h_pool = g2h_pool(g2h.pool_gva, g2h.pool_pages, g2h.buffer_size)
             .with_context(|| "failed to create G2H pool")?;
-        // SAFETY: The caller owns the pool's scratch pages and reserved aliases.
+        // SAFETY: The caller owns the pool's scratch pages.
         let mem = unsafe { pool_mem(&g2h_pool) }
             .with_context(|| "failed to initialize G2H pool access")?;
         let g2h_producer = VirtqProducer::new(g2h.layout, mem, OutbNotifier, g2h_pool);
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
             .with_context(|| "failed to create H2G slot pool")?;
-        // SAFETY: The caller owns this disjoint pool and its reserved aliases.
+        // SAFETY: The caller owns this disjoint pool.
         let mem = unsafe { pool_mem(&h2g_pool) }
             .with_context(|| "failed to initialize H2G pool access")?;
         // H2G prefill supplies writable buffers for host-initiated messages.
@@ -148,9 +143,7 @@ impl GuestContext {
         let mut ctx = Self {
             g2h_producer,
             h2g_producer,
-            generation: Some(generation),
-            g2h_retained: Vec::new(),
-            h2g_retained: Vec::new(),
+            generation,
             h2g_slot_size: h2g.buffer_size,
             mbx_gva,
             next_cid: 1,
@@ -347,9 +340,8 @@ impl GuestContext {
     ///
     /// # Safety
     ///
-    /// Aliases must be prepared. All host consumer chain handles must be dropped.
+    /// All host consumer chain handles must be dropped.
     /// Both consumers must stay stopped until they are reset or replaced.
-    /// Call [`Self::maybe_refresh`] before further transport access, even on error.
     pub unsafe fn prepare_snapshot(&mut self) -> Result<()> {
         let pending = MailboxValue::CheckpointPending.raw();
         // SAFETY: The host has initialized the mailbox.
@@ -370,16 +362,6 @@ impl GuestContext {
                 .with_context(|| "H2G snapshot reset failed")?;
         }
 
-        // Reset generation so the next call to `maybe_refresh` will remap the pools.
-        let _ = self.generation.take();
-
-        // SAFETY: Both producers are reset. The peer is stopped and guest entry
-        // serializes paging for these exclusively owned pool pages.
-        unsafe {
-            self.g2h_retained = backing::prune_pool(self.g2h_producer.pool());
-            self.h2g_retained = backing::prune_pool(self.h2g_producer.pool());
-        }
-
         self.prefill_h2g()?;
 
         let compl = MailboxValue::CheckpointComplete.raw();
@@ -389,30 +371,31 @@ impl GuestContext {
         Ok(())
     }
 
-    /// Prepare pool aliases after checkpointing or a generation change.
+    /// Reclaim retained scratch slots after restore without changing the rings.
     ///
-    /// After restore, retained slots are copied from captured memory into
-    /// scratch before any transport access.
+    /// Retained owners keep their captured aliases. Posted chains keep their
+    /// scratch reservations, including a request written before guest entry.
     pub fn maybe_refresh(&mut self) {
         // SAFETY: Construction requires initialized guest scratch metadata.
         let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
 
-        if self.generation == Some(generation) {
+        if self.generation == generation {
             return;
         }
 
-        // SAFETY: The pools own their scratch and alias pages. Guest entry
-        // serializes paging. The retained ranges come from the last checkpoint
-        // and their views stay unused until dispatch.
+        // SAFETY: A changed generation denotes restore with independent captured
+        // backing. Canonical checkpoints leave only posted chains as reservations.
+        // Guest entry excludes peer access.
         unsafe {
-            let g2h = core::mem::take(&mut self.g2h_retained);
-            backing::map_pool(self.g2h_producer.pool(), &g2h);
-
-            let h2g = core::mem::take(&mut self.h2g_retained);
-            backing::map_pool(self.h2g_producer.pool(), &h2g);
+            self.g2h_producer
+                .reclaim_slots()
+                .expect("G2H pool recovery failed");
+            self.h2g_producer
+                .reclaim_slots()
+                .expect("H2G pool recovery failed");
         }
 
-        self.generation = Some(generation);
+        self.generation = generation;
     }
 
     /// Send a log message via the G2H queue.
@@ -570,8 +553,7 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
 ///
 /// # Safety
 ///
-/// Run on the initialized guest vCPU and own the pool's scratch and mapped
-/// alias pages. Keep backing alive for returned views.
+/// Run on the initialized guest vCPU and own the pool's scratch.
 unsafe fn pool_mem(pool: &SlotPool) -> result::Result<GuestMemOps, AllocError> {
     let scratch_gva = layout::scratch_base_gva();
     let scratch_end = SCRATCH_TOP_GVA as u64 + 1;
@@ -583,8 +565,7 @@ unsafe fn pool_mem(pool: &SlotPool) -> result::Result<GuestMemOps, AllocError> {
         return Err(AllocError::InvalidArg);
     }
 
-    // SAFETY: The validated pool lies in live scratch. The caller keeps its
-    // aliases mapped and preserves backing ownership for views.
+    // SAFETY: The validated pool lies in live scratch on the serialized guest vCPU.
     unsafe { Ok(GuestMemOps::new(scratch_gva, scratch_end)) }
 }
 
@@ -597,12 +578,7 @@ fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotP
     }
     let count = pool_len(pages)? / buffer_size;
     let layout = SlotLayout::new(base, buffer_size, count)?;
-    let pool = SlotPool::new(layout)?;
-
-    // SAFETY: The caller owns this disjoint pool and its reserved aliases.
-    unsafe { backing::map_pool(&pool, &[]) };
-
-    Ok(pool)
+    SlotPool::new(layout)
 }
 
 /// Build the tiered G2H pool.
@@ -627,12 +603,7 @@ fn g2h_pool(base: u64, pages: usize, upper_size: usize) -> result::Result<SlotPo
 
     let lower = SlotLayout::new(base, G2H_LOWER_SLOT_SIZE, G2H_LOWER_SLOT_COUNT)?;
     let upper = SlotLayout::new(lower.end_addr(), upper_size, upper_count)?;
-    let pool = SlotPool::new_tiered(lower, upper)?;
-
-    // SAFETY: The caller owns this disjoint pool and its reserved aliases.
-    unsafe { backing::map_pool(&pool, &[]) };
-
-    Ok(pool)
+    SlotPool::new_tiered(lower, upper)
 }
 
 #[cfg(test)]
