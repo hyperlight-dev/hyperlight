@@ -12,17 +12,21 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::layout::SCRATCH_TOP_GVA;
 use hyperlight_common::outb::OutBAction;
-use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
-use hyperlight_common::virtq::{
-    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, MemOps, Notifier, QueueStats,
-    SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+use hyperlight_common::transport::{
+    EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind,
 };
+use hyperlight_common::virtq::{
+    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, SendChain,
+    SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+};
+use hyperlight_common::vmem::PAGE_SIZE;
 
 use super::{GuestMemOps, codec};
-use crate::bail;
 use crate::error::{GuestErrorContext, Result};
 use crate::exit::out32;
+use crate::{bail, layout};
 
 /// Exits to the host to process available virtqueue work.
 #[derive(Clone, Copy)]
@@ -97,9 +101,11 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     /// Host-to-guest driver.
     h2g_producer: H2gProducer,
+    /// Snapshot lineage whose scratch slots belong to the current pool generation.
+    generation: u64,
     /// Size of each prefilled H2G buffer.
     h2g_slot_size: usize,
-    /// Snapshot checkpoint mailbox GVA.
+    /// Transport mailbox GVA.
     mbx_gva: u64,
     /// Correlation ID assigned to the next host-function request.
     next_cid: u32,
@@ -116,20 +122,28 @@ impl GuestContext {
     /// and pools. Scratch must remain mapped while the context or any returned
     /// buffer views exist.
     pub unsafe fn new(g2h: QueueConfig, h2g: QueueConfig, mbx_gva: u64) -> Result<Self> {
+        // SAFETY: Generation has been initialized by host.
+        let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
+
         let g2h_pool = g2h_pool(g2h.pool_gva, g2h.pool_pages, g2h.buffer_size)
             .with_context(|| "failed to create G2H pool")?;
-        // SAFETY: The caller supplies the guest execution and scratch lifetime requirements.
-        let mem = unsafe { GuestMemOps::for_scratch() };
+        // SAFETY: The caller owns the pool's scratch pages.
+        let mem = unsafe { pool_mem(&g2h_pool) }
+            .with_context(|| "failed to initialize G2H pool access")?;
         let g2h_producer = VirtqProducer::new(g2h.layout, mem, OutbNotifier, g2h_pool);
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
             .with_context(|| "failed to create H2G slot pool")?;
+        // SAFETY: The caller owns this disjoint pool.
+        let mem = unsafe { pool_mem(&h2g_pool) }
+            .with_context(|| "failed to initialize H2G pool access")?;
         // H2G prefill supplies writable buffers for host-initiated messages.
         let h2g_producer = VirtqProducer::new(h2g.layout, mem, NoopNotifier, h2g_pool);
 
         let mut ctx = Self {
             g2h_producer,
             h2g_producer,
+            generation,
             h2g_slot_size: h2g.buffer_size,
             mbx_gva,
             next_cid: 1,
@@ -320,20 +334,20 @@ impl GuestContext {
         self.prefill_h2g()
     }
 
-    /// Canonicalize both queues and publish the retained allocation count.
+    /// Reset stopped queues while retained values keep their pool slots.
+    ///
+    /// The mailbox is complete only after free H2G slots are prefilled.
     ///
     /// # Safety
     ///
-    /// All host consumer chain handles must be dropped. Both consumers must
-    /// stay stopped until they are reset or replaced.
-    ///
-    /// ```compile_fail,E0133
-    /// # use hyperlight_guest::transport::GuestContext;
-    /// fn checkpoint(context: &mut GuestContext) {
-    ///     context.prepare_snapshot().unwrap();
-    /// }
-    /// ```
+    /// All host consumer chain handles must be dropped.
+    /// Both consumers must stay stopped until they are reset or replaced.
     pub unsafe fn prepare_snapshot(&mut self) -> Result<()> {
+        let pending = MailboxValue::CheckpointPending.raw();
+        // SAFETY: The host has initialized the mailbox.
+        unsafe { (self.mbx_gva as *mut u64).write_volatile(pending) };
+
+        // Read all acks from host
         self.g2h_producer
             .reclaim()
             .with_context(|| "G2H snapshot reclaim failed")?;
@@ -348,22 +362,40 @@ impl GuestContext {
                 .with_context(|| "H2G snapshot reset failed")?;
         }
 
-        // Only guest-retained allocations remain between reset and H2G prefill.
-        let guest_owned = self
-            .g2h_producer
-            .pool()
-            .num_live()
-            .checked_add(self.h2g_producer.pool().num_live())
-            .ok_or(VirtqError::InvalidState)?;
-        let guest_owned = u64::try_from(guest_owned).map_err(|_| VirtqError::InvalidState)?;
+        self.prefill_h2g()?;
 
-        // Retained snapshots will publish readiness after sanitization and H2G prefill.
-        self.g2h_producer
-            .memory()
-            .write(self.mbx_gva, &guest_owned.to_le_bytes())
-            .map_err(|_| VirtqError::MemoryWriteError)?;
+        let compl = MailboxValue::CheckpointComplete.raw();
+        // SAFETY: The host has initialized the writable mailbox.
+        unsafe { (self.mbx_gva as *mut u64).write_volatile(compl) };
 
-        self.prefill_h2g()
+        Ok(())
+    }
+
+    /// Reclaim retained scratch slots after restore without changing the rings.
+    ///
+    /// Retained owners keep their captured aliases. Posted chains keep their
+    /// scratch reservations, including a request written before guest entry.
+    pub fn maybe_refresh(&mut self) {
+        // SAFETY: Construction requires initialized guest scratch metadata.
+        let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
+
+        if self.generation == generation {
+            return;
+        }
+
+        // SAFETY: A changed generation denotes restore with independent captured
+        // backing. Canonical checkpoints leave only posted chains as reservations.
+        // Guest entry excludes peer access.
+        unsafe {
+            self.g2h_producer
+                .reclaim_slots()
+                .expect("G2H pool recovery failed");
+            self.h2g_producer
+                .reclaim_slots()
+                .expect("H2G pool recovery failed");
+        }
+
+        self.generation = generation;
     }
 
     /// Send a log message via the G2H queue.
@@ -380,9 +412,6 @@ impl GuestContext {
     }
 
     /// Publish one writable H2G chain for each currently free slot.
-    ///
-    /// Retained external values reduce the number of available receive buffers
-    /// until their final owner drops.
     fn prefill_h2g(&mut self) -> Result<()> {
         let mut batch = self.h2g_producer.batch();
 
@@ -518,6 +547,26 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
     pages
         .checked_mul(hyperlight_common::vmem::PAGE_SIZE)
         .ok_or(AllocError::Overflow)
+}
+
+/// Validate pool placement and bind scratch access.
+///
+/// # Safety
+///
+/// Run on the initialized guest vCPU and own the pool's scratch.
+unsafe fn pool_mem(pool: &SlotPool) -> result::Result<GuestMemOps, AllocError> {
+    let scratch_gva = layout::scratch_base_gva();
+    let scratch_end = SCRATCH_TOP_GVA as u64 + 1;
+
+    let base = pool.base_addr();
+    let end = base + pool.byte_len() as u64;
+
+    if !base.is_multiple_of(PAGE_SIZE as u64) || base < scratch_gva || end > scratch_end {
+        return Err(AllocError::InvalidArg);
+    }
+
+    // SAFETY: The validated pool lies in live scratch on the serialized guest vCPU.
+    unsafe { Ok(GuestMemOps::new(scratch_gva, scratch_end)) }
 }
 
 /// Build the uniform H2G pool.

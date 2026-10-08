@@ -924,6 +924,161 @@ fn c_guest_accesses_byte_chunks() {
     });
 }
 
+/// Restore recovers the captured owner after the source guest releases it.
+#[test]
+fn retained_guest_call_bytes_survive_restore() {
+    with_rust_sandbox(|mut sandbox| {
+        let expected = vec![0x5a; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Both guest APIs keep host-reply buffers alive across calls and restore.
+#[test]
+fn retained_host_reply_bytes_survive_restore() {
+    common::with_all_guests(|path| {
+        let mut sandbox = SandboxBuilder::from_file(&path)
+            .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .build()
+            .unwrap();
+
+        let expected = vec![0xa5; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainHostByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let echo: String = sandbox.call("Echo", "hello".to_string()).unwrap();
+        assert_eq!(echo, "hello");
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Captured aliases survive scratch reuse and further snapshot generations.
+#[test]
+fn retained_byte_chunks_survive_pool_generation_reuse() {
+    let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        .guest_log_level(tracing_core::LevelFilter::OFF)
+        .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+        .build()
+        .unwrap();
+
+    let expected = vec![0xa5; 8192];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let actual: i32 = sandbox
+        .call(
+            "RetainHostByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    // Capture recovered pools while their older retained aliases remain live.
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let replacement = vec![0x3c; 6 * 4096];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&replacement)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, replacement.len());
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), replacement);
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+        6 * 4096
+    );
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap(),
+        8192
+    );
+}
+
 /// Test that validates interrupt behavior with random kill timing under concurrent load
 /// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
 /// Randomly decides to kill some calls at random times during execution.
@@ -1698,7 +1853,10 @@ fn exception_handler_installation_and_validation() {
 /// This validates that the exception handling path does not require heap allocations.
 #[test]
 fn fill_heap_and_cause_exception() {
-    with_rust_sandbox(|mut sandbox| {
+    // The heap must run out before scratch backing its CoW pages.
+    let configure = |builder: SandboxBuilder| builder.heap_size(40 * 1024);
+
+    with_rust_sandbox_from(configure, |mut sandbox| {
         let result = sandbox.call::<()>("FillHeapAndCauseException", ());
 
         // The call should fail with an exception error since there's no handler installed

@@ -411,6 +411,20 @@ fn echo_guest_byte_chunks(data: Vec<Bytes>) -> Vec<Bytes> {
     data
 }
 
+/// Read each segment's endpoints and release its owner before returning.
+#[guest_function("ByteChunksLen")]
+fn byte_chunks_len(data: Vec<Bytes>) -> i32 {
+    let mut len = 0;
+
+    for chunk in data {
+        black_box(chunk.first().copied());
+        black_box(chunk.last().copied());
+        len += chunk.len();
+    }
+
+    len as i32
+}
+
 static mut RETAINED_GUEST_CHUNKS: Option<Vec<Bytes>> = None;
 static mut RETAINED_HOST_CHUNKS: Option<Vec<Bytes>> = None;
 
@@ -420,6 +434,16 @@ fn retain_guest_byte_chunks(data: Vec<Bytes>) -> i32 {
     // SAFETY: the guest is single threaded, so the static has no concurrent access.
     unsafe { RETAINED_GUEST_CHUNKS = Some(data) };
     len as i32
+}
+
+/// Return the retained bytes without releasing their buffers.
+#[guest_function("ReadRetainedGuestByteChunks")]
+fn read_retained_guest_byte_chunks() -> Vec<Bytes> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        RETAINED_GUEST_CHUNKS.clone().unwrap_or_default()
+    }
 }
 
 #[guest_function("ReleaseGuestByteChunks")]
@@ -440,6 +464,16 @@ fn retain_host_byte_chunks(data: Vec<Bytes>) -> Result<i32> {
     // SAFETY: the guest is single threaded, so the static has no concurrent access.
     unsafe { RETAINED_HOST_CHUNKS = Some(chunks) };
     Ok(len as i32)
+}
+
+/// Return the retained bytes without releasing their buffers.
+#[guest_function("ReadRetainedHostByteChunks")]
+fn read_retained_host_byte_chunks() -> Vec<Bytes> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        RETAINED_HOST_CHUNKS.clone().unwrap_or_default()
+    }
 }
 
 #[guest_function("ReleaseHostByteChunks")]

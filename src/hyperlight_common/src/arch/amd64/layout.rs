@@ -11,12 +11,19 @@
 pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff_ffff_efff;
 pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
+pub const VIRTQ_BUFFER_GVA_START: u64 = 0xffff_fc00_0000_0000;
+pub const VIRTQ_BUFFER_GVA_END: u64 = 0xffff_fd00_0000_0000;
 
 /// We assume 36-bit IPAs for now, since every amd64 processor
 /// supports at least 36 bits.  Almost all of them support at least 40
 /// bits, so we could consider bumping this in the future if we were
 /// ever memory-constrained.
 pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
+
+const _: () = {
+    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
+    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
+};
 
 pub fn io_page() -> Option<(u64, u64)> {
     None
