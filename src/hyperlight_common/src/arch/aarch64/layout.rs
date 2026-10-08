@@ -18,6 +18,8 @@ pub const WHP_GITS_TRANSLATOR_BASE_GPA: u64 = 0xeff6_8000;
 pub const WHP_GICR_BASE_GPA: u64 = 0xeffe_e000;
 pub const WHP_GICD_BASE_GPA: u64 = 0xffff_0000;
 
+const _: () = assert!(VIRTQ_BUFFER_GVA_END <= 1 << 48);
+
 pub const fn io_page() -> Option<(crate::vmem::PhysAddr, crate::vmem::VirtAddr)> {
     Some((IO_PAGE_GPA, IO_PAGE_GVA))
 }

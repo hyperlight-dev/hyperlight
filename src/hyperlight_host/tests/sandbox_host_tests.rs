@@ -41,6 +41,7 @@ fn fragmented_control_round_trip_releases_buffers() {
     with_all_guests(|path| {
         let mut sbox = SandboxBuilder::from_file(path)
             .heap_size(256 * 1024)
+            .scratch_size(512 * 1024)
             .build()
             .unwrap();
 
