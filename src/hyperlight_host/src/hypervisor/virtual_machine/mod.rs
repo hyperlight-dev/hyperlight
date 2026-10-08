@@ -8,6 +8,8 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebugError;
+#[cfg(all(gdb, target_arch = "aarch64"))]
+use crate::hypervisor::gdb::VcpuStopReason;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
@@ -140,6 +142,8 @@ pub(crate) enum VmExit {
         dr6: u64,
         #[cfg(target_arch = "x86_64")]
         exception: u32,
+        #[cfg(target_arch = "aarch64")]
+        reason: VcpuStopReason,
     },
     /// The vCPU has halted
     Halt(),
@@ -193,6 +197,9 @@ pub enum CreateVmError {
     HypervisorNotAvailable(HypervisorError),
     #[error("Initialize VM failed: {0}")]
     InitializeVm(HypervisorError),
+    #[cfg(all(gdb, target_arch = "aarch64", target_os = "windows"))]
+    #[error("Failed to initialize ARM64 debug support: {0}")]
+    InitializeDebug(String),
     #[cfg(all(kvm, target_arch = "x86_64"))]
     #[error("KVM MSR filtering requires KVM_CAP_X86_MSR_FILTER")]
     MsrFilterNotSupported,

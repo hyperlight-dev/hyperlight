@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* Support register, memory, continue, single-step, interrupt, and software-breakpoint GDB debugging for Windows ARM64 guests.
+
 ## [v0.19.0] - 2026-11-04
 
 ### Added

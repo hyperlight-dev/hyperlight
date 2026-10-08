@@ -7,18 +7,22 @@ use gdbstub::stub::{
     BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason, run_blocking,
 };
 
-use super::x86_64_target::HyperlightSandboxTarget;
+use super::target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
 
 // Signals are defined differently on Windows and Linux, so we use conditional compilation
 #[cfg(target_os = "linux")]
 mod signals {
+    #[cfg(target_arch = "aarch64")]
+    pub use libc::SIGTRAP;
     pub use libc::{SIGINT, SIGSEGV};
 }
 #[cfg(windows)]
 mod signals {
     pub const SIGINT: i8 = 2;
     pub const SIGSEGV: i8 = 11;
+    #[cfg(target_arch = "aarch64")]
+    pub const SIGTRAP: i8 = 5;
 }
 
 struct GdbBlockingEventLoop;
@@ -47,7 +51,13 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     let stop_response = match stop_reason {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
+                        #[cfg(target_arch = "x86_64")]
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
+                        #[cfg(target_arch = "aarch64")]
+                        VcpuStopReason::Initial => BaseStopReason::SignalWithThread {
+                            tid: (),
+                            signal: Signal(signals::SIGTRAP as u8),
+                        },
                         // This is a consequence of the GDB client sending an interrupt signal
                         // to the target thread
                         VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
@@ -58,6 +68,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                             tid: (),
                             signal: Signal(signals::SIGSEGV as u8),
                         },
+                        #[cfg(target_arch = "x86_64")]
                         VcpuStopReason::Unknown => {
                             tracing::warn!("Unknown stop reason received");
 

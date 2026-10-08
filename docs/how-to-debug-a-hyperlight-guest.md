@@ -7,14 +7,21 @@ to start listening for a gdb connection.
 ## Supported features
 
 The Hyperlight `gdb` feature enables guest debugging to:
-   - stop at an entry point breakpoint which is automatically set by Hyperlight
-   - add and remove HW breakpoints (maximum 4 set breakpoints at a time)
+   - stop before the first vCPU run
    - add and remove SW breakpoints
    - read and write registers
    - read and write addresses
-   - step/continue
+   - continue
+   - single-step
    - get code offset from target
    - stop when a crash occurs and only allow read access to the guest memory and registers
+
+On x86_64, gdb can also add up to four hardware breakpoints.
+Windows ARM64 uses four-byte HVC software breakpoints and software single-step.
+ARM64 stepping supports linear instructions, direct and conditional branches,
+compare and test branches, and `BR`, `BLR`, and `RET`. Other control-flow and
+exception instructions return an explicit error. Hardware breakpoints and
+watchpoints are not advertised on Windows ARM64.
 
 ## Expected behavior
 
@@ -170,7 +177,7 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
       |                        │          |               create_gdb_thread           |                                 |      │
       |                        │          |◄─────────────────────────────────────────┌─┐         vcpu stopped          ┌─┐     │
       |    attach              │         ┌─┐                                         │ │◄──────────────────────────────┴─┘     │
-     ┌─┐───────────────────────┼────────►│ │                                         │ │     entrypoint breakpoint      |      │
+     ┌─┐───────────────────────┼────────►│ │                                         │ │       initial debug stop       |      │
      │ │   attach response     │         │ │                                         │ │                                |      │
      │ │◄──────────────────────┼─────────│ │                                         │ │                                |      │
      │ │                       │         │ │                                         │ │                                |      │
