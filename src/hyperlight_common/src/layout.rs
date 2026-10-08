@@ -109,13 +109,6 @@ const _: () = {
     assert!((VIRTQ_BUFFER_GVA_END as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
     assert!(VIRTQ_BUFFER_GVA_START > SNAPSHOT_PT_GVA_MAX as u64);
 
-    #[cfg(target_arch = "x86_64")]
-    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
-    #[cfg(target_arch = "x86_64")]
-    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
-    #[cfg(target_arch = "aarch64")]
-    assert!(VIRTQ_BUFFER_GVA_END <= 1 << 48);
-
     assert!(VIRTQ_BUFFER_GVA_END < scratch_base_gva(16 * 1024 * 1024 * 1024));
     assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };

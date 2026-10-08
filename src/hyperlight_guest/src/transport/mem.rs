@@ -5,10 +5,12 @@
 
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
+use core::ops::Range;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use hyperlight_common::virtq::{BufferLease, BufferMap, MemOps};
+use hyperlight_common::vmem::PAGE_SIZE;
 
 use super::backing;
 
@@ -34,8 +36,7 @@ impl GuestMemOps {
     ///
     /// # Safety
     ///
-    /// Scratch must be live, initialized, and writable. Completed allocations
-    /// must have mapped aliases that remain valid while their views exist.
+    /// Scratch must be live, initialized, and writable.
     /// All access and destruction must stay on the serialized guest vCPU.
     /// Serialize paging and share alias leaf entries across accessing roots.
     pub(super) unsafe fn new(scratch_gva: u64, scratch_end: u64) -> Self {
@@ -72,24 +73,39 @@ impl BufferMap for GuestMemOps {
         lease: BufferLease,
         written: usize,
     ) -> Result<Self::Mapping, Self::Error> {
-        let allocation = lease.allocation();
-        self.ptr(allocation.addr, allocation.len as usize)?;
+        let alloc = lease.allocation();
+        self.ptr(alloc.addr, alloc.len as usize)?;
 
-        // SAFETY: Construction and the completion contract guarantee a live,
-        // nonnull alias with an initialized prefix of `written` bytes.
-        let data = unsafe { NonNull::new_unchecked(backing::alias(allocation.addr) as *mut u8) };
+        let off = alloc.addr % PAGE_SIZE as u64;
+        let len = (off + written.max(1) as u64).div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+
+        // SAFETY: The lease owns initialized bytes in live scratch pages.
+        // Guest entry serializes paging.
+        let alias = unsafe { backing::map(alloc.addr - off, len) }.map_err(|_| GuestMemError)?;
+        // SAFETY: The reserved arena is nonnull and the mapping is live.
+        let data = unsafe { NonNull::new_unchecked((alias.start + off) as *mut u8) };
 
         Ok(GuestMapping {
             data: NonNull::slice_from_raw_parts(data, written),
+            alias,
             _lease: lease,
         })
     }
 }
 
-/// An immutable alias view backed by its allocation lease.
+/// An alias view backed by its allocation lease.
 pub(crate) struct GuestMapping {
     data: NonNull<[u8]>,
+    alias: Range<u64>,
     _lease: BufferLease,
+}
+
+impl Drop for GuestMapping {
+    fn drop(&mut self) {
+        // SAFETY: The final Bytes owner has released every view. This owner
+        // exclusively reserves its alias pages on the serialized guest vCPU.
+        unsafe { backing::unmap(&self.alias) };
+    }
 }
 
 // SAFETY: Construction requires access and destruction on the serialized guest
@@ -168,11 +184,9 @@ mod tests {
     use alloc::vec;
     use core::mem::size_of;
 
-    use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
     use hyperlight_common::virtq::{MemOps, SlotLayout, SlotPool};
 
     use super::*;
-    use crate::transport::backing::ALIAS_OFFSET;
 
     #[test]
     fn guest_mem_access_is_bounded_by_scratch() {
@@ -261,35 +275,6 @@ mod tests {
         assert_eq!(mem.read(base + 5, &mut []), Err(GuestMemError));
         assert_eq!(mem.write(base + 5, &[]), Err(GuestMemError));
         assert_eq!(backing, [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn mapped_bytes_keep_the_slot_until_the_last_view_drops() {
-        let mut backing = [u64::from_ne_bytes(*b"dataTAIL")];
-        let base = backing.as_mut_ptr() as u64;
-        // Mapped views read the slot alias, so place that alias on `backing`.
-        let slot = base + ALIAS_OFFSET;
-        // SAFETY: Only the slot alias is accessed. It is `backing`, which
-        // outlives every mapped view.
-        let mem = unsafe { GuestMemOps::new(slot, slot + 8) };
-        let layout = SlotLayout::new(slot, 8, 1).unwrap();
-        let pool = SlotPool::new(layout).unwrap();
-        let allocation = pool.alloc(8).unwrap();
-        let lease = BufferLease::new(pool.clone(), allocation);
-
-        // SAFETY: The allocation is initialized and exclusively leased.
-        let bytes = Bytes::from_owner(unsafe { mem.map_buffer(lease, 4) }.unwrap());
-        assert_eq!(bytes.as_ref(), b"data");
-        assert_eq!(bytes.as_ptr() as u64, base);
-
-        let retained = bytes.slice(1..3);
-        drop(bytes);
-        assert_eq!(pool.num_free(), 0);
-        assert_eq!(retained.as_ref(), b"at");
-        assert_eq!(retained.as_ptr() as u64, base + 1);
-
-        drop(retained);
-        assert_eq!(pool.num_free(), 1);
     }
 
     #[test]

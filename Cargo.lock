@@ -1703,6 +1703,7 @@ dependencies = [
  "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",
+ "itertools 0.15.0",
  "serde_json",
  "tracing",
 ]

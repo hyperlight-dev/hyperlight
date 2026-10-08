@@ -998,6 +998,87 @@ fn retained_host_reply_bytes_survive_restore() {
     });
 }
 
+/// Captured aliases survive scratch reuse and further snapshot generations.
+#[test]
+fn retained_byte_chunks_survive_pool_generation_reuse() {
+    let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        .guest_log_level(tracing_core::LevelFilter::OFF)
+        .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+        .build()
+        .unwrap();
+
+    let expected = vec![0xa5; 8192];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let actual: i32 = sandbox
+        .call(
+            "RetainHostByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    // Capture recovered pools while their older retained aliases remain live.
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let replacement = vec![0x3c; 6 * 4096];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&replacement)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, replacement.len());
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), replacement);
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+        6 * 4096
+    );
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap(),
+        8192
+    );
+}
+
 /// Test that validates interrupt behavior with random kill timing under concurrent load
 /// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
 /// Randomly decides to kill some calls at random times during execution.

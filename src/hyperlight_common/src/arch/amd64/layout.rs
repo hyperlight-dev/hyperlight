@@ -20,6 +20,11 @@ pub const VIRTQ_BUFFER_GVA_END: u64 = 0xffff_fd00_0000_0000;
 /// ever memory-constrained.
 pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
 
+const _: () = {
+    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
+    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
+};
+
 pub fn io_page() -> Option<(u64, u64)> {
     None
 }
