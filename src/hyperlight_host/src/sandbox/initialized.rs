@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 #[cfg(crashdump)]
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
+use crate::sandbox::snapshot::SnapshotMemoryBacking;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// The lifecycle state of a [`Sandbox`].
@@ -100,17 +102,37 @@ pub struct Sandbox {
 #[deprecated(since = "0.18.0", note = "use Sandbox")]
 pub type MultiUseSandbox = Sandbox;
 
+/// Read-only access to live snapshot memory by guest physical address.
+pub struct SnapshotMemoryReader<'a> {
+    memory: &'a SnapshotMemoryBacking<HostSharedMemory>,
+}
+
+impl SnapshotMemoryReader<'_> {
+    /// Copy live snapshot bytes at `gpa` into `destination`.
+    pub fn read(&self, gpa: u64, destination: &mut [u8]) -> Result<()> {
+        self.memory.read_snapshot_gpa(gpa, destination)
+    }
+}
+
 /// Callback for discovering page table roots from guest memory.
 ///
 /// Called during [`Sandbox::snapshot`] with:
-/// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
+/// - `snapshot_mem` - live snapshot memory accessed by GPA
 /// - `scratch_mem` - the sandbox's scratch memory as a byte slice
 /// - `root_pt_gpa` - the root page table GPA of the currently-executing
 ///   address space
 ///
-/// Returns a list of root page table GPAs to walk. If the list is
-/// empty, only `root_pt_gpa` is used.
-pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
+/// Returns additional root page table GPAs to walk. `root_pt_gpa` is always
+/// walked first, ignoring duplicates. An error aborts the capture.
+pub type PtRootFinder =
+    Box<dyn Fn(&SnapshotMemoryReader<'_>, &[u8], u64) -> Result<Vec<u64>> + Send>;
+
+fn normalize_page_table_roots(roots: Vec<u64>, active_root: u64) -> Vec<u64> {
+    let mut seen = BTreeSet::from([active_root]);
+    let mut normalized = vec![active_root];
+    normalized.extend(roots.into_iter().filter(|root| seen.insert(*root)));
+    normalized
+}
 
 impl Sandbox {
     fn check_ready(&self) -> Result<()> {
@@ -165,7 +187,7 @@ impl Sandbox {
 
     /// Set a callback that discovers page table roots from guest memory.
     /// The callback receives (snapshot_mem, scratch_mem, cr3) and returns
-    /// the list of root GPAs to walk during snapshot creation.
+    /// additional root GPAs to walk during snapshot creation.
     ///
     /// The callback must support every guest restored into this sandbox.
     pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
@@ -374,6 +396,28 @@ impl Sandbox {
 
     /// Creates a snapshot of the sandbox's current memory state.
     ///
+    /// If the sandbox was created from or restored to a snapshot, this capture can
+    /// reuse memory that has not changed. A successful capture becomes the basis
+    /// for later captures. This avoids copying the full sandbox each time, reducing
+    /// capture time and memory use.
+    ///
+    /// Taking another snapshot after changing the sandbox creates a child of the
+    /// previous snapshot. Restoring an earlier snapshot, changing the sandbox, and
+    /// taking another creates a separate branch. Snapshots therefore form a
+    /// conceptual tree of states. Calling this method again without changing the
+    /// sandbox returns the same snapshot.
+    ///
+    /// Creating a snapshot can fail when its branch reaches Hyperlight's snapshot
+    /// limits. There is no fixed maximum branch length because the limit depends on
+    /// how memory changes between captures. This check leaves the sandbox unchanged
+    /// and ready.
+    ///
+    /// Memory added through [`Self::map_region`] and [`Self::map_file_cow`] is
+    /// copied into the snapshot only for pages the guest has mapped into its page
+    /// tables. Capture then removes these regions from this sandbox. Pages the
+    /// guest has not mapped are lost, and their guest physical addresses can be
+    /// reused by later snapshots.
+    ///
     /// The returned snapshot can be applied to any
     /// [`Sandbox`] whose registered host functions are a
     /// superset of those registered here at the time of capture. See
@@ -389,7 +433,8 @@ impl Sandbox {
     ///
     /// This method returns [`crate::HyperlightError::PoisonedSandbox`] when the
     /// sandbox is poisoned and [`crate::HyperlightError::UnrecoverableSandbox`]
-    /// when it is unrecoverable.
+    /// when it is unrecoverable. An unexpected hypervisor or platform error during
+    /// capture may leave the sandbox poisoned or unrecoverable.
     ///
     /// # Examples
     ///
@@ -427,12 +472,14 @@ impl Sandbox {
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         // Use the callback if set, otherwise just CR3
         let root_pt_gpas = if let Some(finder) = &self.pt_root_finder {
-            let roots = self.mem_mgr.shared_mem.with_contents(|snap| {
-                self.mem_mgr
-                    .scratch_mem
-                    .with_contents(|scratch| finder(snap, scratch, cr3))
-            })??;
-            if roots.is_empty() { vec![cr3] } else { roots }
+            let snapshot = SnapshotMemoryReader {
+                memory: &self.mem_mgr.shared_mem,
+            };
+            let roots = self
+                .mem_mgr
+                .scratch_mem
+                .with_contents(|scratch| finder(&snapshot, scratch, cr3))??;
+            normalize_page_table_roots(roots, cr3)
         } else {
             vec![cr3]
         };
@@ -464,6 +511,31 @@ impl Sandbox {
             host_functions,
         )?;
         let snapshot = Arc::new(memory_snapshot);
+
+        if let Err(error) = self.remove_dynamic_mappings() {
+            self.status = SandboxStatus::Poisoned;
+            self.snapshot = None;
+            return Err(error);
+        }
+        let snapshot_mem = match self.mem_mgr.install_captured_snapshot(&snapshot) {
+            Ok(snapshot_mem) => snapshot_mem,
+            Err(error) => {
+                self.status = SandboxStatus::Unrecoverable;
+                self.snapshot = None;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.vm.update_snapshot_mappings(snapshot_mem) {
+            self.status = SandboxStatus::Unrecoverable;
+            self.snapshot = None;
+            return Err(HyperlightVmError::UpdateRegion(error).into());
+        }
+        if let Err(error) = self.vm.apply_sregs(snapshot.root_pt_gpa(), &sregs) {
+            self.status = SandboxStatus::Poisoned;
+            self.snapshot = None;
+            return Err(HyperlightVmError::Restore(error.into()).into());
+        }
+
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -486,13 +558,21 @@ impl Sandbox {
         })
     }
 
+    fn remove_dynamic_mappings(&mut self) -> Result<()> {
+        let regions = self.vm.get_mapped_regions().cloned().collect::<Vec<_>>();
+        for region in &regions {
+            self.vm
+                .unmap_region(region)
+                .map_err(HyperlightVmError::UnmapRegion)?;
+        }
+        Ok(())
+    }
+
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
         let (snapshot_mem, scratch_mem) = self.mem_mgr.restore_snapshot(snapshot)?;
-        if let Some(snapshot_mem) = snapshot_mem {
-            self.vm
-                .update_snapshot_mapping(snapshot_mem)
-                .map_err(HyperlightVmError::UpdateRegion)?;
-        }
+        self.vm
+            .update_snapshot_mappings(snapshot_mem)
+            .map_err(HyperlightVmError::UpdateRegion)?;
         if let Some(scratch_mem) = scratch_mem {
             self.vm
                 .update_scratch_mapping(scratch_mem)
@@ -522,6 +602,8 @@ impl Sandbox {
     /// ## Status after restore
     ///
     /// A successful restore sets the status to [`Ready`](SandboxStatus::Ready).
+    /// The restored snapshot becomes the basis for later calls to
+    /// [`Self::snapshot`].
     /// The restored state includes snapshot and scratch memory, vCPU state,
     /// stack state, the next VM action, captured MSRs on x86_64, and the removal
     /// of dynamic memory mappings. This discards leaked allocations, restores
@@ -646,12 +728,7 @@ impl Sandbox {
         self.status = SandboxStatus::Poisoned;
         self.snapshot = None;
 
-        let current_regions: Vec<MemoryRegion> = self.vm.get_mapped_regions().cloned().collect();
-        for region in &current_regions {
-            self.vm
-                .unmap_region(region)
-                .map_err(HyperlightVmError::UnmapRegion)?;
-        }
+        self.remove_dynamic_mappings()?;
 
         if let Err(error) = self.restore_memory_and_mappings(&snapshot) {
             self.status = SandboxStatus::Unrecoverable;
@@ -852,6 +929,10 @@ impl Sandbox {
     /// (typically page-aligned). The `region_type` field is ignored as guest
     /// page table entries are not created.
     ///
+    /// [`Self::snapshot`] copies only the pages of this region that the guest has
+    /// mapped into its page tables, then removes the region. Pages the guest has
+    /// not mapped are lost.
+    ///
     /// ## Poisoned Sandbox
     ///
     /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
@@ -881,6 +962,10 @@ impl Sandbox {
     ///
     /// Returns the length of the mapping in bytes.
     ///
+    /// [`Self::snapshot`] copies only the pages of this region that the guest has
+    /// mapped into its page tables, then removes the region. Pages the guest has
+    /// not mapped are lost.
+    ///
     /// ## Poisoned Sandbox
     ///
     /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
@@ -894,7 +979,7 @@ impl Sandbox {
 
         // Validate that the full mapped range doesn't overlap the
         // sandbox's primary shared memory region.
-        let shared_size = self.mem_mgr.shared_mem.mem_size() as u64;
+        let shared_size = self.mem_mgr.shared_mem.gpa_span_len() as u64;
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         let shared_end = base_addr.checked_add(shared_size).ok_or_else(|| {
             crate::HyperlightError::Error("shared memory end overflow".to_string())
@@ -1252,6 +1337,7 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
+    use super::normalize_page_table_roots;
     use crate::func::host_functions::Registerable;
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
@@ -1546,12 +1632,9 @@ mod tests {
 
         let generation = sandbox.mem_mgr.snapshot_count;
         let ring = sandbox.mem_mgr.layout.get_transport_arena().g2h_ring_addr();
-        let offset = sandbox
-            .mem_mgr
-            .layout
-            .resolve_gpa(ring, &[])
-            .unwrap()
-            .offset;
+        let scratch_base =
+            hyperlight_common::layout::scratch_base_gpa(sandbox.mem_mgr.layout.get_scratch_size());
+        let offset = usize::try_from(ring - scratch_base).unwrap();
 
         sandbox.mem_mgr.scratch_mem.write::<u64>(offset, 1).unwrap();
 
@@ -1860,7 +1943,9 @@ mod tests {
     }
 
     fn allocate_guest_memory() -> GuestSharedMemory {
-        page_aligned_memory(b"test data for snapshot")
+        let mut data = vec![0; 2 * page_size::get()];
+        data[..b"test data for snapshot".len()].copy_from_slice(b"test data for snapshot");
+        page_aligned_memory(&data)
     }
 
     #[test]
@@ -1893,7 +1978,7 @@ mod tests {
 
         // 3. Take snapshot 2 with 1 region mapped
         let snapshot2 = sbox.snapshot().unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 4. Re(store to snapshot 1 (should unmap the region)
         sbox.restore(snapshot1.clone()).unwrap();
@@ -1924,6 +2009,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(new_read, orig_read);
+    }
+
+    /// `map_region` invalidates the cached snapshot without running the guest,
+    /// and its pages are not in guest VA space until a later call maps them. So
+    /// the next capture walks the same page tables the previous one built, finds
+    /// every page already backed by a layer, and materializes nothing.
+    #[test]
+    #[cfg(not(unshared_snapshot_mem))]
+    fn capture_without_guest_progress_reuses_every_layer() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        let first = sbox.snapshot().unwrap();
+        assert!(
+            !first.snapshot_memory().layers().is_empty(),
+            "the first capture materializes the initialization delta"
+        );
+
+        let map_mem = allocate_guest_memory();
+        let region = region_for_memory(&map_mem, 0x200000000_usize, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` remains alive until capture removes the mapping.
+        unsafe { sbox.map_region(&region).unwrap() };
+
+        let second = sbox.snapshot().unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "map_region must invalidate the cached snapshot"
+        );
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
+
+        // Every data-bearing layer is shared with the previous snapshot.
+        for layer in second.snapshot_memory().layers().iter() {
+            assert!(
+                first
+                    .snapshot_memory()
+                    .layers()
+                    .iter()
+                    .any(|previous| Arc::ptr_eq(previous.blob(), layer.blob())),
+                "capture copied a page it could have shared"
+            );
+        }
+
+        assert_eq!(
+            second.snapshot_memory().layers().len(),
+            first.snapshot_memory().layers().len()
+        );
+
+        sbox.restore(second).unwrap();
+        assert_eq!(
+            sbox.call::<String>("Echo", "hello".to_string()).unwrap(),
+            "hello"
+        );
     }
 
     /// Compaction copies mapped-region pages into the snapshot blob,
@@ -2027,6 +2165,37 @@ mod tests {
 
     #[test]
     #[cfg(not(gdb))]
+    fn snapshot_capture_mapping_failure_is_unrecoverable() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        let recovery_snapshot = sandbox.snapshot().unwrap();
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+        let fault_plan = sandbox
+            .vm
+            .inject_vm_faults([VmOperation::Map(MemoryRegionType::Snapshot)]);
+
+        let error = sandbox.snapshot().err().unwrap();
+
+        assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
+        assert!(fault_plan.is_consumed());
+        assert_eq!(sandbox.status(), SandboxStatus::Unrecoverable);
+        assert!(matches!(
+            sandbox.restore(recovery_snapshot),
+            Err(HyperlightError::UnrecoverableSandbox)
+        ));
+        assert!(matches!(
+            sandbox.call::<i32>("GetStatic", ()),
+            Err(HyperlightError::UnrecoverableSandbox)
+        ));
+        assert!(matches!(
+            sandbox.snapshot(),
+            Err(HyperlightError::UnrecoverableSandbox)
+        ));
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
     fn snapshot_restore_mapping_failure_is_unrecoverable() {
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
@@ -2049,7 +2218,7 @@ mod tests {
         let error = target.restore(snapshot.clone()).unwrap_err();
         assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
         assert_eq!(target.status(), SandboxStatus::Unrecoverable);
-        assert_eq!(target.vm.base_mapping_state(), (None, mappings.1));
+        assert_eq!(target.vm.base_mapping_state(), (Vec::new(), mappings.1));
         assert!(fault_plan.is_consumed());
 
         assert!(matches!(
@@ -2202,6 +2371,36 @@ mod tests {
 
     #[test]
     #[cfg(not(gdb))]
+    fn snapshot_capture_dynamic_unmapping_failure_is_recoverable() {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let recovery_snapshot = sandbox.snapshot().unwrap();
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+
+        let map_mem = allocate_guest_memory();
+        let region = region_for_memory(&map_mem, 0x200000000_usize, MemoryRegionFlags::READ);
+        // SAFETY: `map_mem` remains alive until restore removes the mapping.
+        unsafe { sandbox.map_region(&region).unwrap() };
+        let fault_plan = sandbox
+            .vm
+            .inject_vm_faults([VmOperation::Unmap(MemoryRegionType::Heap)]);
+
+        let error = sandbox.snapshot().err().unwrap();
+        assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
+        assert!(sandbox.status().is_poisoned());
+        assert!(fault_plan.is_consumed());
+
+        sandbox.restore(recovery_snapshot).unwrap();
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+        assert_eq!(sandbox.vm.get_mapped_regions().count(), 0);
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
     fn snapshot_restore_vcpu_reset_failure_is_recoverable() {
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
@@ -2233,23 +2432,189 @@ mod tests {
             assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
             assert!(target.status().is_poisoned());
             assert!(fault_plan.is_consumed());
+            let (snapshot_mappings, scratch_mapping) = target.vm.base_mapping_state();
+            assert!(!snapshot_mappings.is_empty());
             assert_eq!(
-                target.vm.base_mapping_state(),
-                (
-                    Some((
-                        target.mem_mgr.shared_mem.base_addr(),
-                        target.mem_mgr.shared_mem.mem_size(),
-                    )),
-                    Some((
-                        target.mem_mgr.scratch_mem.base_addr(),
-                        target.mem_mgr.scratch_mem.mem_size(),
-                    )),
-                )
+                scratch_mapping,
+                Some((
+                    target.mem_mgr.scratch_mem.base_addr(),
+                    target.mem_mgr.scratch_mem.mem_size(),
+                ))
             );
 
             target.restore(snapshot.clone()).unwrap();
             assert_eq!(target.status(), SandboxStatus::Ready);
             assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 42);
+        }
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn snapshot_capture_page_table_switch_failure_is_recoverable() {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let recovery_snapshot = sandbox.snapshot().unwrap();
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+
+        let fault_plan = sandbox.vm.inject_vm_faults([VmOperation::SetSregs]);
+
+        let error = sandbox.snapshot().err().unwrap();
+        assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
+        assert!(sandbox.status().is_poisoned());
+        assert!(fault_plan.is_consumed());
+
+        sandbox.restore(recovery_snapshot).unwrap();
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn snapshot_capture_does_not_reset_vcpu() {
+        #[cfg(target_arch = "x86_64")]
+        let reset_operations = [
+            VmOperation::SetRegs,
+            VmOperation::SetDebugRegs,
+            VmOperation::ResetXsave,
+            VmOperation::SetMsrs,
+        ];
+        #[cfg(target_arch = "aarch64")]
+        let reset_operations = [VmOperation::ResetVcpu];
+
+        for reset_operation in reset_operations {
+            let path = simple_guest_as_pathbuf();
+            let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+            sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+            sandbox.checkpoint_transport_for_snapshot().unwrap();
+            let fault_plan = sandbox.vm.inject_vm_faults([reset_operation]);
+
+            sandbox.snapshot().unwrap();
+
+            assert!(!fault_plan.is_consumed());
+            assert_eq!(sandbox.status(), SandboxStatus::Ready);
+        }
+    }
+
+    #[test]
+    fn snapshot_capture_reclaims_internal_scratch_pages() {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+
+        sandbox.snapshot().unwrap();
+
+        let allocator_offset = sandbox.mem_mgr.scratch_mem.mem_size()
+            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        assert_eq!(
+            sandbox
+                .mem_mgr
+                .scratch_mem
+                .read::<u64>(allocator_offset)
+                .unwrap(),
+            sandbox.mem_mgr.first_free_scratch_gpa()
+        );
+    }
+
+    #[test]
+    fn snapshot_capture_zeroes_reclaimed_scratch() {
+        let path = simple_guest_as_pathbuf();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        let page_gva = 0x4000_0000_u64;
+        let page_size = hyperlight_common::vmem::PAGE_SIZE;
+        assert!(sandbox.call::<bool>("MapZeroInitPage", page_gva).unwrap());
+        let allocator_offset = sandbox.mem_mgr.scratch_mem.mem_size()
+            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let used_end = sandbox
+            .mem_mgr
+            .scratch_mem
+            .read::<u64>(allocator_offset)
+            .unwrap();
+        let before = sandbox
+            .mem_mgr
+            .scratch_mem
+            .with_contents(|scratch| scratch.to_vec())
+            .unwrap();
+        sandbox.snapshot().unwrap();
+
+        let scratch_base =
+            hyperlight_common::layout::scratch_base_gpa(sandbox.mem_mgr.scratch_mem.mem_size());
+        let free_start =
+            usize::try_from(sandbox.mem_mgr.first_free_scratch_gpa() - scratch_base).unwrap();
+        let free_end = usize::try_from(used_end - scratch_base).unwrap();
+        let after = sandbox
+            .mem_mgr
+            .scratch_mem
+            .with_contents(|scratch| scratch.to_vec())
+            .unwrap();
+        assert!(before[free_start..free_end].iter().any(|&byte| byte != 0));
+        assert!(after[free_start..free_end].iter().all(|&byte| byte == 0));
+
+        let page = sandbox
+            .call::<Vec<u8>>("ReadMappedBuffer", (page_gva, page_size as u64, false))
+            .unwrap();
+        assert_eq!(page, vec![0; page_size]);
+    }
+
+    /// The guest writes the allocator value that bounds install's scratch zeroing.
+    /// Out-of-range values must not zero memory outside free scratch.
+    #[test]
+    fn snapshot_capture_clamps_guest_allocator_value() {
+        use hyperlight_common::layout::{
+            SCRATCH_TOP_ALLOCATOR_OFFSET, SCRATCH_TOP_SIZE_OFFSET, scratch_base_gpa,
+        };
+
+        for allocator in [0, u64::MAX] {
+            let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .build()
+                .unwrap();
+            sbox.snapshot().unwrap();
+            let scratch_size = sbox.mem_mgr.scratch_mem.mem_size();
+            let first_free = sbox.mem_mgr.first_free_scratch_gpa();
+            let marker_offset =
+                usize::try_from(first_free - scratch_base_gpa(scratch_size)).unwrap();
+            let marker = 0x1234_5678_9abc_def0_u64;
+            let scratch = &sbox.mem_mgr.scratch_mem;
+            scratch.write(marker_offset, marker).unwrap();
+            scratch
+                .write(
+                    scratch_size - SCRATCH_TOP_ALLOCATOR_OFFSET as usize,
+                    allocator,
+                )
+                .unwrap();
+
+            // `map_region` drops the cached snapshot without running the guest.
+            let map_mem = allocate_guest_memory();
+            let region = region_for_memory(&map_mem, 0x200000000_usize, MemoryRegionFlags::READ);
+            // SAFETY: `map_mem` remains alive until capture removes the mapping.
+            unsafe { sbox.map_region(&region).unwrap() };
+            sbox.snapshot().unwrap();
+
+            let scratch = &sbox.mem_mgr.scratch_mem;
+            assert_eq!(sbox.mem_mgr.first_free_scratch_gpa(), first_free);
+            let expected = if allocator == 0 { marker } else { 0 };
+            assert_eq!(scratch.read::<u64>(marker_offset).unwrap(), expected);
+            assert_eq!(
+                scratch
+                    .read::<u64>(scratch_size - SCRATCH_TOP_SIZE_OFFSET as usize)
+                    .unwrap(),
+                scratch_size as u64
+            );
+            assert_eq!(
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap(),
+                "hello\n"
+            );
         }
     }
 
@@ -2275,18 +2640,14 @@ mod tests {
         assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
         assert!(target.status().is_poisoned());
         assert!(fault_plan.is_consumed());
+        let (snapshot_mappings, scratch_mapping) = target.vm.base_mapping_state();
+        assert!(!snapshot_mappings.is_empty());
         assert_eq!(
-            target.vm.base_mapping_state(),
-            (
-                Some((
-                    target.mem_mgr.shared_mem.base_addr(),
-                    target.mem_mgr.shared_mem.mem_size(),
-                )),
-                Some((
-                    target.mem_mgr.scratch_mem.base_addr(),
-                    target.mem_mgr.scratch_mem.mem_size(),
-                )),
-            )
+            scratch_mapping,
+            Some((
+                target.mem_mgr.scratch_mem.base_addr(),
+                target.mem_mgr.scratch_mem.mem_size(),
+            ))
         );
 
         target.restore(snapshot).unwrap();
@@ -2532,7 +2893,7 @@ mod tests {
 
         assert_eq!(source.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
         assert_eq!(target.call::<i32>("AddToStatic", 17i32).unwrap(), 17);
-        target.set_pt_root_finder(Box::new(|_, _, root| vec![root]));
+        target.set_pt_root_finder(Box::new(|_, _, root| Ok(vec![root])));
         assert!(target.pt_root_finder.is_some());
 
         assert_ne!(
@@ -2558,6 +2919,74 @@ mod tests {
                 name
             )) if name == "GetStatic"
         ));
+    }
+
+    #[test]
+    fn active_page_table_root_is_first() {
+        const ACTIVE: u64 = 0x1000;
+        const OTHER: u64 = 0x2000;
+
+        assert_eq!(
+            normalize_page_table_roots(vec![OTHER, ACTIVE, ACTIVE], ACTIVE),
+            vec![ACTIVE, OTHER]
+        );
+        assert_eq!(
+            normalize_page_table_roots(vec![OTHER, OTHER], ACTIVE),
+            vec![ACTIVE, OTHER]
+        );
+        assert_eq!(
+            normalize_page_table_roots(vec![OTHER], ACTIVE),
+            vec![ACTIVE, OTHER]
+        );
+        assert_eq!(normalize_page_table_roots(Vec::new(), ACTIVE), vec![ACTIVE]);
+    }
+
+    #[test]
+    fn page_table_root_finder_reads_snapshot_memory() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        let base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let mut expected = [0; 16];
+        sandbox
+            .mem_mgr
+            .shared_mem
+            .read_snapshot_gpa(base, &mut expected)
+            .unwrap();
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback_invoked = invoked.clone();
+        sandbox.set_pt_root_finder(Box::new(move |snapshot, _, root| {
+            let mut bytes = [0; 16];
+            snapshot.read(base, &mut bytes)?;
+            assert_eq!(bytes, expected);
+            callback_invoked.store(true, Ordering::Relaxed);
+            Ok(vec![root])
+        }));
+
+        sandbox.snapshot().unwrap();
+        assert!(invoked.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn page_table_root_finder_error_aborts_snapshot() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        sandbox.set_pt_root_finder(Box::new(|_, _, _| {
+            Err(crate::new_error!("failed to discover page-table roots"))
+        }));
+
+        let error = sandbox.snapshot().err().unwrap();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to discover page-table roots")
+        );
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+        assert!(sandbox.snapshot.is_none());
     }
 
     #[test]
@@ -2735,7 +3164,7 @@ mod tests {
         ));
 
         assert!(Arc::ptr_eq(&target.snapshot().unwrap(), &cached_snapshot));
-        assert_eq!(target.vm.get_mapped_regions().count(), 1);
+        assert_eq!(target.vm.get_mapped_regions().count(), 0);
         assert!(
             target
                 .call::<bool>("CheckMapped", guest_base as u64)
@@ -2793,11 +3222,13 @@ mod tests {
             .unwrap()
             .evolve()
             .unwrap();
-        assert!(snapshot.memory().mem_size() > target.mem_mgr.shared_mem.mem_size());
+        assert!(
+            snapshot.snapshot_memory().gpa_span_len() > target.mem_mgr.shared_mem.gpa_span_len()
+        );
 
         let map_mem = allocate_guest_memory();
         let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS
-            + target.mem_mgr.shared_mem.mem_size();
+            + target.mem_mgr.shared_mem.gpa_span_len();
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
         // SAFETY: `map_mem` is page-aligned and outlives every use of `target`.
         unsafe { target.map_region(&region).unwrap() };
@@ -3134,7 +3565,7 @@ mod tests {
         use std::io::Write;
 
         let page_size = page_size::get();
-        let padded_len = content.len().max(page_size).div_ceil(page_size) * page_size;
+        let padded_len = content.len().max(page_size).div_ceil(page_size) * page_size + page_size;
         let mut padded = vec![0u8; padded_len];
         padded[..content.len()].copy_from_slice(content);
 

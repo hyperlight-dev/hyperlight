@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
-    InitializeError,
+    InitializeError, SCRATCH_SLOT,
 };
 #[cfg(hvf)]
 use crate::hypervisor::HvfInterruptHandle;
@@ -30,11 +30,11 @@ use crate::hypervisor::virtual_machine::{
     HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
     get_available_hypervisor,
 };
-use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::snapshot::NextAction;
+use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
@@ -44,7 +44,7 @@ impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
-        snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
+        snapshot_mem: SnapshotMemoryBacking<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         root_pt_addr: u64,
         next_action: NextAction,
@@ -83,8 +83,6 @@ impl HyperlightVm {
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
             Arc::new(WindowsInterruptHandle::new(vm.partition_handle()));
 
-        let snapshot_slot = 0u32;
-        let scratch_slot = 1u32;
         let vm_can_reset_vcpu = vm.can_reset_vcpu();
         let mut ret = Self {
             vm,
@@ -93,12 +91,11 @@ impl HyperlightVm {
             interrupt_handle,
             page_size,
 
-            next_slot: scratch_slot + 1,
+            next_slot: SCRATCH_SLOT + 1,
             freed_slots: Vec::new(),
 
-            snapshot_slot,
+            snapshot_mappings: Vec::new(),
             snapshot_memory: None,
-            scratch_slot,
             scratch_memory: None,
 
             mmap_regions: Vec::new(),
@@ -106,7 +103,7 @@ impl HyperlightVm {
             vm_can_reset_vcpu,
             pending_tlb_flush: false,
         };
-        ret.update_snapshot_mapping(snapshot_mem)?;
+        ret.update_snapshot_mappings(snapshot_mem)?;
         ret.update_scratch_mapping(scratch_mem)?;
         Ok(ret)
     }

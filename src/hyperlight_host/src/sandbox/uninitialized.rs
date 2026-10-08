@@ -18,7 +18,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, Sandbox, new_error};
 
@@ -269,6 +269,10 @@ impl UninitializedSandbox {
     /// the sandbox's primary shared memory region (`BASE_ADDRESS` to
     /// `BASE_ADDRESS + shared_mem_size`).
     ///
+    /// [`Sandbox::snapshot`] copies only the pages of this region that the
+    /// guest has mapped into its page tables, during initialization or a later
+    /// call, then removes the region. Pages the guest has not mapped are lost.
+    ///
     /// Returns the length of the mapping in bytes.
     #[instrument(err(Debug), skip(self, file_path, guest_base), parent = Span::current())]
     pub fn map_file_cow(
@@ -278,7 +282,7 @@ impl UninitializedSandbox {
     ) -> crate::Result<u64> {
         // Validate that guest_base is outside the sandbox's primary memory slot.
         // (Full range check happens after prepare_file_cow when we know the mapped size.)
-        let shared_size = self.mgr.shared_mem.mem_size() as u64;
+        let shared_size = self.mgr.shared_mem.gpa_span_len() as u64;
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
 
         let prepared = super::file_mapping::prepare_file_cow(file_path, guest_base)?;
@@ -332,7 +336,7 @@ impl UninitializedSandbox {
     /// This is useful for placing file mappings at guest physical addresses
     /// that don't overlap the primary shared memory slot.
     pub fn shared_mem_size(&self) -> usize {
-        self.mgr.shared_mem.mem_size()
+        self.mgr.shared_mem.gpa_span_len()
     }
 
     /// Sets the maximum log level for guest code execution.

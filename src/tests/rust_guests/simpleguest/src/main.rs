@@ -1079,6 +1079,25 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[guest_function("MapZeroInitPage")]
+fn map_zero_init_page(base: u64) -> bool {
+    // SAFETY: The test supplies an unused, page-aligned GVA.
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            0,
+            base as *mut u8,
+            PAGE_SIZE as u64,
+            MappingKind::ZeroInit(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+    }
+    true
+}
+
 #[guest_function("ReadMappedBuffer")]
 fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     let base = base as usize as *const u8;

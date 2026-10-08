@@ -116,10 +116,10 @@ the metadata at the top of the scratch region and grows downward.
 
 When the host takes a snapshot of a guest, it will traverse the guest
 page tables, collecting every (non-page-table) physical page that is
-mapped (outside of the scratch map) in the guest. It will write out a
-new compacted snapshot with precisely those pages in order, and a new
-set of page tables which produce precisely the same virtual memory
-layout, except for the scratch map.
+mapped (outside of the scratch map) in the guest. It will reuse pages
+unchanged since earlier snapshots, write the rest in order to a new
+compacted blob, and build a new set of page tables which produce
+precisely the same virtual memory layout, except for the scratch map.
 
 ### Pre-sizing the scratch region
 

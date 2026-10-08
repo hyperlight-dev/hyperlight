@@ -300,6 +300,46 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
     });
 }
 
+/// Includes the call, which pays for any memory remapping done by the previous snapshot.
+fn bench_snapshot_call_and_create(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            let start = Instant::now();
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            let snapshot = sbox.snapshot().unwrap();
+            total_duration += start.elapsed();
+
+            std::hint::black_box(snapshot);
+        }
+
+        total_duration
+    });
+}
+
+/// Restores alternate between two snapshots, so the target memory is never the current one.
+fn bench_snapshot_restore_alternate(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let first = sbox.snapshot().unwrap();
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+        let snapshots = [first, sbox.snapshot().unwrap()];
+        let mut total_duration = Duration::ZERO;
+
+        for i in 0..iters {
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            let start = Instant::now();
+            sbox.restore(snapshots[(i % 2) as usize].clone()).unwrap();
+            total_duration += start.elapsed();
+        }
+
+        total_duration
+    });
+}
+
 fn bench_sandbox_from_snapshot(b: &mut criterion::Bencher, size: SandboxSize) {
     use hyperlight_host::HostFunctions;
     use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
@@ -334,6 +374,18 @@ fn snapshots_benchmark(c: &mut Criterion) {
     for size in SandboxSize::all() {
         group.bench_function(format!("restore/{}", size.name()), |b| {
             bench_snapshot_restore(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_and_create/{}", size.name()), |b| {
+            bench_snapshot_call_and_create(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("restore_alternate/{}", size.name()), |b| {
+            bench_snapshot_restore_alternate(b, size)
         });
     }
 

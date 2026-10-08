@@ -75,8 +75,8 @@ use crate::hypervisor::InterruptHandleImpl;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemoryError};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemoryError, snapshot_mapping_range};
 
 #[allow(
     dead_code,
@@ -774,14 +774,20 @@ impl TlbiRegion {
             0x02, 0x00, 0x00, 0xd4, // hvc #0
         ]);
         Ok(Self {
-            insn_memory: ReadonlySharedMemory::from_bytes(&bytes, page_size::get())?,
+            insn_memory: ReadonlySharedMemory::from_bytes(&bytes)?,
         })
     }
 }
-impl From<&TlbiRegion> for MemoryRegion {
-    fn from(t: &TlbiRegion) -> MemoryRegion {
-        t.insn_memory
-            .mapping_at(page_size::get() as u64, MemoryRegionType::Snapshot)
+impl TryFrom<&TlbiRegion> for MemoryRegion {
+    type Error = SharedMemoryError;
+    fn try_from(t: &TlbiRegion) -> Result<MemoryRegion, SharedMemoryError> {
+        let len = page_size::get();
+        snapshot_mapping_range(
+            &t.insn_memory,
+            0..len,
+            len as u64,
+            MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+        )
     }
 }
 struct LoadedMemorySpace {
@@ -885,7 +891,7 @@ impl LoadedMemorySpace {
             .hv_vcpu_get_sys_reg(hv_sys_reg_t::HV_SYS_REG_SCTLR_EL1)
             .itme()?;
 
-        let rgn: MemoryRegion = self.get_tlbi_region().itme()?.into();
+        let rgn = MemoryRegion::try_from(self.get_tlbi_region().itme()?).itme()?;
         Self::do_map(&rgn).itme()?;
         // Save the fact that we've done this mapping, in case
         // we get interrupted

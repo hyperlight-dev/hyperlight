@@ -360,7 +360,10 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
 
         for r in iter {
             if let Some(mapping) = unsafe { read_and_decode_pte(op, &r) } {
-                mappings.push(crate::vmem::SpaceAwareMapping::ThisSpace(mapping));
+                crate::vmem::push_space_mapping(
+                    &mut mappings,
+                    crate::vmem::SpaceAwareMapping::ThisSpace(mapping),
+                );
             }
         }
 

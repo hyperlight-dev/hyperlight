@@ -135,7 +135,7 @@ fn snapshots_and_restores_rings() {
 
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
     let restored = host_scratch();
-    let allocator = layout.get_first_free_scratch_gpa();
+    let allocator = layout.get_pt_base_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
     restored.write::<u64>(allocator_offset, allocator).unwrap();
@@ -150,6 +150,12 @@ fn snapshots_and_restores_rings() {
 
     assert_eq!(restored_snapshot, captured);
     assert_eq!(restored.read::<u64>(allocator_offset).unwrap(), allocator);
+    let arena_gpa_offset = restored.mem_size()
+        - hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
+    assert_eq!(
+        restored.read::<u64>(arena_gpa_offset).unwrap(),
+        layout.get_transport_arena().base_addr()
+    );
     assert_eq!(restored.read::<[u8; 16]>(spare_offset).unwrap(), [0; 16]);
     assert_eq!(pool_bytes, [0; 16]);
     assert!(g2h.poll(0).unwrap().is_none());
@@ -279,33 +285,6 @@ fn rejects_h2g_snapshot_chain_shape() {
     assert!(
         error.to_string().contains("must contain one descriptor"),
         "{error}"
-    );
-}
-
-#[test]
-fn restores_with_finalized_layout() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-
-    let mut grown_layout = layout;
-
-    grown_layout
-        .set_pt_size(layout.get_pt_size() + vmem::PAGE_SIZE)
-        .unwrap();
-    grown_layout.set_snapshot_size(layout.snapshot_size() + page_size::get());
-    let restored = host_scratch();
-
-    snapshot.restore(&grown_layout, &restored).unwrap();
-    assert_eq!(
-        VirtqSnapshot::capture(&grown_layout, &restored).unwrap(),
-        snapshot
-    );
-    let arena_gpa_offset = restored.mem_size()
-        - hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
-    assert_eq!(
-        restored.read::<u64>(arena_gpa_offset).unwrap(),
-        grown_layout.get_transport_arena().base_addr()
     );
 }
 

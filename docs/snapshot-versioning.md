@@ -7,7 +7,7 @@ existing snapshots loadable, or while rejecting them with a clear error.
 
 ## What is versioned
 
-A snapshot carries four independently evolvable version markers:
+A snapshot carries five independently evolvable version markers:
 
 * **Memory blob ABI**, `SNAPSHOT_ABI_VERSION` (a `u32` inside the
   config blob, defined in
@@ -18,25 +18,29 @@ A snapshot carries four independently evolvable version markers:
   size), and the calling convention for guest function entry. A change
   to any of these breaks older snapshots unless the loader adds a
   compat path.
-* **Snapshot blob encoding**, `MT_SNAPSHOT_V1`
-  (`application/vnd.hyperlight.snapshot.memory.v1`), aliased as
+* **Snapshot blob encoding**, `MT_SNAPSHOT_V2`
+  (`application/vnd.hyperlight.snapshot.memory.v2`), aliased as
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
+* **Page-table blob encoding**, `MT_PAGE_TABLES_V1`
+  (`application/vnd.hyperlight.snapshot.page-tables.v1`), aliased as
+  `MT_PAGE_TABLES_CURRENT`. This is the encoding of the guest page-table
+  tree stored after the data layers.
 * **Transport blob encoding**, `MT_TRANSPORT_V1`
   (`application/vnd.hyperlight.snapshot.transport.v1`), aliased as
   `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
   virtqueue state stored outside the memory layer.
-* **Config schema**, `MT_CONFIG_V3`
-  (`application/vnd.hyperlight.snapshot.config.v3+json`), aliased as
+* **Config schema**, `MT_CONFIG_V4`
+  (`application/vnd.hyperlight.snapshot.config.v4+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
   sizes, `abi_version`, `hyperlight_version`, etc.). Renaming a field,
   changing its type, or adding a required field is a schema change and
-  bumps this constant. Version 3 describes the virtqueue-only memory layout
-  and requires a transport layer. Config v1 and v2 are incompatible with
-  the current ABI.
+  bumps this constant. Version 4 describes data layers, page tables, and
+  transport geometry, and requires a transport layer. Config v1, v2,
+  and v3 are incompatible with the current ABI.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
@@ -68,7 +72,7 @@ out at build time rather than in production.
 Compile-time tripwires in
 [src/hyperlight_host/src/sandbox/snapshot/tripwires.rs](../src/hyperlight_host/src/sandbox/snapshot/tripwires.rs)
 hold a copy of every value that defines the format:
-`SNAPSHOT_ABI_VERSION`, the snapshot and config media-type strings, the
+`SNAPSHOT_ABI_VERSION`, every `_CURRENT` media-type string, the
 OCI layout version, the `HyperlightPEB` size, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.

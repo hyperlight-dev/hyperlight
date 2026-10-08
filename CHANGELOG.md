@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the configured level is above `OFF` rather than whether the tracing state was
   allocated.
 * **Breaking:** Virtqueue rings and pools occupy host-owned scratch before page
-  tables. Snapshots use ABI 5 and config schema v3. Existing snapshots must be
+  tables. Snapshots use ABI 6 and config schema v4. Existing snapshots must be
   regenerated.
 * Host virtqueue access uses checked copies and atomics across mapped scratch.
   Snapshot admission checks geometry, canonical rings, and distinct, aligned
@@ -49,13 +49,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Require guest logs and all host and guest function calls to use virtqueues.
 * Keep registered Rust guest return values typed until transport encoding so
   external byte results avoid intermediate FlatBuffer copies.
-* Store canonical virtqueue rings in versioned OCI transport layers. Config v3
+* Store canonical virtqueue rings in versioned OCI transport layers. Config v4
   rejects snapshots without transport state.
 * Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
   keep their deferred result path.
 * Reject snapshot capture while guest-owned transport buffers are retained.
 * Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
   and 8 pages.
+* **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
+  `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read(gpa, buffer)?`
+  and return roots with `Ok(roots)`.
+* Related snapshots share immutable memory layers. This reduces capture time
+  and memory use.
+* KVM: deleting a memory slot flushes only that slot's guest mappings on Linux
+  6.12 and later. This speeds up the first guest call after a snapshot,
+  restore, or unmap changes memory slots.
+* **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
+  sandbox and removes `map_region` and `map_file_cow` regions. Pages of these
+  regions that the guest has not mapped into its page tables are lost.
+* `vmem::walk_va_spaces` merges adjacent mappings of the same kind into one
+  mapping.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.

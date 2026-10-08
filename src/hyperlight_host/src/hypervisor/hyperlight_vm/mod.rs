@@ -7,6 +7,8 @@ mod x86_64;
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
 
+const SCRATCH_SLOT: u32 = 0;
+
 #[cfg(all(test, not(gdb)))]
 pub(crate) mod test_support;
 
@@ -36,12 +38,12 @@ use crate::hypervisor::virtual_machine::{
 };
 use crate::hypervisor::{InterruptHandle, InterruptHandleImpl};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::{HandleOutbError, handle_outb};
-use crate::sandbox::snapshot::NextAction;
+use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
@@ -259,6 +261,8 @@ pub enum UpdateRegionError {
     MapMemory(#[from] MapMemoryError),
     #[error("VM unmap memory error: {0}")]
     UnmapMemory(#[from] UnmapMemoryError),
+    #[error("Invalid snapshot mapping: {0}")]
+    InvalidSnapshot(String),
 }
 
 /// Errors that can occur when accessing the root page table state
@@ -370,11 +374,11 @@ pub(crate) struct HyperlightVm {
     pub(super) next_slot: u32, // Monotonically increasing slot number
     pub(super) freed_slots: Vec<u32>, // Reusable slots from unmapped regions
 
-    pub(super) snapshot_slot: u32,
+    // Hypervisor slot and mapping for each live snapshot range.
+    pub(super) snapshot_mappings: Vec<(u32, MemoryRegion)>,
     // The current snapshot region, used to keep it alive as long as
     // it is used & when unmapping
-    pub(super) snapshot_memory: Option<SnapshotSharedMemory<GuestSharedMemory>>,
-    pub(super) scratch_slot: u32, // The slot number used for the scratch region
+    pub(super) snapshot_memory: Option<SnapshotMemoryBacking<GuestSharedMemory>>,
     // The current scratch region, used to keep it alive as long as it
     // is used & when unmapping
     pub(super) scratch_memory: Option<GuestSharedMemory>,
@@ -406,6 +410,17 @@ pub(crate) struct HyperlightVm {
 }
 
 impl HyperlightVm {
+    /// Returns an unused hypervisor memory slot.
+    fn allocate_slot(&mut self) -> u32 {
+        if let Some(slot) = self.freed_slots.pop() {
+            slot
+        } else {
+            let slot = self.next_slot;
+            self.next_slot += 1;
+            slot
+        }
+    }
+
     /// Map a region of host memory into the sandbox.
     ///
     /// Safety: The caller must ensure that the region points to valid memory and
@@ -448,10 +463,7 @@ impl HyperlightVm {
         // Check against the snapshot region
         if let Some(ref snapshot) = self.snapshot_memory {
             let snap_start = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS;
-            #[cfg(not(unshared_snapshot_mem))]
-            let snap_end = snap_start + snapshot.guest_mapped_size();
-            #[cfg(unshared_snapshot_mem)]
-            let snap_end = snap_start + snapshot.mem_size();
+            let snap_end = snap_start + snapshot.gpa_span_len();
             if new_start < snap_end && new_end > snap_start {
                 return Err(MapRegionError::Overlapping {
                     new_start,
@@ -478,13 +490,7 @@ impl HyperlightVm {
         }
 
         // Try to reuse a freed slot first, otherwise use next_slot
-        let slot = if let Some(freed_slot) = self.freed_slots.pop() {
-            freed_slot
-        } else {
-            let slot = self.next_slot;
-            self.next_slot += 1;
-            slot
-        };
+        let slot = self.allocate_slot();
 
         // Safety: slots are unique. It's up to caller to ensure that the region is valid
         unsafe { self.vm.map_memory((slot, region))? };
@@ -515,22 +521,48 @@ impl HyperlightVm {
         self.mmap_regions.iter().map(|(_, region)| region)
     }
 
-    /// Update the snapshot mapping to point to a new GuestSharedMemory
-    pub(crate) fn update_snapshot_mapping(
+    /// Updates the VM mappings to match the specified snapshot.
+    ///
+    /// This method keeps shared mappings. It removes obsolete mappings and
+    /// adds new mappings.
+    pub(crate) fn update_snapshot_mappings(
         &mut self,
-        snapshot: SnapshotSharedMemory<GuestSharedMemory>,
+        snapshot: SnapshotMemoryBacking<GuestSharedMemory>,
     ) -> Result<(), UpdateRegionError> {
-        let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
-        let rgn = snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
+        let target_mappings = snapshot
+            .mappings()
+            .map_err(|error| UpdateRegionError::InvalidSnapshot(error.to_string()))?;
 
-        // Keep the backing memory alive until its VM mapping is removed.
-        if let Some(old_snapshot) = self.snapshot_memory.as_ref() {
-            let old_rgn = old_snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
-            self.vm.unmap_memory((self.snapshot_slot, &old_rgn))?;
+        let mut index = self.snapshot_mappings.len();
+        while index > 0 {
+            index -= 1;
+            let keep = target_mappings
+                .iter()
+                .any(|target| self.snapshot_mappings[index].1 == *target);
+            if keep {
+                continue;
+            }
+            let (slot, mapping) = &self.snapshot_mappings[index];
+            self.vm.unmap_memory((*slot, mapping))?;
+            let (slot, _) = self.snapshot_mappings.remove(index);
+            self.freed_slots.push(slot);
         }
-        self.snapshot_memory = None;
-        unsafe { self.vm.map_memory((self.snapshot_slot, &rgn))? };
+
         self.snapshot_memory = Some(snapshot);
+
+        for mapping in target_mappings {
+            if self
+                .snapshot_mappings
+                .iter()
+                .any(|(_, current)| current == &mapping)
+            {
+                continue;
+            }
+            let slot = self.allocate_slot();
+            // SAFETY: `self.snapshot_memory` owns the backing for `mapping`.
+            unsafe { self.vm.map_memory((slot, &mapping))? };
+            self.snapshot_mappings.push((slot, mapping));
+        }
 
         Ok(())
     }
@@ -547,10 +579,11 @@ impl HyperlightVm {
         if let Some(old_scratch) = self.scratch_memory.as_ref() {
             let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
             let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
-            self.vm.unmap_memory((self.scratch_slot, &old_rgn))?;
+            self.vm.unmap_memory((SCRATCH_SLOT, &old_rgn))?;
         }
         self.scratch_memory = None;
-        unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
+        // SAFETY: `scratch` owns the backing through this call and is retained on success.
+        unsafe { self.vm.map_memory((SCRATCH_SLOT, &rgn))? };
         self.scratch_memory = Some(scratch);
 
         Ok(())
