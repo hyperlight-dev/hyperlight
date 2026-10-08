@@ -416,6 +416,13 @@ impl Sandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot_with_options(&mut self, options: &SnapshotOptions) -> Result<Arc<Snapshot>> {
         self.check_ready()?;
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot snapshot an ARM64 sandbox while software breakpoints are installed"
+            ));
+        }
+
         // Unpacked in full so that a new option has to decide whether the
         // cached plain snapshot still answers it.
         let SnapshotOptions { scratch_size } = options;
@@ -611,6 +618,13 @@ impl Sandbox {
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
         if self.status.is_unrecoverable() {
             return Err(HyperlightError::UnrecoverableSandbox);
+        }
+
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot restore an ARM64 sandbox while software breakpoints are installed"
+            ));
         }
 
         // Currently, we do not try to optimise restore to the
