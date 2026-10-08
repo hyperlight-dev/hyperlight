@@ -410,6 +410,13 @@ impl Sandbox {
     pub fn snapshot(&mut self) -> Result<Arc<Snapshot>> {
         self.check_ready()?;
 
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot snapshot an ARM64 sandbox while software breakpoints are installed"
+            ));
+        }
+
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
@@ -593,6 +600,13 @@ impl Sandbox {
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
         if self.status.is_unrecoverable() {
             return Err(HyperlightError::UnrecoverableSandbox);
+        }
+
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot restore an ARM64 sandbox while software breakpoints are installed"
+            ));
         }
 
         // Currently, we do not try to optimise restore to the
