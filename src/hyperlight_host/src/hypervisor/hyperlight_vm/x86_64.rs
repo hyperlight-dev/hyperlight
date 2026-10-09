@@ -184,7 +184,7 @@ impl HyperlightVm {
             // We usually keep the top of the stack 16-byte
             // aligned. However, the ABI requirement is that the stack
             // be aligned _before a call instruction_, which means
-            // that the stack needs to actually be â‰¡ 8 mod 16 at the
+            // that the stack needs to actually be ≡ 8 mod 16 at the
             // first instruction (since, on x64, a call instruction
             // automatically pushes a return address).
             rsp: self.rsp_gva - 8,
@@ -270,7 +270,7 @@ impl HyperlightVm {
             // aligned. Since the usual ABI requirement is that the
             // stack be aligned _before a call instruction_, one might
             // expect that the stack pointer here needs to actually be
-            // â‰¡ 8 mod 16 at the first instruction (since, on x64, a
+            // ≡ 8 mod 16 at the first instruction (since, on x64, a
             // call instruction automatically pushes a return
             // address).  However, the x64 entry stub in
             // hyperlight_guest::arch::dispatch handles this itself,
@@ -929,8 +929,8 @@ mod tests {
     ///   Bytes 0-1: FCW, 2-3: FSW, 4: FTW, 5: reserved, 6-7: FOP
     ///   Bytes 8-15: FIP, 16-23: FDP
     ///   Bytes 24-27: MXCSR, 28-31: MXCSR_MASK (preserve - hardware defined)
-    ///   Bytes 32-159: ST0-ST7/MM0-MM7 (8 regs Ã— 16 bytes)
-    ///   Bytes 160-415: XMM0-XMM15 (16 regs Ã— 16 bytes)
+    ///   Bytes 32-159: ST0-ST7/MM0-MM7 (8 regs × 16 bytes)
+    ///   Bytes 160-415: XMM0-XMM15 (16 regs × 16 bytes)
     ///   Bytes 416-511: Reserved
     fn dirty_xsave_legacy(xsave: &mut [u32], current_xsave: &[u8]) {
         // FCW (bytes 0-1) + FSW (bytes 2-3) - pack into xsave[0]

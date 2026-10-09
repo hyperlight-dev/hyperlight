@@ -100,7 +100,7 @@ const PARTITION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(gdb)]
 const EXTENDED_VM_EXIT_HYPERCALL: u64 = 1 << 5;
 #[cfg(gdb)]
-const DEBUG_CACHE_SYNC_GPA: u64 = 0x1000;
+pub(crate) const DEBUG_CACHE_SYNC_GPA: u64 = 0x1000;
 #[cfg(gdb)]
 const DEBUG_CACHE_SYNC_IMMEDIATE: u16 = 0x4858;
 #[cfg(gdb)]
