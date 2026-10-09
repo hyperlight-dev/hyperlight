@@ -7,6 +7,8 @@ mod x86_64;
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
 
+mod dirty_log;
+
 #[cfg(all(test, not(gdb)))]
 pub(crate) mod test_support;
 
@@ -18,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::log_level::GuestLogFilter;
 use tracing_core::LevelFilter;
 
+use self::dirty_log::ScratchDirtyLog;
 use crate::HyperlightError;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
@@ -378,6 +381,8 @@ pub(crate) struct HyperlightVm {
     // The current scratch region, used to keep it alive as long as it
     // is used & when unmapping
     pub(super) scratch_memory: Option<GuestSharedMemory>,
+    /// What the guest wrote to scratch since the last restore.
+    pub(super) scratch_dirty: ScratchDirtyLog,
 
     pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
@@ -535,6 +540,15 @@ impl HyperlightVm {
         Ok(())
     }
 
+    /// The scratch pages the guest wrote since the last restore, where
+    /// the hypervisor logs them. Called once per restore, before
+    /// scratch is reset. See [`ScratchDirtyLog`].
+    pub(crate) fn scratch_dirty_pages(&mut self) -> Option<&mut Vec<u64>> {
+        let size = self.scratch_memory.as_ref()?.mem_size();
+        let gpa = hyperlight_common::layout::scratch_base_gpa(size);
+        self.scratch_dirty.take(&mut *self.vm, gpa, size)
+    }
+
     /// Update the scratch mapping to point to a new GuestSharedMemory
     pub(crate) fn update_scratch_mapping(
         &mut self,
@@ -547,11 +561,16 @@ impl HyperlightVm {
         if let Some(old_scratch) = self.scratch_memory.as_ref() {
             let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
             let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
+            self.scratch_dirty
+                .unmapping(&mut *self.vm, old_base, old_rgn.guest_region.len());
             self.vm.unmap_memory((self.scratch_slot, &old_rgn))?;
         }
         self.scratch_memory = None;
         unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
         self.scratch_memory = Some(scratch);
+        // Track the guest's writes to it from before the guest runs.
+        self.scratch_dirty
+            .mapped(&mut *self.vm, guest_base, rgn.guest_region.len());
 
         Ok(())
     }
