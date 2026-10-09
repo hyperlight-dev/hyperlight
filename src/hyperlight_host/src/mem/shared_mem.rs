@@ -2355,90 +2355,151 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    mod guard_page_crash_test {
-        use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+    /// Shared by the guard page shims. The ignored tests crash on
+    /// purpose, so each one runs in its own process.
+    #[cfg(not(miri))]
+    mod guard_page_subprocess {
+        /// Derive a libtest filter path for a test function from its
+        /// type name. Strips the leading crate-name segment that
+        /// `type_name` includes but libtest does not.
+        pub(super) fn test_path<F: Fn()>(_: F) -> &'static str {
+            let full = std::any::type_name::<F>();
+            let (_, rest) = full
+                .split_once("::")
+                .expect("type_name of a function item is always qualified by the crate name");
+            rest
+        }
 
-        const TEST_EXIT_CODE: u8 = 211; // an uncommon exit code, used for testing purposes
+        pub(super) fn run_guard_page_subprocess(exe: &std::path::Path, ignored_test_path: &str) {
+            let output = std::process::Command::new(exe)
+                .args([
+                    "--ignored",
+                    "--nocapture",
+                    "--exact",
+                    "--test-threads=1",
+                    ignored_test_path,
+                ])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("Unable to launch subprocess test");
 
-        /// hook sigsegv to exit with status code, to make it testable, rather than have it exit from a signal
-        /// NOTE: We CANNOT panic!() in the handler, and make the tests #[should_panic], because
-        ///     the test harness process will crash anyway after the test passes
-        fn setup_signal_handler() {
-            unsafe {
-                signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
-                    std::process::exit(TEST_EXIT_CODE.into());
-                })
-                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // libtest with no matching filter exits 0, so verify the
+            // test actually ran via the "running 1 test" banner.
+            let ran_test = stdout.contains("running 1 test");
+            let reached = stdout.contains("reached_guard");
+            let survived = stdout.contains("survived_guard");
+            let by_access_violation = killed_by_access_violation(&output.status);
+
+            let ok = reached && !survived && by_access_violation && ran_test;
+            if !ok {
+                eprintln!("=== Guard page shim failed for {} ===", ignored_test_path);
+                eprintln!(
+                    "status={:?} ran_test={} reached={} survived={} by_access_violation={}",
+                    output.status, ran_test, reached, survived, by_access_violation
+                );
+                eprintln!("=== STDOUT ===\n{}", stdout);
+                eprintln!("=== STDERR ===\n{}", stderr);
+                let hint = if !ran_test {
+                    format!(
+                        "\nHINT: ran_test=false (subprocess reported 'running 0 tests'). \
+                         Most likely cause is a stale test path in the shim. Verify that \
+                         `{}` still exists and matches the path passed via --exact above.",
+                        ignored_test_path
+                    )
+                } else {
+                    String::new()
+                };
+                panic!(
+                    "Expected subprocess to run {}, print 'reached_guard', \
+                     then die from a memory access fault. ran_test={}, reached={}, \
+                     survived={}, by_access_violation={}, status={:?}{}",
+                    ignored_test_path,
+                    ran_test,
+                    reached,
+                    survived,
+                    by_access_violation,
+                    output.status,
+                    hint
+                );
+            }
+
+            println!(
+                "guard page trap confirmed for {}: subprocess terminated with {:?}",
+                ignored_test_path, output.status
+            );
+        }
+
+        /// Returns true if `status` indicates the process died from a
+        /// memory access fault (SIGBUS on macos, SIGSEGV on linux,
+        /// STATUS_ACCESS_VIOLATION (or 0xDEAD) on Windows).
+        fn killed_by_access_violation(status: &std::process::ExitStatus) -> bool {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                let expected_signal = if cfg!(target_os = "macos") {
+                    libc::SIGBUS
+                } else {
+                    libc::SIGSEGV
+                };
+                status.signal() == Some(expected_signal)
+            }
+            #[cfg(windows)]
+            {
+                use windows::Win32::Foundation::STATUS_ACCESS_VIOLATION;
+                // See https://github.com/hyperlight-dev/hyperlight/issues/1507
+                status.code() == Some(STATUS_ACCESS_VIOLATION.0) || status.code() == Some(0xDEAD)
             }
         }
+    }
+
+    #[cfg(all(not(miri), any(target_os = "linux", windows)))]
+    mod guard_page_crash_test {
+        use super::guard_page_subprocess::{run_guard_page_subprocess, test_path};
+        use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 
         #[test]
         #[ignore] // this test is ignored because it will crash the running process
         fn read() {
-            setup_signal_handler();
-
             let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
+            println!("reached_guard");
             unsafe { std::ptr::read_volatile(guard_page_ptr) };
+            println!("survived_guard");
         }
 
         #[test]
         #[ignore] // this test is ignored because it will crash the running process
         fn write() {
-            setup_signal_handler();
-
             let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
+            println!("reached_guard");
             unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
+            println!("survived_guard");
         }
 
         #[test]
         #[ignore] // this test is ignored because it will crash the running process
         fn exec() {
-            setup_signal_handler();
-
             let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
             let (hshm, _) = eshm.build();
             let guard_page_ptr = hshm.raw_ptr();
             let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
+            println!("reached_guard");
             func();
+            println!("survived_guard");
         }
 
         // provides a way for running the above tests in a separate process since they expect to crash
         #[test]
-        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
         fn guard_page_testing_shim() {
-            let tests = vec!["read", "write", "exec"];
-            for test in tests {
-                let triple = std::env::var("TARGET_TRIPLE").ok();
-                let target_args = if let Some(triple) = triple.filter(|t| !t.is_empty()) {
-                    vec!["--target".to_string(), triple.to_string()]
-                } else {
-                    vec![]
-                };
-                let output = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host", "--lib"])
-                    .args(target_args)
-                    .args(["--", "--ignored", test])
-                    .stdin(std::process::Stdio::null())
-                    .output()
-                    .expect("Unable to launch tests");
-                let exit_code = output.status.code();
-                if exit_code != Some(TEST_EXIT_CODE.into()) {
-                    eprintln!("=== Guard Page test '{}' failed ===", test);
-                    eprintln!("Exit code: {:?} (expected {})", exit_code, TEST_EXIT_CODE);
-                    eprintln!("=== STDOUT ===");
-                    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-                    eprintln!("=== STDERR ===");
-                    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-                    panic!(
-                        "Guard Page test failed: {} (exit code {:?}, expected {})",
-                        test, exit_code, TEST_EXIT_CODE
-                    );
-                }
+            let exe = std::env::current_exe().expect("current_exe");
+            for path in [test_path(read), test_path(write), test_path(exec)] {
+                run_guard_page_subprocess(&exe, path);
             }
         }
     }
@@ -2581,6 +2642,7 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
         fn from_file_guard_page_shim() {
+            use super::guard_page_subprocess::{run_guard_page_subprocess, test_path};
             use guard_page_crash_tests::{leading_guard_page_traps, trailing_guard_page_traps};
             let ignored_test_paths = [
                 test_path(leading_guard_page_traps),
@@ -2590,101 +2652,6 @@ mod tests {
             let exe = std::env::current_exe().expect("current_exe");
             for path in &ignored_test_paths {
                 run_guard_page_subprocess(&exe, path);
-            }
-        }
-
-        /// Derive a libtest filter path for a test function from its
-        /// type name. Strips the leading crate-name segment that
-        /// `type_name` includes but libtest does not.
-        fn test_path<F: Fn()>(_: F) -> &'static str {
-            let full = std::any::type_name::<F>();
-            let (_, rest) = full
-                .split_once("::")
-                .expect("type_name of a function item is always qualified by the crate name");
-            rest
-        }
-
-        fn run_guard_page_subprocess(exe: &std::path::Path, ignored_test_path: &str) {
-            let output = std::process::Command::new(exe)
-                .args([
-                    "--ignored",
-                    "--nocapture",
-                    "--exact",
-                    "--test-threads=1",
-                    ignored_test_path,
-                ])
-                .stdin(std::process::Stdio::null())
-                .output()
-                .expect("Unable to launch subprocess test");
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            // libtest with no matching filter exits 0, so verify the
-            // test actually ran via the "running 1 test" banner.
-            let ran_test = stdout.contains("running 1 test");
-            let reached = stdout.contains("reached_guard");
-            let survived = stdout.contains("survived_guard");
-            let by_access_violation = killed_by_access_violation(&output.status);
-
-            let ok = reached && !survived && by_access_violation && ran_test;
-            if !ok {
-                eprintln!("=== Guard page shim failed for {} ===", ignored_test_path);
-                eprintln!(
-                    "status={:?} ran_test={} reached={} survived={} by_access_violation={}",
-                    output.status, ran_test, reached, survived, by_access_violation
-                );
-                eprintln!("=== STDOUT ===\n{}", stdout);
-                eprintln!("=== STDERR ===\n{}", stderr);
-                let hint = if !ran_test {
-                    format!(
-                        "\nHINT: ran_test=false (subprocess reported 'running 0 tests'). \
-                         Most likely cause is a stale test path in the shim. Verify that \
-                         `{}` still exists and matches the path passed via --exact above.",
-                        ignored_test_path
-                    )
-                } else {
-                    String::new()
-                };
-                panic!(
-                    "Expected subprocess to run {}, print 'reached_guard', \
-                     then die from a memory access fault. ran_test={}, reached={}, \
-                     survived={}, by_access_violation={}, status={:?}{}",
-                    ignored_test_path,
-                    ran_test,
-                    reached,
-                    survived,
-                    by_access_violation,
-                    output.status,
-                    hint
-                );
-            }
-
-            println!(
-                "guard page trap confirmed for {}: subprocess terminated with {:?}",
-                ignored_test_path, output.status
-            );
-        }
-
-        /// Returns true if `status` indicates the process died from a
-        /// memory access fault (SIGBUS on macos, SIGSEGV on linux,
-        /// STATUS_ACCESS_VIOLATION (or 0xDEAD) on Windows).
-        fn killed_by_access_violation(status: &std::process::ExitStatus) -> bool {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                let expected_signal = if cfg!(target_os = "macos") {
-                    libc::SIGBUS
-                } else {
-                    libc::SIGSEGV
-                };
-                status.signal() == Some(expected_signal)
-            }
-            #[cfg(windows)]
-            {
-                use windows::Win32::Foundation::STATUS_ACCESS_VIOLATION;
-                // See https://github.com/hyperlight-dev/hyperlight/issues/1507
-                status.code() == Some(STATUS_ACCESS_VIOLATION.0) || status.code() == Some(0xDEAD)
             }
         }
     }
