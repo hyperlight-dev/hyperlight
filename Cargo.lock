@@ -43,6 +43,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c880a97d28a3681c0267bd29cff89621202715b065127cd445fa0f0fe0aa2880"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -284,15 +290,6 @@ checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
 dependencies = [
  "memchr",
  "serde_core",
-]
-
-[[package]]
-name = "buddy_system_allocator"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1af5a01adeeade54c9f5060300227a8ee64c05b6376f28e9b8ee3b72dd2056f"
-dependencies = [
- "spin 0.10.1",
 ]
 
 [[package]]
@@ -1683,7 +1680,7 @@ dependencies = [
  "quickcheck",
  "rand 0.10.3",
  "smallvec",
- "spin 0.12.3",
+ "spin",
  "thiserror",
  "tracing",
  "tracing-core",
@@ -1745,7 +1742,6 @@ dependencies = [
 name = "hyperlight-guest-bin"
 version = "0.18.0"
 dependencies = [
- "buddy_system_allocator",
  "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest",
@@ -1754,7 +1750,8 @@ dependencies = [
  "hyperlight-libc",
  "linkme",
  "log",
- "spin 0.12.3",
+ "spin",
+ "talc",
  "tracing",
 ]
 
@@ -1773,7 +1770,7 @@ name = "hyperlight-guest-tracing"
 version = "0.18.0"
 dependencies = [
  "hyperlight-common",
- "spin 0.12.3",
+ "spin",
  "tracing",
  "tracing-core",
 ]
@@ -3743,12 +3740,6 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
-
-[[package]]
-name = "spin"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
@@ -3848,6 +3839,16 @@ dependencies = [
  "pkg-config",
  "toml 1.1.8+spec-1.1.0",
  "version-compare",
+]
+
+[[package]]
+name = "talc"
+version = "5.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53f8ad14fa1c1b8635114abf9721076fe1e869572a5f26a52690f407292c80dc"
+dependencies = [
+ "allocator-api2",
+ "lock_api",
 ]
 
 [[package]]
