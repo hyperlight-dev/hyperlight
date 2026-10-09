@@ -100,6 +100,16 @@ impl HyperlightVm {
                     let response = match req {
                         DebugMsg::DisableDebug => {
                             detach = true;
+                            // Remove software breakpoint state so restore does not reject recovery.
+                            #[cfg(target_arch = "aarch64")]
+                            match self.process_dbg_request(DebugMsg::DisableDebug, &mem_access) {
+                                Ok(response) => response,
+                                Err(error) => {
+                                    tracing::error!("Failed to clean up after detach: {error}");
+                                    DebugResponse::ErrorOccurred
+                                }
+                            }
+                            #[cfg(not(target_arch = "aarch64"))]
                             DebugResponse::DisableDebug
                         }
                         DebugMsg::Continue => {
