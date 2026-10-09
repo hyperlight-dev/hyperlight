@@ -7,28 +7,29 @@ mod x86_64;
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
 
+#[cfg(gdb)]
+mod debug;
+
 #[cfg(all(test, not(gdb)))]
 pub(crate) mod test_support;
 
-#[cfg(gdb)]
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::log_level::GuestLogFilter;
 use tracing_core::LevelFilter;
 
+#[cfg(gdb)]
+use self::debug::{ProcessDebugRequestError, SoftwareBreakpoints};
 use crate::HyperlightError;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-#[cfg(gdb)]
+#[cfg(all(gdb, target_arch = "x86_64"))]
 use crate::hypervisor::gdb::arch::VcpuStopReasonError;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{
     DebugCommChannel, DebugError, DebugMsg, DebugResponse, GdbTargetError, VcpuStopReason,
 };
-#[cfg(gdb)]
-use crate::hypervisor::hyperlight_vm::x86_64::debug::ProcessDebugRequestError;
 #[cfg(not(gdb))]
 use crate::hypervisor::virtual_machine::VirtualMachine;
 use crate::hypervisor::virtual_machine::{
@@ -208,7 +209,7 @@ pub enum RunVmError {
     RunVcpu(#[from] RunVcpuError),
     #[error("Unexpected VM exit: {0}")]
     UnexpectedVmExit(String),
-    #[cfg(gdb)]
+    #[cfg(all(gdb, target_arch = "x86_64"))]
     #[error("vCPU stop reason error: {0}")]
     VcpuStopReason(#[from] VcpuStopReasonError),
 }
@@ -259,6 +260,9 @@ pub enum UpdateRegionError {
     MapMemory(#[from] MapMemoryError),
     #[error("VM unmap memory error: {0}")]
     UnmapMemory(#[from] UnmapMemoryError),
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    #[error("Cannot replace snapshot memory while software breakpoints are installed")]
+    ActiveSoftwareBreakpoints,
 }
 
 /// Errors that can occur when accessing the root page table state
@@ -388,14 +392,18 @@ pub(crate) struct HyperlightVm {
     #[cfg(gdb)]
     pub(super) gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
-    pub(super) sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
+    pub(super) sw_breakpoints: SoftwareBreakpoints,
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    pending_software_step: Option<debug::PendingSoftwareStep>,
     /// One-shot hw breakpoint installed at the entry address when gdb is
     /// enabled, so the gdb stub gets a `VcpuStopped` to enter its event
     /// loop on the first vCPU run after construction. Cleared by the
     /// `VmExit::Debug` arm of `run` the first time a `HwBp` stop fires
     /// at the entry address.
-    #[cfg(gdb)]
+    #[cfg(all(gdb, target_arch = "x86_64"))]
     pub(super) one_shot_entry_bp: Option<u64>,
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    pub(super) initial_debug_stop_pending: bool,
     #[cfg(feature = "mem_profile")]
     pub(super) trace_info: MemTraceInfo,
     #[cfg(crashdump)]
@@ -477,6 +485,23 @@ impl HyperlightVm {
             }
         }
 
+        // Check against the hidden debug cache-sync page
+        #[cfg(all(gdb, target_arch = "aarch64", target_os = "windows"))]
+        {
+            use crate::hypervisor::virtual_machine::whp::DEBUG_CACHE_SYNC_GPA;
+
+            let reserved_start = DEBUG_CACHE_SYNC_GPA as usize;
+            let reserved_end = reserved_start + self.page_size;
+            if new_start < reserved_end && new_end > reserved_start {
+                return Err(MapRegionError::Overlapping {
+                    new_start,
+                    new_end,
+                    existing_start: reserved_start,
+                    existing_end: reserved_end,
+                });
+            }
+        }
+
         // Try to reuse a freed slot first, otherwise use next_slot
         let slot = if let Some(freed_slot) = self.freed_slots.pop() {
             freed_slot
@@ -520,6 +545,11 @@ impl HyperlightVm {
         &mut self,
         snapshot: SnapshotSharedMemory<GuestSharedMemory>,
     ) -> Result<(), UpdateRegionError> {
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.has_sw_breakpoints() {
+            return Err(UpdateRegionError::ActiveSoftwareBreakpoints);
+        }
+
         let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
         let rgn = snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
 
@@ -672,7 +702,15 @@ impl HyperlightVm {
             //    - Signals will not be sent
             match exit_reason {
                 #[cfg(gdb)]
-                Ok(VmExit::Debug { dr6, exception }) => {
+                Ok(VmExit::Debug {
+                    #[cfg(target_arch = "x86_64")]
+                    dr6,
+                    #[cfg(target_arch = "x86_64")]
+                    exception,
+                    #[cfg(target_arch = "aarch64")]
+                        reason: stop_reason,
+                }) => {
+                    #[cfg(target_arch = "x86_64")]
                     // Classify the debug exit. `vcpu_stop_reason` is a
                     // pure classifier and has no side effects on the VM.
                     let stop_reason = crate::hypervisor::gdb::arch::vcpu_stop_reason(
@@ -680,6 +718,7 @@ impl HyperlightVm {
                         dr6,
                         exception,
                     )?;
+                    #[cfg(target_arch = "x86_64")]
                     // Remove the one-shot entry breakpoint installed by
                     // `HyperlightVm::new` the first time it fires so it
                     // does not interfere with later user-installed
@@ -695,6 +734,16 @@ impl HyperlightVm {
                             self.one_shot_entry_bp = None;
                         }
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    let stop_reason = if self.pending_software_step.is_some() {
+                        match self.finish_software_step(mem_mgr) {
+                            Ok(Some(reason)) => reason,
+                            Ok(None) => continue,
+                            Err(e) => break Err(HandleDebugError::from(e).into()),
+                        }
+                    } else {
+                        stop_reason
+                    };
                     if let Err(e) = self.handle_debug(mem_mgr, stop_reason) {
                         break Err(e.into());
                     }
@@ -756,12 +805,22 @@ impl HyperlightVm {
                         continue;
                     }
 
+                    // Pending ARM64 software steps hold temporary breakpoints, so they
+                    // are cancelled for any interruption source.
+                    #[cfg(all(gdb, target_arch = "aarch64"))]
+                    if let Err(e) = self.cancel_pending_software_step(mem_mgr) {
+                        break Err(HandleDebugError::from(e).into());
+                    }
+
                     // If the vcpu was interrupted by a debugger, we need to handle it
                     #[cfg(gdb)]
-                    {
+                    if debug_interrupted {
                         self.interrupt_handle.state().clear_debug_interrupt();
                         if let Err(e) = self.handle_debug(mem_mgr, VcpuStopReason::Interrupt) {
                             break Err(e.into());
+                        }
+                        if !cancel_requested {
+                            continue;
                         }
                     }
 

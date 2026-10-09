@@ -34,10 +34,12 @@ fn main() -> hyperlight_host::Result<()> {
             .host_function("Sleep5Secs", sleep_5_secs)
             .build()?;
 
-    // Call guest function
+    #[cfg(target_arch = "x86_64")]
     multi_use_sandbox_dbg
         .call::<()>("UseSSE2Registers", ())
         .unwrap();
+    #[cfg(target_arch = "aarch64")]
+    multi_use_sandbox_dbg.call::<()>("NoOp", ()).unwrap();
 
     let message =
         "Hello, World! I am executing inside of a VM with debugger attached :)\n".to_string();
@@ -291,6 +293,76 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[serial]
+    fn test_gdb_continue_over_sw_breakpoint() {
+        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-aarch64-continue");
+        let cmd = format!(
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :8080
+                set pagination off
+                set logging file {out_file_path}
+                set logging enabled on
+                break simpleguest::no_op
+                commands 1
+                    continue
+                end
+                break simpleguest::print_output
+                commands 2
+                    echo Continued over ARM64 software breakpoint\\n
+                    set logging enabled off
+                    detach
+                    quit
+                end
+                continue
+            "
+        );
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{cmd}");
+        let checker =
+            |contents: String| contents.contains("Continued over ARM64 software breakpoint");
+        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
+
+        cleanup(&out_file_path, &cmd_file_path);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[serial]
+    fn test_gdb_single_step() {
+        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-aarch64-step");
+        let cmd = format!(
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :8080
+                set pagination off
+                set logging file {out_file_path}
+                set logging enabled on
+                break simpleguest::no_op
+                stepi
+                echo Stepped over ARM64 linear instruction\\n
+                continue
+                stepi
+                echo Stepped over ARM64 RET\\n
+                set logging enabled off
+                detach
+                quit
+            "
+        );
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{cmd}");
+        let checker = |contents: String| {
+            contents.contains("Stepped over ARM64 linear instruction")
+                && contents.contains("Stepped over ARM64 RET")
+        };
+        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
+
+        cleanup(&out_file_path, &cmd_file_path);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
     #[serial]
     fn test_gdb_sse_check() {
         let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-sse");

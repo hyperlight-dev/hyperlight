@@ -11,11 +11,16 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase, SingleThreadResume, SingleThreadResumeOps, SingleThreadSingleStep,
     SingleThreadSingleStepOps,
 };
+#[cfg(target_arch = "x86_64")]
+use gdbstub::target::ext::breakpoints::HwBreakpointOps;
 use gdbstub::target::ext::breakpoints::{
-    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
+    Breakpoints, BreakpointsOps, HwBreakpoint, SwBreakpoint, SwBreakpointOps,
 };
 use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
+#[cfg(target_arch = "aarch64")]
+use gdbstub_arch::aarch64::AArch64 as GdbTargetArch;
+#[cfg(target_arch = "x86_64")]
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
 use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError};
@@ -69,9 +74,7 @@ impl HyperlightSandboxTarget {
         match self.send_command(DebugMsg::Continue)? {
             DebugResponse::Continue => Ok(()),
             DebugResponse::NotAllowed => {
-                tracing::error!("Action not allowed at this time, crash might have occurred");
-                // This is a consequence of the target crashing or being in an invalid state
-                // we cannot continue execution, but we can still read registers and memory
+                tracing::error!("Resume is not allowed in the current target state");
                 Ok(())
             }
             msg => {
@@ -108,7 +111,8 @@ impl HyperlightSandboxTarget {
     /// Interrupts the vCPU execution
     pub(crate) fn interrupt_vcpu(&mut self) -> bool {
         if let Some(handle) = &self.interrupt_handle {
-            handle.kill_from_debugger()
+            handle.kill_from_debugger();
+            true
         } else {
             tracing::warn!("No interrupt handle set, cannot interrupt vCPU");
 
@@ -198,27 +202,40 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         match self.send_command(DebugMsg::ReadRegisters)? {
             DebugResponse::ReadRegisters(boxed_regs) => {
                 let (read_regs, read_fpu) = boxed_regs.as_ref();
-                regs.regs[0] = read_regs.rax;
-                regs.regs[1] = read_regs.rbp;
-                regs.regs[2] = read_regs.rcx;
-                regs.regs[3] = read_regs.rdx;
-                regs.regs[4] = read_regs.rsi;
-                regs.regs[5] = read_regs.rdi;
-                regs.regs[6] = read_regs.rbp;
-                regs.regs[7] = read_regs.rsp;
-                regs.regs[8] = read_regs.r8;
-                regs.regs[9] = read_regs.r9;
-                regs.regs[10] = read_regs.r10;
-                regs.regs[11] = read_regs.r11;
-                regs.regs[12] = read_regs.r12;
-                regs.regs[13] = read_regs.r13;
-                regs.regs[14] = read_regs.r14;
-                regs.regs[15] = read_regs.r15;
-                regs.rip = read_regs.rip;
-                regs.eflags = read_regs.rflags as u32;
+                #[cfg(target_arch = "x86_64")]
+                {
+                    regs.regs[0] = read_regs.rax;
+                    regs.regs[1] = read_regs.rbp;
+                    regs.regs[2] = read_regs.rcx;
+                    regs.regs[3] = read_regs.rdx;
+                    regs.regs[4] = read_regs.rsi;
+                    regs.regs[5] = read_regs.rdi;
+                    regs.regs[6] = read_regs.rbp;
+                    regs.regs[7] = read_regs.rsp;
+                    regs.regs[8] = read_regs.r8;
+                    regs.regs[9] = read_regs.r9;
+                    regs.regs[10] = read_regs.r10;
+                    regs.regs[11] = read_regs.r11;
+                    regs.regs[12] = read_regs.r12;
+                    regs.regs[13] = read_regs.r13;
+                    regs.regs[14] = read_regs.r14;
+                    regs.regs[15] = read_regs.r15;
+                    regs.rip = read_regs.rip;
+                    regs.eflags = read_regs.rflags as u32;
 
-                regs.xmm = read_fpu.xmm.map(u128::from_le_bytes);
-                regs.mxcsr = read_fpu.mxcsr;
+                    regs.xmm = read_fpu.xmm.map(u128::from_le_bytes);
+                    regs.mxcsr = read_fpu.mxcsr;
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    regs.x = read_regs.x;
+                    regs.sp = read_regs.sp;
+                    regs.pc = read_regs.pc;
+                    regs.cpsr = read_regs.pstate as u32;
+                    regs.v = read_fpu.v;
+                    regs.fpcr = read_fpu.fpcr;
+                    regs.fpsr = read_fpu.fpsr;
+                }
 
                 Ok(())
             }
@@ -240,6 +257,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
     ) -> TargetResult<(), Self> {
         tracing::debug!("Write regs");
 
+        #[cfg(target_arch = "x86_64")]
         let common_regs = CommonRegisters {
             rax: regs.regs[0],
             rbx: regs.regs[1],
@@ -261,15 +279,33 @@ impl SingleThreadBase for HyperlightSandboxTarget {
             rflags: u64::from(regs.eflags),
         };
 
+        #[cfg(target_arch = "x86_64")]
         let mut xmm = [[0u8; 16]; 16];
+        #[cfg(target_arch = "x86_64")]
         for (i, &reg) in regs.xmm.iter().enumerate() {
             xmm[i] = reg.to_le_bytes();
         }
 
+        #[cfg(target_arch = "x86_64")]
         let common_fpu = CommonFpu {
             xmm,
             mxcsr: regs.mxcsr,
             ..Default::default()
+        };
+
+        #[cfg(target_arch = "aarch64")]
+        let common_regs = CommonRegisters {
+            x: regs.x,
+            sp: regs.sp,
+            pc: regs.pc,
+            pstate: u64::from(regs.cpsr),
+        };
+
+        #[cfg(target_arch = "aarch64")]
+        let common_fpu = CommonFpu {
+            v: regs.v,
+            fpcr: regs.fpcr,
+            fpsr: regs.fpsr,
         };
 
         match self.send_command(DebugMsg::WriteRegisters(Box::new((
@@ -321,6 +357,7 @@ impl SectionOffsets for HyperlightSandboxTarget {
 }
 
 impl Breakpoints for HyperlightSandboxTarget {
+    #[cfg(target_arch = "x86_64")]
     fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<'_, Self>> {
         Some(self)
     }
@@ -476,6 +513,9 @@ impl SingleThreadSingleStep for HyperlightSandboxTarget {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "aarch64")]
+    use gdbstub_arch::aarch64::reg::AArch64CoreRegs;
+    #[cfg(target_arch = "x86_64")]
     use gdbstub_arch::x86::reg::X86_64CoreRegs;
 
     use super::*;
@@ -492,6 +532,9 @@ mod tests {
         let res = gdb_conn.send(msg);
         assert!(res.is_ok());
 
+        #[cfg(target_arch = "aarch64")]
+        let mut regs = AArch64CoreRegs::default();
+        #[cfg(target_arch = "x86_64")]
         let mut regs = X86_64CoreRegs::default();
         assert!(
             target.read_registers(&mut regs).is_ok(),
@@ -514,5 +557,52 @@ mod tests {
             "Succeeded to read registers when
             expected to fail"
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_register_conversion_round_trip() {
+        let mut common_regs = CommonRegisters::default();
+        for (index, value) in common_regs.x.iter_mut().enumerate() {
+            *value = 0x1000 + index as u64;
+        }
+        common_regs.sp = 0x2000;
+        common_regs.pc = 0x3000;
+        common_regs.pstate = 0xa000_03c5;
+
+        let mut common_fpu = CommonFpu::default();
+        for (index, value) in common_fpu.v.iter_mut().enumerate() {
+            *value = 0x4000 + index as u128;
+        }
+        common_fpu.fpcr = 0x5000;
+        common_fpu.fpsr = 0x6000;
+
+        let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
+        let mut target = HyperlightSandboxTarget::new(hyp_conn);
+        gdb_conn
+            .send(DebugResponse::ReadRegisters(Box::new((
+                common_regs,
+                common_fpu,
+            ))))
+            .unwrap();
+
+        let mut gdb_regs = AArch64CoreRegs::default();
+        assert!(target.read_registers(&mut gdb_regs).is_ok());
+        assert_eq!(gdb_regs.x, common_regs.x);
+        assert_eq!(gdb_regs.sp, common_regs.sp);
+        assert_eq!(gdb_regs.pc, common_regs.pc);
+        assert_eq!(gdb_regs.cpsr, common_regs.pstate as u32);
+        assert_eq!(gdb_regs.v, common_fpu.v);
+        assert_eq!(gdb_regs.fpcr, common_fpu.fpcr);
+        assert_eq!(gdb_regs.fpsr, common_fpu.fpsr);
+        assert!(matches!(gdb_conn.recv().unwrap(), DebugMsg::ReadRegisters));
+
+        gdb_conn.send(DebugResponse::WriteRegisters).unwrap();
+        assert!(target.write_registers(&gdb_regs).is_ok());
+        let DebugMsg::WriteRegisters(written) = gdb_conn.recv().unwrap() else {
+            panic!("unexpected request");
+        };
+        assert_eq!(written.0, common_regs);
+        assert_eq!(written.1, common_fpu);
     }
 }
