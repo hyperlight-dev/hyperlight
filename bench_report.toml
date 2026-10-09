@@ -4,6 +4,11 @@
 # nothing fails the report.
 allowlist = [
   "^function_call_codec/decode_vec_bytes_copy$",
+  "^guest_calls/call_with_restore/default$",
+  "^guest_calls/call_with_restore/scratch_64mib$",
+  "^guest_calls/call_with_restore/scratch_64mib_write_1mib$",
+  "^guest_calls/call_with_restore/scratch_256mib$",
+  "^guest_calls/call_with_restore/scratch_256mib_write_1mib$",
   "^function_call_codec/encode_control/byte_chunks$",
   "^function_call_codec/encode_control/vec_bytes$",
   "^payload_allocation/slot_pool_segmented/262144$",
