@@ -130,6 +130,30 @@ fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) 
     });
 }
 
+/// A call and a restore with `mib` MiB of scratch, where resetting scratch
+/// dominates a restore. The guest writes `write` bytes of heap a call, or
+/// only a few pages (an Echo).
+fn bench_large_scratch_call_with_restore(
+    b: &mut criterion::Bencher,
+    mib: usize,
+    write: Option<u64>,
+) {
+    let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+        .heap_size(4 << 20)
+        .scratch_size(mib << 20)
+        .build()
+        .unwrap();
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter(|| {
+        match write {
+            Some(len) => sbox.call::<()>("AllocAndWritePattern", len).unwrap(),
+            None => drop(sbox.call::<String>("Echo", "hello\n".to_string()).unwrap()),
+        }
+        sbox.restore(snapshot.clone()).unwrap();
+    });
+}
+
 fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: SandboxSize) {
     let mut multiuse_sandbox = size
         .builder()
@@ -235,6 +259,16 @@ fn guest_calls_benchmark(c: &mut Criterion) {
         group.bench_function(format!("call_with_restore/{}", size.name()), |b| {
             bench_guest_call_with_restore(b, size)
         });
+    }
+
+    for mib in [64, 256] {
+        group.bench_function(format!("call_with_restore/scratch_{mib}mib"), |b| {
+            bench_large_scratch_call_with_restore(b, mib, None)
+        });
+        group.bench_function(
+            format!("call_with_restore/scratch_{mib}mib_write_1mib"),
+            |b| bench_large_scratch_call_with_restore(b, mib, Some(1 << 20)),
+        );
     }
 
     for size in SandboxSize::all() {
