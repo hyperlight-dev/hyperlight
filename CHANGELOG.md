@@ -61,6 +61,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   architecture-independent exception handling hooks. The new
   interfaces are significantly more liminited, but more portable; they
   will be extended in the future.
+* On KVM, restore zeroes the scratch pages the guest wrote since the last
+  restore and keeps them mapped, so its next run takes no faults on them.
+  Other scratch is dropped, a few runs of it per restore when it is
+  fragmented, so what stays resident follows what recent runs wrote.
+* On WHP, and on MSHV on x86_64, restore zeroes only the scratch pages written
+  since the last restore, from the hypervisor's dirty-page log and a log of host
+  writes. WHP no longer replaces the scratch mapping on each restore, so the
+  pages a guest writes stay committed between restores. MSHV tracks scratch of
+  2 MiB or more, and stops tracking a scratch region after a run writes more
+  than a tenth of it (a quarter from 32 MiB), where zeroing all of it costs
+  less.
+* When Windows cannot tell which scratch pages were written, restore zeroes
+  scratch of up to 16 MiB in place, which is faster than replacing it below
+  that size, and replaces larger scratch.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.

@@ -1095,6 +1095,8 @@ impl MemorySpace {
     }
 }
 
+impl crate::hypervisor::virtual_machine::DirtyLog for HvfVm {}
+
 impl VirtualMachine for HvfVm {
     unsafe fn map_memory(
         &mut self,

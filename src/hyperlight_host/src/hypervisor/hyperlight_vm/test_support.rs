@@ -11,7 +11,9 @@ use crate::hypervisor::regs::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::hypervisor::virtual_machine::CreateVmError;
-use crate::hypervisor::virtual_machine::{HypervisorError, VirtualMachine};
+use crate::hypervisor::virtual_machine::{
+    DirtyLog, DirtyTracking, HypervisorError, VirtualMachine,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VmOperation {
@@ -100,6 +102,33 @@ impl FaultInjectingVirtualMachine {
 
     fn injected_error() -> HypervisorError {
         HypervisorError::Injected
+    }
+}
+
+impl DirtyLog for FaultInjectingVirtualMachine {
+    fn dirty_tracking(&self) -> DirtyTracking {
+        self.inner().dirty_tracking()
+    }
+
+    fn enable_dirty_tracking(&mut self) -> std::result::Result<(), HypervisorError> {
+        self.inner_mut().enable_dirty_tracking()
+    }
+
+    fn disable_dirty_tracking(
+        &mut self,
+        gpa: u64,
+        size: usize,
+    ) -> std::result::Result<(), HypervisorError> {
+        self.inner_mut().disable_dirty_tracking(gpa, size)
+    }
+
+    fn read_dirty_log(
+        &mut self,
+        gpa: u64,
+        size: usize,
+        bitmap: &mut Vec<u64>,
+    ) -> std::result::Result<(), HypervisorError> {
+        self.inner_mut().read_dirty_log(gpa, size, bitmap)
     }
 }
 

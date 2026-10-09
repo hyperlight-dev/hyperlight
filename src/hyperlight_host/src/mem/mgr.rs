@@ -15,6 +15,7 @@ use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
+use super::scratch_reset::ScratchReset;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
@@ -163,6 +164,8 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) h2g_consumer: Option<H2gConsumer>,
     /// Correlation ID sequence survives consumer replacement and manager cloning.
     next_guest_cid: u32,
+    /// How scratch resets keep or drop backed pages.
+    pub(crate) scratch_reset: ScratchReset,
 }
 
 impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
@@ -178,6 +181,8 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            // Opens its own pagemap.
+            scratch_reset: ScratchReset::default(),
         }
     }
 }
@@ -318,6 +323,7 @@ where
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: 1,
+            scratch_reset: ScratchReset::default(),
         }
     }
 
@@ -331,7 +337,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
         let layout = *s.layout();
         let shared_mem = s.memory().to_mgr_snapshot_mem()?;
-        let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
+        let scratch_mem = ExclusiveSharedMemory::new_scratch(s.layout().get_scratch_size())?;
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
         mgr.original_entrypoint = s.original_entrypoint();
@@ -372,6 +378,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            scratch_reset: self.scratch_reset,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -384,6 +391,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            scratch_reset: ScratchReset::default(),
         };
         host_mgr.update_scratch_bookkeeping()?;
 
@@ -669,9 +677,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Restore base memory after the caller checks snapshot compatibility.
+    ///
+    /// `guest_written` is the scratch pages the guest wrote since the
+    /// last restore, one bit per 4 KiB page, when the hypervisor logs
+    /// them. Only those, and what the host wrote, are zeroed then.
     pub(crate) fn restore_snapshot(
         &mut self,
         snapshot: &Snapshot,
+        guest_written: Option<&mut Vec<u64>>,
     ) -> Result<(
         Option<SnapshotSharedMemory<GuestSharedMemory>>,
         Option<GuestSharedMemory>,
@@ -704,11 +717,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         };
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
-            // zero_or_replace picks the fastest zeroing strategy for
-            // the current platform (see SharedMemory::zero_or_replace).
-            self.scratch_mem.zero_or_replace()?
+            match guest_written {
+                Some(written) => {
+                    // The page tables are copied in with exclusive
+                    // access, which the host-write log does not see.
+                    self.scratch_mem
+                        .zero_written(written, self.scratch_pt_range())?;
+                    None
+                }
+                // zero_or_replace picks the fastest zeroing strategy for
+                // the current platform (see SharedMemory::zero_or_replace).
+                None => self.scratch_mem.zero_or_replace(&mut self.scratch_reset)?,
+            }
         } else {
-            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
+            let new_scratch_mem = ExclusiveSharedMemory::new_scratch(new_scratch_size)?;
             let (hscratch, gscratch) = new_scratch_mem.build();
             // Even though this destroys the reference to the host
             // side of the old scratch mapping, the VM should still
@@ -763,6 +785,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
             (hyperlight_common::log_level::GUEST_LOG_FILTER_UPDATE_PENDING)
                 | u64::from(GuestLogFilter::from(log_level)),
         )
+    }
+
+    /// Where [`update_scratch_bookkeeping`](Self::update_scratch_bookkeeping)
+    /// copies the snapshot's page tables into scratch.
+    pub(crate) fn scratch_pt_range(&self) -> std::ops::Range<usize> {
+        let start = self.layout.get_pt_base_scratch_offset();
+        start..start + self.layout.get_pt_size().next_multiple_of(page_size::get())
     }
 
     fn update_scratch_bookkeeping(&mut self) -> Result<()> {
@@ -828,9 +857,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // overlapping with `map_file_cow` regions installed
         // immediately after the snapshot in the guest PA space.
         let snapshot_pt_end = self.shared_mem.mem_size();
+        #[cfg(unshared_snapshot_mem)]
         let snapshot_pt_size = self.layout.get_pt_size();
-        let snapshot_pt_start =
-            snapshot_pt_end - snapshot_pt_size.next_multiple_of(page_size::get());
+        let snapshot_pt_start = snapshot_pt_end - self.scratch_pt_range().len();
         self.scratch_mem.with_exclusivity(|scratch| {
             #[cfg(not(unshared_snapshot_mem))]
             let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];

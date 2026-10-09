@@ -487,7 +487,8 @@ impl Sandbox {
     }
 
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let (snapshot_mem, scratch_mem) = self.mem_mgr.restore_snapshot(snapshot)?;
+        let guest_written = self.vm.scratch_dirty_pages();
+        let (snapshot_mem, scratch_mem) = self.mem_mgr.restore_snapshot(snapshot, guest_written)?;
         if let Some(snapshot_mem) = snapshot_mem {
             self.vm
                 .update_snapshot_mapping(snapshot_mem)
@@ -1487,6 +1488,59 @@ mod tests {
         }
     }
 
+    /// Restores that zero only the scratch pages written since the last
+    /// one leave nothing behind: from the first restore on, and after the
+    /// guest writes much of scratch (which stops MSHV tracking).
+    #[test]
+    fn restore_zeroes_every_scratch_page_written() {
+        // After a restore, scratch holds only what the host wrote: the
+        // rings at the bottom, the page tables after the transport pools,
+        // and the bookkeeping page at the top. The pools held the last
+        // run's messages.
+        fn assert_reset(sbox: &mut Sandbox, i: u64) {
+            const ZERO: [u8; 4096] = [0; 4096];
+            let arena = sbox.mem_mgr.layout.get_transport_arena();
+            let pools = arena.ring_span_len()..arena.size();
+            let free = sbox.mem_mgr.scratch_pt_range().end
+                ..sbox.mem_mgr.scratch_mem.mem_size() - ZERO.len();
+            for range in [pools, free] {
+                let left = sbox
+                    .mem_mgr
+                    .scratch_mem
+                    .with_contents(|scratch| {
+                        scratch[range.clone()]
+                            .chunks(ZERO.len())
+                            .position(|page| page != &ZERO[..page.len()])
+                    })
+                    .unwrap();
+                assert_eq!(left, None, "restore {i} left scratch in {range:#x?}");
+            }
+        }
+
+        const SCRATCH: usize = 4 << 20;
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .heap_size(8 << 20)
+            .scratch_size(SCRATCH)
+            .build()
+            .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+        for i in 0..300u64 {
+            // A few pages, with a stretch writing a quarter of scratch.
+            let len = if (100..110).contains(&i) {
+                SCRATCH as u64 / 4
+            } else {
+                4096 * (i % 5)
+            };
+            sbox.call::<()>("AllocAndWritePattern", len).unwrap();
+            sbox.restore(snapshot.clone()).unwrap();
+            assert_reset(&mut sbox, i);
+            let pattern: Vec<u8> = sbox.call("ReadPattern", ()).unwrap();
+            assert!(pattern.is_empty(), "restore {i} kept the pattern");
+            sbox.restore(snapshot.clone()).unwrap();
+            assert_reset(&mut sbox, i);
+        }
+    }
+
     /// Tests that evolving from Sandbox to Sandbox creates a new state
     /// and restoring a snapshot from before evolving restores the previous state
     #[test]
@@ -2018,8 +2072,9 @@ mod tests {
         let new_mappings = sandbox.vm.base_mapping_state();
         // Snapshot mapping must be identical (no remap).
         assert_eq!(new_mappings.0, mappings.0);
-        // On Windows, scratch is freshly allocated each restore so the
-        // base address may change, but the size must stay the same.
+        // Where scratch is replaced on restore (Windows without dirty
+        // tracking) the base address may change, but the size must stay
+        // the same.
         assert_eq!(new_mappings.1.map(|m| m.1), mappings.1.map(|m| m.1));
         assert!(!fault_plan.is_consumed());
         assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
