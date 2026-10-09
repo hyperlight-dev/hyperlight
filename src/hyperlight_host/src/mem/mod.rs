@@ -19,9 +19,19 @@ pub mod ptr;
 pub(super) mod ptr_addr_space;
 /// Structures to represent an offset into a memory space
 pub mod ptr_offset;
+#[cfg(all(kvm, not(miri)))]
+pub(crate) mod scratch_reset;
 /// A wrapper around unsafe functionality to create and initialize
 /// a memory region for a guest running in a sandbox.
 pub mod shared_mem;
+/// Without KVM, scratch is reset by zeroing what was written, filling or
+/// replacing it (see `HostSharedMemory::zero_written` and
+/// `zero_or_replace`): nothing to keep between resets.
+#[cfg(not(all(kvm, not(miri))))]
+pub(crate) mod scratch_reset {
+    #[derive(Debug, Default)]
+    pub(crate) struct ScratchReset {}
+}
 /// Utilities for writing shared memory tests
 #[cfg(all(test, not(miri)))] // uses proptest which isn't miri-compatible
 pub(crate) mod shared_mem_tests;
