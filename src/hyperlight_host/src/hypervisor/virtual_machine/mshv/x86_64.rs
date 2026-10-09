@@ -13,8 +13,9 @@ use mshv_bindings::LapicState;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, SpecialRegisters, StandardRegisters, XSave, Xcrs,
-    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, MSHV_GPAP_ACCESS_OP_CLEAR,
+    MSHV_GPAP_ACCESS_OP_SET, SpecialRegisters, StandardRegisters, XSave, Xcrs, hv_message_type,
+    hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
@@ -47,10 +48,11 @@ use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
-    CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
-    VmExit, XSAVE_MIN_SIZE,
+    CreateVmError, DirtyLog, DirtyTracking, HypervisorError, MapMemoryError, RegisterError,
+    RunVcpuError, UnmapMemoryError, VirtualMachine, VmExit, XSAVE_MIN_SIZE,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::shared_mem::DIRTY_PAGE_SIZE;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
@@ -218,6 +220,44 @@ impl MshvVm {
             #[cfg(feature = "hw-interrupts")]
             timer: None,
         })
+    }
+}
+
+impl DirtyLog for MshvVm {
+    fn dirty_tracking(&self) -> DirtyTracking {
+        DirtyTracking::Switched
+    }
+
+    fn enable_dirty_tracking(&mut self) -> std::result::Result<(), HypervisorError> {
+        Ok(self.vm_fd.enable_dirty_page_tracking()?)
+    }
+
+    fn disable_dirty_tracking(
+        &mut self,
+        gpa: u64,
+        size: usize,
+    ) -> std::result::Result<(), HypervisorError> {
+        // MSHV refuses to stop tracking while any page's bit is clear.
+        self.vm_fd.get_dirty_log(
+            gpa / DIRTY_PAGE_SIZE as u64,
+            size,
+            MSHV_GPAP_ACCESS_OP_SET as u8,
+        )?;
+        Ok(self.vm_fd.disable_dirty_page_tracking()?)
+    }
+
+    fn read_dirty_log(
+        &mut self,
+        gpa: u64,
+        size: usize,
+        bitmap: &mut Vec<u64>,
+    ) -> std::result::Result<(), HypervisorError> {
+        *bitmap = self.vm_fd.get_dirty_log(
+            gpa / DIRTY_PAGE_SIZE as u64,
+            size,
+            MSHV_GPAP_ACCESS_OP_CLEAR as u8,
+        )?;
+        Ok(())
     }
 }
 

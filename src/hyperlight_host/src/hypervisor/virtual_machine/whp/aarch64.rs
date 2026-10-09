@@ -330,6 +330,10 @@ pub(crate) struct WhpVm {
     /// Tracks host-side file mappings for cleanup.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
     _no_surrogate_guard: Option<NoSurrogateGuard>,
+    /// The scratch region is mapped with dirty-page tracking.
+    scratch_dirty_tracked: bool,
+    /// Mapping with dirty-page tracking failed, so it is not tried again.
+    dirty_tracking_failed: bool,
 }
 
 // Safety: same reasoning as x86_64 WhpVm — raw pointers are kernel resource handles,
@@ -406,6 +410,8 @@ impl WhpVm {
             surrogate_process: None,
             file_mappings: Vec::new(),
             _no_surrogate_guard: no_surrogate_guard,
+            scratch_dirty_tracked: false,
+            dirty_tracking_failed: false,
         };
 
         if !no_surrogate {
@@ -457,6 +463,26 @@ impl WhpVm {
     }
 }
 
+impl crate::hypervisor::virtual_machine::DirtyLog for WhpVm {
+    fn dirty_tracking(&self) -> crate::hypervisor::virtual_machine::DirtyTracking {
+        use crate::hypervisor::virtual_machine::DirtyTracking;
+        if self.scratch_dirty_tracked {
+            DirtyTracking::Mapped
+        } else {
+            DirtyTracking::None
+        }
+    }
+
+    fn read_dirty_log(
+        &mut self,
+        gpa: u64,
+        size: usize,
+        bitmap: &mut Vec<u64>,
+    ) -> Result<(), super::super::HypervisorError> {
+        super::read_dirty_bitmap(self.partition, gpa, size, bitmap)
+    }
+}
+
 impl VirtualMachine for WhpVm {
     unsafe fn map_memory(
         &mut self,
@@ -502,22 +528,41 @@ impl VirtualMachine for WhpVm {
             }
         };
 
-        let result = unsafe {
-            (self.map_gpa_range2)(
-                self.partition,
-                process_handle,
-                host_addr,
-                region.guest_region.start as u64,
-                region.guest_region.len() as u64,
-                flags,
-            )
+        let map = |flags| {
+            let result = unsafe {
+                (self.map_gpa_range2)(
+                    self.partition,
+                    process_handle,
+                    host_addr,
+                    region.guest_region.start as u64,
+                    region.guest_region.len() as u64,
+                    flags,
+                )
+            };
+            if result.is_err() {
+                return Err(MapMemoryError::Hypervisor(
+                    super::super::HypervisorError::WindowsError(
+                        windows_result::Error::from_hresult(result),
+                    ),
+                ));
+            }
+            Ok(())
         };
-        if result.is_err() {
-            return Err(MapMemoryError::Hypervisor(
-                super::super::HypervisorError::WindowsError(windows_result::Error::from_hresult(
-                    result,
-                )),
-            ));
+        if region.region_type == MemoryRegionType::Scratch {
+            self.scratch_dirty_tracked = false;
+            // Tracking lets a restore zero only the pages the guest wrote.
+            // Without it, scratch is mapped as before.
+            if self.dirty_tracking_failed {
+                map(flags)?;
+            } else if let Err(e) = map(flags | WHvMapGpaRangeFlagTrackDirtyPages) {
+                tracing::debug!("Mapping scratch with dirty tracking failed: {e}");
+                self.dirty_tracking_failed = true;
+                map(flags)?;
+            } else {
+                self.scratch_dirty_tracked = true;
+            }
+        } else {
+            map(flags)?;
         }
 
         if region.region_type == MemoryRegionType::MappedFile {
