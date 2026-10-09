@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ""
+      benchmark_suffix:
+        description: Suffix for the runner job and benchmark artifact
+        required: false
+        type: string
+        default: ""
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
@@ -61,7 +66,7 @@ jobs:
             inputs.cpu_vendor,
             github.run_id,
             github.run_number,
-            github.run_attempt)
+            format('{0}{1}', github.run_attempt, inputs.benchmark_suffix))
         || '["self-hosted", "Linux", "arm64", "kvm"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -131,7 +136,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
+          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}${{ inputs.benchmark_suffix }}
           path: ./target/criterion/
           if-no-files-found: error
           # The longest GitHub keeps an artifact, so that a run stays readable
