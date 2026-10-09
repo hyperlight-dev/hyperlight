@@ -4,9 +4,10 @@
 use std::ffi::c_void;
 use std::io::Error;
 use std::mem::{align_of, size_of};
+use std::ops::Range;
 #[cfg(unix)]
 use std::ptr::null_mut;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use bytemuck::Pod;
@@ -30,6 +31,7 @@ use windows::core::PCSTR;
 use super::memory_region::{
     HostGuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
 };
+use super::scratch_reset::ScratchReset;
 use crate::log_then_return;
 
 type Result<T> = core::result::Result<T, SharedMemoryError>;
@@ -938,6 +940,7 @@ impl ExclusiveSharedMemory {
         let hshm = HostSharedMemory {
             region: self.region.clone(),
             lock: lock.clone(),
+            host_writes: Arc::new(HostWrites::new(self.mem_size())),
         };
         (
             hshm,
@@ -952,6 +955,33 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
         self.region.file_mapping_handle()
+    }
+}
+
+impl ExclusiveSharedMemory {
+    /// New memory for a sandbox's scratch region. On KVM it is backed 4
+    /// KiB at a time: KVM maps scratch 4 KiB at a time, since it is not
+    /// 2 MiB aligned for the guest, so a huge page would only make a touch,
+    /// and a reset that zeroes the touched pages (see `ScratchReset`), zero
+    /// 2 MiB.
+    pub(crate) fn new_scratch(size: usize) -> Result<Self> {
+        let mem = Self::new(size)?;
+        #[cfg(all(kvm, not(miri)))]
+        if matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+        ) {
+            // SAFETY: the region is a private anonymous mapping of our
+            // own. Failure leaves the default page size, so it is ignored.
+            unsafe {
+                libc::madvise(
+                    mem.base_ptr() as *mut libc::c_void,
+                    mem.mem_size(),
+                    libc::MADV_NOHUGEPAGE,
+                )
+            };
+        }
+        Ok(mem)
     }
 }
 
@@ -1202,6 +1232,8 @@ impl SharedMemory for GuestSharedMemory {
 pub struct HostSharedMemory {
     region: Arc<HostMapping>,
     lock: Arc<RwLock<()>>,
+    /// The pages written through any clone of this.
+    host_writes: Arc<HostWrites>,
 }
 unsafe impl Send for HostSharedMemory {}
 
@@ -1275,6 +1307,7 @@ impl HostSharedMemory {
         // AtomicAccess is sealed to integer atomics, whose bit patterns are valid.
         let atomic = unsafe { &*ptr.cast::<A>() };
         atomic.store(value, ordering);
+        self.host_writes.note(offset, size_of::<A>());
         Ok(())
     }
 
@@ -1370,6 +1403,7 @@ impl HostSharedMemory {
             i += 1;
         }
 
+        self.host_writes.note(offset, len);
         drop(guard);
         Ok(())
     }
@@ -1415,60 +1449,363 @@ impl HostSharedMemory {
             i += 1;
         }
 
+        self.host_writes.note(offset, len);
         drop(guard);
         Ok(())
     }
 }
 
 impl HostSharedMemory {
+    /// Reset this memory region to all-zeros given the pages written
+    /// since the last reset: `written` (the guest's writes, one bit per
+    /// 4 KiB page, bits past the end ignored), `also`, and the pages
+    /// host writes through this memory touched. Pages no one wrote are
+    /// left alone, so the cost follows the pages written, not the size.
+    ///
+    /// `written` comes from the hypervisor's dirty log, which sees only
+    /// the guest's writes. `also` covers host writes made with
+    /// exclusive access, which are not logged.
+    pub(crate) fn zero_written(
+        &mut self,
+        written: &mut Vec<u64>,
+        also: Range<usize>,
+    ) -> Result<()> {
+        let pages = self.mem_size() / DIRTY_PAGE_SIZE;
+        written.resize(written.len().max(pages.div_ceil(64)), 0);
+        let also = also.start / DIRTY_PAGE_SIZE..also.end.div_ceil(DIRTY_PAGE_SIZE).min(pages);
+        for page in also {
+            written[page / 64] |= 1 << (page % 64);
+        }
+        let host_writes = self.host_writes.clone();
+        self.with_exclusivity(|e| {
+            // Under the lock, so no host write is noted after this.
+            host_writes.take_into(written);
+            let mem = e.as_mut_slice();
+            for run in DirtyRuns::new(written, pages) {
+                mem[run.start * DIRTY_PAGE_SIZE..run.end * DIRTY_PAGE_SIZE].fill(0);
+            }
+            debug_assert!(
+                mem.chunks(DIRTY_PAGE_SIZE)
+                    .all(|page| page == &ZERO_PAGE[..page.len()]),
+                "a scratch page written since the last reset was not logged"
+            );
+        })
+    }
+
     /// Reset this memory region to all-zeros, choosing the fastest
-    /// strategy for the current platform and hypervisor configuration.
+    /// strategy for the current platform and hypervisor, without
+    /// knowing which pages were written (see
+    /// [`zero_written`](Self::zero_written) for when they are known).
     ///
-    /// On Linux/KVM (without mshv3), uses `MADV_DONTNEED` for lazy
-    /// zeroing.  On Linux/mshv3, falls through to `fill(0)`.
+    /// On KVM, `state` resets the region in place. It zeroes the pages
+    /// the guest uses on each run, keeping them mapped, and drops the
+    /// rest (see [`ScratchReset`]). If that fails, the whole region is
+    /// dropped with `MADV_DONTNEED` for lazy zeroing. On MSHV, whose
+    /// mappings must stay in sync with userspace, it is zeroed with
+    /// `fill(0)`.
     ///
-    /// On Windows, zeroing via `fill(0)` is prohibitively expensive
-    /// for large regions (e.g. 448 MiB scratch).  Instead, the
-    /// mapping is replaced with a fresh demand-zero allocation.
-    /// Returns `Some(GuestSharedMemory)` when the mapping was
-    /// replaced (the caller must update the VM mapping), or `None`
-    /// when zeroed in place.
-    ///
-    // TODO: Find the break-even point between zero-in-place and
-    // replace for each hypervisor and use a size-based heuristic
-    // instead of a compile-time platform check.
-    pub(crate) fn zero_or_replace(&mut self) -> Result<Option<GuestSharedMemory>> {
+    /// On Windows, scratch up to [`FILL_IN_PLACE_MAX`] is zeroed with
+    /// `fill(0)`. Larger scratch is replaced with a fresh demand-zero
+    /// allocation, since `fill(0)` takes long and makes all of it
+    /// resident (e.g. 448 MiB scratch). Returns `Some(GuestSharedMemory)`
+    /// when the mapping was replaced (the caller must update the VM
+    /// mapping), or `None` when zeroed in place.
+    pub(crate) fn zero_or_replace(
+        &mut self,
+        #[cfg_attr(not(all(kvm, not(miri))), allow(unused_variables))] state: &mut ScratchReset,
+    ) -> Result<Option<GuestSharedMemory>> {
+        // Zeroing in place makes the whole region resident; above the cap,
+        // Windows maps fresh memory instead (#1765).
         #[cfg(target_os = "windows")]
-        {
-            let new_mem = ExclusiveSharedMemory::new(self.mem_size())?;
+        if self.mem_size() > FILL_IN_PLACE_MAX {
+            let new_mem = ExclusiveSharedMemory::new_scratch(self.mem_size())?;
             let (hscratch, gscratch) = new_mem.build();
             *self = hscratch;
-            Ok(Some(gscratch))
+            return Ok(Some(gscratch));
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.with_exclusivity(|e| {
-                #[allow(unused_mut)]
-                let mut do_copy = true;
-                // TODO: Find a similar lazy zeroing approach that works on MSHV.
-                //       (See Note [Keeping mappings in sync between userspace and the guest])
-                #[cfg(all(feature = "kvm", not(any(feature = "mshv3"))))]
-                unsafe {
-                    let ret = libc::madvise(
-                        e.region.ptr() as *mut libc::c_void,
-                        e.region.size(),
+        let host_writes = self.host_writes.clone();
+        self.with_exclusivity(|e| {
+            // Nothing written before this reset is left to zero. Under the
+            // lock, so no host write is noted before it ends.
+            host_writes.clear();
+            // TODO: Find a similar lazy zeroing approach that works on MSHV.
+            //       (See Note [Keeping mappings in sync between userspace and the guest])
+            #[cfg(all(kvm, not(miri)))]
+            if matches!(
+                crate::hypervisor::virtual_machine::get_available_hypervisor(),
+                Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+            ) {
+                if state.reset(e).is_ok() {
+                    return;
+                }
+                // SAFETY: the region is a private anonymous mapping,
+                // held exclusively.
+                let ret = unsafe {
+                    libc::madvise(
+                        e.base_ptr() as *mut libc::c_void,
+                        e.mem_size(),
                         libc::MADV_DONTNEED,
-                    );
-                    if ret == 0 {
-                        do_copy = false;
-                    }
+                    )
+                };
+                if ret == 0 {
+                    return;
                 }
-                if do_copy {
-                    e.as_mut_slice().fill(0);
-                }
-            })?;
-            Ok(None)
+            }
+            e.as_mut_slice().fill(0);
+        })?;
+        Ok(None)
+    }
+}
+
+/// On Windows without a dirty log, the largest scratch zeroed in place.
+/// Zeroing in place makes all of scratch resident, where a fresh mapping
+/// holds only what the next run touches (#1765), so larger scratch is
+/// replaced. Below it, zeroing in place is about 2x faster than a fresh
+/// mapping, and over 5x when the guest writes a megabyte or more, since
+/// a fresh mapping faults on every page touched.
+#[cfg(target_os = "windows")]
+const FILL_IN_PLACE_MAX: usize = 16 << 20;
+
+/// The page size of dirty-page bitmaps: hypervisor dirty logs and
+/// [`HostWrites`].
+pub(crate) const DIRTY_PAGE_SIZE: usize = 4096;
+
+static ZERO_PAGE: [u8; DIRTY_PAGE_SIZE] = [0; DIRTY_PAGE_SIZE];
+
+/// The pages host writes through a [`HostSharedMemory`] touched since
+/// the last reset, one bit per page. A hypervisor's dirty log sees only
+/// the guest's writes, and the host writes wherever the guest points
+/// it (virtqueue buffers), so a reset that zeroes only written pages
+/// needs these too.
+#[derive(Debug)]
+struct HostWrites {
+    size: usize,
+    /// Allocated on the first write, since most memory other than
+    /// scratch is never written by the host.
+    words: std::sync::OnceLock<Box<[AtomicU64]>>,
+}
+
+impl HostWrites {
+    fn new(size: usize) -> Self {
+        Self {
+            size,
+            words: std::sync::OnceLock::new(),
         }
+    }
+
+    fn words(&self) -> &[AtomicU64] {
+        self.words.get().map_or(&[], |words| words)
+    }
+
+    /// Note a write of `len` bytes at `offset`, already bounds checked.
+    /// Called with the lock held for reading, so a reset, which holds
+    /// it for writing, sees it.
+    fn note(&self, offset: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let words = self.words.get_or_init(|| {
+            let words = self.size.div_ceil(DIRTY_PAGE_SIZE * 64);
+            (0..words).map(|_| AtomicU64::new(0)).collect()
+        });
+        for page in offset / DIRTY_PAGE_SIZE..=(offset + len - 1) / DIRTY_PAGE_SIZE {
+            let bit = 1 << (page % 64);
+            let word = &words[page / 64];
+            // Most writes land on pages already noted; skip the RMW.
+            if word.load(Ordering::Relaxed) & bit == 0 {
+                word.fetch_or(bit, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Move the noted pages into `bitmap`, at least as long as these.
+    fn take_into(&self, bitmap: &mut [u64]) {
+        for (word, out) in self.words().iter().zip(bitmap) {
+            *out |= word.swap(0, Ordering::Relaxed);
+        }
+    }
+
+    fn clear(&self) {
+        for word in self.words() {
+            word.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The runs of set bits below `pages` in a page bitmap.
+pub(crate) struct DirtyRuns<'a> {
+    bitmap: &'a [u64],
+    pages: usize,
+    next: usize,
+}
+
+impl<'a> DirtyRuns<'a> {
+    pub(crate) fn new(bitmap: &'a [u64], pages: usize) -> Self {
+        Self {
+            bitmap,
+            pages,
+            next: 0,
+        }
+    }
+
+    /// The first page at or after `from` whose bit is `set`, or `pages`.
+    fn seek(&self, from: usize, set: bool) -> usize {
+        let mut page = from;
+        while page < self.pages {
+            let word = self.bitmap.get(page / 64).copied().unwrap_or(0);
+            let word = (if set { word } else { !word }) >> (page % 64);
+            if word != 0 {
+                return (page + word.trailing_zeros() as usize).min(self.pages);
+            }
+            page = (page / 64 + 1) * 64;
+        }
+        self.pages
+    }
+}
+
+impl Iterator for DirtyRuns<'_> {
+    type Item = Range<usize>;
+
+    fn next(&mut self) -> Option<Range<usize>> {
+        let start = self.seek(self.next, true);
+        if start >= self.pages {
+            return None;
+        }
+        let end = self.seek(start, false);
+        self.next = end;
+        Some(start..end)
+    }
+}
+
+#[cfg(test)]
+mod zero_written_tests {
+    use super::*;
+
+    const PAGE: usize = DIRTY_PAGE_SIZE;
+
+    fn bits(pages: &[usize]) -> Vec<u64> {
+        let mut bitmap = vec![0; 4];
+        for &page in pages {
+            bitmap[page / 64] |= 1 << (page % 64);
+        }
+        bitmap
+    }
+
+    fn runs(bitmap: &[u64], pages: usize) -> Vec<Range<usize>> {
+        DirtyRuns::new(bitmap, pages).collect()
+    }
+
+    #[test]
+    fn runs_span_words_and_stop_at_the_end() {
+        assert!(runs(&bits(&[]), 200).is_empty());
+        assert_eq!(runs(&bits(&[0, 1, 2, 5]), 200), vec![0..3, 5..6]);
+        assert_eq!(
+            runs(&bits(&[62, 63, 64, 65, 130]), 200),
+            vec![62..66, 130..131]
+        );
+        assert_eq!(runs(&[u64::MAX; 4], 200), vec![0..200]);
+        // Bits past the end, and a bitmap shorter than the region.
+        assert_eq!(runs(&bits(&[10, 150]), 100), vec![10..11]);
+        assert_eq!(runs(&[u64::MAX], 100), vec![0..64]);
+    }
+
+    #[test]
+    fn host_writes_note_every_page_touched() {
+        let log = HostWrites::new(200 * PAGE);
+        log.note(PAGE - 1, 2);
+        log.note(70 * PAGE, 1);
+        log.note(5 * PAGE, 0);
+        let mut bitmap = vec![0; 4];
+        log.take_into(&mut bitmap);
+        assert_eq!(runs(&bitmap, 200), vec![0..2, 70..71]);
+        // Taken, so cleared.
+        let mut bitmap = vec![0; 4];
+        log.take_into(&mut bitmap);
+        assert!(runs(&bitmap, 200).is_empty());
+    }
+
+    fn scratch(pages: usize) -> HostSharedMemory {
+        ExclusiveSharedMemory::new(pages * PAGE).unwrap().build().0
+    }
+
+    /// Write `byte` at `page` with exclusive access, which the host-write
+    /// log does not see, as the guest's writes are not seen.
+    fn guest_write(mem: &mut HostSharedMemory, page: usize, byte: u8) {
+        mem.with_exclusivity(|e| e.as_mut_slice()[page * PAGE + 7] = byte)
+            .unwrap();
+    }
+
+    fn nonzero_pages(mem: &mut HostSharedMemory) -> Vec<usize> {
+        mem.with_exclusivity(|e| {
+            e.as_slice()
+                .chunks(PAGE)
+                .enumerate()
+                .filter(|(_, page)| page.iter().any(|&b| b != 0))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn zeroes_the_guest_host_and_extra_pages() {
+        let mut mem = scratch(100);
+        guest_write(&mut mem, 3, 1);
+        guest_write(&mut mem, 64, 2);
+        mem.write::<u64>(40 * PAGE, u64::MAX).unwrap();
+        guest_write(&mut mem, 90, 3);
+        let mut written = bits(&[3, 64]);
+        mem.zero_written(&mut written, 90 * PAGE..91 * PAGE)
+            .unwrap();
+        assert!(nonzero_pages(&mut mem).is_empty());
+    }
+
+    #[test]
+    fn leaves_pages_no_one_wrote() {
+        let mut mem = scratch(100);
+        // A page that is not logged is left alone; with debug
+        // assertions, it is caught instead.
+        guest_write(&mut mem, 9, 1);
+        guest_write(&mut mem, 10, 1);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mem.zero_written(&mut bits(&[10]), 0..0)
+        }));
+        if cfg!(debug_assertions) {
+            assert!(result.is_err());
+        } else {
+            result.unwrap().unwrap();
+            assert_eq!(nonzero_pages(&mut mem), vec![9]);
+        }
+    }
+
+    /// Without a dirty log, Windows zeroes small scratch in place and
+    /// replaces large scratch.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_replaces_only_large_scratch() {
+        use super::FILL_IN_PLACE_MAX;
+        let mut state = crate::mem::scratch_reset::ScratchReset::default();
+        let mut small = scratch(FILL_IN_PLACE_MAX / PAGE);
+        guest_write(&mut small, 3, 1);
+        small.write::<u8>(5 * PAGE, 1).unwrap();
+        assert!(small.zero_or_replace(&mut state).unwrap().is_none());
+        assert!(nonzero_pages(&mut small).is_empty());
+        let mut bitmap = vec![0; FILL_IN_PLACE_MAX / PAGE / 64];
+        small.host_writes.take_into(&mut bitmap);
+        assert!(bitmap.iter().all(|&w| w == 0));
+        let mut large = scratch(FILL_IN_PLACE_MAX / PAGE + 1);
+        assert!(large.zero_or_replace(&mut state).unwrap().is_some());
+    }
+
+    #[test]
+    fn host_writes_are_cleared_by_a_full_reset() {
+        let mut mem = scratch(16);
+        mem.write::<u8>(3 * PAGE, 1).unwrap();
+        let mut state = crate::mem::scratch_reset::ScratchReset::default();
+        assert!(mem.zero_or_replace(&mut state).unwrap().is_none());
+        let mut bitmap = vec![0; 1];
+        mem.host_writes.take_into(&mut bitmap);
+        assert_eq!(bitmap, vec![0]);
     }
 }
 

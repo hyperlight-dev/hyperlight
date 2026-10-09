@@ -61,6 +61,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   architecture-independent exception handling hooks. The new
   interfaces are significantly more liminited, but more portable; they
   will be extended in the future.
+* On KVM, restore zeroes the scratch pages the guest wrote since the last
+  restore and keeps them mapped, so its next run takes no faults on them.
+  Other scratch is dropped, a few runs of it per restore when it is
+  fragmented, so what stays resident follows what recent runs wrote.
+* When Windows cannot tell which scratch pages were written, restore zeroes
+  scratch of up to 16 MiB in place, which is faster than replacing it below
+  that size, and replaces larger scratch.
 
 ### Removed
 * `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
