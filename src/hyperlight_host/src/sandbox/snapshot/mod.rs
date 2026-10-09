@@ -30,7 +30,7 @@ use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::{BackingSource, GuestBacking, GuestPageTableBuffer, GuestPhysicalMemoryView};
-use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory, ReadonlySharedMemory};
+use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory};
 use crate::mem::virtq::VirtqSnapshot;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
@@ -550,18 +550,6 @@ impl Snapshot {
         layout.set_code_gva(code_gva)?;
         let regions = layout.get_memory_regions()?;
 
-        let mut memory = vec![0; layout.get_memory_size()?];
-
-        let load_info = exe_info.load(
-            layout.get_guest_code_gva() as u64,
-            &mut memory[layout.guest_code_offset()..],
-        )?;
-
-        layout.write_peb(&mut memory)?;
-
-        blob.map(|x| layout.write_init_data(&mut memory, x.data))
-            .transpose()?;
-
         // Set up page table entries for the snapshot
         let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
@@ -615,13 +603,25 @@ impl Snapshot {
             .ok_or_else(|| crate::new_error!("ELF entrypoint GVA overflows"))?;
 
         // The page tables follow the data, which is padded to a host page.
-        let data_len = memory
-            .len()
-            .next_multiple_of(self::memory::host_page_size());
-        memory.resize(data_len, 0);
-        memory.extend_from_slice(&pt_bytes);
+        let host_page_size = self::memory::host_page_size();
+        let data_len = layout.get_memory_size()?.next_multiple_of(host_page_size);
+        let mut memory = ExclusiveSharedMemory::new(
+            (data_len + pt_bytes.len()).next_multiple_of(host_page_size),
+        )?;
+        let data = &mut memory.as_mut_slice()[..data_len];
+
+        let load_info = exe_info.load(
+            layout.get_guest_code_gva() as u64,
+            &mut data[layout.guest_code_offset()..],
+        )?;
+
+        layout.write_peb(data)?;
+
+        blob.map(|x| layout.write_init_data(data, x.data))
+            .transpose()?;
+        memory.copy_from_slice(&pt_bytes, data_len)?;
         let memory = Arc::new(SnapshotMemory::from_flat(
-            ReadonlySharedMemory::from_bytes(&memory, data_len)?,
+            memory.freeze(data_len)?,
             SandboxMemoryLayout::BASE_ADDRESS as u64,
             pt_bytes.len(),
             scratch_base_gpa(layout.get_scratch_size()),
