@@ -49,6 +49,9 @@ jobs:
         with:
           shared-key: "${{ runner.os }}-debug"
           cache-on-failure: "true"
+          # Only save on main as caches are not shared across branches.
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up sccache
         uses: ./.github/actions/setup-sccache

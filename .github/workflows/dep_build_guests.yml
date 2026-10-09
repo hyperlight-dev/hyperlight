@@ -83,8 +83,9 @@ jobs:
       # cargo-hyperlight builds a custom sysroot for the Hyperlight guest target.
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
-      - name: Sysroot cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - name: Restore sysroot cache
+        id: sysroot-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
             src/tests/rust_guests/target/sysroot
@@ -140,3 +141,15 @@ jobs:
           path: src/tests/c_guests/bin/${{ inputs.config }}/
           retention-days: 1
           if-no-files-found: error
+
+      # A job step, not a post-job step, so the save runs before rust-cache's
+      # post-job cleanup deletes the sysroot. Only main saves, as caches are not
+      # shared across branches.
+      - name: Save sysroot cache
+        if: ${{ github.ref == 'refs/heads/main' && steps.sysroot-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            src/tests/rust_guests/target/sysroot
+            src/tests/rust_guests/target-non-pie/sysroot
+          key: ${{ steps.sysroot-cache.outputs.cache-primary-key }}
