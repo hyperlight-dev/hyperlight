@@ -9,7 +9,8 @@ use core::num::{NonZeroU16, NonZeroUsize};
 mod arch;
 
 pub use arch::{
-    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
+    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN,
+    VIRTQ_BUFFER_GVA_END, VIRTQ_BUFFER_GVA_START, io_page,
 };
 #[cfg(target_arch = "aarch64")]
 pub use arch::{WHP_GICD_BASE_GPA, WHP_GICR_BASE_GPA, WHP_GITS_TRANSLATOR_BASE_GPA};
@@ -102,6 +103,14 @@ const _: () = {
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x60);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x68);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
+
+    assert!(VIRTQ_BUFFER_GVA_START < VIRTQ_BUFFER_GVA_END);
+    assert!((VIRTQ_BUFFER_GVA_START as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!((VIRTQ_BUFFER_GVA_END as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!(VIRTQ_BUFFER_GVA_START > SNAPSHOT_PT_GVA_MAX as u64);
+
+    assert!(VIRTQ_BUFFER_GVA_END < scratch_base_gva(16 * 1024 * 1024 * 1024));
+    assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };
 
 /// Exclusive upper GPA boundary for dynamic scratch allocations.
@@ -112,14 +121,14 @@ pub const fn scratch_allocator_limit_gpa() -> u64 {
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (SCRATCH_TOP_GPA - size + 1) as u64
 }
-pub fn scratch_base_gva(size: usize) -> u64 {
+pub const fn scratch_base_gva(size: usize) -> u64 {
     (SCRATCH_TOP_GVA - size + 1) as u64
 }
 
-/// Compute the minimum scratch region size needed for a sandbox.
+/// Compute fixed scratch overhead for a sandbox, saturating at [`usize::MAX`].
 ///
-/// `transport_len` includes both rings and buffer pools.
-/// The result saturates at [`usize::MAX`].
+/// `transport_len` covers rings and buffer pools. Snapshot page tables and
+/// runtime allocations need additional scratch.
 pub fn min_scratch_size(transport_len: usize) -> usize {
     arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))
@@ -396,11 +405,12 @@ mod tests {
     }
 
     #[test]
-    fn minimum_scratch_includes_ring_arena_and_pools() {
+    fn minimum_scratch_includes_transport() {
         let fixed = arch::min_scratch_size().unwrap();
-        let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
 
-        assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
+        for transport_len in [0, (1 + 8 + 4) * crate::vmem::PAGE_SIZE, 5 << 20] {
+            assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
+        }
     }
 
     #[test]
