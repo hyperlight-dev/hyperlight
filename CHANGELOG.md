@@ -71,6 +71,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 * AMD64 exception handlers clear the direction flag before calling Rust.
 * Linear-time segment consumption for fragmented virtqueue messages.
+* Correct packed virtqueue descriptor-event notification decisions when a
+  published batch wraps the ring, including full-ring batches.
 * Allow reclaimed virtqueue completions to span multiple ring reuse cycles.
 * Virtqueue consumers return errors when payload copies or runtime bookkeeping
   cannot be allocated.

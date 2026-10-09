@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Kani
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, "release/**"]
+    paths:
+      - ".github/workflows/Kani.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "Justfile"
+      - "src/hyperlight_common/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-virtqueue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          toolchain: "1.94"
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+
+      - name: Run packed-ring cursor and notification proofs
+        run: cargo kani -p hyperlight-common --lib --no-default-features
