@@ -3696,6 +3696,25 @@ mod tests {
         );
     }
 
+    #[cfg(all(gdb, target_arch = "aarch64", target_os = "windows"))]
+    #[test]
+    fn map_region_rejects_debug_cache_sync_page() {
+        use crate::hypervisor::virtual_machine::whp::DEBUG_CACHE_SYNC_GPA;
+
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        let mem = allocate_guest_memory();
+        let region =
+            region_for_memory(&mem, DEBUG_CACHE_SYNC_GPA as usize, MemoryRegionFlags::READ);
+        let err = unsafe { sbox.map_region(&region) }.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Overlapping"),
+            "Expected Overlapping error, got: {err:?}"
+        );
+    }
+
     #[test]
     fn map_region_allows_adjacent_non_overlapping() {
         let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
