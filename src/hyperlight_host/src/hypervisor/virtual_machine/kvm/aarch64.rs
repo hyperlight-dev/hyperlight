@@ -105,6 +105,8 @@ impl KvmVm {
     }
 }
 
+impl crate::hypervisor::virtual_machine::DirtyLog for KvmVm {}
+
 impl VirtualMachine for KvmVm {
     unsafe fn map_memory(
         &mut self,

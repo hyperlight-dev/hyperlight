@@ -35,8 +35,8 @@ use crate::hypervisor::surrogate_process_manager::{
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::{self, TimerThread};
 use crate::hypervisor::virtual_machine::{
-    CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
-    VirtualMachine, VmExit, XSAVE_MIN_SIZE,
+    CreateVmError, DirtyLog, DirtyTracking, HypervisorError, MapMemoryError, RegisterError,
+    RunVcpuError, UnmapMemoryError, VirtualMachine, VmExit, XSAVE_MIN_SIZE,
 };
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -249,6 +249,10 @@ pub(crate) struct WhpVm {
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
+    /// The scratch region is mapped with dirty-page tracking.
+    scratch_dirty_tracked: bool,
+    /// Mapping with dirty-page tracking failed, so it is not tried again.
+    dirty_tracking_failed: bool,
 }
 
 // Safety: `WhpVm` is !Send because it holds `Option<SurrogateProcess>` which
@@ -317,6 +321,8 @@ impl WhpVm {
             _no_surrogate_guard: no_surrogate_guard,
             #[cfg(feature = "hw-interrupts")]
             timer: None,
+            scratch_dirty_tracked: false,
+            dirty_tracking_failed: false,
         })
     }
 
@@ -359,58 +365,17 @@ impl WhpVm {
     }
 }
 
-impl VirtualMachine for WhpVm {
-    unsafe fn map_memory(
-        &mut self,
-        (_slot, region): (u32, &MemoryRegion),
+impl WhpVm {
+    /// Map `region` into the partition, from `surrogate_addr` in the
+    /// surrogate process when there is one.
+    fn map_gpa_range(
+        &self,
+        region: &MemoryRegion,
+        surrogate_addr: Option<*mut c_void>,
+        flags: WHV_MAP_GPA_RANGE_FLAGS,
     ) -> Result<(), MapMemoryError> {
-        let flags = region
-            .flags
-            .iter()
-            .map(|flag| match flag {
-                MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
-                MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
-                MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
-                MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
-                _ => Err(MapMemoryError::InvalidFlags(format!(
-                    "Invalid memory region flag: {:?}",
-                    flag
-                ))),
-            })
-            .collect::<std::result::Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>, MapMemoryError>>()?
-            .iter()
-            .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
-
-        match &mut self.surrogate_process {
-            None => {
-                let host_addr = (region.host_region.start.handle_base
-                    + region.host_region.start.offset)
-                    as *const c_void;
-                let res = unsafe {
-                    WHvMapGpaRange(
-                        self.partition,
-                        host_addr,
-                        region.guest_region.start as u64,
-                        region.guest_region.len() as u64,
-                        flags,
-                    )
-                };
-                if let Err(e) = res {
-                    return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(e)));
-                }
-            }
-            Some(surrogate) => {
-                // Calculate the surrogate process address for this region
-                let surrogate_base = surrogate
-                    .map(
-                        region.host_region.start.from_handle,
-                        region.host_region.start.handle_base,
-                        region.host_region.start.handle_size,
-                        &region.region_type.surrogate_mapping(),
-                    )
-                    .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
-                let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
-
+        match (&self.surrogate_process, surrogate_addr) {
+            (Some(surrogate), Some(surrogate_addr)) => {
                 // This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll
                 // WHvMapGpaRange2 only available on Windows 11 or Windows Server 2022 and later
                 // we do things this way to allow a user trying to load hyperlight on an older version of windows to
@@ -446,6 +411,107 @@ impl VirtualMachine for WhpVm {
                     )));
                 }
             }
+            (None, None) => {
+                let host_addr = (region.host_region.start.handle_base
+                    + region.host_region.start.offset)
+                    as *const c_void;
+                let res = unsafe {
+                    WHvMapGpaRange(
+                        self.partition,
+                        host_addr,
+                        region.guest_region.start as u64,
+                        region.guest_region.len() as u64,
+                        flags,
+                    )
+                };
+                if let Err(e) = res {
+                    return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(e)));
+                }
+            }
+            _ => {
+                return Err(MapMemoryError::SurrogateProcess(
+                    "surrogate address given without a surrogate, or not given with one".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DirtyLog for WhpVm {
+    fn dirty_tracking(&self) -> DirtyTracking {
+        if self.scratch_dirty_tracked {
+            DirtyTracking::Mapped
+        } else {
+            DirtyTracking::None
+        }
+    }
+
+    fn read_dirty_log(
+        &mut self,
+        gpa: u64,
+        size: usize,
+        bitmap: &mut Vec<u64>,
+    ) -> Result<(), HypervisorError> {
+        super::read_dirty_bitmap(self.partition, gpa, size, bitmap)
+    }
+}
+
+impl VirtualMachine for WhpVm {
+    unsafe fn map_memory(
+        &mut self,
+        (_slot, region): (u32, &MemoryRegion),
+    ) -> Result<(), MapMemoryError> {
+        let flags = region
+            .flags
+            .iter()
+            .map(|flag| match flag {
+                MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
+                MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
+                MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
+                MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
+                _ => Err(MapMemoryError::InvalidFlags(format!(
+                    "Invalid memory region flag: {:?}",
+                    flag
+                ))),
+            })
+            .collect::<std::result::Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>, MapMemoryError>>()?
+            .iter()
+            .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
+
+        // The surrogate's view of the region, when there is a surrogate.
+        let surrogate_addr = match &mut self.surrogate_process {
+            None => None,
+            Some(surrogate) => {
+                // Calculate the surrogate process address for this region
+                let surrogate_base = surrogate
+                    .map(
+                        region.host_region.start.from_handle,
+                        region.host_region.start.handle_base,
+                        region.host_region.start.handle_size,
+                        &region.region_type.surrogate_mapping(),
+                    )
+                    .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
+                Some(surrogate_base.wrapping_add(region.host_region.start.offset))
+            }
+        };
+
+        if region.region_type == MemoryRegionType::Scratch {
+            self.scratch_dirty_tracked = false;
+            // Tracking lets a restore zero only the pages the guest wrote.
+            // Without it, scratch is mapped as before.
+            let tracked = flags | WHvMapGpaRangeFlagTrackDirtyPages;
+            if self.dirty_tracking_failed {
+                self.map_gpa_range(region, surrogate_addr, flags)?;
+            } else if let Err(e) = self.map_gpa_range(region, surrogate_addr, tracked) {
+                tracing::debug!("Mapping scratch with dirty tracking failed: {e}");
+                self.dirty_tracking_failed = true;
+                self.map_gpa_range(region, surrogate_addr, flags)?;
+            } else {
+                self.scratch_dirty_tracked = true;
+            }
+        } else {
+            self.map_gpa_range(region, surrogate_addr, flags)?;
         }
 
         // Track host-side file mappings for cleanup on unmap or drop.

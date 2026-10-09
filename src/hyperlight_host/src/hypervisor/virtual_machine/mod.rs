@@ -18,6 +18,7 @@ use crate::hypervisor::regs::{
 #[cfg(target_arch = "x86_64")]
 use crate::hypervisor::regs::{MsrEntry, is_resettable_msr};
 use crate::mem::memory_region::MemoryRegion;
+use crate::mem::shared_mem::DIRTY_PAGE_SIZE;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
@@ -429,9 +430,69 @@ pub enum HvfSyncError {
     SyncInvariant(String),
 }
 
+/// How a VM reports the pages the guest writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirtyTracking {
+    /// It does not.
+    None,
+    /// For the scratch region, from when it is mapped (WHP).
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    Mapped,
+    /// For the whole VM, switched on and off (MSHV). While on, the
+    /// guest's first write to a page after each read faults to the
+    /// hypervisor.
+    #[cfg_attr(not(all(mshv3, target_arch = "x86_64")), allow(dead_code))]
+    Switched,
+}
+
+/// The pages the guest writes, where a VM logs them. Restores use it to
+/// zero only those (see `hyperlight_vm::dirty_log`).
+pub(crate) trait DirtyLog {
+    /// How this VM reports the pages the guest writes. The dirty-log
+    /// methods below are only called when this is not
+    /// [`DirtyTracking::None`].
+    fn dirty_tracking(&self) -> DirtyTracking {
+        DirtyTracking::None
+    }
+
+    /// Start tracking the pages the guest writes, for
+    /// [`DirtyTracking::Switched`]. Until the first
+    /// [`read_dirty_log`](Self::read_dirty_log) after this, every page
+    /// may read as written.
+    fn enable_dirty_tracking(&mut self) -> std::result::Result<(), HypervisorError> {
+        Ok(())
+    }
+
+    /// Stop tracking, for [`DirtyTracking::Switched`]. `[gpa, gpa +
+    /// size)` is the range read since tracking was enabled.
+    fn disable_dirty_tracking(
+        &mut self,
+        _gpa: u64,
+        _size: usize,
+    ) -> std::result::Result<(), HypervisorError> {
+        Ok(())
+    }
+
+    /// Set `bitmap` to the pages, of [`DIRTY_PAGE_SIZE`], in `[gpa, gpa +
+    /// size)` the guest wrote since the last read, one bit per page from
+    /// bit 0 of word 0, and clear them. Bits past the range may be set.
+    fn read_dirty_log(
+        &mut self,
+        _gpa: u64,
+        size: usize,
+        bitmap: &mut Vec<u64>,
+    ) -> std::result::Result<(), HypervisorError> {
+        // A backend that tracks but does not read reports every page, so
+        // a restore zeroes all of scratch rather than too little.
+        bitmap.clear();
+        bitmap.resize(size.div_ceil(DIRTY_PAGE_SIZE * 64), u64::MAX);
+        Ok(())
+    }
+}
+
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
 /// Abstracts over differences between KVM, MSHV and WHP implementations.
-pub(crate) trait VirtualMachine: Debug + Send {
+pub(crate) trait VirtualMachine: Debug + Send + DirtyLog {
     /// Map memory region into this VM
     ///
     /// # Safety
