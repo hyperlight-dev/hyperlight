@@ -11,7 +11,10 @@ mod media_types;
 pub(crate) mod reference;
 mod transport;
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+
+use fs2::FileExt;
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::PAGE_SIZE;
@@ -397,10 +400,25 @@ impl Snapshot {
             }
         }
 
-        // Validate any pre-existing `oci-layout` marker before
-        // touching anything else, so a foreign layout (future
-        // version, hand-edited file) is reported without altering
-        // the directory.
+        // Serialize layout validation and the index read-modify-write
+        // transaction across cooperating processes.
+        // Use a stable lock file, not index.json, which is atomically replaced.
+        let lock_path = path.join(".hyperlight-index.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| {
+                crate::new_error!("save: failed to open index lock {:?}: {}", lock_path, e)
+            })?;
+        lock_file.lock_exclusive().map_err(|e| {
+            crate::new_error!("save: failed to acquire index lock {:?}: {}", lock_path, e)
+        })?;
+        // File lock is released when lock_file is dropped on all exit paths.
+
+        // Validate the existing marker while holding the lock.
+        // Invalid layouts are rejected before writing snapshot data.
         let layout_marker = path.join("oci-layout");
         let marker_existed = layout_marker
             .try_exists()
