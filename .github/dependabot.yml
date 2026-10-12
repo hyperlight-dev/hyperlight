@@ -29,6 +29,7 @@ updates:
       wasm-tools:
         patterns:
           - "wasmparser"
+          - "wat"
           - "wit-parser"
           - "wit-component"
   - package-ecosystem: "cargo"
