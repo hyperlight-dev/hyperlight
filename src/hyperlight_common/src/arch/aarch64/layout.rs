@@ -25,5 +25,5 @@ pub const fn io_page() -> Option<(crate::vmem::PhysAddr, crate::vmem::VirtAddr)>
 }
 
 pub(super) fn min_scratch_size() -> Option<usize> {
-    12usize.checked_mul(crate::vmem::PAGE_SIZE)
+    (10 + super::SCRATCH_TOP_RESERVED_PAGES).checked_mul(crate::vmem::PAGE_SIZE)
 }

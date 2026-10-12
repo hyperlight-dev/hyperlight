@@ -77,6 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Embedded byte payload tables and their value-union variants.
 
 ### Fixed
+* Reserve 48 KiB for guest exception stacks and metadata to cover debug paging walks.
 * AMD64 exception handlers clear the direction flag before calling Rust.
 * Linear-time segment consumption for fragmented virtqueue messages.
 * Allow reclaimed virtqueue completions to span multiple ring reuse cycles.

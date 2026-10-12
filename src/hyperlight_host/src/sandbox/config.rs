@@ -105,9 +105,10 @@ impl SandboxConfiguration {
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// Scratch backs the default heap, transport pools, and page tables.
+    /// Scratch backs the default heap, transport pools, page tables, and exception stack.
     /// The size is 16 KiB aligned for macOS hosts.
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x58000;
+    /// TODO: revisit when https://github.com/hyperlight-dev/hyperlight/issues/1925 is fixed
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x64000;
     /// The default G2H virtqueue descriptor count.
     pub const DEFAULT_G2H_QUEUE_SIZE: usize = 64;
     /// The default H2G virtqueue descriptor count.

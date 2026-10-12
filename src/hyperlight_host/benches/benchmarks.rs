@@ -42,7 +42,7 @@ impl SandboxSize {
         match self {
             Self::Default => builder,
             Self::Small => builder.heap_size(SMALL_HEAP_SIZE),
-            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x64000),
+            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x80000),
             Self::Large => builder.heap_size(LARGE_HEAP_SIZE).scratch_size(0x100000),
         }
     }

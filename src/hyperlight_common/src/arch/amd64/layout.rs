@@ -34,7 +34,7 @@ pub fn io_page() -> Option<(u64, u64)> {
 /// - (up to) 4 pages for the PTEs for mapping that (including CoW'ing the root PT)
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for mapping that
-/// - Two pages for the exception stack and metadata
+/// - The exception stack and metadata reservation
 pub(super) fn min_scratch_size() -> Option<usize> {
-    12usize.checked_mul(crate::vmem::PAGE_SIZE)
+    (10 + super::SCRATCH_TOP_RESERVED_PAGES).checked_mul(crate::vmem::PAGE_SIZE)
 }

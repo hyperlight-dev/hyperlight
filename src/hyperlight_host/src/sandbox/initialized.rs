@@ -2464,6 +2464,7 @@ mod tests {
     #[test]
     fn snapshot_restore_applies_smaller_h2g_capacity() {
         let mut source_cfg = SandboxConfiguration::default();
+        source_cfg.set_scratch_size(1024 * 1024);
         source_cfg.set_h2g_pool_pages(4);
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
@@ -2472,6 +2473,7 @@ mod tests {
             .unwrap();
         let snapshot = source.snapshot().unwrap();
         let mut target_cfg = SandboxConfiguration::default();
+        target_cfg.set_scratch_size(1024 * 1024);
         target_cfg.set_h2g_pool_pages(8);
         let path = simple_guest_as_pathbuf();
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))

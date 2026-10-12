@@ -19,7 +19,7 @@ use crate::virtq;
 
 const EXN_STACK_ALIGNMENT: usize = 16;
 /// Pages reserved for the exception stack and scratch-top metadata.
-pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
+pub const SCRATCH_TOP_RESERVED_PAGES: usize = 12;
 
 // Fields are listed in ascending-address order. Public offsets are measured
 // down from the top of scratch memory.
