@@ -318,8 +318,12 @@ impl Inner {
     ) -> Result<(), AllocError> {
         let generation = self.generation.checked_add(1).ok_or(AllocError::Overflow)?;
 
+        #[cfg(debug_assertions)]
         for addr in reserved.clone() {
-            self.allocation_len(addr)?;
+            debug_assert!(
+                self.allocation_len(addr).is_ok(),
+                "address {addr:#x} is not a live pool slot"
+            );
         }
 
         self.generation = generation;

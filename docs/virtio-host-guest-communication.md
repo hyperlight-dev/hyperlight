@@ -486,9 +486,11 @@ leases, and aliases.
 Initialized `restore` and `from_snapshot` are ready for the first H2G request
 before guest entry. Pre-initialization snapshots use normal guest startup.
 
-The first request fits the H2G capacity posted at checkpoint. Retained slots
-reduce pool capacity but hold no ring descriptors. Framing, slot rounding, ring
-size, and the external-byte control reserve still apply.
+The first request after restore must fit the H2G capacity posted at checkpoint.
+Retained buffers can reduce this prefill if their leases still belong to the
+current pool generation. Buffers from retired generations do not consume current
+pool slots. Framing, slot rounding, ring size, and the external-byte control
+reserve still apply.
 
 The first transport entry after restore recycles slots held by captured
 leases. Posted chains keep their reservations, preserving the submitted
