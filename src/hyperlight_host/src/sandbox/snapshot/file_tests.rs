@@ -1597,6 +1597,15 @@ fn save_rejects_unsupported_existing_layout_version() {
         br#"{"imageLayoutVersion":"99.0.0"}"#,
     )
     .unwrap();
+    // Capture every existing entry and its bytes before the failed save.
+    let before: Vec<_> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+
     let err = snap
         .save(&path, &OciTag::new("latest").unwrap())
         .unwrap_err();
@@ -1605,9 +1614,17 @@ fn save_rejects_unsupported_existing_layout_version() {
         msg.contains("imageLayoutVersion") || msg.contains("unsupported"),
         "expected unsupported-version error, got: {msg}"
     );
-    assert!(
-        !path.join("index.json").exists(),
-        "save must not have written index.json"
+    let after: Vec<_> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+
+    assert_eq!(
+        before, after,
+        "unsupported layout must leave directory contents unchanged"
     );
 }
 
