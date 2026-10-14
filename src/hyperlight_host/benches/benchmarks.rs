@@ -131,6 +131,103 @@ fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) 
     });
 }
 
+/// Sandboxes with large scratch, where resetting scratch dominates a
+/// restore: the name, MiB of scratch, and bytes of heap the guest writes a
+/// call (0 for only a few pages, an Echo).
+const LARGE_SCRATCH: [(&str, usize, u64); 5] = [
+    ("scratch_64mib", 64, 0),
+    ("scratch_64mib_write_1mib", 64, 1 << 20),
+    ("scratch_256mib", 256, 0),
+    ("scratch_256mib_write_1mib", 256, 1 << 20),
+    ("scratch_256mib_write_16mib", 256, 16 << 20),
+];
+
+/// A sandbox with `mib` MiB of scratch whose heap can allocate `write`
+/// bytes.
+fn large_scratch_sandbox(mib: usize, write: u64) -> Sandbox {
+    SandboxBuilder::from_file(simple_guest_as_pathbuf())
+        .heap_size((4 << 20).max(4 * write))
+        .scratch_size(mib << 20)
+        .build()
+        .unwrap()
+}
+
+/// A guest call that writes `write` bytes of heap, or an Echo at 0.
+fn call_writing(sbox: &mut Sandbox, write: u64) {
+    if write == 0 {
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+    } else {
+        sbox.call::<()>("AllocAndWritePattern", write).unwrap();
+    }
+}
+
+fn bench_large_scratch_call_with_restore(b: &mut criterion::Bencher, mib: usize, write: u64) {
+    let mut sbox = large_scratch_sandbox(mib, write);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter(|| {
+        call_writing(&mut sbox, write);
+        sbox.restore(snapshot.clone()).unwrap();
+    });
+}
+
+/// After one call that wrote `heavy` bytes, the next 32 calls that write
+/// little and their restores, as a pool of sandboxes sees after one
+/// large request. An iteration times those 32.
+fn bench_call_with_restore_after_heavy(b: &mut criterion::Bencher, mib: usize, heavy: u64) {
+    let mut sbox = large_scratch_sandbox(mib, heavy);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter_custom(|iters| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+            call_writing(&mut sbox, heavy);
+            sbox.restore(snapshot.clone()).unwrap();
+            let start = Instant::now();
+            for _ in 0..32 {
+                call_writing(&mut sbox, 0);
+                sbox.restore(snapshot.clone()).unwrap();
+            }
+            total += start.elapsed();
+        }
+        total
+    });
+}
+
+/// Only the call after a restore, which pays for any page the restore
+/// left the guest to fault in again.
+fn bench_call_after_restore(b: &mut criterion::Bencher, mut sbox: Sandbox, write: u64) {
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter_custom(|iters| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+            sbox.restore(snapshot.clone()).unwrap();
+            let start = Instant::now();
+            call_writing(&mut sbox, write);
+            total += start.elapsed();
+        }
+        total
+    });
+}
+
+/// Only the restore after a call.
+fn bench_restore_after_call(b: &mut criterion::Bencher, mib: usize, write: u64) {
+    let mut sbox = large_scratch_sandbox(mib, write);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter_custom(|iters| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+            call_writing(&mut sbox, write);
+            let start = Instant::now();
+            sbox.restore(snapshot.clone()).unwrap();
+            total += start.elapsed();
+        }
+        total
+    });
+}
+
 fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: SandboxSize) {
     let mut multiuse_sandbox = size
         .builder()
@@ -238,6 +335,29 @@ fn guest_calls_benchmark(c: &mut Criterion) {
         });
     }
 
+    for (name, mib, write) in LARGE_SCRATCH {
+        group.bench_function(format!("call_with_restore/{name}"), |b| {
+            bench_large_scratch_call_with_restore(b, mib, write)
+        });
+    }
+
+    group.bench_function("call_with_restore/32_after_32mib_scratch_64mib", |b| {
+        bench_call_with_restore_after_heavy(b, 64, 32 << 20)
+    });
+
+    group.bench_function("call_after_restore/default", |b| {
+        bench_call_after_restore(
+            b,
+            create_multiuse_sandbox_with_size(SandboxSize::Default),
+            0,
+        )
+    });
+    for (name, mib, write) in LARGE_SCRATCH.into_iter().skip(2) {
+        group.bench_function(format!("call_after_restore/{name}"), |b| {
+            bench_call_after_restore(b, large_scratch_sandbox(mib, write), write)
+        });
+    }
+
     for size in SandboxSize::all() {
         group.bench_function(format!("call_with_host_function/{}", size.name()), |b| {
             bench_guest_call_with_host_function(b, size)
@@ -335,6 +455,12 @@ fn snapshots_benchmark(c: &mut Criterion) {
     for size in SandboxSize::all() {
         group.bench_function(format!("restore/{}", size.name()), |b| {
             bench_snapshot_restore(b, size)
+        });
+    }
+
+    for (name, mib, write) in LARGE_SCRATCH.into_iter().skip(2) {
+        group.bench_function(format!("restore/{name}"), |b| {
+            bench_restore_after_call(b, mib, write)
         });
     }
 

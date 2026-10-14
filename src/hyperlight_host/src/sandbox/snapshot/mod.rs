@@ -945,13 +945,13 @@ mod tests {
         .unwrap();
 
         // Restore snapshot A
-        mgr.restore_snapshot(&snapshot_a).unwrap();
+        mgr.restore_snapshot(&snapshot_a, None).unwrap();
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_a.len()], &pattern_a[..]))
             .unwrap();
 
         // Restore snapshot B
-        mgr.restore_snapshot(&snapshot_b).unwrap();
+        mgr.restore_snapshot(&snapshot_b, None).unwrap();
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();

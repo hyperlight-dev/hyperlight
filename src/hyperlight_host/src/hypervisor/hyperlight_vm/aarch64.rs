@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
-    InitializeError,
+    InitializeError, ScratchDirtyLog,
 };
 #[cfg(hvf)]
 use crate::hypervisor::HvfInterruptHandle;
@@ -100,6 +100,7 @@ impl HyperlightVm {
             snapshot_memory: None,
             scratch_slot,
             scratch_memory: None,
+            scratch_dirty: ScratchDirtyLog::default(),
 
             mmap_regions: Vec::new(),
 
