@@ -743,10 +743,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             match guest_written {
                 Some(written) => {
-                    // The page tables are copied in with exclusive
-                    // access, which the host-write log does not see.
-                    self.scratch_mem
-                        .zero_written(written, self.scratch_pt_range())?;
+                    self.scratch_mem.zero_written(written)?;
                     None
                 }
                 // zero_or_replace picks the fastest zeroing strategy for
@@ -888,19 +885,19 @@ impl SandboxMemoryManager<HostSharedMemory> {
         #[cfg(unshared_snapshot_mem)]
         let snapshot_pt_size = self.layout.get_pt_size();
         let snapshot_pt_start = snapshot_pt_end - self.scratch_pt_range().len();
-        self.scratch_mem.with_exclusivity(|scratch| {
-            #[cfg(not(unshared_snapshot_mem))]
-            let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];
-            #[cfg(unshared_snapshot_mem)]
-            let bytes = {
-                let mut bytes = vec![0u8; snapshot_pt_size];
-                self.shared_mem
-                    .copy_to_slice(&mut bytes, snapshot_pt_start)?;
-                bytes
-            };
-            #[allow(clippy::needless_borrow)]
-            scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
-        })??;
+        // A logged write, so a reset that zeroes only written pages sees it.
+        #[cfg(not(unshared_snapshot_mem))]
+        let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];
+        #[cfg(unshared_snapshot_mem)]
+        let bytes = {
+            let mut bytes = vec![0u8; snapshot_pt_size];
+            self.shared_mem
+                .copy_to_slice(&mut bytes, snapshot_pt_start)?;
+            bytes
+        };
+        #[allow(clippy::needless_borrow)]
+        self.scratch_mem
+            .copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())?;
 
         Ok(())
     }

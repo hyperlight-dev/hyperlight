@@ -549,6 +549,14 @@ impl HyperlightVm {
         self.scratch_dirty.take(&mut *self.vm, gpa, size)
     }
 
+    /// The restores that had the guest's writes to scratch from the
+    /// hypervisor, or `None` where it does not log them.
+    #[cfg(test)]
+    pub(crate) fn scratch_dirty_logs(&self) -> Option<usize> {
+        use crate::hypervisor::virtual_machine::DirtyTracking;
+        (self.vm.dirty_tracking() != DirtyTracking::None).then_some(self.scratch_dirty.logs)
+    }
+
     /// Update the scratch mapping to point to a new GuestSharedMemory
     pub(crate) fn update_scratch_mapping(
         &mut self,

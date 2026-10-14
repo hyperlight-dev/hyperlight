@@ -1500,9 +1500,30 @@ mod tests {
         }
     }
 
+    /// A restore copies the page tables into scratch with a logged write,
+    /// page by page, so the next restore zeroes them, and only them, before
+    /// the snapshot's own go in.
+    #[test]
+    fn restore_logs_the_page_table_copy() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .scratch_size(4 << 20)
+            .build()
+            .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+        sbox.restore(snapshot).unwrap();
+        let written = sbox.mem_mgr.scratch_mem.take_host_writes();
+        let range = sbox.mem_mgr.scratch_pt_range();
+        assert!(!range.is_empty());
+        let noted = |page: usize| written[page / 64] & 1 << (page % 64) != 0;
+        assert!((range.start / 4096..range.end / 4096).all(noted));
+        // Free scratch, past the page tables and below the bookkeeping.
+        let free = (4 << 20) / 4096 / 2;
+        assert!(free > range.end / 4096 && !noted(free));
+    }
+
     /// Restores that zero only the scratch pages written since the last
     /// one leave nothing behind: from the first restore on, and after the
-    /// guest writes much of scratch (which stops MSHV tracking).
+    /// guest writes much of scratch (which pauses MSHV tracking).
     #[test]
     fn restore_zeroes_every_scratch_page_written() {
         // After a restore, scratch holds only what the host wrote: the
@@ -1550,6 +1571,20 @@ mod tests {
             assert!(pattern.is_empty(), "restore {i} kept the pattern");
             sbox.restore(snapshot.clone()).unwrap();
             assert_reset(&mut sbox, i);
+        }
+        // Where the hypervisor logs the guest's writes, most restores
+        // used the log: tracking pauses only after the stretch.
+        #[cfg(all(mshv3, target_arch = "x86_64"))]
+        let mshv = matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Mshv)
+        );
+        #[cfg(not(all(mshv3, target_arch = "x86_64")))]
+        let mshv = false;
+        // WHP may lack tracking, which the VM then reports.
+        let logs = sbox.vm.scratch_dirty_logs();
+        if mshv || logs.is_some() {
+            assert!(logs.is_some_and(|logs| logs > 500), "{logs:?}");
         }
     }
 
