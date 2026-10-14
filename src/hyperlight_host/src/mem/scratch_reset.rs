@@ -7,21 +7,24 @@
 //! fault twice, in the host for a zeroed page and in KVM to map it, which
 //! costs a few microseconds a page on a nested hypervisor. Zeroing in
 //! place the pages a run wrote keeps them mapped, which costs a fraction
-//! of that, so every reset zeroes those and drops the rest.
+//! of that, so every reset zeroes those and keeps them.
 //!
 //! `/proc/self/pagemap` reports each page's page-table entry, and every
 //! reset reads it for the whole region. A page with memory of its own
-//! that holds data is zeroed and kept. One that holds only zeros, as the
-//! last reset left it unless the last run wrote it, is not zeroed again,
-//! and is dropped to give its memory back, so what stays resident follows
-//! what runs write. A page in swap, or mapped to memory it shares that
-//! holds data (a page shared with a forked child), is dropped. One that
-//! shares only zeros (the zero page a read maps) holds no data, and is
-//! dropped like an unwritten page of its own. A page with an empty entry
-//! reads as zero and is left alone. The kernel reports any page that
-//! holds data as present or swapped, so this leaves no data behind.
-//! Pagemap is used only after it reports a page this process wrote, read
-//! by the process that opened it.
+//! that holds data is zeroed and kept. One that holds only zeros is kept
+//! as it is: it may be one the last run wrote zeros to, which a drop would
+//! make the next run fault on again. Every [`GIVE_BACK_EVERY`] resets,
+//! pages holding only zeros are dropped instead, up to [`MAX_DROPS`] runs
+//! of them, so memory a run once used is given back without a guest that
+//! writes zeros faulting on every run. A page in swap, or mapped to
+//! memory it shares that holds data (a page shared with a forked child),
+//! is dropped. One that shares only zeros (the zero page a read maps)
+//! holds no data, and is left like an unwritten page of its own. A page
+//! with an empty entry reads as zero and is left alone. The kernel reports
+//! any page that holds data as present or swapped, so this leaves no data
+//! behind. Pagemap is opened once per process (and once per sandbox in a
+//! forked child), and used only after it reports a page the process
+//! wrote.
 //!
 //! From Linux 6.7, the `PAGEMAP_SCAN` ioctl reports pagemap as ranges of
 //! pages alike, skipping what was never touched, so a reset costs time
@@ -33,7 +36,7 @@
 use std::fs::File;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use tracing::{debug, warn};
 
@@ -41,9 +44,14 @@ use super::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 
 /// The most separate drops of each kind a reset makes. A guest that
 /// scatters shared pages so a reset would drop them one by one has the
-/// whole region dropped instead. Runs of pages left zero past it stay,
-/// for later resets to drop.
+/// whole region dropped instead. Runs of pages holding only zeros past
+/// it stay, for a later reset that gives them back.
 const MAX_DROPS: usize = 64;
+
+/// How often a reset gives back the pages holding only zeros. A page
+/// dropped costs a fault when the guest next touches it, which costs
+/// about as much as checking it for data on 16 resets.
+const GIVE_BACK_EVERY: usize = 16;
 
 /// Pagemap entries read at once.
 const CHUNK_PAGES: usize = 512;
@@ -59,12 +67,30 @@ const PM_PRESENT: u64 = 1 << 63;
 const PM_SWAPPED: u64 = 1 << 62;
 const PM_EXCLUSIVE: u64 = 1 << 56;
 
+/// The process's pagemap, with the process that opened it, set once and
+/// never freed. A forked child inherits its parent's, which shows the
+/// parent's pages. Published with an atomic rather than a lock, which a
+/// fork could leave held.
+static PAGEMAP: AtomicPtr<(u32, Pagemap)> = AtomicPtr::new(std::ptr::null_mut());
+
+/// The process's pagemap, once a reset opened it.
+fn process_pagemap() -> Option<&'static (u32, Pagemap)> {
+    // SAFETY: set only from a leaked `Box`, never freed or changed after.
+    unsafe { PAGEMAP.load(Ordering::Acquire).as_ref() }
+}
+
+/// That pagemap is unusable was logged.
+static WARNED: AtomicBool = AtomicBool::new(false);
+
 /// How a scratch region is reset in place. See the module docs.
 #[derive(Debug, Default)]
 pub(crate) struct ScratchReset {
-    pagemap: Option<Pagemap>,
-    /// The process for which pagemap could not be used, so it is not
-    /// opened again.
+    /// Resets since pages holding only zeros were last given back.
+    resets: usize,
+    /// The pagemap of a forked child, with the child.
+    forked: Option<(u32, Pagemap)>,
+    /// The process for which pagemap could not be opened, so it is not
+    /// tried again.
     unusable: Option<u32>,
     /// Read entries one a page, to test that.
     #[cfg(test)]
@@ -81,9 +107,6 @@ pub(crate) struct ScratchReset {
 #[derive(Debug)]
 struct Pagemap {
     file: File,
-    /// The process that opened it. A forked child reads its parent's
-    /// pages through an inherited one.
-    pid: u32,
 }
 
 impl Pagemap {
@@ -94,7 +117,6 @@ impl Pagemap {
     fn open() -> std::io::Result<Self> {
         let pagemap = Self {
             file: File::open("/proc/self/pagemap")?,
-            pid: std::process::id(),
         };
         let mut probe = Box::new(0u64);
         for _ in 0..3 {
@@ -123,6 +145,15 @@ impl Pagemap {
         let offset = (addr / page_size::get()) as u64 * 8;
         self.file.read_exact_at(bytes, offset)
     }
+}
+
+/// [`Pagemap::open`], saying once per process when it fails.
+fn open_warned() -> std::io::Result<Pagemap> {
+    Pagemap::open().inspect_err(|e| {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            warn!("scratch is dropped on restore while pagemap is unusable: {e}");
+        }
+    })
 }
 
 /// Backed by memory of its own: zero it and keep it.
@@ -191,56 +222,87 @@ impl Region<'_> {
 }
 
 impl ScratchReset {
-    /// Reset `mem` to zeros, keeping the pages the guest wrote mapped and
-    /// dropping the rest. On an error the region may be partly reset, and
-    /// the caller must reset it some other way.
+    /// Reset `mem` to zeros, keeping mapped the pages that are its own,
+    /// as the module docs say. On an error the region may be partly
+    /// reset, and the caller must reset it some other way.
     pub(crate) fn reset(&mut self, mem: &mut ExclusiveSharedMemory) -> std::io::Result<()> {
         let pages = mem.mem_size() / page_size::get();
         let mut region = Region { mem, pages };
-        if self.scan(&mut region)? > MAX_DROPS {
+        self.resets += 1;
+        let give_back = self.resets == GIVE_BACK_EVERY;
+        if give_back {
+            self.resets = 0;
+        }
+        if self.scan(&mut region, give_back)? > MAX_DROPS {
             region.drop_pages(0..pages)?;
         }
         Ok(())
     }
 
-    /// This process's pagemap, opened again after a fork.
+    /// This process's pagemap. Where it cannot be opened, this sandbox
+    /// does not try again.
     fn pagemap(&mut self) -> std::io::Result<&Pagemap> {
         let pid = std::process::id();
         if self.unusable == Some(pid) {
             return Err(std::io::ErrorKind::Unsupported.into());
         }
-        let pagemap = match self.pagemap.take() {
-            Some(pagemap) if pagemap.pid == pid => pagemap,
-            _ => {
-                #[cfg(test)]
-                let opened = if self.fail_pagemap {
-                    Err(std::io::ErrorKind::Unsupported.into())
-                } else {
-                    Pagemap::open()
-                };
-                #[cfg(not(test))]
-                let opened = Pagemap::open();
-                opened.inspect_err(|e| {
-                    warn!("scratch is dropped on every restore, pagemap is unusable: {e}");
-                    self.unusable = Some(pid);
-                })?
+        if let Err(e) = self.open_pagemap(pid) {
+            self.unusable = Some(pid);
+            return Err(e);
+        }
+        match process_pagemap() {
+            Some((opener, pagemap)) if *opener == pid => Ok(pagemap),
+            _ => self
+                .forked
+                .as_ref()
+                .map(|(_, pagemap)| pagemap)
+                .ok_or_else(|| std::io::ErrorKind::Unsupported.into()),
+        }
+    }
+
+    /// Open the pagemap of process `pid` if it is not open: the process's
+    /// own, or in a forked child, the child's.
+    fn open_pagemap(&mut self, pid: u32) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.fail_pagemap {
+            return Err(std::io::ErrorKind::Unsupported.into());
+        }
+        if process_pagemap().is_none() {
+            let opened = Box::into_raw(Box::new((pid, open_warned()?)));
+            // Another thread may set it first; either is this process's.
+            if PAGEMAP
+                .compare_exchange(
+                    std::ptr::null_mut(),
+                    opened,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+            {
+                // SAFETY: from `Box::into_raw` above, and not published.
+                drop(unsafe { Box::from_raw(opened) });
             }
-        };
-        Ok(self.pagemap.insert(pagemap))
+        }
+        let own = matches!(process_pagemap(), Some((opener, _)) if *opener == pid);
+        if !own && !matches!(&self.forked, Some((child, _)) if *child == pid) {
+            self.forked = Some((pid, open_warned()?));
+        }
+        Ok(())
     }
 
     /// Zero the pages with memory of their own that hold data, and drop
-    /// the rest that are backed, one drop per run between kept pages (see
-    /// [`Run::end`]). Returns the drops of runs that had to go, and stops
-    /// past [`MAX_DROPS`] of them for the caller to drop it all.
-    fn scan(&mut self, region: &mut Region<'_>) -> std::io::Result<usize> {
+    /// the rest that hold data, one drop per run between kept pages (see
+    /// [`Run::end`]), and with `give_back` those holding only zeros too.
+    /// Returns the drops of runs that had to go, and stops past
+    /// [`MAX_DROPS`] of them for the caller to drop it all.
+    fn scan(&mut self, region: &mut Region<'_>, give_back: bool) -> std::io::Result<usize> {
         #[cfg(test)]
         let ranges = !self.no_ranges;
         #[cfg(not(test))]
         let ranges = true;
         if ranges
             && !NO_RANGES.load(Ordering::Relaxed)
-            && let Some(drops) = self.scan_ranges(region)?
+            && let Some(drops) = self.scan_ranges(region, give_back)?
         {
             #[cfg(test)]
             {
@@ -248,12 +310,12 @@ impl ScratchReset {
             }
             return Ok(drops);
         }
-        self.scan_entries(region)
+        self.scan_entries(region, give_back)
     }
 
     /// [`scan`](Self::scan) from pagemap entries, one a page.
-    fn scan_entries(&mut self, region: &mut Region<'_>) -> std::io::Result<usize> {
-        let mut walk = Walk::default();
+    fn scan_entries(&mut self, region: &mut Region<'_>, give_back: bool) -> std::io::Result<usize> {
+        let mut walk = Walk::new(give_back);
         let mut entries = [0u64; CHUNK_PAGES];
         let pagemap = self.pagemap()?;
         let mut chunk = 0;
@@ -283,17 +345,20 @@ impl ScratchReset {
     /// first call fails, before anything is reset, for the caller to read
     /// entries instead. A later call failing is an error, as the region is
     /// partly reset. Either way, later scans read entries.
-    fn scan_ranges(&mut self, region: &mut Region<'_>) -> std::io::Result<Option<usize>> {
-        use std::os::fd::AsRawFd;
+    fn scan_ranges(
+        &mut self,
+        region: &mut Region<'_>,
+        give_back: bool,
+    ) -> std::io::Result<Option<usize>> {
         let size = page_size::get();
         let base = region.addr(0) as u64;
-        let fd = self.pagemap()?.file.as_raw_fd();
+        let pagemap = self.pagemap()?;
         let mut ranges = [PageRegion::default(); SCAN_RANGES];
-        let mut arg = PmScanArg::new(base, base + (region.pages * size) as u64, &mut ranges);
-        let mut walk = Walk::default();
+        let mut arg = PmScanArg::new(base, base + (region.pages * size) as u64);
+        let mut walk = Walk::new(give_back);
         let mut next = 0;
         loop {
-            let n = match pagemap_scan(fd, &mut arg) {
+            let n = match pagemap_scan(&pagemap.file, &mut arg, &mut ranges) {
                 Ok(n) => n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
@@ -338,11 +403,20 @@ impl ScratchReset {
     }
 }
 
-/// Run `PAGEMAP_SCAN` on pagemap `fd`. Returns the ranges it filled.
-fn pagemap_scan(fd: std::os::fd::RawFd, arg: &mut PmScanArg) -> std::io::Result<usize> {
-    // SAFETY: `arg` describes its `vec`, which the kernel fills with at
-    // most `vec_len` entries.
-    let n = unsafe { libc::ioctl(fd, PAGEMAP_SCAN, &mut *arg) };
+/// Run `PAGEMAP_SCAN` on `pagemap` into `ranges`. Returns the ranges it
+/// filled.
+fn pagemap_scan(
+    pagemap: &File,
+    arg: &mut PmScanArg,
+    ranges: &mut [PageRegion],
+) -> std::io::Result<usize> {
+    use std::os::fd::AsRawFd;
+    arg.vec = ranges.as_mut_ptr() as u64;
+    arg.vec_len = ranges.len() as u64;
+    // SAFETY: `arg` points at `ranges`, borrowed for the call, which the
+    // kernel fills with at most `vec_len` entries. The kernel writes no
+    // other memory of ours but `arg`.
+    let n = unsafe { libc::ioctl(pagemap.as_raw_fd(), PAGEMAP_SCAN, &mut *arg) };
     usize::try_from(n).map_err(|_| std::io::Error::last_os_error())
 }
 
@@ -372,15 +446,13 @@ struct PmScanArg {
 }
 
 impl PmScanArg {
-    /// Report into `ranges` the present or swapped pages in
-    /// `[start, end)`, flagging those mapped to the zero page.
-    fn new(start: u64, end: u64, ranges: &mut [PageRegion]) -> Self {
+    /// Report the present or swapped pages in `[start, end)`, flagging
+    /// those mapped to the zero page. [`pagemap_scan`] says where.
+    fn new(start: u64, end: u64) -> Self {
         Self {
             size: size_of::<Self>() as u64,
             start,
             end,
-            vec: ranges.as_mut_ptr() as u64,
-            vec_len: ranges.len() as u64,
             category_anyof_mask: PAGE_IS_PRESENT | PAGE_IS_SWAPPED,
             return_mask: PAGE_IS_PRESENT | PAGE_IS_SWAPPED | PAGE_IS_PFNZERO,
             ..Self::default()
@@ -403,8 +475,9 @@ struct Walk {
     drops: Drops,
 }
 
-impl Default for Walk {
-    fn default() -> Self {
+impl Walk {
+    /// With `give_back`, runs holding only zeros are dropped.
+    fn new(give_back: bool) -> Self {
         Self {
             run: Run {
                 start: 0,
@@ -412,12 +485,13 @@ impl Default for Walk {
                 shared: false,
                 zero: false,
             },
-            drops: Drops::default(),
+            drops: Drops {
+                give_back,
+                ..Drops::default()
+            },
         }
     }
-}
 
-impl Walk {
     /// Page `page` is kept, or not and holds shared or swapped data, or
     /// zeros. Every page up to the next one fed is as this one. True once
     /// shared drops pass [`MAX_DROPS`].
@@ -457,9 +531,10 @@ impl Walk {
 struct Drops {
     /// Of runs holding shared or swapped pages, which must go.
     shared: usize,
-    /// Of runs only the last run left zero, dropped to give their memory
-    /// back.
+    /// Of runs holding only zeros, dropped to give their memory back.
     zero: usize,
+    /// Runs holding only zeros are dropped.
+    give_back: bool,
 }
 
 /// A run of pages kept, or not, between pages that are the other.
@@ -473,8 +548,9 @@ struct Run {
 impl Run {
     /// Zero the run if kept. Otherwise drop it, empty entries and all,
     /// so the guest cannot make a reset drop page by page: always when it
-    /// holds shared or swapped pages, and when it holds pages left zero,
-    /// up to [`MAX_DROPS`] of those a reset; past that they stay, zero.
+    /// holds shared or swapped pages, and when it holds pages holding only
+    /// zeros on a reset that gives them back, up to [`MAX_DROPS`] of those;
+    /// past that they stay, zero.
     /// True once shared drops pass [`MAX_DROPS`].
     fn end(&self, region: &mut Region<'_>, end: usize, drops: &mut Drops) -> std::io::Result<bool> {
         let pages = self.start..end;
@@ -483,7 +559,7 @@ impl Run {
         } else if self.shared {
             region.drop_pages(pages)?;
             drops.shared += 1;
-        } else if self.zero && drops.zero < MAX_DROPS {
+        } else if self.zero && drops.give_back && drops.zero < MAX_DROPS {
             region.drop_pages(pages)?;
             drops.zero += 1;
         }
@@ -521,7 +597,6 @@ mod tests {
     fn entry(mem: &ExclusiveSharedMemory, page_index: usize) -> u64 {
         let pagemap = Pagemap {
             file: File::open("/proc/self/pagemap").unwrap(),
-            pid: std::process::id(),
         };
         let mut e = [0u64];
         pagemap
@@ -530,14 +605,21 @@ mod tests {
         e[0]
     }
 
-    /// Reading maps the zero page on dropped pages, which the next reset
-    /// drops again.
+    /// Reading maps the zero page on dropped pages, which a reset that
+    /// gives back drops again.
     fn all_zero(mem: &mut ExclusiveSharedMemory) -> bool {
         mem.as_mut_slice().iter().all(|b| *b == 0)
     }
 
     fn reset(state: &mut ScratchReset, mem: &mut ExclusiveSharedMemory) {
         state.reset(mem).unwrap();
+    }
+
+    /// A reset that gives back the pages holding only zeros.
+    fn give_back(state: &mut ScratchReset, mem: &mut ExclusiveSharedMemory) {
+        state.resets = GIVE_BACK_EVERY - 1;
+        reset(state, mem);
+        assert_eq!(state.resets, 0);
     }
 
     /// Every reset leaves the region zero, whatever the run wrote: the
@@ -612,14 +694,13 @@ mod tests {
     /// wrong call.
     #[test]
     fn ranges_are_read_where_supported() {
-        use std::os::fd::AsRawFd;
         let mut mem = region(64);
         write(&mut mem, 3, 1);
         let file = File::open("/proc/self/pagemap").unwrap();
         let mut ranges = [PageRegion::default(); 4];
         let base = mem.base_ptr() as u64;
-        let mut arg = PmScanArg::new(base, base + 64 * page() as u64, &mut ranges);
-        match pagemap_scan(file.as_raw_fd(), &mut arg) {
+        let mut arg = PmScanArg::new(base, base + 64 * page() as u64);
+        match pagemap_scan(&file, &mut arg, &mut ranges) {
             Err(e) if e.raw_os_error() == Some(libc::ENOTTY) => {
                 eprintln!("no PAGEMAP_SCAN: ranges_are_read_where_supported skipped");
                 return;
@@ -678,10 +759,12 @@ mod tests {
         }
     }
 
-    /// Pages a run did not write are given back: what stays resident
-    /// follows the last run, not the most any run wrote.
+    /// Pages holding only zeros stay backed until a reset gives them
+    /// back: a guest that writes zeros to a page every run would
+    /// otherwise fault on it every run. What stays resident then follows
+    /// the last run, not the most any run wrote.
     #[test]
-    fn pages_not_written_since_are_dropped() {
+    fn zero_pages_stay_until_given_back() {
         for mut state in states() {
             let mut mem = region(2048);
             for p in 0..512 {
@@ -690,9 +773,16 @@ mod tests {
             reset(&mut state, &mut mem);
             assert!(kept(entry(&mem, 300)));
             write(&mut mem, 0, 1);
+            write(&mut mem, 301, 0);
+            for _ in 2..GIVE_BACK_EVERY {
+                reset(&mut state, &mut mem);
+                assert!((0..512).all(|p| kept(entry(&mem, p))));
+            }
+            assert_eq!(state.resets, GIVE_BACK_EVERY - 1);
+            write(&mut mem, 0, 1);
             reset(&mut state, &mut mem);
             assert!(kept(entry(&mem, 0)));
-            assert!(!held(entry(&mem, 300)));
+            assert!((1..512).all(|p| !held(entry(&mem, p))));
             assert!(all_zero(&mut mem));
         }
     }
@@ -711,16 +801,17 @@ mod tests {
             for p in (0..4096).step_by(16) {
                 write(&mut mem, p, 1);
             }
-            reset(&mut state, &mut mem);
+            give_back(&mut state, &mut mem);
             assert!((0..4096).step_by(16).all(|p| kept(entry(&mem, p))));
             assert!(all_zero(&mut mem));
         }
     }
 
-    /// The zero page a read maps holds no data: it is dropped like an
-    /// unwritten page, never as a run that must go.
+    /// The zero page a read maps holds no data: it is left like an
+    /// unwritten page, and given back like one, never as a run that must
+    /// go.
     #[test]
-    fn zero_page_reads_are_dropped_as_unwritten() {
+    fn zero_page_reads_are_left_as_unwritten() {
         for mut state in states() {
             let mut mem = region(512);
             write(&mut mem, 10, 1);
@@ -729,18 +820,23 @@ mod tests {
             for p in (11..200).step_by(2) {
                 assert_eq!(mem.as_mut_slice()[p * page()], 0);
             }
-            write(&mut mem, 10, 1);
-            write(&mut mem, 200, 1);
-            assert_eq!(
-                state
-                    .scan(&mut Region {
-                        pages: 512,
-                        mem: &mut mem
-                    })
-                    .unwrap(),
-                0
-            );
-            assert!(!held(entry(&mem, 11)));
+            for give_back in [false, true] {
+                write(&mut mem, 10, 1);
+                write(&mut mem, 200, 1);
+                assert_eq!(
+                    state
+                        .scan(
+                            &mut Region {
+                                pages: 512,
+                                mem: &mut mem
+                            },
+                            give_back
+                        )
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(held(entry(&mem, 11)), !give_back);
+            }
             assert!(kept(entry(&mem, 10)) && kept(entry(&mem, 200)));
             assert!(all_zero(&mut mem));
         }
@@ -763,15 +859,15 @@ mod tests {
             // Only the ends written again: what lies between is left zero.
             write(&mut mem, 0, 1);
             write(&mut mem, pages - 1, 1);
-            reset(&mut state, &mut mem);
+            give_back(&mut state, &mut mem);
             assert!((0..chunks).all(|c| !held(entry(&mem, c * CHUNK_PAGES + 7))));
             assert!(kept(entry(&mem, 0)) && kept(entry(&mem, pages - 1)));
         }
     }
 
     /// Runs that must go always drop, and past [`MAX_DROPS`] of them the
-    /// reset drops everything. Runs only left zero drop up to their own
-    /// budget, then stay.
+    /// reset drops everything. Runs holding only zeros drop only on a
+    /// reset that gives them back, up to their own budget, then stay.
     #[test]
     fn drop_limits() {
         let mut mem = region(16);
@@ -790,11 +886,17 @@ mod tests {
             assert!(!run(true, false).end(&mut region, 1, &mut drops).unwrap());
         }
         assert!(run(true, false).end(&mut region, 1, &mut drops).unwrap());
-        let mut drops = Drops::default();
-        for _ in 0..MAX_DROPS + 10 {
-            assert!(!run(false, true).end(&mut region, 1, &mut drops).unwrap());
+        for give_back in [false, true] {
+            let mut drops = Drops {
+                give_back,
+                ..Drops::default()
+            };
+            for _ in 0..MAX_DROPS + 10 {
+                assert!(!run(false, true).end(&mut region, 1, &mut drops).unwrap());
+            }
+            let zero = if give_back { MAX_DROPS } else { 0 };
+            assert_eq!((drops.shared, drops.zero), (0, zero));
         }
-        assert_eq!((drops.shared, drops.zero), (0, MAX_DROPS));
     }
 
     /// A page in swap holds the guest's data. The reset drops it.
@@ -843,7 +945,11 @@ mod tests {
         write(&mut mem, 10, 1);
         write(&mut mem, 20, 1);
         reset(&mut state, &mut mem);
-        assert!(state.pagemap.is_some());
+        assert_eq!(
+            process_pagemap().map(|(pid, _)| *pid),
+            Some(std::process::id())
+        );
+        assert!(state.forked.is_none());
         write(&mut mem, 40, 0x33);
         let mut fds = [0; 2];
         // SAFETY: two valid fds for the pipe.
@@ -861,7 +967,9 @@ mod tests {
             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 write(&mut mem, 15, 0x5a);
                 write(&mut mem, 39, 0x5a);
-                state.reset(&mut mem).is_ok() && all_zero(&mut mem)
+                state.reset(&mut mem).is_ok()
+                    && all_zero(&mut mem)
+                    && state.forked.as_ref().map(|(pid, _)| *pid) == Some(std::process::id())
             }));
             // SAFETY: ends the child.
             unsafe { libc::_exit(if matches!(ok, Ok(true)) { 0 } else { 1 }) };
@@ -898,8 +1006,8 @@ mod tests {
         );
     }
 
-    /// Without pagemap, a reset fails, says so once, and the caller
-    /// drops the region instead.
+    /// Without pagemap, a reset fails, and the caller drops the region
+    /// instead. Pagemap is not tried again for the sandbox.
     #[test]
     fn without_pagemap_a_reset_fails() {
         let mut mem = region(512);
@@ -910,6 +1018,7 @@ mod tests {
         write(&mut mem, 10, 1);
         assert!(state.reset(&mut mem).is_err());
         assert_eq!(state.unusable, Some(std::process::id()));
+        state.fail_pagemap = false;
         assert!(state.reset(&mut mem).is_err());
     }
 

@@ -193,7 +193,7 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
-            // Opens its own pagemap.
+            // Counts its own resets.
             scratch_reset: ScratchReset::default(),
         }
     }

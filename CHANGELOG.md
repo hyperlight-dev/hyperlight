@@ -71,10 +71,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will be extended in the future.
 * MSHV: vCPU creation reads the partition's XSAVE format once. This removes
   one hypercall from every restore.
-* On KVM, restore zeroes the scratch pages the guest wrote since the last
-  restore and keeps them mapped, so its next run takes no faults on them.
-  Other scratch is dropped, a few runs of it per restore when it is
-  fragmented, so what stays resident follows what recent runs wrote. On Linux
+* On KVM, restore zeroes the scratch pages that hold data and keeps them
+  mapped, so the next run takes no faults on them. Pages holding only zeros
+  are kept as well, and every 16th restore gives them back (64 runs of them
+  at most), so what stays resident follows what recent runs wrote. On Linux
   6.7 or newer, a restore costs time in how much of scratch is in use rather
   than in its size.
 * On WHP, and on MSHV on x86_64, restore zeroes only the scratch pages written

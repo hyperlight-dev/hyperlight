@@ -960,10 +960,10 @@ impl ExclusiveSharedMemory {
 
 impl ExclusiveSharedMemory {
     /// New memory for a sandbox's scratch region. On KVM it is backed 4
-    /// KiB at a time: KVM maps scratch 4 KiB at a time, since it is not
-    /// 2 MiB aligned for the guest, so a huge page would only make a touch,
-    /// and a reset that zeroes the touched pages (see `ScratchReset`), zero
-    /// 2 MiB.
+    /// KiB at a time: KVM maps scratch 4 KiB at a time, since the guard
+    /// page before it puts its host address 4 KiB off its guest address
+    /// within 2 MiB, so a huge page would only make a touch, and a reset
+    /// that zeroes the touched pages (see `ScratchReset`), zero 2 MiB.
     pub(crate) fn new_scratch(size: usize) -> Result<Self> {
         let mem = Self::new(size)?;
         #[cfg(all(kvm, not(miri)))]
@@ -1458,33 +1458,28 @@ impl HostSharedMemory {
 impl HostSharedMemory {
     /// Reset this memory region to all-zeros given the pages written
     /// since the last reset: `written` (the guest's writes, one bit per
-    /// 4 KiB page, bits past the end ignored), `also`, and the pages
-    /// host writes through this memory touched. Pages no one wrote are
-    /// left alone, so the cost follows the pages written, not the size.
+    /// 4 KiB page, bits past the end ignored) and the pages host writes
+    /// through this memory touched. Pages no one wrote are left alone,
+    /// so the cost follows the pages written, not the size.
     ///
     /// `written` comes from the hypervisor's dirty log, which sees only
-    /// the guest's writes. `also` covers host writes made with
-    /// exclusive access, which are not logged.
-    pub(crate) fn zero_written(
-        &mut self,
-        written: &mut Vec<u64>,
-        also: Range<usize>,
-    ) -> Result<()> {
+    /// the guest's writes. Every host write is noted, page by page or,
+    /// with exclusive access, all of the memory at once.
+    pub(crate) fn zero_written(&mut self, written: &mut Vec<u64>) -> Result<()> {
         let pages = self.mem_size() / DIRTY_PAGE_SIZE;
         written.resize(written.len().max(pages.div_ceil(64)), 0);
-        let also = also.start / DIRTY_PAGE_SIZE..also.end.div_ceil(DIRTY_PAGE_SIZE).min(pages);
-        for page in also {
-            written[page / 64] |= 1 << (page % 64);
-        }
         let host_writes = self.host_writes.clone();
-        self.with_exclusivity(|e| {
+        self.with_exclusivity_unnoted(|e| {
             // Under the lock, so no host write is noted after this.
             host_writes.take_into(written);
             let mem = e.as_mut_slice();
             for run in DirtyRuns::new(written, pages) {
                 mem[run.start * DIRTY_PAGE_SIZE..run.end * DIRTY_PAGE_SIZE].fill(0);
             }
-            debug_assert!(
+            // All of memory, so only in tests: on WHP it also makes pages
+            // never touched resident.
+            #[cfg(test)]
+            assert!(
                 mem.chunks(DIRTY_PAGE_SIZE)
                     .all(|page| page == &ZERO_PAGE[..page.len()]),
                 "a scratch page written since the last reset was not logged"
@@ -1497,10 +1492,12 @@ impl HostSharedMemory {
     /// knowing which pages were written (see
     /// [`zero_written`](Self::zero_written) for when they are known).
     ///
-    /// On KVM, `state` resets the region in place. It zeroes the pages
-    /// the guest uses on each run, keeping them mapped, and drops the
-    /// rest (see [`ScratchReset`]). If that fails, the whole region is
-    /// dropped with `MADV_DONTNEED` for lazy zeroing. On MSHV, whose
+    /// On KVM, `state` resets the region in place. It zeroes its own pages
+    /// that hold data, keeping them mapped, drops pages holding data that
+    /// are not its own, and gives back now and then those holding only
+    /// zeros (see [`ScratchReset`]). If that
+    /// fails, the whole region is dropped with `MADV_DONTNEED` for lazy
+    /// zeroing. On MSHV, whose
     /// mappings must stay in sync with userspace, it is zeroed with
     /// `fill(0)`.
     ///
@@ -1524,7 +1521,7 @@ impl HostSharedMemory {
             return Ok(Some(gscratch));
         }
         let host_writes = self.host_writes.clone();
-        self.with_exclusivity(|e| {
+        self.with_exclusivity_unnoted(|e| {
             // Nothing written before this reset is left to zero. Under the
             // lock, so no host write is noted before it ends.
             host_writes.clear();
@@ -1557,6 +1554,15 @@ impl HostSharedMemory {
     }
 }
 
+#[cfg(test)]
+impl HostSharedMemory {
+    /// The pages host writes touched since the last reset, one bit per
+    /// page, taken.
+    pub(crate) fn take_host_writes(&self) -> Vec<u64> {
+        self.host_writes.take()
+    }
+}
+
 /// On Windows without a dirty log, the largest scratch zeroed in place.
 /// Zeroing in place makes all of scratch resident, where a fresh mapping
 /// holds only what the next run touches (#1765), so larger scratch is
@@ -1570,6 +1576,7 @@ const FILL_IN_PLACE_MAX: usize = 16 << 20;
 /// [`HostWrites`].
 pub(crate) const DIRTY_PAGE_SIZE: usize = 4096;
 
+#[cfg(test)]
 static ZERO_PAGE: [u8; DIRTY_PAGE_SIZE] = [0; DIRTY_PAGE_SIZE];
 
 /// The pages host writes through a [`HostSharedMemory`] touched since
@@ -1623,6 +1630,14 @@ impl HostWrites {
         for (word, out) in self.words().iter().zip(bitmap) {
             *out |= word.swap(0, Ordering::Relaxed);
         }
+    }
+
+    /// Take the noted pages, to test what was noted.
+    #[cfg(test)]
+    fn take(&self) -> Vec<u64> {
+        let mut bitmap = vec![0; self.words().len()];
+        self.take_into(&mut bitmap);
+        bitmap
     }
 
     fn clear(&self) {
@@ -1728,16 +1743,15 @@ mod zero_written_tests {
         ExclusiveSharedMemory::new(pages * PAGE).unwrap().build().0
     }
 
-    /// Write `byte` at `page` with exclusive access, which the host-write
-    /// log does not see, as the guest's writes are not seen.
+    /// Write `byte` at `page` unnoted, as the guest's writes are.
     fn guest_write(mem: &mut HostSharedMemory, page: usize, byte: u8) {
-        mem.with_exclusivity(|e| e.as_mut_slice()[page * PAGE + 7] = byte)
+        mem.with_exclusivity_unnoted(|e| e.as_mut_slice()[page * PAGE + 7] = byte)
             .unwrap();
     }
 
     fn nonzero_pages(mem: &mut HostSharedMemory) -> Vec<usize> {
-        mem.with_exclusivity(|e| {
-            e.as_slice()
+        mem.with_contents(|contents| {
+            contents
                 .chunks(PAGE)
                 .enumerate()
                 .filter(|(_, page)| page.iter().any(|&b| b != 0))
@@ -1748,34 +1762,43 @@ mod zero_written_tests {
     }
 
     #[test]
-    fn zeroes_the_guest_host_and_extra_pages() {
+    fn zeroes_the_guest_and_host_pages() {
         let mut mem = scratch(100);
         guest_write(&mut mem, 3, 1);
         guest_write(&mut mem, 64, 2);
         mem.write::<u64>(40 * PAGE, u64::MAX).unwrap();
-        guest_write(&mut mem, 90, 3);
         let mut written = bits(&[3, 64]);
-        mem.zero_written(&mut written, 90 * PAGE..91 * PAGE)
-            .unwrap();
+        mem.zero_written(&mut written).unwrap();
         assert!(nonzero_pages(&mut mem).is_empty());
+        assert_eq!(runs(&written, 100), vec![3..4, 40..41, 64..65]);
     }
 
+    /// Host writes with exclusive access are not logged page by page, so
+    /// they count as writing every page; reads count as none.
+    #[test]
+    fn exclusive_access_writes_every_page() {
+        let mut mem = scratch(100);
+        mem.with_contents(|_| ()).unwrap();
+        let mut written = bits(&[]);
+        mem.host_writes.take_into(&mut written);
+        assert!(runs(&written, 100).is_empty());
+        mem.with_exclusivity(|e| e.as_mut_slice()[90 * PAGE] = 3)
+            .unwrap();
+        mem.zero_written(&mut written).unwrap();
+        assert!(nonzero_pages(&mut mem).is_empty());
+        assert_eq!(runs(&written, 100), vec![0..100]);
+    }
+
+    /// A page no one noted is left alone, which tests catch.
     #[test]
     fn leaves_pages_no_one_wrote() {
         let mut mem = scratch(100);
-        // A page that is not logged is left alone; with debug
-        // assertions, it is caught instead.
         guest_write(&mut mem, 9, 1);
         guest_write(&mut mem, 10, 1);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mem.zero_written(&mut bits(&[10]), 0..0)
+            mem.zero_written(&mut bits(&[10]))
         }));
-        if cfg!(debug_assertions) {
-            assert!(result.is_err());
-        } else {
-            result.unwrap().unwrap();
-            assert_eq!(nonzero_pages(&mut mem), vec![9]);
-        }
+        assert!(result.is_err());
     }
 
     /// Without a dirty log, Windows zeroes small scratch in place and
@@ -1809,11 +1832,10 @@ mod zero_written_tests {
     }
 }
 
-impl SharedMemory for HostSharedMemory {
-    fn region(&self) -> &HostMapping {
-        &self.region
-    }
-    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+impl HostSharedMemory {
+    /// [`SharedMemory::with_exclusivity`] without noting the writes `f`
+    /// makes, for reads and resets.
+    fn with_exclusivity_unnoted<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
     ) -> Result<T> {
@@ -1825,6 +1847,31 @@ impl SharedMemory for HostSharedMemory {
         drop(excl);
         drop(guard);
         Ok(ret)
+    }
+}
+
+impl SharedMemory for HostSharedMemory {
+    fn region(&self) -> &HostMapping {
+        &self.region
+    }
+    /// Notes all of the memory as written: what `f` writes is not logged
+    /// page by page, so a reset that zeroes only written pages zeroes
+    /// all of it. The logged writes, such as
+    /// [`copy_from_slice`](HostSharedMemory::copy_from_slice), avoid that.
+    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+        &mut self,
+        f: F,
+    ) -> Result<T> {
+        let size = self.mem_size();
+        let host_writes = self.host_writes.clone();
+        self.with_exclusivity_unnoted(|e| {
+            // First, so a panic in `f` leaves its writes noted.
+            host_writes.note(0, size);
+            f(e)
+        })
+    }
+    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
+        self.with_exclusivity_unnoted(|e| f(e.as_slice()))
     }
 }
 
