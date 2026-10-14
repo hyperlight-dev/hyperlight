@@ -529,6 +529,8 @@ impl VirtualMachine for WhpVm {
         };
 
         let map = |flags| {
+            // SAFETY: the caller of `map_memory` keeps the region valid
+            // while it is mapped.
             let result = unsafe {
                 (self.map_gpa_range2)(
                     self.partition,
@@ -555,6 +557,8 @@ impl VirtualMachine for WhpVm {
             if self.dirty_tracking_failed {
                 map(flags)?;
             } else if let Err(e) = map(flags | WHvMapGpaRangeFlagTrackDirtyPages) {
+                // Expected where Windows does not track dirty pages, so not
+                // a warning, unlike a failed read of the log.
                 tracing::debug!("Mapping scratch with dirty tracking failed: {e}");
                 self.dirty_tracking_failed = true;
                 map(flags)?;

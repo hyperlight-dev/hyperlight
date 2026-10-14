@@ -368,7 +368,11 @@ impl WhpVm {
 impl WhpVm {
     /// Map `region` into the partition, from `surrogate_addr` in the
     /// surrogate process when there is one.
-    fn map_gpa_range(
+    ///
+    /// # Safety
+    /// As for [`VirtualMachine::map_memory`]: the memory `region` describes,
+    /// and its view at `surrogate_addr`, must stay valid while it is mapped.
+    unsafe fn map_gpa_range(
         &self,
         region: &MemoryRegion,
         surrogate_addr: Option<*mut c_void>,
@@ -383,6 +387,8 @@ impl WhpVm {
                 // with an error about a missing entrypoint
                 // This function should always succeed since before we get here we have already checked that the hypervisor is present and
                 // that we are on a supported version of windows.
+                // SAFETY: loads a function from winhvplatform.dll, whose
+                // signature `try_load_whv_map_gpa_range2` declares.
                 let whvmapgparange2_func = unsafe {
                     match try_load_whv_map_gpa_range2() {
                         Ok(func) => func,
@@ -395,6 +401,8 @@ impl WhpVm {
                     }
                 };
 
+                // SAFETY: the caller keeps the region valid while it is
+                // mapped, and `surrogate_addr` is its view in the surrogate.
                 let res = unsafe {
                     whvmapgparange2_func(
                         self.partition,
@@ -415,6 +423,8 @@ impl WhpVm {
                 let host_addr = (region.host_region.start.handle_base
                     + region.host_region.start.offset)
                     as *const c_void;
+                // SAFETY: the caller keeps the region at `host_addr` valid
+                // while it is mapped.
                 let res = unsafe {
                     WHvMapGpaRange(
                         self.partition,
@@ -501,17 +511,24 @@ impl VirtualMachine for WhpVm {
             // Tracking lets a restore zero only the pages the guest wrote.
             // Without it, scratch is mapped as before.
             let tracked = flags | WHvMapGpaRangeFlagTrackDirtyPages;
-            if self.dirty_tracking_failed {
-                self.map_gpa_range(region, surrogate_addr, flags)?;
-            } else if let Err(e) = self.map_gpa_range(region, surrogate_addr, tracked) {
-                tracing::debug!("Mapping scratch with dirty tracking failed: {e}");
-                self.dirty_tracking_failed = true;
-                self.map_gpa_range(region, surrogate_addr, flags)?;
-            } else {
-                self.scratch_dirty_tracked = true;
+            // SAFETY: the caller of `map_memory` keeps the region valid
+            // while it is mapped.
+            unsafe {
+                if self.dirty_tracking_failed {
+                    self.map_gpa_range(region, surrogate_addr, flags)?;
+                } else if let Err(e) = self.map_gpa_range(region, surrogate_addr, tracked) {
+                    // Expected where Windows does not track dirty pages, so
+                    // not a warning, unlike a failed read of the log.
+                    tracing::debug!("Mapping scratch with dirty tracking failed: {e}");
+                    self.dirty_tracking_failed = true;
+                    self.map_gpa_range(region, surrogate_addr, flags)?;
+                } else {
+                    self.scratch_dirty_tracked = true;
+                }
             }
         } else {
-            self.map_gpa_range(region, surrogate_addr, flags)?;
+            // SAFETY: as above.
+            unsafe { self.map_gpa_range(region, surrogate_addr, flags)? };
         }
 
         // Track host-side file mappings for cleanup on unmap or drop.

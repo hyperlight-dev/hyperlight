@@ -490,6 +490,25 @@ pub(crate) trait DirtyLog {
     }
 }
 
+#[cfg(test)]
+mod dirty_log_tests {
+    use super::*;
+
+    /// A backend that tracks but does not read its log reports every
+    /// page written, so a restore zeroes all of scratch.
+    #[test]
+    fn the_default_log_reports_every_page() {
+        struct Untracked;
+        impl DirtyLog for Untracked {}
+        let mut bitmap = vec![0; 1];
+        Untracked
+            .read_dirty_log(0, 130 * DIRTY_PAGE_SIZE, &mut bitmap)
+            .unwrap();
+        assert_eq!(bitmap, vec![u64::MAX; 3]);
+        assert_eq!(Untracked.dirty_tracking(), DirtyTracking::None);
+    }
+}
+
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
 /// Abstracts over differences between KVM, MSHV and WHP implementations.
 pub(crate) trait VirtualMachine: Debug + Send + DirtyLog {
