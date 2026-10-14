@@ -80,7 +80,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * On WHP, and on MSHV on x86_64, restore zeroes only the scratch pages written
   since the last restore, from the hypervisor's dirty-page log and a log of host
   writes. WHP no longer replaces the scratch mapping on each restore, so the
-  pages a guest writes stay committed between restores. MSHV tracks scratch of
+  pages a guest writes stay resident between restores. MSHV tracks scratch of
   2 MiB or more. After a run writes more than a tenth of it (a quarter from 32
   MiB), where zeroing all of it costs less, it stops tracking for 16 restores.
 * When Windows cannot tell which scratch pages were written, restore zeroes

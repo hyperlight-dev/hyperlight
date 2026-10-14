@@ -16,10 +16,11 @@
 //! without tracking faults and the first restore zeroes all of scratch.
 //!
 //! On WHP, scratch is mapped with tracking, which costs the guest
-//! nothing measurable, so the log is always used. Scratch is no longer
-//! replaced on each restore, so the pages the guest writes stay
-//! committed between restores, as all of scratch does on MSHV:
-//! releasing them would cost a fault on each the next run touches.
+//! nothing measurable on bare metal, so the log is always used. Scratch
+//! is no longer replaced on each restore, so the pages the guest writes
+//! stay resident between restores: releasing them would cost a fault on
+//! each the next run touches. The section is charged to commit in full
+//! when it is created, as before.
 //!
 //! On MSHV, tracking is switched on for the whole VM. While it is on,
 //! the guest's first write to each page after a read faults to the
