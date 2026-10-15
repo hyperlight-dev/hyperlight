@@ -1000,7 +1000,7 @@ fn retained_host_reply_bytes_survive_restore() {
 
 /// Captured aliases survive scratch reuse and further snapshot generations.
 #[test]
-fn retained_byte_chunks_survive_pool_generation_reuse() {
+fn retained_byte_chunks_survive_pool_swap() {
     let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
         .guest_log_level(tracing_core::LevelFilter::OFF)
         .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)

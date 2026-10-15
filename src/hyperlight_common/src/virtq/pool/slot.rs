@@ -104,7 +104,7 @@ struct Tier {
     /// Number of slots in this tier.
     count: usize,
     /// Free slot addresses, popped/pushed LIFO.
-    free: SmallVec<[u64; 64]>,
+    free: SmallVec<[u64; 16]>,
     /// One bit per slot index; set means the slot is currently handed out.
     allocated: FixedBitSet,
 }
@@ -114,10 +114,6 @@ impl Tier {
         let mut free = SmallVec::new();
         free.try_reserve_exact(layout.slot_count)
             .map_err(|_| AllocError::Bookkeeping)?;
-
-        for i in 0..layout.slot_count {
-            free.push(layout.base_addr + (i * layout.slot_size as usize) as u64);
-        }
 
         Ok(Self {
             base_addr: layout.base_addr,
@@ -186,7 +182,7 @@ impl Tier {
         Ok(())
     }
 
-    /// Keep one queue-owned slot unavailable during generation recovery.
+    /// Keep one queue-owned slot unavailable for a pool swap.
     fn reserve_addr(&mut self, addr: u64) -> Result<(), AllocError> {
         let slot = self.slot_of(addr)?;
 
@@ -198,7 +194,7 @@ impl Tier {
         Ok(())
     }
 
-    /// Rebuild the free list from the recovered ownership bitmap.
+    /// Populate the free list from the allocation bitmap.
     fn rebuild_free(&mut self) {
         self.free.clear();
 
@@ -241,7 +237,6 @@ impl Tier {
 struct Inner {
     lower: Option<Tier>,
     upper: Tier,
-    generation: u64,
 }
 
 impl Inner {
@@ -250,7 +245,6 @@ impl Inner {
             return Ok(Self {
                 lower: None,
                 upper: Tier::from_layout(upper)?,
-                generation: 0,
             });
         };
 
@@ -273,14 +267,12 @@ impl Inner {
             return Ok(Self {
                 lower: None,
                 upper: Tier::from_layout(layout)?,
-                generation: 0,
             });
         }
 
         Ok(Self {
             lower: Some(Tier::from_layout(lower)?),
             upper: Tier::from_layout(upper)?,
-            generation: 0,
         })
     }
 
@@ -309,47 +301,6 @@ impl Inner {
             return lower.dealloc_addr(addr);
         }
         self.upper.dealloc_addr(addr)
-    }
-
-    /// Start a new generation and rebuild allocation state from `reserved`.
-    fn retire_generation(
-        &mut self,
-        reserved: impl Iterator<Item = u64> + Clone,
-    ) -> Result<(), AllocError> {
-        let generation = self.generation.checked_add(1).ok_or(AllocError::Overflow)?;
-
-        #[cfg(debug_assertions)]
-        for addr in reserved.clone() {
-            debug_assert!(
-                self.allocation_len(addr).is_ok(),
-                "address {addr:#x} is not a live pool slot"
-            );
-        }
-
-        self.generation = generation;
-        self.upper.allocated.clear();
-
-        if let Some(lower) = &mut self.lower {
-            lower.allocated.clear();
-        }
-
-        for addr in reserved {
-            if let Some(lower) = &mut self.lower
-                && lower.contains(addr)
-            {
-                lower.reserve_addr(addr)?;
-            } else {
-                self.upper.reserve_addr(addr)?;
-            }
-        }
-
-        self.upper.rebuild_free();
-
-        if let Some(lower) = &mut self.lower {
-            lower.rebuild_free();
-        }
-
-        Ok(())
     }
 
     fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
@@ -419,23 +370,32 @@ pub struct SlotPool {
 }
 
 impl SlotPool {
-    /// Generation owning the current scratch allocations.
-    pub(crate) fn generation(&self) -> u64 {
-        self.inner.borrow().generation
+    /// Whether both handles share allocation state.
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 
-    /// Retire existing leases and rebuild the pool around the supplied reservations.
+    /// Create allocation state for a pool swap with the supplied live slots reserved.
     ///
-    /// # Safety
-    ///
-    /// Retired views must already use backing independent of these scratch slots.
-    /// `reserved` must name every other live allocation exactly once.
-    /// No allocation or peer access may race this call.
-    pub(crate) unsafe fn retire_generation(
-        &self,
-        reserved: impl Iterator<Item = u64> + Clone,
-    ) -> Result<(), AllocError> {
-        self.inner.borrow_mut().retire_generation(reserved)
+    /// Invalid or duplicate reservations leave this pool unchanged.
+    pub(crate) fn swap(&self, reserved: impl Iterator<Item = u64>) -> Result<Self, AllocError> {
+        let current = self.inner.borrow();
+        let (lower, upper) = current.layouts();
+        let mut inner = Inner::new(lower, upper)?;
+
+        for addr in reserved {
+            // this address is a valid allocation in the current pool
+            current.allocation_len(addr)?;
+            if let Some(lower) = &mut inner.lower
+                && lower.contains(addr)
+            {
+                lower.reserve_addr(addr)?;
+            } else {
+                inner.upper.reserve_addr(addr)?;
+            }
+        }
+
+        Ok(Self::from_inner(inner))
     }
 
     /// Create a single-tier recycling pool from exact slot placement.
@@ -453,10 +413,18 @@ impl SlotPool {
     }
 
     fn from_layouts(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
-        let inner = Inner::new(lower, upper)?;
-        Ok(Self {
+        Ok(Self::from_inner(Inner::new(lower, upper)?))
+    }
+
+    fn from_inner(mut inner: Inner) -> Self {
+        inner.upper.rebuild_free();
+        if let Some(lower) = &mut inner.lower {
+            lower.rebuild_free();
+        }
+
+        Self {
             inner: Rc::new(RefCell::new(inner)),
-        })
+        }
     }
 
     /// Return every live slot address in deterministic tier and index order.
