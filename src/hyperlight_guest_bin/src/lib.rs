@@ -270,6 +270,8 @@ pub(crate) extern "C" fn generic_init(
         let heap_allocator = &HEAP_ALLOCATOR;
         #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
         let heap_allocator = &HEAP_ALLOCATOR.0;
+        // SAFETY: the host reserves the PEB heap range for the guest heap, and
+        // init claims it once. Only this allocator writes to it.
         heap_allocator
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
