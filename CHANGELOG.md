@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* **Breaking:** Snapshots use ABI 7 and config schema v4. Existing snapshots
+  must be regenerated.
+* **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
+  `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read_exact(gpa, buffer)?`
+  and return roots with `Ok(roots)`.
+* Related snapshots share immutable memory layers. This reduces capture time
+  and memory use. A guest can read data it overwrote before a snapshot from the
+  older layers of that snapshot.
+* KVM: deleting a memory slot flushes only that slot's guest mappings on Linux
+  6.12 and later. This speeds up the first guest call after a snapshot,
+  restore, or unmap changes memory slots.
+* **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
+  sandbox and removes `map_region` and `map_file_cow` regions. Pages of these
+  regions that the guest has not mapped into its page tables are lost.
+* `vmem::walk_va_spaces` merges adjacent mappings of the same kind into one
+  mapping.
 
 ### Removed
 

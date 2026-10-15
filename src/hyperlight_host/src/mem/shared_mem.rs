@@ -107,6 +107,10 @@ pub enum SharedMemoryError {
     #[error("Cannot take exclusive access to a ReadonlySharedMemory")]
     ReadonlySharedMemoryExclusiveRequest,
 
+    /// Calling code attempted to freeze memory that still has writable aliases.
+    #[error("Cannot freeze shared memory that still has other owners")]
+    SharedMemoryNotExclusive,
+
     /// An error was encountered when trying to convert a slice of raw
     /// bytes into some logical data
     #[error("Error reading slice {0}")]
@@ -867,7 +871,7 @@ impl ExclusiveSharedMemory {
     ///   the safety documentation of pointer::offset.
     ///
     ///   This is ensured by a check in ::new()
-    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
     }
 
@@ -948,6 +952,30 @@ impl ExclusiveSharedMemory {
         )
     }
 
+    /// Convert this allocation to immutable memory without copying it.
+    pub(crate) fn freeze(mut self, guest_mapped_size: usize) -> Result<ReadonlySharedMemory> {
+        if guest_mapped_size > self.mem_size()
+            || !guest_mapped_size.is_multiple_of(page_size::get())
+        {
+            return Err(SharedMemoryError::MemoryRequest(
+                guest_mapped_size,
+                0,
+                self.mem_size(),
+                page_size::get(),
+            ));
+        }
+        if Arc::get_mut(&mut self.region).is_none() {
+            return Err(SharedMemoryError::SharedMemoryNotExclusive);
+        }
+
+        // This is the only Arc left. To make another one you have to clone this
+        // one, and it lives in `self`, which this function owns.
+        Ok(ReadonlySharedMemory {
+            region: self.region,
+            guest_mapped_size,
+        })
+    }
+
     /// Gets the file handle of the shared memory region for this Sandbox
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
@@ -1010,7 +1038,7 @@ impl GuestSharedMemory {
             }
             #[allow(clippy::panic)]
             // This will not ever actually panic: the only places this
-            // is called are HyperlightVm::update_snapshot_mapping and
+            // is called are SnapshotMemoryBacking::mappings and
             // HyperlightVm::update_scratch_mapping. The latter
             // statically uses the Scratch region type, and the former
             // does not use this at all when the unshared_snapshot_mem
@@ -1502,7 +1530,6 @@ pub struct ReadonlySharedMemory {
     /// exposes to the guest. Production callers pass the size of the
     /// guest-visible prefix of the snapshot blob; the remainder of
     /// the blob is the page-table tail that lives only host-side.
-    #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
     guest_mapped_size: usize,
 }
 // Safety: HostMapping is only non-Send/Sync (causing
@@ -1520,9 +1547,7 @@ unsafe impl Sync for ReadonlySharedMemory {}
 
 impl ReadonlySharedMemory {
     pub(crate) fn from_bytes(contents: &[u8], guest_mapped_size: usize) -> Result<Self> {
-        if guest_mapped_size == 0
-            || guest_mapped_size > contents.len()
-            || !guest_mapped_size.is_multiple_of(page_size::get())
+        if guest_mapped_size > contents.len() || !guest_mapped_size.is_multiple_of(page_size::get())
         {
             return Err(SharedMemoryError::MemoryRequest(
                 guest_mapped_size,
@@ -1541,7 +1566,6 @@ impl ReadonlySharedMemory {
     }
 
     /// The number of bytes that should be mapped into guest PA space.
-    #[cfg(not(unshared_snapshot_mem))]
     pub(crate) fn guest_mapped_size(&self) -> usize {
         self.guest_mapped_size
     }
@@ -1549,8 +1573,8 @@ impl ReadonlySharedMemory {
     /// Create a `ReadonlySharedMemory` backed by a file on disk.
     ///
     /// The file's length must be a non-zero multiple of `PAGE_SIZE`.
-    /// `guest_mapped_size` must be a non-zero multiple of `PAGE_SIZE`
-    /// no greater than the file's length.
+    /// `guest_mapped_size` must be a multiple of `PAGE_SIZE` no greater
+    /// than the file's length.
     pub(crate) fn from_file(file: &std::fs::File, guest_mapped_size: usize) -> Result<Self> {
         let len: usize = file
             .metadata()
@@ -1568,10 +1592,7 @@ impl ReadonlySharedMemory {
             ));
         }
 
-        if guest_mapped_size == 0
-            || guest_mapped_size > len
-            || !guest_mapped_size.is_multiple_of(page_size::get())
-        {
+        if guest_mapped_size > len || !guest_mapped_size.is_multiple_of(page_size::get()) {
             return Err(SharedMemoryError::MemoryRequest(
                 guest_mapped_size,
                 0,
@@ -1741,14 +1762,16 @@ impl ReadonlySharedMemory {
 
     #[cfg(unshared_snapshot_mem)]
     pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
-        let mut writable = ExclusiveSharedMemory::new(self.mem_size())?;
-        writable.copy_from_slice(self.as_slice(), 0)?;
+        let mut writable = ExclusiveSharedMemory::new(self.guest_mapped_size)?;
+        writable.copy_from_slice(&self.as_slice()[..self.guest_mapped_size], 0)?;
         Ok(writable)
     }
 
     #[cfg(not(unshared_snapshot_mem))]
-    pub(crate) fn build(self) -> (Self, Self) {
-        (self.clone(), self)
+    pub(crate) fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        bounds_check!(offset, slice.len(), self.mem_size());
+        slice.copy_from_slice(&self.as_slice()[offset..offset + slice.len()]);
+        Ok(())
     }
 
     #[cfg(not(unshared_snapshot_mem))]
@@ -1759,7 +1782,7 @@ impl ReadonlySharedMemory {
     ) -> MemoryRegion {
         #[allow(clippy::panic)]
         // This will not ever actually panic: the only place this is
-        // called is HyperlightVm::update_snapshot_mapping, which
+        // called is SnapshotMemoryBacking::mappings, which
         // always calls it with the Snapshot region type.
         if region_type != MemoryRegionType::Snapshot {
             panic!("ReadonlySharedMemory::mapping_at should only be used for Snapshot regions");
@@ -1833,7 +1856,7 @@ mod tests {
 
     #[cfg(not(miri))]
     use super::HostSharedMemory;
-    use super::{ExclusiveSharedMemory, Result, SharedMemory};
+    use super::{ExclusiveSharedMemory, Result, SharedMemory, SharedMemoryError};
     #[cfg(not(miri))]
     use crate::mem::shared_mem_tests::read_write_test_suite;
 
@@ -1942,6 +1965,43 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[test]
+    fn freeze_transfers_mapping_without_copying() {
+        let page_size = page_size::get();
+        let mut memory = ExclusiveSharedMemory::new(2 * page_size).unwrap();
+        memory.copy_from_slice(&[1, 2, 3, 4], page_size).unwrap();
+        let base_addr = memory.base_addr();
+
+        let frozen = memory.freeze(page_size).unwrap();
+
+        assert_eq!(frozen.base_addr(), base_addr);
+        assert_eq!(frozen.guest_mapped_size(), page_size);
+        assert_eq!(&frozen.as_slice()[page_size..page_size + 4], &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn freeze_rejects_writable_aliases() {
+        let memory = ExclusiveSharedMemory::new(page_size::get()).unwrap();
+        let alias = ExclusiveSharedMemory {
+            region: memory.region.clone(),
+        };
+
+        assert!(matches!(
+            memory.freeze(0),
+            Err(SharedMemoryError::SharedMemoryNotExclusive)
+        ));
+        drop(alias);
+    }
+
+    #[test]
+    fn freeze_rejects_invalid_guest_mapped_size() {
+        let page_size = page_size::get();
+        let freeze = |size| ExclusiveSharedMemory::new(page_size).unwrap().freeze(size);
+
+        assert!(freeze(page_size + 1).is_err());
+        assert!(freeze(2 * page_size).is_err());
     }
 
     #[test]
@@ -2565,14 +2625,6 @@ mod tests {
                 page_size::get() + 1,
                 page_size::get()
             )));
-        }
-
-        #[test]
-        fn from_file_rejects_zero_guest_mapped_size() {
-            let tmp = make_temp_file(page_size::get());
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 0)
-                .expect_err("zero guest_mapped_size should be rejected");
-            assert!(format!("{}", err).contains("0x0 < 0x0"));
         }
 
         #[test]
