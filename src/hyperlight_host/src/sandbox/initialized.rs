@@ -109,7 +109,7 @@ pub struct SnapshotMemoryReader<'a> {
 
 impl SnapshotMemoryReader<'_> {
     /// Copy live snapshot bytes at `gpa` into `destination`.
-    pub fn read(&self, gpa: u64, destination: &mut [u8]) -> Result<()> {
+    pub fn read_exact(&self, gpa: u64, destination: &mut [u8]) -> Result<()> {
         self.memory.read_snapshot_gpa(gpa, destination)
     }
 }
@@ -3034,7 +3034,7 @@ mod tests {
         let callback_invoked = invoked.clone();
         sandbox.set_pt_root_finder(Box::new(move |snapshot, _, root| {
             let mut bytes = [0; 16];
-            snapshot.read(base, &mut bytes)?;
+            snapshot.read_exact(base, &mut bytes)?;
             assert_eq!(bytes, expected);
             callback_invoked.store(true, Ordering::Relaxed);
             Ok(vec![root])

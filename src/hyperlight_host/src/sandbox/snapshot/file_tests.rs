@@ -374,7 +374,7 @@ fn layered_snapshot_recapture_round_trip() {
         .to_vec();
     layers.extend_from_slice(&snapshot.state.memory.layers()[1..]);
     let page_tables =
-        super::memory::page_tables_from_bytes(snapshot.state.memory.page_table_bytes());
+        super::memory::tests::page_tables_from_bytes(snapshot.state.memory.page_table_bytes());
     Arc::get_mut(&mut snapshot.state).unwrap().memory =
         Arc::new(SnapshotMemory::new(layers.into_boxed_slice(), page_tables).unwrap());
 

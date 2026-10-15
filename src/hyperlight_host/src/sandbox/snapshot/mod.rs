@@ -1296,7 +1296,7 @@ mod tests {
         super::map_specials(&pt_buf, PAGE_SIZE);
         let pt_bytes = pt_buf.into_bytes();
 
-        super::memory::flat_memory(
+        super::memory::tests::flat_memory(
             contents,
             &pt_bytes,
             SandboxMemoryLayout::BASE_ADDRESS as u64,
@@ -1378,7 +1378,7 @@ mod tests {
         let mut bytes = vec![0u8; data_len];
         bytes[..PAGE_SIZE].fill(0x11);
         bytes[PAGE_SIZE..2 * PAGE_SIZE].fill(0x22);
-        let memory = super::memory::flat_memory(
+        let memory = super::memory::tests::flat_memory(
             &bytes,
             &page_tables,
             base,
@@ -1693,7 +1693,7 @@ mod tests {
         let mut source_bytes = vec![0u8; 2 * host_page_size];
         source_bytes[..host_page_size].fill(0x11);
         source_bytes[host_page_size..2 * host_page_size].fill(0x22);
-        let source = super::memory::flat_memory(
+        let source = super::memory::tests::flat_memory(
             &source_bytes,
             &page_tables,
             base,
@@ -1840,7 +1840,7 @@ mod tests {
         layout.ensure_page_tables_fit(page_tables.len()).unwrap();
 
         let bytes = vec![0u8; host_page_size];
-        let source = super::memory::flat_memory(
+        let source = super::memory::tests::flat_memory(
             &bytes,
             &page_tables,
             base,
@@ -1948,7 +1948,7 @@ mod tests {
             .collect::<Box<[_]>>();
         let source = super::SnapshotMemory::new(
             source_layers.clone(),
-            super::memory::page_tables_from_bytes(&page_tables),
+            super::memory::tests::page_tables_from_bytes(&page_tables),
         )
         .unwrap();
         let managed = SnapshotMemoryBacking::from_snapshot(Arc::new(source)).unwrap();
