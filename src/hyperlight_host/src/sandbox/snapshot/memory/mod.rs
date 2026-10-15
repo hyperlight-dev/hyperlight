@@ -254,43 +254,6 @@ impl SnapshotMemory {
     }
 }
 
-/// Copies guest data and page tables into one blob. The data is padded to a
-/// host page.
-#[cfg(test)]
-pub(crate) fn blob_bytes(data: &[u8], page_tables: &[u8]) -> Result<ReadonlySharedMemory> {
-    let data_len = data.len().next_multiple_of(host_page_size());
-    let mut bytes = vec![0u8; data_len + page_tables.len()];
-    bytes[..data.len()].copy_from_slice(data);
-    bytes[data_len..].copy_from_slice(page_tables);
-    Ok(ReadonlySharedMemory::from_bytes(&bytes, data_len)?)
-}
-
-#[cfg(test)]
-pub(crate) fn flat_memory(
-    data: &[u8],
-    page_tables: &[u8],
-    gpa_start: u64,
-    scratch_base_gpa: u64,
-) -> SnapshotMemory {
-    SnapshotMemory::from_flat(
-        blob_bytes(data, page_tables).unwrap(),
-        gpa_start,
-        page_tables.len(),
-        scratch_base_gpa,
-    )
-    .unwrap()
-}
-
-#[cfg(test)]
-pub(crate) fn page_tables_from_bytes(bytes: &[u8]) -> Arc<SnapshotBlob> {
-    Arc::new(SnapshotBlob::new(blob_bytes(&[], bytes).unwrap(), 0, bytes.len(), 0).unwrap())
-}
-
-#[cfg(test)]
-pub(crate) fn stub_page_tables() -> Arc<SnapshotBlob> {
-    page_tables_from_bytes(&vec![0u8; PAGE_SIZE])
-}
-
 pub(crate) fn host_page_size() -> usize {
     PAGE_SIZE.max(page_size::get())
 }
@@ -301,11 +264,44 @@ fn is_page_aligned(value: u64) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::mem::shared_mem::ExclusiveSharedMemory;
 
     const SCRATCH_BASE_GPA: u64 = 0x1_0000_0000;
+
+    /// Copies guest data and page tables into one blob. The data is padded to a
+    /// host page.
+    pub(crate) fn blob_bytes(data: &[u8], page_tables: &[u8]) -> Result<ReadonlySharedMemory> {
+        let data_len = data.len().next_multiple_of(host_page_size());
+        let mut bytes = vec![0u8; data_len + page_tables.len()];
+        bytes[..data.len()].copy_from_slice(data);
+        bytes[data_len..].copy_from_slice(page_tables);
+        Ok(ReadonlySharedMemory::from_bytes(&bytes, data_len)?)
+    }
+
+    pub(crate) fn flat_memory(
+        data: &[u8],
+        page_tables: &[u8],
+        gpa_start: u64,
+        scratch_base_gpa: u64,
+    ) -> SnapshotMemory {
+        SnapshotMemory::from_flat(
+            blob_bytes(data, page_tables).unwrap(),
+            gpa_start,
+            page_tables.len(),
+            scratch_base_gpa,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn page_tables_from_bytes(bytes: &[u8]) -> Arc<SnapshotBlob> {
+        Arc::new(SnapshotBlob::new(blob_bytes(&[], bytes).unwrap(), 0, bytes.len(), 0).unwrap())
+    }
+
+    pub(crate) fn stub_page_tables() -> Arc<SnapshotBlob> {
+        page_tables_from_bytes(&vec![0u8; PAGE_SIZE])
+    }
 
     fn blob(data_pages: usize, gpa_start: u64) -> Arc<SnapshotBlob> {
         let data_len = data_pages * page_size::get();

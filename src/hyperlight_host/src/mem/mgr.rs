@@ -330,7 +330,7 @@ impl<'a> GuestVirtualMemoryReader<'a> {
         Ok(page_gpa)
     }
 
-    pub(crate) fn read(&mut self, gva: u64, destination: &mut [u8]) -> Result<()> {
+    pub(crate) fn read_exact(&mut self, gva: u64, destination: &mut [u8]) -> Result<()> {
         gva.checked_add(u64::try_from(destination.len())?)
             .ok_or_else(|| new_error!("guest virtual address overflows"))?;
         let mut copied = 0usize;
@@ -1220,7 +1220,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ) -> Result<Vec<u8>> {
         let mut result = vec![0; len];
         self.guest_virtual_memory_reader(root_pt)
-            .read(gva, &mut result)?;
+            .read_exact(gva, &mut result)?;
         Ok(result)
     }
 }
@@ -1251,7 +1251,7 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
     #[cfg(target_arch = "x86_64")]
     use crate::sandbox::snapshot::Snapshot;
-    use crate::sandbox::snapshot::memory::flat_memory;
+    use crate::sandbox::snapshot::memory::tests::flat_memory;
     use crate::sandbox::snapshot::{SnapshotBlob, SnapshotMemory};
 
     fn manager(case: &TestCase) -> SandboxMemoryManager<HostSharedMemory> {
@@ -1598,7 +1598,7 @@ mod tests {
         let memory = Arc::new(
             SnapshotMemory::new(
                 Box::new([first, second]),
-                crate::sandbox::snapshot::memory::stub_page_tables(),
+                crate::sandbox::snapshot::memory::tests::stub_page_tables(),
             )
             .unwrap(),
         );
@@ -1678,7 +1678,7 @@ mod tests {
         let memory = Arc::new(
             SnapshotMemory::new(
                 Box::new([first, second]),
-                crate::sandbox::snapshot::memory::page_tables_from_bytes(&page_tables),
+                crate::sandbox::snapshot::memory::tests::page_tables_from_bytes(&page_tables),
             )
             .unwrap(),
         );
@@ -1706,7 +1706,7 @@ mod tests {
         let mut bytes = [0u8; 2];
 
         reader
-            .read(base + PAGE_SIZE as u64 - 1, &mut bytes)
+            .read_exact(base + PAGE_SIZE as u64 - 1, &mut bytes)
             .unwrap();
 
         assert_eq!(bytes, [0x11, 0x22]);
@@ -1718,7 +1718,7 @@ mod tests {
         let mut bytes = [0; 2];
         manager
             .guest_virtual_memory_reader(root)
-            .read(base + 2 * PAGE_SIZE as u64 - 1, &mut bytes)
+            .read_exact(base + 2 * PAGE_SIZE as u64 - 1, &mut bytes)
             .unwrap();
         assert_eq!(bytes, [0x22, 0x33]);
     }
@@ -1727,9 +1727,13 @@ mod tests {
     fn virtual_reader_rejects_unmapped_and_overflowing_ranges() {
         let (manager, root, base) = virtual_reader_manager();
         let mut reader = manager.guest_virtual_memory_reader(root);
-        assert!(reader.read(base + 3 * PAGE_SIZE as u64, &mut [0]).is_err());
-        assert!(reader.read(u64::MAX, &mut [0; 2]).is_err());
-        assert!(reader.read(u64::MAX, &mut []).is_ok());
+        assert!(
+            reader
+                .read_exact(base + 3 * PAGE_SIZE as u64, &mut [0])
+                .is_err()
+        );
+        assert!(reader.read_exact(u64::MAX, &mut [0; 2]).is_err());
+        assert!(reader.read_exact(u64::MAX, &mut []).is_ok());
     }
 
     #[test]
@@ -1737,7 +1741,7 @@ mod tests {
         let (manager, _, base) = virtual_reader_manager();
         let error = manager
             .guest_virtual_memory_reader(u64::MAX)
-            .read(base, &mut [0])
+            .read_exact(base, &mut [0])
             .unwrap_err();
         assert!(error.to_string().contains("unbacked"));
     }

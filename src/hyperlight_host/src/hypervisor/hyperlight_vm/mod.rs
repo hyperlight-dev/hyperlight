@@ -528,17 +528,12 @@ impl HyperlightVm {
     ) -> Result<(), UpdateRegionError> {
         let target_mappings = snapshot.mappings();
 
-        let mut index = self.snapshot_mappings.len();
-        while index > 0 {
-            index -= 1;
-            let keep = target_mappings
-                .iter()
-                .any(|target| self.snapshot_mappings[index].1 == *target);
-            if keep {
+        for index in (0..self.snapshot_mappings.len()).rev() {
+            let (slot, current) = &self.snapshot_mappings[index];
+            if target_mappings.contains(current) {
                 continue;
             }
-            let (slot, mapping) = &self.snapshot_mappings[index];
-            self.vm.unmap_memory((*slot, mapping))?;
+            self.vm.unmap_memory((*slot, current))?;
             let (slot, _) = self.snapshot_mappings.remove(index);
             self.freed_slots.push(slot);
         }
