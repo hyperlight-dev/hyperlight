@@ -1468,7 +1468,7 @@ mod tests {
         snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
         layout.write_peb(&mut snapshot_contents).unwrap();
-        let snapshot_memory = crate::sandbox::snapshot::memory::flat_memory(
+        let snapshot_memory = crate::sandbox::snapshot::memory::tests::flat_memory(
             &snapshot_contents,
             &pt_bytes,
             SandboxMemoryLayout::BASE_ADDRESS as u64,
