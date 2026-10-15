@@ -382,7 +382,7 @@ external `ByteChunks`:
 * `VecBytes` values copy into a contiguous `Vec<u8>`.
 * Multiple `Bytes` clones or slices backed by one owner keep one slot live.
 * The final owner unmaps its alias and returns the virtual range for reuse.
-  Its lease releases the scratch slot only in the slot's current generation.
+  Its lease releases the slot in its original pool.
 
 Producer reset releases allocations still owned by queue bookkeeping. After
 both producers reset and before H2G prefill, every live pool slot belongs to
@@ -394,13 +394,15 @@ handles. The host resets both consumers before processing more queue traffic.
 ### Retained virtual addresses
 
 Both pools share one guest-global alias allocator. Its state is captured with
-the mappings and keeps retained ranges reserved across pool generations.
+the mappings and keeps retained ranges reserved across pool swaps.
 Each completed `GuestMapping` owns a separate page-aligned range. Mapping occurs
 when the guest receives the buffer. Capture, restore, and cloning preserve its
 pointer and contents.
 
 Retained aliases reach captured memory after restore. The first transport
-entry advances the pool generations and recycles slots outside posted chains.
+entry swaps allocators that hold retained slots, preserving posted reservations.
+Retained leases keep their original pools, so their release cannot free slots
+in the new pool.
 Retained values keep their aliases until their final owner drops. Reusing
 freed virtual ranges bounds page-table growth by the alias high-water mark.
 
@@ -497,7 +499,7 @@ leases. Posted chains keep their reservations, preserving the submitted
 request. Descriptors and cursors stay unchanged. Retained aliases keep their
 captured mappings without payload copying.
 
-Source continuation keeps the pool generation and live scratch leases intact.
+Source continuation keeps the pool instances and live scratch leases intact.
 Checkpointing alone does not detach retained payloads from scratch.
 
 Result completion prefills free H2G slots. This requires no preparatory guest

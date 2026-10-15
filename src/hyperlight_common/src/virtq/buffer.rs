@@ -245,12 +245,10 @@ impl Buf for SegmentsBuf<'_> {
     }
 }
 
-/// A buffer allocation returned on drop while its pool generation is current.
+/// A buffer allocation returned to its original pool on drop.
 pub struct BufferLease {
     /// The pool that allocated the buffer.
     pool: SlotPool,
-    /// The pool generation at the time of allocation.
-    generation: u64,
     /// The buffer's start address and full allocation capacity.
     allocation: Allocation,
 }
@@ -258,13 +256,7 @@ pub struct BufferLease {
 impl BufferLease {
     /// Create a new buffer lease from a pool and allocation.
     pub fn new(pool: SlotPool, allocation: Allocation) -> Self {
-        let generation = pool.generation();
-
-        Self {
-            pool,
-            allocation,
-            generation,
-        }
+        Self { pool, allocation }
     }
 
     /// The buffer's start address and full allocation capacity.
@@ -275,10 +267,6 @@ impl BufferLease {
 
 impl Drop for BufferLease {
     fn drop(&mut self) {
-        if self.generation != self.pool.generation() {
-            return;
-        }
-
         if let Err(error) = self.pool.dealloc(self.allocation.addr) {
             log::error!("Failed to release a virtqueue buffer: {error}");
             debug_assert!(false, "BufferLease deallocation failed: {error}");
@@ -315,38 +303,42 @@ mod tests {
     }
 
     #[test]
-    fn retired_lease_does_not_release_a_reused_slot() {
-        let pool = SlotPool::new(SlotLayout::new(0x1000, 4096, 1).unwrap()).unwrap();
-        let allocation = pool.alloc(4096).unwrap();
-        let retained = BufferLease::new(pool.clone(), allocation);
+    fn old_leases_do_not_release_a_reused_slot() {
+        let mut pool = SlotPool::new(SlotLayout::new(0x1000, 4096, 1).unwrap()).unwrap();
+        let mut allocation = pool.alloc(4096).unwrap();
+        let mut retained = Vec::new();
 
-        // SAFETY: This test has no views or queue reservations.
-        unsafe { pool.retire_generation(core::iter::empty()) }.unwrap();
-        let reused = pool.alloc(4096).unwrap();
-        assert_eq!(reused.addr, allocation.addr);
+        for _ in 0..3 {
+            retained.push(BufferLease::new(pool.clone(), allocation));
+            pool = pool.swap(core::iter::empty()).unwrap();
+            let reused = pool.alloc(4096).unwrap();
+            assert_eq!(reused.addr, allocation.addr);
+            allocation = reused;
+        }
 
         drop(retained);
         assert_eq!(pool.num_free(), 0);
-        drop(BufferLease::new(pool.clone(), reused));
+        drop(BufferLease::new(pool.clone(), allocation));
         assert_eq!(pool.num_free(), 1);
     }
 
     #[test]
-    fn generation_recovery_preserves_queue_reservations() {
+    fn swap_preserves_queue_reservations() {
         let pool = SlotPool::new(SlotLayout::new(0x1000, 4096, 2).unwrap()).unwrap();
         let reserved = pool.alloc(4096).unwrap();
         let captured = pool.alloc(4096).unwrap();
         let retained = BufferLease::new(pool.clone(), captured);
 
-        // SAFETY: No view exists. The iterator names the only queue reservation.
-        unsafe { pool.retire_generation(core::iter::once(reserved.addr)) }.unwrap();
-        assert_eq!(pool.num_free(), 1);
-        assert_eq!(pool.alloc(4096).unwrap().addr, captured.addr);
+        let swapped = pool.swap(core::iter::once(reserved.addr)).unwrap();
+        assert_eq!(swapped.num_free(), 1);
+        assert_eq!(swapped.alloc(4096).unwrap().addr, captured.addr);
 
         drop(retained);
-        assert_eq!(pool.num_free(), 0);
+        assert_eq!(swapped.num_free(), 0);
+        swapped.dealloc(reserved.addr).unwrap();
+        swapped.dealloc(captured.addr).unwrap();
+        assert_eq!(swapped.num_free(), 2);
         pool.dealloc(reserved.addr).unwrap();
-        pool.dealloc(captured.addr).unwrap();
         assert_eq!(pool.num_free(), 2);
     }
 

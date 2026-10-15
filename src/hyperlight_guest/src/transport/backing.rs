@@ -15,7 +15,7 @@ use itertools::Itertools;
 use super::SyncWrap;
 use crate::paging;
 
-/// Reservations are captured with their aliases and survive pool generations.
+/// Reservations are captured with their aliases and survive pool swaps.
 static ALLOCATOR: SyncWrap<RefCell<AliasAllocator>> = SyncWrap(RefCell::new(AliasAllocator::new()));
 // Permissions for transport alias mappings.
 const PERMISSIONS: BasicMapping = BasicMapping {

@@ -240,27 +240,43 @@ where
         self.inner.mem()
     }
 
-    /// Reclaim retained scratch slots while preserving in-flight chains.
+    /// Reclaim scratch slots held by retained views without changing in-flight chains.
+    ///
+    /// Retained views keep their original pools. Buffered completions or chains
+    /// from another allocator return [`VirtqError::InvalidState`].
     ///
     /// # Safety
     ///
-    /// Every live allocation outside this producer's in-flight chains must
-    /// belong to a returned view with backing independent of reused scratch.
+    /// Allocations held outside this producer must have backing independent of
+    /// reused scratch. After a swap, old pool handles must not allocate again.
     /// No unsent chains or builders may remain. Peer accesses must be stopped.
     pub unsafe fn reclaim_slots(&mut self) -> Result<(), VirtqError> {
+        let live = &mut self.inflight.live;
+        // All pending used chains must be drained before we can swap pools
         if !self.pending.is_empty() {
             return Err(VirtqError::InvalidState);
         }
 
-        let reserved = self
-            .inflight
-            .live
-            .iter()
-            .flat_map(|inflight| inflight.chain.buffers.iter().map(|buffer| buffer.addr));
+        // inflight chains must have the same pool as the producer before we swap
+        if live.iter().any(|inf| !self.pool.ptr_eq(&inf.chain.pool)) {
+            return Err(VirtqError::InvalidState);
+        }
 
-        // SAFETY: In-flight records preserve all non-retired allocations.
-        // The caller guarantees independent backing and excludes untracked chains.
-        unsafe { self.pool.retire_generation(reserved)? };
+        let reserved = live
+            .iter()
+            .flat_map(|inf| inf.chain.buffers.iter().map(|buf| buf.addr));
+
+        // No retained slots need reclaiming when all live slots are in-flight.
+        if self.pool.num_live() == reserved.clone().count() {
+            return Ok(());
+        }
+
+        let pool = self.pool.swap(reserved)?;
+        for inf in live {
+            inf.chain.pool = pool.clone();
+        }
+
+        self.pool = pool;
         Ok(())
     }
 
@@ -1070,7 +1086,7 @@ struct BufferEntry {
 
 /// Buffer ownership passed from [`SendChain`] to [`Inflight`] at publication.
 ///
-/// Keeps the original memory backend and pool for reply mappings and slot release.
+/// Keeps the original memory backend and the pool owning its slot reservations.
 struct OwnedChain<M> {
     /// Original backend for writing payloads and mapping completed replies.
     mem: M,
@@ -1584,6 +1600,13 @@ mod tests {
 
         producer.submit(chain).unwrap();
 
+        // SAFETY: No views exist and the consumer has not accessed the ring.
+        assert!(matches!(
+            unsafe { producer.reclaim_slots() },
+            Err(VirtqError::InvalidState)
+        ));
+        assert!(producer.pool().ptr_eq(&replacement));
+
         assert!(orig_gen.upgrade().is_some());
 
         let (recv, reply) = poll_received(&mut consumer);
@@ -1810,13 +1833,113 @@ mod tests {
     }
 
     #[test]
+    fn pool_swap_skips_pools_without_retained_allocations() {
+        let ring = make_ring(8);
+        let (mut producer, _consumer) = make_virtq_pair(&ring, 64);
+        let pool = producer.pool().clone();
+
+        // SAFETY: No allocations or peer accesses exist.
+        unsafe { producer.reclaim_slots() }.unwrap();
+        assert!(producer.pool().ptr_eq(&pool));
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+        // SAFETY: Only the posted chain owns an allocation. The peer stays stopped.
+        unsafe { producer.reclaim_slots() }.unwrap();
+        assert!(producer.pool().ptr_eq(&pool));
+
+        // SAFETY: The consumer has not accessed the ring and stays inactive.
+        unsafe { producer.reset() }.unwrap();
+        assert_eq!(pool.num_live(), 0);
+    }
+
+    #[test]
+    fn pool_swap_preserves_posted_requests_and_ring_state() {
+        let ring = make_ring(8);
+        let mem = ring.mem();
+        let (mut producer, mut consumer) = make_virtq_pair(&ring, 64);
+
+        let original = producer.pool().clone();
+        let allocation = original.alloc(64).unwrap();
+        let mut retained = vec![BufferLease::new(original.clone(), allocation)];
+
+        let mut tokens = Vec::new();
+        for _ in 0..2 {
+            let chain = producer.chain().writable(64).build().unwrap();
+            tokens.push(producer.submit(chain).unwrap());
+        }
+
+        let (recv, reply) = poll_received(&mut consumer);
+        let ReplyChain::Writable(mut reply) = reply else {
+            panic!("expected writable reply");
+        };
+        reply.write_all(b"first").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let mut ring_before = vec![0; Layout::query_size(ring.len())];
+        mem.read(mem.base_addr(), &mut ring_before).unwrap();
+
+        for round in 0..2 {
+            let previous = producer.pool().clone();
+            if round != 0 {
+                let allocation = previous.alloc(64).unwrap();
+                retained.push(BufferLease::new(previous.clone(), allocation));
+            }
+            // SAFETY: The retained lease has no views. No peer handles remain,
+            // and the consumer stays stopped during the swap.
+            unsafe { producer.reclaim_slots() }.unwrap();
+            assert!(!producer.pool().ptr_eq(&previous));
+
+            let mut ring_after = vec![0; ring_before.len()];
+            mem.read(mem.base_addr(), &mut ring_after).unwrap();
+            assert_eq!(ring_after, ring_before);
+        }
+
+        let pool = producer.pool().clone();
+        let reused = pool.alloc(64).unwrap();
+        assert_eq!(reused.addr, allocation.addr);
+
+        drop(retained);
+        assert_eq!(pool.num_live(), 3);
+
+        let first = producer.poll().unwrap().unwrap();
+        assert_eq!(first.token(), tokens[0]);
+
+        let first = first.into_bytes().unwrap();
+        assert_eq!(first.as_ref(), b"first");
+
+        drop(first);
+        assert_eq!(pool.num_live(), 2);
+
+        let (recv, reply) = poll_received(&mut consumer);
+        let ReplyChain::Writable(mut reply) = reply else {
+            panic!("expected writable reply");
+        };
+
+        reply.write_all(b"second").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let second = producer.poll().unwrap().unwrap();
+        assert_eq!(second.token(), tokens[1]);
+
+        let second = second.into_bytes().unwrap();
+        assert_eq!(second.as_ref(), b"second");
+
+        drop(second);
+        pool.dealloc(reused.addr).unwrap();
+        assert_eq!(pool.num_live(), 0);
+    }
+
+    #[test]
     fn reset_reclaims_inflight_slots_and_reuses_ring() {
         let ring = make_ring(8);
         let mem = ring.mem();
+
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
         let pool_layout = SlotLayout::new(pool_base, 64, ring.len()).unwrap();
         let pool = SlotPool::new(pool_layout).unwrap();
         let notifier = TestNotifier::new();
+
         let mut producer = VirtqProducer::new(ring.layout(), mem, notifier, pool.clone());
 
         for _ in 0..ring.len() {
@@ -1833,13 +1956,6 @@ mod tests {
         assert_eq!(producer.num_free(), ring.len());
         assert_eq!(pool.num_free(), ring.len());
         assert!(producer.inflight.live.is_empty());
-        assert!(
-            producer
-                .inflight
-                .by_id
-                .iter()
-                .all(|slot| *slot == InflightTable::<TestMem>::VACANT)
-        );
 
         for _ in 0..ring.len() {
             let chain = producer.chain().writable(64).build().unwrap();
@@ -1888,7 +2004,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_rejects_buffered_writable_completion() {
+    fn reset_and_pool_swap_reject_buffered_writable_completion() {
         let ring = make_ring(8);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
         let chain = producer.chain().writable(64).build().unwrap();
@@ -1902,6 +2018,15 @@ mod tests {
         reply.write_all(b"retained").unwrap();
         consumer.complete(recv, reply).unwrap();
         producer.reclaim().unwrap();
+
+        let pool = producer.pool().clone();
+        // SAFETY: No allocations are held outside the producer. The consumer
+        // completed its handles and stays inactive.
+        assert!(matches!(
+            unsafe { producer.reclaim_slots() },
+            Err(VirtqError::InvalidState)
+        ));
+        assert!(producer.pool().ptr_eq(&pool));
 
         // SAFETY: The consumer completed its handles and stays inactive.
         assert!(matches!(

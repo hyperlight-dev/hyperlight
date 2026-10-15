@@ -101,7 +101,7 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     /// Host-to-guest driver.
     h2g_producer: H2gProducer,
-    /// Snapshot lineage whose scratch slots belong to the current pool generation.
+    /// Snapshot lineage whose scratch slots belong to the current pools.
     generation: u64,
     /// Size of each prefilled H2G buffer.
     h2g_slot_size: usize,
@@ -383,9 +383,8 @@ impl GuestContext {
             return;
         }
 
-        // SAFETY: A changed generation denotes restore with independent captured
-        // backing. Canonical checkpoints leave only posted chains as reservations.
-        // Guest entry excludes peer access.
+        // SAFETY: Restore gives retained views independent captured backing.
+        // Only posted chains access scratch. Guest entry excludes peer access.
         unsafe {
             self.g2h_producer
                 .reclaim_slots()
