@@ -1,0 +1,103 @@
+package test:wire@0.1.0;
+
+/// Exercises every value type supported by the component wire format.
+world wire {
+  import host;
+  export echo;
+  import now: func() -> u64;
+  export run: func(input: string) -> result<string, string>;
+  export extra: interface {
+    ping: func(x: u8) -> u8;
+  }
+}
+
+interface types {
+  record point {
+    x: s32,
+    y: s32,
+  }
+
+  variant shape {
+    none,
+    circle(u32),
+    rect(point),
+    named(string),
+    path(list<point>),
+  }
+
+  enum color {
+    red,
+    green,
+    blue,
+  }
+
+  flags permissions {
+    read,
+    write,
+    exec,
+  }
+
+  flags many-flags {
+    f0, f1, f2, f3, f4, f5, f6, f7, f8, f9,
+  }
+
+  flags full-flags {
+    h0, h1, h2, h3, h4, h5, h6, h7,
+    h8, h9, h10, h11, h12, h13, h14, h15,
+    h16, h17, h18, h19, h20, h21, h22, h23,
+    h24, h25, h26, h27, h28, h29, h30, h31,
+  }
+
+  record everything {
+    b: bool,
+    u8v: u8,
+    s8v: s8,
+    u16v: u16,
+    s16v: s16,
+    u32v: u32,
+    s32v: s32,
+    u64v: u64,
+    s64v: s64,
+    f32v: f32,
+    f64v: f64,
+    c: char,
+    s: string,
+    bytes: list<u8>,
+    points: list<point>,
+    nested: list<list<string>>,
+    fixed-bytes: list<u8, 3>,
+    fixed-points: list<point, 2>,
+    maybe: option<string>,
+    maybe-num: option<u32>,
+    maybe-maybe: option<option<string>>,
+    res: result<point, string>,
+    res-unit: result<_, string>,
+    res-empty: result,
+    tup: tuple<string, u8, point>,
+    tup8: tuple<u8, u8, u8, u8, u8, u8, u8, u16>,
+    maybe-maybe-num: option<option<u32>>,
+    shape: shape,
+    color: color,
+    perms: permissions,
+    many: many-flags,
+    full: full-flags,
+  }
+}
+
+interface echo {
+  use types.{everything, shape};
+
+  echo-everything: func(x: everything) -> everything;
+  echo-shape: func(x: shape) -> shape;
+  echo-string: func(x: string) -> string;
+  two-args: func(first: u32, second: string) -> tuple<u32, string>;
+  no-args: func() -> u32;
+  no-result: func(x: u32);
+}
+
+interface host {
+  use types.{point};
+
+  log: func(message: string, event: u8);
+  add: func(left: point, right: point) -> point;
+}
