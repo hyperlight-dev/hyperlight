@@ -82,14 +82,14 @@ jobs:
           echo '> For a detailed per-file breakdown, download the **HTML coverage report** from the Artifacts section below.' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload HTML coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-html-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/html/
           if-no-files-found: error
 
       - name: Upload LCOV coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-lcov-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/lcov.info
