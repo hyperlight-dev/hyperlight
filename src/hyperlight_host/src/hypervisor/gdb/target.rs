@@ -11,10 +11,8 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase, SingleThreadResume, SingleThreadResumeOps, SingleThreadSingleStep,
     SingleThreadSingleStepOps,
 };
-#[cfg(target_arch = "x86_64")]
-use gdbstub::target::ext::breakpoints::HwBreakpointOps;
 use gdbstub::target::ext::breakpoints::{
-    Breakpoints, BreakpointsOps, HwBreakpoint, SwBreakpoint, SwBreakpointOps,
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
 };
 use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
@@ -357,7 +355,6 @@ impl SectionOffsets for HyperlightSandboxTarget {
 }
 
 impl Breakpoints for HyperlightSandboxTarget {
-    #[cfg(target_arch = "x86_64")]
     fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<'_, Self>> {
         Some(self)
     }

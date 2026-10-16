@@ -8,13 +8,13 @@
 //! expose ARM64 WHP structures, we define our own FFI bindings derived from
 //! the Windows SDK header `WinHvPlatformDefs.h` (10.0.26100.0).
 
-#[cfg(gdb)]
-use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(gdb)]
+use hyperlight_common::arch::exn::DEBUG_EXCEPTION_HVC as DEBUG_EXCEPTION_IMMEDIATE;
 use hyperlight_common::layout::{
     WHP_GICD_BASE_GPA, WHP_GICR_BASE_GPA, WHP_GITS_TRANSLATOR_BASE_GPA,
 };
@@ -24,8 +24,6 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 use windows_result::HRESULT;
 
 use super::release_file_mapping;
-#[cfg(gdb)]
-use crate::hypervisor::gdb::arch::SW_BP_IMMEDIATE;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm, VcpuStopReason};
 use crate::hypervisor::regs::whp_reg::*;
@@ -103,6 +101,17 @@ const EXTENDED_VM_EXIT_HYPERCALL: u64 = 1 << 5;
 pub(crate) const DEBUG_CACHE_SYNC_GPA: u64 = 0x1000;
 #[cfg(gdb)]
 const DEBUG_CACHE_SYNC_IMMEDIATE: u16 = 0x4858;
+#[cfg(gdb)]
+const MDSCR_MDE: u64 = 1 << 15;
+#[cfg(gdb)]
+const MDSCR_KDE: u64 = 1 << 13;
+#[cfg(gdb)]
+const PSTATE_SS: u64 = 1 << 21;
+#[cfg(gdb)]
+const PSTATE_D: u64 = 1 << 9;
+// Armv8 guarantees at least two instruction breakpoint registers.
+#[cfg(gdb)]
+const HARDWARE_BREAKPOINTS: usize = 2;
 #[cfg(gdb)]
 const DEBUG_CACHE_SYNC_CODE: [u8; 20] = [
     0x9f, 0x3b, 0x03, 0xd5, // dsb ish
@@ -291,32 +300,6 @@ const _: [(); 24] = [(); core::mem::size_of::<Arm64InterceptMessageHeader>()];
 #[cfg(gdb)]
 const _: [(); 176] = [(); core::mem::size_of::<Arm64HypercallContext>()];
 
-#[cfg(gdb)]
-#[derive(Debug, PartialEq, Eq)]
-enum Arm64HypercallClassification {
-    SoftwareBreakpoint,
-    Unknown { immediate: u16, pc: u64 },
-}
-
-#[cfg(gdb)]
-fn classify_hypercall(
-    context: &Arm64HypercallContext,
-    debug_enabled: bool,
-    software_breakpoints: &HashSet<u64>,
-) -> Arm64HypercallClassification {
-    if debug_enabled
-        && context.immediate == SW_BP_IMMEDIATE
-        && software_breakpoints.contains(&context.header.pc)
-    {
-        Arm64HypercallClassification::SoftwareBreakpoint
-    } else {
-        Arm64HypercallClassification::Unknown {
-            immediate: context.immediate,
-            pc: context.header.pc,
-        }
-    }
-}
-
 // ============================================================================
 // Surrogate process guard (same as x86_64 version)
 // ============================================================================
@@ -408,7 +391,9 @@ pub(crate) struct WhpVm {
     #[cfg(gdb)]
     debug_enabled: bool,
     #[cfg(gdb)]
-    software_breakpoints: HashSet<u64>,
+    hardware_breakpoints: [Option<u64>; HARDWARE_BREAKPOINTS],
+    #[cfg(gdb)]
+    debug_exception_pending: bool,
     #[cfg(gdb)]
     _debug_cache_sync_host_memory: Option<HostSharedMemory>,
     #[cfg(gdb)]
@@ -503,7 +488,9 @@ impl WhpVm {
             #[cfg(gdb)]
             debug_enabled: false,
             #[cfg(gdb)]
-            software_breakpoints: HashSet::new(),
+            hardware_breakpoints: [None; HARDWARE_BREAKPOINTS],
+            #[cfg(gdb)]
+            debug_exception_pending: false,
             #[cfg(gdb)]
             _debug_cache_sync_host_memory: None,
             #[cfg(gdb)]
@@ -562,6 +549,33 @@ impl WhpVm {
     }
 
     #[cfg(gdb)]
+    fn write_hardware_breakpoint(
+        &self,
+        slot: usize,
+        address: Option<u64>,
+    ) -> Result<(), RegisterError> {
+        self.set_registers(
+            &[
+                WHV_REGISTER_NAME(WHV_ARM64_REGISTER_DBGBVR0_EL1.0 + slot as i32),
+                WHV_REGISTER_NAME(WHV_ARM64_REGISTER_DBGBCR0_EL1.0 + slot as i32),
+            ],
+            &[
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: address.unwrap_or(0),
+                }),
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: if address.is_some() {
+                        (15 << 5) | (1 << 1) | 1
+                    } else {
+                        0
+                    },
+                }),
+            ],
+        )
+        .map_err(RegisterError::SetRegs)
+    }
+
+    #[cfg(gdb)]
     fn initialize_debug_support(&mut self) -> Result<(), CreateVmError> {
         let mut memory = ExclusiveSharedMemory::new(page_size::get())
             .map_err(|e| CreateVmError::InitializeDebug(e.to_string()))?;
@@ -581,25 +595,31 @@ impl WhpVm {
 
     #[cfg(gdb)]
     fn run_debug_cache_sync(&mut self) -> std::result::Result<(), DebugError> {
-        let original_regs = self
-            .regs()
+        let names = [
+            WHV_ARM64_REGISTER_PC,
+            WHV_ARM64_REGISTER_PSTATE,
+            WHV_ARM64_REGISTER_SCTLR_EL1,
+            WHV_ARM64_REGISTER_MDSCR_EL1,
+        ];
+        let original_values = self
+            .get_registers(&names)
             .map_err(|e| DebugError::InstructionCacheSync(e.to_string()))?;
-        let original_sctlr_values = self
-            .get_registers(&[WHV_ARM64_REGISTER_SCTLR_EL1])
-            .map_err(|e| DebugError::InstructionCacheSync(e.to_string()))?;
-        let original_sctlr = unsafe { original_sctlr_values[0].0.Reg64 };
 
         let sync_result = (|| {
-            let mut sync_regs = original_regs;
-            sync_regs.pc = DEBUG_CACHE_SYNC_GPA;
-            sync_regs.pstate = 0b11 << 6 | 0b100;
-            self.set_regs(&sync_regs)
-                .map_err(|e| DebugError::InstructionCacheSync(e.to_string()))?;
+            // SAFETY: These values were read as 64-bit system registers.
+            let mdscr = unsafe { original_values[3].0.Reg64 };
             self.set_registers(
-                &[WHV_ARM64_REGISTER_SCTLR_EL1],
-                &[Align16(WHV_REGISTER_VALUE {
-                    Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
-                })],
+                &names,
+                &[
+                    Align16(WHV_REGISTER_VALUE {
+                        Reg64: DEBUG_CACHE_SYNC_GPA,
+                    }),
+                    Align16(WHV_REGISTER_VALUE { Reg64: 0x3c5 }),
+                    Align16(WHV_REGISTER_VALUE {
+                        Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
+                    }),
+                    Align16(WHV_REGISTER_VALUE { Reg64: mdscr & !1 }),
+                ],
             )
             .map_err(|e| DebugError::InstructionCacheSync(e.to_string()))?;
 
@@ -637,21 +657,12 @@ impl WhpVm {
             Ok(())
         })();
 
-        let restore_sctlr = self
-            .set_registers(
-                &[WHV_ARM64_REGISTER_SCTLR_EL1],
-                &[Align16(WHV_REGISTER_VALUE {
-                    Reg64: original_sctlr,
-                })],
-            )
-            .map_err(|e| DebugError::InstructionCacheSync(e.to_string()));
-        let restore_regs = self
-            .set_regs(&original_regs)
+        let restore = self
+            .set_registers(&names, &original_values)
             .map_err(|e| DebugError::InstructionCacheSync(e.to_string()));
 
         sync_result?;
-        restore_sctlr?;
-        restore_regs
+        restore
     }
 }
 
@@ -767,6 +778,10 @@ impl VirtualMachine for WhpVm {
     ) -> Result<VmExit, RunVcpuError> {
         use arm64_exit_reasons::*;
         let mut exit_context = Arm64ExitContext::default();
+        #[cfg(gdb)]
+        {
+            self.debug_exception_pending = false;
+        }
 
         unsafe {
             WHvRunVirtualProcessor(
@@ -840,16 +855,36 @@ impl VirtualMachine for WhpVm {
             #[cfg(gdb)]
             WHV_EXIT_REASON_HYPERCALL => {
                 let context = exit_context.hypercall_context();
-                match classify_hypercall(&context, self.debug_enabled, &self.software_breakpoints) {
-                    Arm64HypercallClassification::SoftwareBreakpoint => Ok(VmExit::Debug {
-                        reason: VcpuStopReason::SwBp,
-                    }),
-                    Arm64HypercallClassification::Unknown { immediate, pc } => {
-                        Ok(VmExit::Unknown(format!(
-                            "Unsupported ARM64 hypercall immediate {immediate:#x} at PC={pc:#x}"
-                        )))
+                if self.debug_enabled && context.immediate == DEBUG_EXCEPTION_IMMEDIATE {
+                    let values = self
+                        .get_registers(&[WHV_ARM64_REGISTER_ESR_EL1])
+                        .map_err(RunVcpuError::Unknown)?;
+                    // SAFETY: ESR_EL1 is a 64-bit system register.
+                    let ec = unsafe { values[0].0.Reg64 } >> 26;
+                    let reason = match ec {
+                        0x30 | 0x31 => Some(VcpuStopReason::HwBp),
+                        0x32 | 0x33 => Some(VcpuStopReason::DoneStep),
+                        0x3c => Some(VcpuStopReason::SwBp),
+                        _ => None,
+                    };
+                    // Debug events return through ERET. Other exceptions enter
+                    // the ordinary prologue after the scratch-register restore.
+                    let next_pc = context.header.pc + if reason.is_some() { 4 } else { 12 };
+                    self.set_registers(
+                        &[WHV_ARM64_REGISTER_PC],
+                        &[Align16(WHV_REGISTER_VALUE { Reg64: next_pc })],
+                    )
+                    .map_err(RunVcpuError::IncrementRip)?;
+                    if let Some(reason) = reason {
+                        self.debug_exception_pending = true;
+                        return Ok(VmExit::Debug { reason });
                     }
+                    return Ok(VmExit::Retry());
                 }
+                Ok(VmExit::Unknown(format!(
+                    "Unsupported ARM64 hypercall immediate {:#x} at PC={:#x}",
+                    context.immediate, context.header.pc
+                )))
             }
             WHV_EXIT_REASON_ARM64_RESET => Ok(VmExit::Halt()),
             WHV_EXIT_REASON_UNRECOVERABLE => {
@@ -880,6 +915,11 @@ impl VirtualMachine for WhpVm {
         names[32] = WHV_ARM64_REGISTER_SP_EL0;
         names[33] = WHV_ARM64_REGISTER_SP_EL1;
         names[34] = WHV_ARM64_REGISTER_PSTATE;
+        #[cfg(gdb)]
+        if self.debug_exception_pending {
+            names[31] = WHV_ARM64_REGISTER_ELR_EL1;
+            names[34] = WHV_ARM64_REGISTER_SPSR_EL1;
+        }
 
         let values = self.get_registers(&names).map_err(RegisterError::GetRegs)?;
 
@@ -924,6 +964,11 @@ impl VirtualMachine for WhpVm {
         values[32] = Align16(WHV_REGISTER_VALUE { Reg64: regs.sp });
         names[33] = WHV_ARM64_REGISTER_PSTATE;
         values[33] = Align16(WHV_REGISTER_VALUE { Reg64: regs.pstate });
+        #[cfg(gdb)]
+        if self.debug_exception_pending {
+            names[31] = WHV_ARM64_REGISTER_ELR_EL1;
+            names[33] = WHV_ARM64_REGISTER_SPSR_EL1;
+        }
 
         self.set_registers(&names, &values)
             .map_err(RegisterError::SetRegs)
@@ -1075,6 +1120,22 @@ impl VirtualMachine for WhpVm {
             )
             .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
         }
+        #[cfg(gdb)]
+        {
+            self.debug_exception_pending = false;
+            if self.debug_enabled {
+                self.set_registers(
+                    &[WHV_ARM64_REGISTER_MDSCR_EL1],
+                    &[Align16(WHV_REGISTER_VALUE {
+                        Reg64: MDSCR_MDE | MDSCR_KDE,
+                    })],
+                )
+                .map_err(RegisterError::SetRegs)?;
+                for (slot, address) in self.hardware_breakpoints.iter().enumerate() {
+                    self.write_hardware_breakpoint(slot, *address)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1126,22 +1187,87 @@ impl DebuggableVm for WhpVm {
     }
 
     fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        if !enable {
+            self.set_single_step(false)?;
+            for slot in 0..HARDWARE_BREAKPOINTS {
+                self.write_hardware_breakpoint(slot, None)?;
+            }
+            self.hardware_breakpoints.fill(None);
+        }
+        let values = self
+            .get_registers(&[WHV_ARM64_REGISTER_MDSCR_EL1])
+            .map_err(RegisterError::GetRegs)?;
+        // SAFETY: MDSCR_EL1 is a 64-bit system register.
+        let value = unsafe { values[0].0.Reg64 };
+        let value = if enable {
+            value | MDSCR_MDE | MDSCR_KDE
+        } else {
+            value & !(MDSCR_MDE | MDSCR_KDE | 1)
+        };
+        self.set_registers(
+            &[WHV_ARM64_REGISTER_MDSCR_EL1],
+            &[Align16(WHV_REGISTER_VALUE { Reg64: value })],
+        )
+        .map_err(RegisterError::SetRegs)?;
         self.debug_enabled = enable;
+        Ok(())
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        let mut regs = self.regs()?;
+        regs.pstate = if enable {
+            (regs.pstate | PSTATE_SS) & !PSTATE_D
+        } else {
+            regs.pstate & !PSTATE_SS
+        };
+        self.set_regs(&regs)?;
+        let values = self
+            .get_registers(&[WHV_ARM64_REGISTER_MDSCR_EL1])
+            .map_err(RegisterError::GetRegs)?;
+        // SAFETY: MDSCR_EL1 is a 64-bit system register.
+        let value = unsafe { values[0].0.Reg64 };
+        self.set_registers(
+            &[WHV_ARM64_REGISTER_MDSCR_EL1],
+            &[Align16(WHV_REGISTER_VALUE {
+                Reg64: if enable { value | 1 } else { value & !1 },
+            })],
+        )
+        .map_err(RegisterError::SetRegs)?;
+        Ok(())
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
+        if self.hardware_breakpoints.contains(&Some(addr)) {
+            return Ok(());
+        }
+        if !addr.is_multiple_of(4) {
+            return Err(DebugError::Unsupported(
+                "unaligned ARM64 hardware breakpoint",
+            ));
+        }
+        let slot = self
+            .hardware_breakpoints
+            .iter()
+            .position(Option::is_none)
+            .ok_or(DebugError::TooManyHwBreakpoints(HARDWARE_BREAKPOINTS))?;
+        self.write_hardware_breakpoint(slot, Some(addr))?;
+        self.hardware_breakpoints[slot] = Some(addr);
+        Ok(())
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
+        let slot = self
+            .hardware_breakpoints
+            .iter()
+            .position(|&value| value == Some(addr))
+            .ok_or(DebugError::HwBreakpointNotFound(addr))?;
+        self.write_hardware_breakpoint(slot, None)?;
+        self.hardware_breakpoints[slot] = None;
         Ok(())
     }
 
     fn sync_instruction_cache(&mut self) -> std::result::Result<(), DebugError> {
         self.run_debug_cache_sync()
-    }
-
-    fn register_sw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
-        self.software_breakpoints.insert(addr);
-        Ok(())
-    }
-
-    fn unregister_sw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
-        self.software_breakpoints.remove(&addr);
-        Ok(())
     }
 }
 
@@ -1170,29 +1296,8 @@ mod debug_tests {
     }
 
     #[test]
-    fn classifies_only_tracked_debugger_hypercall() {
-        let breakpoints = HashSet::from([0x4000]);
-        assert_eq!(
-            classify_hypercall(&context(SW_BP_IMMEDIATE, 0x4000), true, &breakpoints),
-            Arm64HypercallClassification::SoftwareBreakpoint
-        );
-        assert!(matches!(
-            classify_hypercall(&context(SW_BP_IMMEDIATE, 0x4004), true, &breakpoints),
-            Arm64HypercallClassification::Unknown { .. }
-        ));
-        assert!(matches!(
-            classify_hypercall(&context(0, 0x4000), true, &breakpoints),
-            Arm64HypercallClassification::Unknown { .. }
-        ));
-        assert!(matches!(
-            classify_hypercall(&context(SW_BP_IMMEDIATE, 0x4000), false, &breakpoints),
-            Arm64HypercallClassification::Unknown { .. }
-        ));
-    }
-
-    #[test]
     fn parses_arm64_hypercall_context_layout() {
-        let expected = context(SW_BP_IMMEDIATE, 0x1234);
+        let expected = context(DEBUG_EXCEPTION_IMMEDIATE, 0x1234);
         let mut exit = Arm64ExitContext::default();
         // SAFETY: `payload` is larger than `Arm64HypercallContext`. The write is
         // unaligned and does not outlive the payload.
@@ -1215,6 +1320,201 @@ mod debug_tests {
 
     #[test]
     #[serial]
+    fn asynchronous_vectors_ignore_stale_debug_syndromes() {
+        if !is_hypervisor_present() {
+            return;
+        }
+
+        let bytes = std::fs::read(hyperlight_testing::simple_guest_as_pathbuf()).unwrap();
+        let elf = goblin::elf::Elf::parse(&bytes).unwrap();
+        let address = elf
+            .syms
+            .iter()
+            .find(|symbol| elf.strtab.get_at(symbol.st_name) == Some("hyperlight_debug_vectors"))
+            .unwrap()
+            .st_value;
+        let segment = elf
+            .program_headers
+            .iter()
+            .find(|segment| {
+                segment.p_type == goblin::elf::program_header::PT_LOAD
+                    && address >= segment.p_vaddr
+                    && address + 0x800 <= segment.p_vaddr + segment.p_filesz
+            })
+            .unwrap();
+        let offset = (segment.p_offset + address - segment.p_vaddr) as usize;
+        let mut vectors = bytes[offset..offset + 0x800].to_vec();
+        let mut handler_stops = Vec::new();
+        for (index, vector) in vectors.chunks_exact_mut(0x80).enumerate() {
+            // Stop at the ordinary handler's context-save call.
+            let call = vector
+                .chunks_exact(4)
+                .position(|instruction| {
+                    u32::from_le_bytes(instruction.try_into().unwrap()) & 0xfc00_0000 == 0x9400_0000
+                })
+                .unwrap()
+                * 4;
+            vector[call..call + 4].copy_from_slice(&(0xd400_0002u32 | (0x485b << 5)).to_le_bytes());
+            handler_stops.push(DEBUG_CACHE_SYNC_GPA + 0x800 + (index * 0x80 + call) as u64);
+        }
+
+        let mut vm = WhpVm::new().unwrap();
+        vm._debug_cache_sync_host_memory
+            .as_ref()
+            .unwrap()
+            .copy_from_slice(&vectors, 0x800)
+            .unwrap();
+        vm.sync_instruction_cache().unwrap();
+        vm.set_registers(
+            &[WHV_ARM64_REGISTER_SCTLR_EL1],
+            &[Align16(WHV_REGISTER_VALUE {
+                Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
+            })],
+        )
+        .unwrap();
+        vm.set_debug(true).unwrap();
+
+        for syndrome in [0x31u64 << 26, 0x33u64 << 26, 0x3cu64 << 26] {
+            for (index, &handler_pc) in handler_stops.iter().enumerate() {
+                if index % 4 == 0 {
+                    continue;
+                }
+                let mut regs = CommonRegisters {
+                    pc: DEBUG_CACHE_SYNC_GPA + 0x800 + (index * 0x80) as u64,
+                    sp: DEBUG_CACHE_SYNC_GPA + 0x800,
+                    pstate: 0x3c5,
+                    ..Default::default()
+                };
+                regs.x[0] = 0x1234;
+                regs.x[1] = 0x5678;
+                vm.set_regs(&regs).unwrap();
+                vm.set_registers(
+                    &[WHV_ARM64_REGISTER_ESR_EL1],
+                    &[Align16(WHV_REGISTER_VALUE { Reg64: syndrome })],
+                )
+                .unwrap();
+                match vm.run_vcpu().unwrap() {
+                    VmExit::Unknown(message) => assert!(
+                        message.starts_with("Unsupported ARM64 hypercall immediate 0x485b "),
+                        "{message}"
+                    ),
+                    _ => panic!("vector {index} forwarded stale syndrome {syndrome:#x}"),
+                }
+                let stopped = vm.regs().unwrap();
+                assert_eq!(stopped.pc, handler_pc);
+                assert_eq!(stopped.x, regs.x);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn hardware_debug_preserves_context_and_steps_control_flow() {
+        if !is_hypervisor_present() {
+            return;
+        }
+
+        let mut vm = WhpVm::new().unwrap();
+        let mut code = vec![0u8; page_size::get()];
+        for (offset, instruction) in [
+            (0x20, 0xd503_201fu32),
+            (0x24, 0x1400_0000),  // b .
+            (0x28, 0xd65f_03c0),  // ret
+            (0x800, 0xd409_0b42), // hvc #0x485a
+            (0x804, 0xd69f_03e0), // eret
+        ] {
+            code[offset..offset + 4].copy_from_slice(&instruction.to_le_bytes());
+        }
+        vm._debug_cache_sync_host_memory
+            .as_ref()
+            .unwrap()
+            .copy_from_slice(&code[0x20..], 0x20)
+            .unwrap();
+        vm.sync_instruction_cache().unwrap();
+        vm.set_registers(
+            &[
+                WHV_ARM64_REGISTER_SCTLR_EL1,
+                WHV_ARM64_REGISTER_VBAR_EL1,
+                WHV_ARM64_REGISTER_SP_EL1,
+            ],
+            &[
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
+                }),
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: DEBUG_CACHE_SYNC_GPA + 0x800,
+                }),
+                Align16(WHV_REGISTER_VALUE { Reg64: 0x9870 }),
+            ],
+        )
+        .unwrap();
+        let mut regs = CommonRegisters {
+            pc: DEBUG_CACHE_SYNC_GPA + 0x20,
+            sp: 0x4560,
+            pstate: 0xc4,
+            ..Default::default()
+        };
+        regs.x[9] = 0xfeed;
+        regs.x[30] = DEBUG_CACHE_SYNC_GPA + 0x20;
+        vm.set_regs(&regs).unwrap();
+        vm.set_debug(true).unwrap();
+        vm.add_hw_breakpoint(regs.pc).unwrap();
+        assert!(matches!(
+            vm.run_vcpu().unwrap(),
+            VmExit::Debug {
+                reason: VcpuStopReason::HwBp
+            }
+        ));
+        let stopped = vm.regs().unwrap();
+        assert_eq!(
+            (stopped.pc, stopped.sp, stopped.pstate, stopped.x),
+            (regs.pc, regs.sp, regs.pstate, regs.x)
+        );
+
+        let special = vm.sregs().unwrap();
+        vm.reset_vcpu().unwrap();
+        vm.set_sregs(&special).unwrap();
+        vm.set_regs(&regs).unwrap();
+        assert!(matches!(
+            vm.run_vcpu().unwrap(),
+            VmExit::Debug {
+                reason: VcpuStopReason::HwBp
+            }
+        ));
+        vm.sync_instruction_cache().unwrap();
+        assert_eq!(vm.regs().unwrap().sp, regs.sp);
+        let values = vm.get_registers(&[WHV_ARM64_REGISTER_SP_EL1]).unwrap();
+        // SAFETY: SP_EL1 is a 64-bit stack-pointer register.
+        assert_eq!(unsafe { values[0].0.Reg64 }, 0x9870);
+        vm.remove_hw_breakpoint(regs.pc).unwrap();
+        regs.pc += 4;
+        regs.x[9] = 0xbeef;
+        vm.set_regs(&regs).unwrap();
+        vm.set_single_step(true).unwrap();
+        assert!(matches!(
+            vm.run_vcpu().unwrap(),
+            VmExit::Debug {
+                reason: VcpuStopReason::DoneStep
+            }
+        ));
+        assert_eq!(vm.regs().unwrap().pc, regs.pc);
+        assert_eq!(vm.regs().unwrap().x[9], 0xbeef);
+
+        regs.pc += 4;
+        vm.set_regs(&regs).unwrap();
+        vm.set_single_step(true).unwrap();
+        assert!(matches!(
+            vm.run_vcpu().unwrap(),
+            VmExit::Debug {
+                reason: VcpuStopReason::DoneStep
+            }
+        ));
+        assert_eq!(vm.regs().unwrap().pc, regs.x[30]);
+        vm.set_debug(false).unwrap();
+    }
+
+    #[test]
+    #[serial]
     fn patched_software_breakpoint_is_runnable_without_pc_advance() {
         if !is_hypervisor_present() {
             return;
@@ -1226,18 +1526,22 @@ mod debug_tests {
         host_memory
             .copy_from_slice(&SW_BP, BREAKPOINT_OFFSET)
             .unwrap();
+        host_memory
+            .copy_from_slice(
+                &(0xd400_0002 | (u32::from(DEBUG_EXCEPTION_IMMEDIATE) << 5)).to_le_bytes(),
+                0x800,
+            )
+            .unwrap();
+        host_memory
+            .copy_from_slice(&0xd69f_03e0u32.to_le_bytes(), 0x804)
+            .unwrap();
         // SAFETY: The current process handle is valid and the range is inside
         // the live shared-memory mapping.
         unsafe {
             FlushInstructionCache(
                 GetCurrentProcess(),
-                Some(
-                    host_memory
-                        .base_ptr()
-                        .wrapping_add(BREAKPOINT_OFFSET)
-                        .cast::<c_void>(),
-                ),
-                SW_BP.len(),
+                Some(host_memory.base_ptr().cast::<c_void>()),
+                page_size::get(),
             )
             .unwrap();
         }
@@ -1245,12 +1549,16 @@ mod debug_tests {
 
         let breakpoint_address = DEBUG_CACHE_SYNC_GPA + BREAKPOINT_OFFSET as u64;
         vm.set_debug(true).unwrap();
-        vm.register_sw_breakpoint(breakpoint_address).unwrap();
         vm.set_registers(
-            &[WHV_ARM64_REGISTER_SCTLR_EL1],
-            &[Align16(WHV_REGISTER_VALUE {
-                Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
-            })],
+            &[WHV_ARM64_REGISTER_SCTLR_EL1, WHV_ARM64_REGISTER_VBAR_EL1],
+            &[
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
+                }),
+                Align16(WHV_REGISTER_VALUE {
+                    Reg64: DEBUG_CACHE_SYNC_GPA + 0x800,
+                }),
+            ],
         )
         .unwrap();
         vm.set_regs(&CommonRegisters {

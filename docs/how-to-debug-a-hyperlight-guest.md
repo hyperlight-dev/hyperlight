@@ -17,11 +17,11 @@ The Hyperlight `gdb` feature enables guest debugging to:
    - stop when a crash occurs and only allow read access to the guest memory and registers
 
 On x86_64, gdb can also add up to four hardware breakpoints.
-Windows ARM64 uses four-byte HVC software breakpoints and software single-step.
-ARM64 stepping supports linear instructions, direct and conditional branches,
-compare and test branches, and `BR`, `BLR`, and `RET`. Other control-flow and
-exception instructions return an explicit error. Hardware breakpoints and
-watchpoints are not advertised on Windows ARM64.
+Windows ARM64 supports two hardware breakpoints, four-byte `BRK` software
+breakpoints, and hardware single-step. Guest exception vectors forward debug
+exceptions to WHP through HVC. ARM64 guest binaries must retain the
+`hyperlight_debug_vectors` symbol so the host can install the vectors before
+the initial debug stop. Watchpoints are not advertised.
 
 ## Expected behavior
 

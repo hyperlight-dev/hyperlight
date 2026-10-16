@@ -7,8 +7,6 @@ use super::{
     HandleDebugError, HyperlightVm, RecvDbgMsgError, SendDbgMsgError, VcpuStopReason, VmError,
 };
 use crate::hypervisor::gdb::arch::{SW_BP, SW_BP_SIZE, valid_sw_breakpoint_address};
-#[cfg(target_arch = "aarch64")]
-use crate::hypervisor::gdb::arch::{SoftwareStepError, software_step_targets};
 use crate::hypervisor::gdb::{
     DebugError, DebugMemoryAccessError, DebugMemoryView, DebugMsg, DebugResponse,
 };
@@ -42,9 +40,6 @@ impl SoftwareBreakpoints {
 #[derive(Clone, Debug)]
 pub(super) struct PendingSoftwareStep {
     origin: u64,
-    reinsert_origin: bool,
-    targets: Vec<u64>,
-    temporary_breakpoints: HashMap<u64, Vec<u8>>,
     report_stop: bool,
 }
 
@@ -60,9 +55,6 @@ pub enum ProcessDebugRequestError {
     UnalignedSwBreakpoint { address: u64, alignment: usize },
     #[error("Address {0:#x} is not a software breakpoint")]
     SwBreakpointNotFound(u64),
-    #[cfg(target_arch = "aarch64")]
-    #[error("Failed to prepare ARM64 software single-step: {0}")]
-    SoftwareStep(#[from] SoftwareStepError),
     #[error("Failed to read memory: {0}")]
     ReadMemory(#[from] DebugMemoryAccessError),
     #[error("Failed to write memory: {0}")]
@@ -133,11 +125,6 @@ impl HyperlightVm {
                             ))
                             | Err(ProcessDebugRequestError::Debug(DebugError::TranslateGva(_))) => {
                                 DebugResponse::ErrorOccurred
-                            }
-                            #[cfg(target_arch = "aarch64")]
-                            Err(error @ ProcessDebugRequestError::SoftwareStep(_)) => {
-                                tracing::error!("{error}");
-                                DebugResponse::NotAllowed
                             }
                             Err(e) => {
                                 tracing::error!("Error processing debug request: {:?}", e);
@@ -248,6 +235,8 @@ impl HyperlightVm {
                     let pc = self.vm.regs().map_err(VmError::Register)?.pc;
                     if self.sw_breakpoints.contains(pc) {
                         self.begin_software_step(false, mem_access)?;
+                    } else {
+                        self.vm.set_single_step(false)?;
                     }
                 }
                 #[cfg(target_arch = "x86_64")]
@@ -402,16 +391,12 @@ impl HyperlightVm {
 
         let mut saved_instruction = vec![0; SW_BP_SIZE];
         self.read_addrs(gva, &mut saved_instruction, mem_access)?;
-        if let Err(error) = self
-            .write_addrs(gva, &SW_BP, mem_access)
-            .and_then(|()| self.vm.register_sw_breakpoint(gva).map_err(Into::into))
-        {
+        if let Err(error) = self.write_addrs(gva, &SW_BP, mem_access) {
             if let Err(rollback_error) = self.write_addrs(gva, &saved_instruction, mem_access) {
                 tracing::error!(
                     "Failed to roll back software breakpoint {gva:#x}: {rollback_error}"
                 );
             }
-            self.vm.unregister_sw_breakpoint(gva)?;
             return Err(error);
         }
         self.sw_breakpoints.insert(gva, saved_instruction);
@@ -428,16 +413,12 @@ impl HyperlightVm {
             .get(gva)
             .ok_or(ProcessDebugRequestError::SwBreakpointNotFound(gva))?
             .to_vec();
-        if let Err(error) = self
-            .write_addrs(gva, &saved_instruction, mem_access)
-            .and_then(|()| self.vm.unregister_sw_breakpoint(gva).map_err(Into::into))
-        {
+        if let Err(error) = self.write_addrs(gva, &saved_instruction, mem_access) {
             if let Err(rollback_error) = self.write_addrs(gva, &SW_BP, mem_access) {
                 tracing::error!(
                     "Failed to roll back software breakpoint removal at {gva:#x}: {rollback_error}"
                 );
             }
-            self.vm.register_sw_breakpoint(gva)?;
             return Err(error);
         }
         self.sw_breakpoints.remove(gva);
@@ -456,104 +437,27 @@ impl HyperlightVm {
 
         let regs = self.vm.regs().map_err(VmError::Register)?;
         let pc = regs.pc;
-        let saved_instruction = if let Some(instruction) = self.sw_breakpoints.get(pc) {
-            instruction.to_vec()
-        } else {
-            let mut instruction = vec![0; SW_BP_SIZE];
-            self.read_addrs(pc, &mut instruction, mem_access)?;
-            instruction
+        let Some(saved_instruction) = self.sw_breakpoints.get(pc).map(<[u8]>::to_vec) else {
+            self.vm.set_single_step(true)?;
+            return Ok(());
         };
-        let instruction = u32::from_le_bytes(
-            saved_instruction
-                .as_slice()
-                .try_into()
-                .expect("ARM64 instructions are four bytes"),
-        );
-        let targets = software_step_targets(pc, instruction, &regs)?;
-
-        let mut temporary_breakpoints = HashMap::new();
-        for &target in &targets {
-            if self.sw_breakpoints.contains(target) {
-                continue;
-            }
-            let mut target_instruction = vec![0; SW_BP_SIZE];
-            self.read_addrs(target, &mut target_instruction, mem_access)?;
-            temporary_breakpoints.insert(target, target_instruction);
-        }
-
-        let mut installed_targets = Vec::new();
-        for &target in temporary_breakpoints.keys() {
-            let result = self
-                .write_addrs(target, &SW_BP, mem_access)
-                .and_then(|()| self.vm.register_sw_breakpoint(target).map_err(Into::into));
-            if let Err(error) = result {
-                installed_targets.push(target);
-                self.rollback_temporary_breakpoints(
-                    &installed_targets,
-                    &temporary_breakpoints,
-                    mem_access,
+        let result = self
+            .write_addrs(pc, &saved_instruction, mem_access)
+            .and_then(|()| self.vm.set_single_step(true).map_err(Into::into));
+        if let Err(error) = result {
+            if let Err(rollback_error) = self.write_addrs(pc, &SW_BP, mem_access) {
+                tracing::error!(
+                    "Failed to roll back breakpoint-step origin {pc:#x}: {rollback_error}"
                 );
-                return Err(error);
             }
-            installed_targets.push(target);
-        }
-
-        let reinsert_origin = self.sw_breakpoints.contains(pc);
-        if reinsert_origin {
-            let result = self
-                .write_addrs(pc, &saved_instruction, mem_access)
-                .and_then(|()| self.vm.unregister_sw_breakpoint(pc).map_err(Into::into));
-            if let Err(error) = result {
-                if let Err(rollback_error) = self.write_addrs(pc, &SW_BP, mem_access) {
-                    tracing::error!(
-                        "Failed to roll back software-step origin {pc:#x}: {rollback_error}"
-                    );
-                }
-                if let Err(rollback_error) = self.vm.register_sw_breakpoint(pc) {
-                    tracing::error!(
-                        "Failed to re-register software-step origin {pc:#x}: {rollback_error}"
-                    );
-                }
-                self.rollback_temporary_breakpoints(
-                    &installed_targets,
-                    &temporary_breakpoints,
-                    mem_access,
-                );
-                return Err(error);
-            }
+            return Err(error);
         }
 
         self.pending_software_step = Some(PendingSoftwareStep {
             origin: pc,
-            reinsert_origin,
-            targets,
-            temporary_breakpoints,
             report_stop,
         });
         Ok(())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn rollback_temporary_breakpoints(
-        &mut self,
-        targets: &[u64],
-        temporary_breakpoints: &HashMap<u64, Vec<u8>>,
-        mem_access: &DebugMemoryView<'_>,
-    ) {
-        for &target in targets {
-            if let Some(instruction) = temporary_breakpoints.get(&target) {
-                if let Err(error) = self.write_addrs(target, instruction, mem_access) {
-                    tracing::error!(
-                        "Failed to roll back temporary breakpoint {target:#x}: {error}"
-                    );
-                }
-                if let Err(error) = self.vm.unregister_sw_breakpoint(target) {
-                    tracing::error!(
-                        "Failed to unregister temporary breakpoint {target:#x}: {error}"
-                    );
-                }
-            }
-        }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -561,6 +465,7 @@ impl HyperlightVm {
         &mut self,
         mem_access: &DebugMemoryView<'_>,
     ) -> std::result::Result<(), ProcessDebugRequestError> {
+        self.vm.set_single_step(false)?;
         let Some(pending) = self.pending_software_step.clone() else {
             return Ok(());
         };
@@ -575,14 +480,7 @@ impl HyperlightVm {
         pending: &PendingSoftwareStep,
         mem_access: &DebugMemoryView<'_>,
     ) -> std::result::Result<(), ProcessDebugRequestError> {
-        for (target, instruction) in &pending.temporary_breakpoints {
-            self.write_addrs(*target, instruction, mem_access)?;
-            self.vm.unregister_sw_breakpoint(*target)?;
-        }
-        if pending.reinsert_origin {
-            self.write_addrs(pending.origin, &SW_BP, mem_access)?;
-            self.vm.register_sw_breakpoint(pending.origin)?;
-        }
+        self.write_addrs(pending.origin, &SW_BP, mem_access)?;
         Ok(())
     }
 
@@ -591,6 +489,9 @@ impl HyperlightVm {
         &mut self,
         mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
     ) -> std::result::Result<(), ProcessDebugRequestError> {
+        if self.gdb_conn.is_none() {
+            return Ok(());
+        }
         let mapped_regions = self.get_mapped_regions().cloned().collect();
         let mem_access = DebugMemoryView::new(mem_mgr, mapped_regions);
         self.cancel_software_step(&mem_access)
@@ -600,25 +501,20 @@ impl HyperlightVm {
     pub(super) fn finish_software_step(
         &mut self,
         mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
+        stop_reason: VcpuStopReason,
     ) -> std::result::Result<Option<VcpuStopReason>, ProcessDebugRequestError> {
         let pending = self
             .pending_software_step
             .clone()
             .expect("software-step completion requires pending state");
-        let pc = self.vm.regs().map_err(VmError::Register)?.pc;
-        if !pending.targets.contains(&pc) {
-            return Ok(Some(VcpuStopReason::SwBp));
-        }
-
         let mapped_regions = self.get_mapped_regions().cloned().collect();
         let mem_access = DebugMemoryView::new(mem_mgr, mapped_regions);
         self.restore_software_step(&pending, &mem_access)?;
+        self.vm.set_single_step(false)?;
         self.pending_software_step = None;
 
-        if self.sw_breakpoints.contains(pc) {
-            Ok(Some(VcpuStopReason::SwBp))
-        } else if pending.report_stop {
-            Ok(Some(VcpuStopReason::DoneStep))
+        if pending.report_stop || !matches!(stop_reason, VcpuStopReason::DoneStep) {
+            Ok(Some(stop_reason))
         } else {
             Ok(None)
         }
