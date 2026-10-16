@@ -1,8 +1,9 @@
 # Component wire format
 
 Bindings generated from WIT exchange values in this format. It is used by
-`host_bindgen!`, `guest_bindgen!` and the hyperlight-wasm guest runtime. The
-host and guest must be built from the same Hyperlight version.
+`host_bindgen!`, `guest_bindgen!`, the hyperlight-wasm guest runtime, and the
+C# generator in `hyperlight-component-csharp`. The host and guest must be built
+from the same Hyperlight version.
 
 ## Calls
 
@@ -49,3 +50,47 @@ their parts with no alignment.
 lists encodings of the types in
 [`wire.wit`](../src/tests/component_wire/wire.wit). The Rust host bindings are
 tested against it.
+
+## C# host bindings
+
+`hyperlight_component_csharp::generate_from_path` generates C# for the host
+side of a world. The generated code depends on the `Hyperlight.Component`
+namespace in `hyperlight_component_csharp::RUNTIME_SOURCE`. It targets .NET 8
+or later.
+
+For a world `w`, the generator emits:
+
+* `WComponent`, constructed from an `IGuestCaller`. It has a property for each
+  exported interface and a method for each function the world exports.
+* `WComponent.RegisterImports`, which registers host functions on an
+  `IHostFunctionRegistry` from an implementation of each imported interface.
+* A C# interface `IName` for each imported interface `name`, and `IWImports`
+  for functions the world imports.
+* Types for every record, variant, enum and flags in the world's interfaces.
+
+| WIT type | C# type |
+|---|---|
+| `bool`, integers, floats | `bool`, `sbyte` to `ulong`, `float`, `double` |
+| `char` | `System.Text.Rune` |
+| `string` | `string` |
+| `list<u8>`, `list<u8, N>` | `byte[]` |
+| `list<T>`, `list<T, N>` | `IReadOnlyList<T>` |
+| `tuple<...>` | Value tuple |
+| `option<T>` | `T?`, or `Option<T>` when `T` is an `option` |
+| `result<T, E>` | `Result<T, E>`, with `Unit` for a missing type |
+| `record` | Sealed record with `required init` properties |
+| `variant` | Abstract record with a nested sealed record per case |
+| `enum` | `enum` with `uint` values |
+| `flags` | `[Flags]` enum with `uint` values |
+
+Resources, async functions, futures, streams, maps and flags with more than 32
+members are rejected.
+
+Records, variant cases, `Option` and `Result` compare lists by element.
+Variants and `Result` have `Match` and `Switch` methods that take one function
+per case. These give a compile error when a case is missing.
+
+For a root namespace `Root`, types from `ns:pkg/iface` are in
+`Root.Ns.Pkg.Iface`. The C# interface or exports class for `iface` is in
+`Root.Ns.Pkg`. A world that uses two versions of a package gets the version
+after `Pkg`, such as `Root.Ns.Pkg.V1_0_0`.

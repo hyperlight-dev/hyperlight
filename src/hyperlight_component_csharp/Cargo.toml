@@ -1,0 +1,22 @@
+[package]
+name = "hyperlight-component-csharp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = """
+Generates C# host bindings for Hyperlight components from WIT worlds
+"""
+
+[lib]
+name = "hyperlight_component_csharp"
+
+[dependencies]
+wit-parser = { version = "0.259.0" }
+
+[dev-dependencies]
+hyperlight-component-util = { workspace = true }
+proc-macro2 = { version = "1.0.106" }

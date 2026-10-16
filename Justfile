@@ -151,7 +151,7 @@ code-checks-like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just clippy-exhaustive " + config } else { "" } }}
 
     @# Verify MSRV
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
     @# Check cargo features compile
     just check
@@ -287,6 +287,7 @@ test-integration target=default-target features="":
 
     @# run component-util unit tests and the integration tests that exercise WIT input codegen
     {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib --test wasmtime_guest_codegen
+    {{ cargo-cmd }} test -p hyperlight-component-csharp --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
     @# run the rest of the integration tests. `snapshot_goldens` is in
     @# the glob but no-ops without a mode token, so it needs no golden
@@ -414,6 +415,7 @@ clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-component-csharp {{ target }} {{ target-triple }}
     {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
@@ -423,7 +425,7 @@ clippy-package package target=default-target:
 
 # Verify Minimum Supported Rust Version
 verify-msrv:
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
 #####################
 ### RUST EXAMPLES ###
@@ -548,7 +550,7 @@ ensure-cargo-llvm-cov:
 
 # host-side packages to collect coverage for (guest/no_std crates are excluded because they
 # define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
-coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro -p hyperlight-component-csharp"
 
 # run all tests and examples with coverage instrumentation, collecting profdata without
 # generating a report. Mirrors test-like-ci + run-examples-like-ci to exercise all code paths
