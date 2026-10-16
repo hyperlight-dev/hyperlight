@@ -337,6 +337,10 @@ test-rust-tracing target=default-target features="":
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
+# generates and tests C# bindings for the component test fixtures. Needs the .NET 8 SDK or newer.
+test-csharp-bindings:
+    dotnet run --project src/tests/component_wire/csharp
+
 # Nextest runs one Miri process per job, each with its own interpreter, so
 # memory grows with the job count at roughly 0.4GB per job. Lower MIRI_JOBS on
 # a machine with many cores but little RAM.
