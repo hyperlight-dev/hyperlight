@@ -414,6 +414,10 @@ pub struct State<'a, 'b> {
     /// When a name is in this set, the parent namespace is prepended to
     /// disambiguate the trait member name.
     pub colliding_import_names: HashSet<String>,
+    /// Full kebab name of the instance whose functions are being
+    /// emitted, e.g. `wasi:http/types@0.2.0`. Wire function names are
+    /// derived from it.
+    pub cur_instance: Option<String>,
 }
 
 /// Create a State with all of its &mut references pointing to
@@ -467,6 +471,7 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest,
             is_wasmtime_guest,
             colliding_import_names: HashSet::new(),
+            cur_instance: None,
         }
     }
     pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
@@ -489,6 +494,7 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
             colliding_import_names: self.colliding_import_names.clone(),
+            cur_instance: self.cur_instance.clone(),
         }
     }
     /// Obtain a reference to the [`Mod`] that we are currently
@@ -522,6 +528,13 @@ impl<'a, 'b> State<'a, 'b> {
     pub fn with_cursor<'c>(&'c mut self, cursor: Vec<Ident>) -> State<'c, 'b> {
         let mut s = self.clone();
         s.mod_cursor = cursor;
+        s
+    }
+    /// Copy the state to emit the functions of the instance `wn`,
+    /// moving the module cursor to its namespace.
+    pub fn with_instance<'c>(&'c mut self, wn: &WitName) -> State<'c, 'b> {
+        let mut s = self.with_cursor(wn.namespace_idents());
+        s.cur_instance = Some(wn.kebab.to_string());
         s
     }
     /// Copy the state, replacing its [`State::cur_needs_vars`] reference,
@@ -813,6 +826,8 @@ impl<'a, 'b> State<'a, 'b> {
 /// namespaces, an actual name, and possibly a SemVer version
 #[derive(Debug, Clone)]
 pub struct WitName<'a> {
+    /// The unparsed name
+    pub kebab: &'a str,
     pub namespaces: Vec<&'a str>,
     pub name: &'a str,
     pub _version: Vec<&'a str>,
@@ -844,6 +859,7 @@ pub fn split_wit_name(n: &str) -> WitName<'_> {
     let name = versioned_name.next().unwrap();
     namespaces.extend(slash_components.rev());
     WitName {
+        kebab: n,
         namespaces,
         name,
         _version: versioned_name.collect(),

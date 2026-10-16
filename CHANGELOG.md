@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
+* **Breaking:** `hyperlight-component-macro`: `host_bindgen!` and `guest_bindgen!` encode values little-endian and qualify function names with their interface, such as `wasi:http/types@0.2.0#[method]fields.get` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
 
 ### Removed
 
