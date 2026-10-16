@@ -98,6 +98,10 @@ jobs:
       - name: Run loom concurrency tests
         run: just test-loom
 
+      # Uses the .NET SDK installed in the runner image.
+      - name: Test generated C# bindings
+        run: just test-csharp-bindings
+
       # A job step, not a post-job step, so the save runs before rust-cache's
       # post-job cleanup deletes the sysroot. Only main saves, as caches are not
       # shared across branches.
@@ -184,6 +188,10 @@ jobs:
         run: |
           just test-compilation-no-default-features debug
           just test-compilation-no-default-features release
+
+      # Uses the .NET SDK installed in the runner image.
+      - name: Test generated C# bindings
+        run: just test-csharp-bindings
 
       # A job step, not a post-job step, so the save runs before rust-cache's
       # post-job cleanup deletes the sysroot. Only main saves, as caches are not

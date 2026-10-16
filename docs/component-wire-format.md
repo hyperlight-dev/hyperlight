@@ -48,8 +48,11 @@ their parts with no alignment.
 
 [`src/tests/component_wire/vectors.txt`](../src/tests/component_wire/vectors.txt)
 lists encodings of the types in
-[`wire.wit`](../src/tests/component_wire/wire.wit). The Rust host bindings are
-tested against it.
+[`wire.wit`](../src/tests/component_wire/wire.wit). The Rust host bindings and
+the C# bindings are both tested against it.
+[`csharp/edge.wit`](../src/tests/component_wire/csharp/edge.wit) covers C#
+naming cases. `just test-csharp-bindings` generates C# for both and runs the C#
+tests.
 
 ## C# host bindings
 
