@@ -17,13 +17,14 @@ use super::backing;
 // Mark types not [`Send`]
 type NotThreadSafe = PhantomData<*mut ()>;
 
-/// Bounded scratch memory access.
+/// Memory access bounded to a range of scratch: the transport arena, for
+/// the producers.
 ///
-/// Copies reject buffers that overlap the accessed scratch range.
+/// Copies reject buffers that overlap the accessed range.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GuestMemOps {
-    scratch_gva: u64,
-    scratch_end: u64,
+    start: u64,
+    end: u64,
     _nts: NotThreadSafe,
 }
 
@@ -32,24 +33,25 @@ pub(crate) struct GuestMemOps {
 pub struct GuestMemError;
 
 impl GuestMemOps {
-    /// Bind memory access to live scratch bounds.
+    /// Bind memory access to `[start, end)`, a live part of
+    /// scratch (the transport arena, for the producers).
     ///
     /// # Safety
     ///
-    /// Scratch must be live, initialized, and writable.
+    /// The range must be live, initialized, and writable scratch.
     /// All access and destruction must stay on the serialized guest vCPU.
     /// Serialize paging and share alias leaf entries across accessing roots.
-    pub(super) unsafe fn new(scratch_gva: u64, scratch_end: u64) -> Self {
+    pub(super) unsafe fn new(start: u64, end: u64) -> Self {
         Self {
-            scratch_gva,
-            scratch_end,
+            start,
+            end,
             _nts: PhantomData,
         }
     }
 
     fn ptr(&self, addr: u64, len: usize) -> Result<*mut u8, GuestMemError> {
         let end = addr.checked_add(len as u64).ok_or(GuestMemError)?;
-        if addr < self.scratch_gva || end > self.scratch_end {
+        if addr < self.start || end > self.end {
             return Err(GuestMemError);
         }
         Ok(addr as *mut u8)
@@ -119,7 +121,7 @@ impl AsRef<[u8]> for GuestMapping {
     }
 }
 
-// SAFETY: Every address is restricted to the scratch mapping. Payload
+// SAFETY: Every address is restricted to the bound range of scratch. Payload
 // references rely on descriptor ownership, and ring flags use aligned atomics.
 unsafe impl MemOps for GuestMemOps {
     type Error = GuestMemError;

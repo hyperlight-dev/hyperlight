@@ -1469,8 +1469,7 @@ mod tests {
             let defaults = SandboxConfiguration::default();
             let layout =
                 crate::mem::layout::SandboxMemoryLayout::new(defaults, 0, 0, None).unwrap();
-            hyperlight_common::layout::min_scratch_size(layout.get_transport_arena().size())
-                .next_multiple_of(page_size::get())
+            layout.min_scratch().next_multiple_of(page_size::get())
         } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())

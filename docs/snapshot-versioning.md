@@ -41,6 +41,10 @@ A snapshot carries four independently evolvable version markers:
 ABI 6 requires checkpoint readiness after guest initialization and permits
 H2G prefill to omit retained slots. Earlier snapshots must be regenerated.
 
+ABI 7 places the transport arena below the reserved scratch-top pages, at an
+address independent of the scratch size, and the page tables at the scratch
+base. Earlier snapshots must be regenerated.
+
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
 
