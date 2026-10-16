@@ -128,9 +128,13 @@ scratch region that will be used when this snapshot is next restored
 into a sandbox. This will then be baked into the guest page tables
 created in the snapshot.
 
-TODO: add support, if found to be useful operationally, for either
-dynamically growing the scratch region, or changing its size between
-taking a snapshot and restoring it.
+`Sandbox::snapshot_with_scratch_size` takes a snapshot whose scratch is
+smaller than the sandbox's. Its page tables map the smaller window, and
+restoring it replaces the scratch region. A guest can boot with the
+scratch its initialisation needs and run guest function calls from a
+snapshot with only the scratch they need. A snapshot cannot have more
+scratch than the sandbox it is taken from. Restoring a larger snapshot
+gives a sandbox its scratch back.
 
 ### Call descriptors
 
@@ -139,14 +143,18 @@ calls, i.e. there may be no calls in flight at the time of
 snapshotting. This is not enforced, but odd things may happen if it is
 violated.
 
-Host and guest calls use two virtqueues in a fixed transport arena at
-the bottom of scratch. The arena contains both rings and their
-fixed-slot buffer pools. Copied page tables follow the arena. Dynamic
-scratch allocations begin after the copied page tables.
+Host function calls and guest function calls use two virtqueues in a
+fixed transport arena below the reserved scratch-top pages, with one
+free page between them for an exception stack overrun. The arena's
+address does not depend on the scratch size. The arena contains both
+rings and their fixed-slot buffer pools. Copied page tables start at the
+scratch base. Dynamic scratch allocations begin after the copied page
+tables and stop at the arena.
 
-The minimum scratch size is calculated by `min_scratch_size()` in the
-architecture-specific layout modules under `hyperlight_common`; see
-that function for the detailed breakdown of required overhead.
+The minimum scratch size is the architecture's fixed overhead
+(`min_scratch_size()` in the layout modules under `hyperlight_common`,
+which breaks it down) plus the transport arena and the free page above
+it (`SandboxMemoryLayout::min_scratch`), plus the copied page tables.
 
 ## Creating a fresh guest
 

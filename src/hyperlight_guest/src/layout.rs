@@ -52,3 +52,30 @@ pub fn guest_log_level_gva() -> *mut u64 {
     (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET + 1) as *mut u64
 }
 pub use arch::{scratch_base_gpa, scratch_base_gva};
+
+/// Exclusive upper GPA for the scratch page allocator: the transport arena,
+/// which sits below the reserved top pages.
+///
+/// Aborts if the host has not published an arena between the scratch base
+/// and the end of the transport range, so allocations never reach the
+/// rings.
+pub fn allocator_limit_gpa() -> u64 {
+    // SAFETY: the host writes the arena GPA into scratch metadata before entry.
+    let arena = unsafe { transport_arena_gpa_gva().read_volatile() };
+    if arena <= scratch_base_gpa()
+        || arena >= hyperlight_common::layout::scratch_transport_end_gpa()
+    {
+        // SAFETY: aborting is always sound.
+        unsafe {
+            crate::exit::abort_with_code_and_message(
+                &[
+                    hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::MallocFailed
+                        as u8,
+                ],
+                c"Transport arena not published between the scratch base and the transport end"
+                    .as_ptr(),
+            )
+        }
+    }
+    arena
+}
