@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `ExternalValueSource` implementations for `RecvChain` and `Segments`.
 * Producer batch completion without notification and segmented payload
   assembly and extraction without flattening.
-* Support register, memory, continue, single-step, interrupt, and software-breakpoint GDB debugging for Windows ARM64 guests.
+* Support register, memory, continue, hardware single-step, interrupt, and
+  hardware and software breakpoint GDB debugging for Windows ARM64 guests.
 
 ### Changed
 * `Sandbox` is the primary initialized sandbox type. `MultiUseSandbox` remains

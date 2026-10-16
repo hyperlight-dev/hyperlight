@@ -736,7 +736,7 @@ impl HyperlightVm {
                     }
                     #[cfg(target_arch = "aarch64")]
                     let stop_reason = if self.pending_software_step.is_some() {
-                        match self.finish_software_step(mem_mgr) {
+                        match self.finish_software_step(mem_mgr, stop_reason) {
                             Ok(Some(reason)) => reason,
                             Ok(None) => continue,
                             Err(e) => break Err(HandleDebugError::from(e).into()),
@@ -750,6 +750,9 @@ impl HyperlightVm {
                 }
 
                 Ok(VmExit::Halt()) => {
+                    #[cfg(all(gdb, target_arch = "aarch64"))]
+                    self.cancel_pending_software_step(mem_mgr)
+                        .map_err(HandleDebugError::from)?;
                     break Ok(());
                 }
                 Ok(VmExit::IoOut(port, data)) => {
@@ -805,8 +808,6 @@ impl HyperlightVm {
                         continue;
                     }
 
-                    // Pending ARM64 software steps hold temporary breakpoints, so they
-                    // are cancelled for any interruption source.
                     #[cfg(all(gdb, target_arch = "aarch64"))]
                     if let Err(e) = self.cancel_pending_software_step(mem_mgr) {
                         break Err(HandleDebugError::from(e).into());

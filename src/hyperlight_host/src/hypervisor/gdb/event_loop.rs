@@ -51,7 +51,6 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     let stop_response = match stop_reason {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
-                        #[cfg(target_arch = "x86_64")]
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
                         #[cfg(target_arch = "aarch64")]
                         VcpuStopReason::Initial => BaseStopReason::SignalWithThread {

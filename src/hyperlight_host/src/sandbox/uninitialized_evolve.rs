@@ -142,7 +142,7 @@ pub(crate) fn set_up_hypervisor_partition(
         rt_cfg
     };
 
-    Ok(HyperlightVm::new(
+    let vm = HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
         mgr.layout.get_pt_base_gpa(),
@@ -157,7 +157,15 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(feature = "mem_profile")]
         trace_info,
     )
-    .map_err(HyperlightVmError::Create)?)
+    .map_err(HyperlightVmError::Create)?;
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    let vm = {
+        let mut vm = vm;
+        vm.initialize_debug_vectors(_load_info.debug_vectors)
+            .map_err(HyperlightVmError::Create)?;
+        vm
+    };
+    Ok(vm)
 }
 
 #[cfg(test)]
