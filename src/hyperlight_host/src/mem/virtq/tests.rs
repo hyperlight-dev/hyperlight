@@ -182,23 +182,12 @@ fn rejects_snapshot_geometry_mismatches() {
     let case = TestCase::new();
     let layout = memory_layout();
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-    let scratch_size = layout.get_scratch_size();
     let g2h = captured.g2h_ring();
     let h2g = captured.h2g_ring();
 
-    for (size, g2h_len, h2g_len) in [
-        (scratch_size - vmem::PAGE_SIZE, g2h.len(), h2g.len()),
-        (scratch_size, g2h.len() - 1, h2g.len()),
-        (scratch_size, g2h.len(), h2g.len() - 1),
-    ] {
+    for (g2h_len, h2g_len) in [(g2h.len() - 1, h2g.len()), (g2h.len(), h2g.len() - 1)] {
         assert!(
-            VirtqSnapshot::new(
-                &layout,
-                size,
-                g2h[..g2h_len].to_vec(),
-                h2g[..h2g_len].to_vec(),
-            )
-            .is_err()
+            VirtqSnapshot::new(&layout, g2h[..g2h_len].to_vec(), h2g[..h2g_len].to_vec()).is_err()
         );
     }
 }

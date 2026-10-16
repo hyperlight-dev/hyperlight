@@ -129,9 +129,18 @@ scratch region that will be used when this snapshot is next restored
 into a sandbox. This will then be baked into the guest page tables
 created in the snapshot.
 
-TODO: add support, if found to be useful operationally, for either
-dynamically growing the scratch region, or changing its size between
-taking a snapshot and restoring it.
+`Sandbox::snapshot_with_options`, with `SnapshotOptions::scratch_size`,
+takes a snapshot whose scratch size differs from the sandbox's. Its
+page tables map a window of that size, and restoring it replaces the
+scratch region. A guest can boot with the scratch its initialisation
+needs and run guest function calls from a snapshot with only the
+scratch they need, or with more.
+
+The scratch window grows downward from the top of the address space. A
+larger window covers guest-virtual addresses below the current one, so
+the host rejects the size when the guest has a mapping there. The
+physical window needs no such check: scratch hangs from a fixed top,
+far above the largest snapshot region.
 
 ### Call descriptors
 

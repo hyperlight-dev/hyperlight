@@ -519,7 +519,7 @@ impl Snapshot {
         let transport = self.state.virtq.as_ref().ok_or_else(|| {
             crate::new_error!("initialized snapshot has no canonical transport state")
         })?;
-        let transport_bytes = transport::encode(transport)?;
+        let transport_bytes = transport::encode(&self.state.layout, transport)?;
         let transport_digest = Digest256::from_bytes(&transport_bytes);
         put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
 
@@ -846,6 +846,15 @@ impl Snapshot {
 
         // 4. config blob
         let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
+        // A snapshot taken on a host with smaller pages may have a scratch
+        // size this host cannot map: refuse it before reading the blobs.
+        let host_page = crate::mem::layout::SandboxMemoryLayout::host_page_size();
+        if !cfg.layout.scratch_size.is_multiple_of(host_page) {
+            return Err(crate::new_error!(
+                "snapshot scratch size {} is not a multiple of this host's {host_page}-byte pages",
+                cfg.layout.scratch_size
+            ));
+        }
 
         // 5. snapshot blob: open once, hash and mmap the same
         //    handle so an attacker cannot swap the file between

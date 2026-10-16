@@ -360,7 +360,10 @@ impl SandboxMemoryLayout {
             .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
         let min_scratch_size = Self::min_scratch_for(&transport_arena);
         if scratch_size < min_scratch_size {
-            return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
+            return Err(MemoryRequestTooSmall(
+                scratch_size,
+                min_scratch_size.next_multiple_of(Self::host_page_size()),
+            ));
         }
 
         let mut ret = Self {
@@ -380,6 +383,12 @@ impl SandboxMemoryLayout {
         };
         ret.set_snapshot_size(ret.get_memory_size()?);
         Ok(ret)
+    }
+
+    /// Granularity the host maps scratch in: host pages, which can be
+    /// larger than the guest's.
+    pub(crate) fn host_page_size() -> usize {
+        PAGE_SIZE.max(page_size::get())
     }
 
     /// Fixed scratch overhead: the arena and the guard page above it count
@@ -403,6 +412,31 @@ impl SandboxMemoryLayout {
         let len = TransportArena::new(0, g2h, h2g)?.size() as u64;
         let base = hyperlight_common::layout::scratch_transport_end_gpa().checked_sub(len)?;
         TransportArena::new(base, g2h, h2g)
+    }
+
+    /// This layout with another scratch size and no page tables yet. Room
+    /// for the page tables is checked when they are built (`set_pt_size`),
+    /// since their size depends on the guest's mappings.
+    pub(crate) fn with_scratch_size(&self, scratch_size: usize) -> Result<Self> {
+        if scratch_size > Self::MAX_MEMORY_SIZE {
+            return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
+        }
+        // The host maps scratch in host pages, which can be larger than
+        // the guest's. A size checked here is one a restore can map.
+        let page = Self::host_page_size();
+        let min = self.min_scratch().next_multiple_of(page);
+        if scratch_size < min {
+            return Err(MemoryRequestTooSmall(scratch_size, min));
+        }
+        if !scratch_size.is_multiple_of(page) {
+            return Err(new_error!(
+                "scratch size {scratch_size} must be a multiple of {page}"
+            ));
+        }
+        let mut ret = *self;
+        ret.scratch_size = scratch_size;
+        ret.pt_size = None;
+        Ok(ret)
     }
 
     /// Scratch offset of the transport arena.
@@ -497,7 +531,12 @@ impl SandboxMemoryLayout {
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_scratch = self.min_scratch().saturating_add(size);
         if self.scratch_size < min_scratch {
-            return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
+            // Report a size the host can map.
+            let page = Self::host_page_size();
+            return Err(MemoryRequestTooSmall(
+                self.scratch_size,
+                min_scratch.next_multiple_of(page),
+            ));
         }
         self.pt_size = Some(size);
         Ok(())
@@ -866,6 +905,49 @@ mod tests {
         assert_eq!(
             layout.get_first_free_scratch_gpa(),
             scratch_base + PAGE_SIZE as u64
+        );
+    }
+
+    /// A different scratch size keeps the arena where it is, so a guest's
+    /// cached ring addresses stay valid in a resized snapshot.
+    #[test]
+    fn resizing_scratch_keeps_the_transport_arena() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_scratch_size(4 << 20);
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
+        // Sizes in host pages, which can be larger than the guest's.
+        let page = SandboxMemoryLayout::host_page_size();
+        let half = (layout.get_scratch_size() / 2).next_multiple_of(page);
+        let smaller = layout.with_scratch_size(half).unwrap();
+
+        assert_eq!(smaller.get_transport_arena(), layout.get_transport_arena());
+        assert_eq!(
+            smaller.get_pt_base_gpa(),
+            hyperlight_common::layout::scratch_base_gpa(half)
+        );
+        assert_eq!(
+            smaller.mbx_scratch_offset() + (layout.get_scratch_size() - half),
+            layout.mbx_scratch_offset()
+        );
+        assert!(matches!(
+            layout.with_scratch_size(layout.min_scratch() - 1),
+            Err(MemoryRequestTooSmall(..))
+        ));
+        assert!(layout.with_scratch_size(half + 1).is_err());
+        assert!(matches!(
+            layout.with_scratch_size(
+                SandboxMemoryLayout::MAX_MEMORY_SIZE.next_multiple_of(page) + page
+            ),
+            Err(MemoryRequestTooBig(..))
+        ));
+
+        let larger = layout
+            .with_scratch_size(layout.get_scratch_size() * 2)
+            .unwrap();
+        assert_eq!(larger.get_transport_arena(), layout.get_transport_arena());
+        assert_eq!(
+            larger.mbx_scratch_offset(),
+            layout.mbx_scratch_offset() + layout.get_scratch_size()
         );
     }
 

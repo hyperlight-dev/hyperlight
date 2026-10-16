@@ -426,6 +426,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         #[cfg(target_arch = "x86_64")] msrs: Vec<crate::hypervisor::regs::MsrEntry>,
         next_action: NextAction,
         host_functions: HostFunctionDetails,
+        scratch_size: usize,
     ) -> Result<Snapshot> {
         let virtq = match (&self.g2h_consumer, &self.h2g_consumer) {
             (Some(_), Some(_)) => Some(VirtqSnapshot::capture(&self.layout, &self.scratch_mem)?),
@@ -449,6 +450,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.snapshot_count + 1,
             host_functions,
             virtq,
+            scratch_size,
         )?;
         self.snapshot_count = snapshot.snapshot_generation();
         Ok(snapshot)

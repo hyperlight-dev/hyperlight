@@ -476,8 +476,9 @@ not stored.
 
 ### Restore
 
-Capture and load validate scratch size, ring lengths, and canonical transport
-state against the layout. Admitted images and their layout remain immutable.
+Capture and load validate ring lengths and canonical transport state against
+the layout. Load also checks the scratch size the transport blob records.
+Admitted images and their layout remain immutable.
 
 Transport admission precedes changes to sandbox status, the cached snapshot,
 and memory mappings.

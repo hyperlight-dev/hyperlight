@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* `Sandbox::snapshot_with_options` takes a snapshot with `SnapshotOptions`. `SnapshotOptions::scratch_size` gives a restored sandbox a different scratch size. A guest can boot with the scratch its initialisation needs and run guest function calls from a snapshot with only the scratch they need, so each restore costs less. It can also give a guest more scratch than it booted with.
 
 ### Changed
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975

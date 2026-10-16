@@ -59,6 +59,43 @@ pub enum NextAction {
     None,
 }
 
+/// Options for
+/// [`Sandbox::snapshot_with_options`](crate::Sandbox::snapshot_with_options).
+/// The default options take the same snapshot as
+/// [`Sandbox::snapshot`](crate::Sandbox::snapshot).
+#[derive(Clone, Debug, Default)]
+pub struct SnapshotOptions {
+    pub(crate) scratch_size: Option<usize>,
+}
+
+impl SnapshotOptions {
+    /// Restoring the snapshot gives the sandbox a scratch region of
+    /// `scratch_size` bytes. By default it keeps the sandbox's current
+    /// size.
+    ///
+    /// A sandbox can boot with the scratch its initialisation needs, then
+    /// run guest function calls from a snapshot with only the scratch they
+    /// need, which makes each restore cheaper, or with more scratch than it
+    /// booted with.
+    ///
+    /// A size larger than the maximum memory size (`MemoryRequestTooBig`),
+    /// too small for the transport (`MemoryRequestTooSmall`), or not a
+    /// whole number of host pages is rejected before the guest is entered.
+    /// Room for the page tables depends on the guest's mappings and is
+    /// checked when the snapshot is built, after a pending transport
+    /// checkpoint has run in the guest: a size without it fails then, with
+    /// `MemoryRequestTooSmall`. A larger size whose scratch window would
+    /// cover a guest mapping below the current one fails then too. Both
+    /// failures leave the sandbox usable. Whether guest function calls fit
+    /// is not checked: one that needs more scratch fails in the guest, and
+    /// a later restore recovers the sandbox.
+    #[must_use]
+    pub fn scratch_size(mut self, scratch_size: usize) -> Self {
+        self.scratch_size = Some(scratch_size);
+        self
+    }
+}
+
 /// An immutable snapshot of sandbox state.
 pub struct Snapshot {
     state: Arc<SnapshotState>,
@@ -463,12 +500,16 @@ impl Snapshot {
     #[allow(clippy::too_many_arguments)]
     /// Capture memory with optional validated transport images.
     ///
-    /// Page-table and snapshot sizes do not affect transport geometry.
+    /// `layout` is the sandbox's own: the live page tables and scratch are
+    /// read with it. The snapshot's page tables are built for
+    /// `scratch_size`, which can differ from the sandbox's own. A larger
+    /// scratch window must not cover a guest mapping. Page-table and
+    /// snapshot sizes do not affect transport geometry.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new<S: SharedMemory>(
         shared_mem: &mut SnapshotSharedMemory<S>,
         scratch_mem: &mut S,
-        mut layout: SandboxMemoryLayout,
+        layout: SandboxMemoryLayout,
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
         root_pt_gpas: &[u64],
@@ -480,9 +521,14 @@ impl Snapshot {
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
         virtq: Option<VirtqSnapshot>,
+        scratch_size: usize,
     ) -> Result<Self> {
+        let mut target = layout.with_scratch_size(scratch_size)?;
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
+        // A larger scratch window also covers this band below the current
+        // one, which `map_specials` would map over the guest's mappings.
+        let grown_band = scratch_base_gva(scratch_size)..scratch_gva;
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
                 // Phase 1: walk every PT root together. This detects
@@ -516,7 +562,7 @@ impl Snapshot {
                 // spaces' tables.
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
+                let pt_buf = GuestPageTableBuffer::new(target.get_pt_base_gpa() as usize);
                 // Allocate one root table per space and remember the
                 // addresses returned by `alloc_table` instead of
                 // assuming the buffer's physical layout.
@@ -565,6 +611,15 @@ impl Snapshot {
                                     MappingKind::Unmapped => continue,
                                     MappingKind::ZeroInit(bm) => (MappingKind::ZeroInit(bm), false),
                                 };
+                                if !grown_band.is_empty()
+                                    && mapping.virt_base < grown_band.end
+                                    && mapping.virt_base + mapping.len > grown_band.start
+                                {
+                                    return Err(crate::new_error!(
+                                        "a scratch size of {scratch_size} would map scratch over the guest mapping at {:#x}",
+                                        mapping.virt_base
+                                    ));
+                                }
                                 let new_gpa = if has_contents {
                                     let Some(contents) = (unsafe {
                                         guest_page(
@@ -611,7 +666,7 @@ impl Snapshot {
                 // Phase 3: Map the scratch region into each root.
                 for &root_addr in &root_addrs {
                     pt_buf.set_root(root_addr);
-                    map_specials(&pt_buf, layout.get_scratch_size());
+                    map_specials(&pt_buf, scratch_size);
                 }
                 pt_buf.set_root(pt_buf.initial_root());
 
@@ -622,7 +677,7 @@ impl Snapshot {
 
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
-                layout.set_pt_size(pt_data.len())?;
+                target.set_pt_size(pt_data.len())?;
                 snapshot_memory.extend(&pt_data);
                 Ok::<_, crate::HyperlightError>(snapshot_memory)
             })
@@ -633,13 +688,13 @@ impl Snapshot {
         // mapping of the snapshot region avoids overlap with
         // `map_file_cow` regions installed immediately after the
         // snapshot in guest PA space.
-        let guest_visible_size = memory.len() - layout.get_pt_size();
+        let guest_visible_size = memory.len() - target.get_pt_size();
         debug_assert!(guest_visible_size.is_multiple_of(page_size::get()));
-        layout.set_snapshot_size(guest_visible_size);
+        target.set_snapshot_size(guest_visible_size);
 
         Ok(Self {
             state: Arc::new(SnapshotState {
-                layout,
+                layout: target,
                 memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
                 load_info,
                 stack_top_gva,
@@ -885,18 +940,25 @@ mod tests {
     }
 
     fn make_simple_pt_mem(contents: &[u8]) -> SnapshotSharedMemory<ExclusiveSharedMemory> {
+        make_pt_mem(contents, &[SandboxMemoryLayout::BASE_ADDRESS as u64])
+    }
+
+    /// Page tables that map the first snapshot page at each of `gvas`.
+    fn make_pt_mem(contents: &[u8], gvas: &[u64]) -> SnapshotSharedMemory<ExclusiveSharedMemory> {
         let pt_buf = GuestPageTableBuffer::new(simple_pt_base());
-        let mapping = Mapping {
-            phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
-            virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
-            len: page_size::get() as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: true,
-                executable: true,
-            }),
-        };
-        unsafe { vmem::map(&pt_buf, mapping) };
+        for &virt_base in gvas {
+            let mapping = Mapping {
+                phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
+                virt_base,
+                len: page_size::get() as u64,
+                kind: MappingKind::Basic(BasicMapping {
+                    readable: true,
+                    writable: true,
+                    executable: true,
+                }),
+            };
+            unsafe { vmem::map(&pt_buf, mapping) };
+        }
         super::map_specials(&pt_buf, PAGE_SIZE);
         let pt_bytes = pt_buf.into_bytes();
 
@@ -944,6 +1006,7 @@ mod tests {
             1,
             HostFunctionDetails::default(),
             None,
+            mgr.layout.get_scratch_size(),
         )
         .unwrap();
 
@@ -965,6 +1028,7 @@ mod tests {
             2,
             HostFunctionDetails::default(),
             None,
+            mgr.layout.get_scratch_size(),
         )
         .unwrap();
 
@@ -979,5 +1043,58 @@ mod tests {
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
+    }
+    fn snapshot_with_scratch(
+        snap_mem: SnapshotSharedMemory<ExclusiveSharedMemory>,
+        mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        pt_base: u64,
+        scratch_size: usize,
+    ) -> crate::Result<super::Snapshot> {
+        super::Snapshot::new(
+            &mut snap_mem.build().0,
+            &mut mgr.scratch_mem,
+            mgr.layout,
+            LoadInfo::dummy(),
+            Vec::new(),
+            &[pt_base],
+            0,
+            default_sregs(),
+            #[cfg(target_arch = "x86_64")]
+            Vec::new(),
+            super::NextAction::None,
+            0,
+            1,
+            HostFunctionDetails::default(),
+            None,
+            scratch_size,
+        )
+    }
+
+    /// A snapshot can have more scratch than its sandbox, unless the larger
+    /// window would cover a guest mapping below the current one.
+    #[test]
+    fn larger_scratch_must_not_cover_guest_mappings() {
+        let (mut mgr, pt_base) = make_simple_pt_mgr();
+        let scratch_size = mgr.layout.get_scratch_size();
+        let larger = scratch_size * 2;
+        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let contents = vec![0u8; page_size::get()];
+
+        let plain = make_simple_pt_mem(&contents);
+        let Ok(snapshot) = snapshot_with_scratch(plain, &mut mgr, pt_base, larger) else {
+            panic!("a larger scratch window over no guest mapping is rejected");
+        };
+        assert_eq!(snapshot.layout().get_scratch_size(), larger);
+
+        let in_band = super::scratch_base_gva(scratch_size) - PAGE_SIZE as u64;
+        let covered = make_pt_mem(&contents, &[base, in_band]);
+        let Err(err) = snapshot_with_scratch(covered, &mut mgr, pt_base, larger) else {
+            panic!("a larger scratch window covers a guest mapping");
+        };
+        assert!(err.to_string().contains(&format!("{in_band:#x}")), "{err}");
+
+        // The same mapping is kept when the scratch window does not grow.
+        let covered = make_pt_mem(&contents, &[base, in_band]);
+        assert!(snapshot_with_scratch(covered, &mut mgr, pt_base, scratch_size).is_ok());
     }
 }

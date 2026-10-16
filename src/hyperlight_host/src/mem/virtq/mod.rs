@@ -68,8 +68,6 @@ pub(crate) fn create_consumers(
 /// Validated ring images excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
-    /// Scratch size used to derive transport GVAs.
-    scratch_size: usize,
     /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
     /// Host-to-guest ring bytes.
@@ -80,15 +78,10 @@ impl VirtqSnapshot {
     /// Validate captured or decoded rings against the final transport geometry.
     pub(crate) fn new(
         layout: &SandboxMemoryLayout,
-        scratch_size: usize,
         g2h_ring: Vec<u8>,
         h2g_ring: Vec<u8>,
     ) -> Result<Self> {
-        let snapshot = Self {
-            scratch_size,
-            g2h_ring,
-            h2g_ring,
-        };
+        let snapshot = Self { g2h_ring, h2g_ring };
 
         snapshot.validate(layout)?;
         Ok(snapshot)
@@ -115,12 +108,7 @@ impl VirtqSnapshot {
             layout.get_h2g_queue_dims().ring_len(),
         )?;
 
-        Self::new(layout, layout.get_scratch_size(), g2h_ring, h2g_ring)
-    }
-
-    /// Scratch size used to interpret the saved ring addresses.
-    pub(crate) fn scratch_size(&self) -> usize {
-        self.scratch_size
+        Self::new(layout, g2h_ring, h2g_ring)
     }
 
     /// Canonical guest-to-host ring bytes.
@@ -153,14 +141,6 @@ impl VirtqSnapshot {
 
     /// Check geometry, canonical rings, and distinct, aligned H2G pool slots.
     fn validate(&self, layout: &SandboxMemoryLayout) -> Result<()> {
-        if self.scratch_size != layout.get_scratch_size() {
-            return Err(new_error!(
-                "virtqueue snapshot scratch size {} does not match layout size {}",
-                self.scratch_size,
-                layout.get_scratch_size()
-            ));
-        }
-
         if self.g2h_ring.len() != layout.get_g2h_queue_dims().ring_len()
             || self.h2g_ring.len() != layout.get_h2g_queue_dims().ring_len()
         {

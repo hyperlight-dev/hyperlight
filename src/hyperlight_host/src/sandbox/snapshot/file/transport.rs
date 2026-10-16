@@ -13,8 +13,11 @@ const MAGIC: [u8; 8] = *b"HLVQSNAP";
 const VERSION: u32 = 1;
 const HEADER_LEN: usize = 40;
 
-/// Serialize the scratch size and ring images.
-pub(super) fn encode(snapshot: &VirtqSnapshot) -> crate::Result<Vec<u8>> {
+/// Serialize the snapshot's scratch size and ring images.
+pub(super) fn encode(
+    layout: &SandboxMemoryLayout,
+    snapshot: &VirtqSnapshot,
+) -> crate::Result<Vec<u8>> {
     let g2h_len = snapshot.g2h_ring().len();
     let h2g_len = snapshot.h2g_ring().len();
 
@@ -37,7 +40,7 @@ pub(super) fn encode(snapshot: &VirtqSnapshot) -> crate::Result<Vec<u8>> {
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&VERSION.to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&u64::try_from(snapshot.scratch_size())?.to_le_bytes());
+    bytes.extend_from_slice(&u64::try_from(layout.get_scratch_size())?.to_le_bytes());
     bytes.extend_from_slice(&u64::try_from(g2h_len)?.to_le_bytes());
     bytes.extend_from_slice(&u64::try_from(h2g_len)?.to_le_bytes());
     bytes.extend_from_slice(snapshot.g2h_ring());
@@ -92,6 +95,12 @@ pub(super) fn decode(layout: &SandboxMemoryLayout, bytes: &[u8]) -> crate::Resul
         ));
     };
     let scratch_size = usize::try_from(u64::from_le_bytes(scratch_size))?;
+    if scratch_size != layout.get_scratch_size() {
+        return Err(crate::new_error!(
+            "snapshot transport scratch size {scratch_size} does not match layout size {}",
+            layout.get_scratch_size()
+        ));
+    }
 
     let Some(g2h_len) = read_field(&mut bytes) else {
         return Err(crate::new_error!(
@@ -122,7 +131,7 @@ pub(super) fn decode(layout: &SandboxMemoryLayout, bytes: &[u8]) -> crate::Resul
     // The checked total length guarantees both ring slices fit.
     let (g2h_ring, h2g_ring) = bytes.split_at(g2h_len);
 
-    VirtqSnapshot::new(layout, scratch_size, g2h_ring.to_vec(), h2g_ring.to_vec())
+    VirtqSnapshot::new(layout, g2h_ring.to_vec(), h2g_ring.to_vec())
 }
 
 #[cfg(test)]
@@ -155,14 +164,14 @@ mod tests {
         expected.extend_from_slice(snapshot.g2h_ring());
         expected.extend_from_slice(snapshot.h2g_ring());
 
-        assert_eq!(encode(&snapshot).unwrap(), expected);
+        assert_eq!(encode(&layout, &snapshot).unwrap(), expected);
         assert_eq!(decode(&layout, &expected).unwrap(), snapshot);
     }
 
     #[test]
     fn transport_blob_rejects_empty_rings() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes.truncate(HEADER_LEN);
         bytes[24..40].fill(0);
 
@@ -173,7 +182,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_invalid_magic() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes[0] ^= 1;
 
         assert!(
@@ -187,7 +196,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_version_mismatch() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes[8..12].copy_from_slice(&VERSION.wrapping_add(1).to_le_bytes());
 
         assert!(
@@ -201,7 +210,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_nonzero_reserved_field() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes[12] = 1;
 
         assert!(
@@ -215,7 +224,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_truncated_header_fields() {
         let (layout, snapshot) = transport_snapshot();
-        let bytes = encode(&snapshot).unwrap();
+        let bytes = encode(&layout, &snapshot).unwrap();
 
         for (range, field) in [
             (0..8, "magic"),
@@ -238,7 +247,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_truncated_ring_images() {
         let (layout, snapshot) = transport_snapshot();
-        let bytes = encode(&snapshot).unwrap();
+        let bytes = encode(&layout, &snapshot).unwrap();
 
         for len in HEADER_LEN..bytes.len() {
             let error = decode(&layout, &bytes[..len]).unwrap_err();
@@ -249,7 +258,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_trailing_bytes() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes.push(3);
 
         assert!(
@@ -264,7 +273,7 @@ mod tests {
     fn transport_blob_rejects_length_overflow() {
         for (g2h_len, h2g_len) in [(usize::MAX, 0), (0, usize::MAX)] {
             let (layout, snapshot) = transport_snapshot();
-            let mut bytes = encode(&snapshot).unwrap();
+            let mut bytes = encode(&layout, &snapshot).unwrap();
             bytes[24..32].copy_from_slice(&(g2h_len as u64).to_le_bytes());
             bytes[32..40].copy_from_slice(&(h2g_len as u64).to_le_bytes());
 
@@ -276,13 +285,13 @@ mod tests {
     #[test]
     fn transport_blob_rejects_layout_mismatch() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
-        bytes[16..24].copy_from_slice(&(snapshot.scratch_size() as u64 + 1).to_le_bytes());
+        let mut bytes = encode(&layout, &snapshot).unwrap();
+        bytes[16..24].copy_from_slice(&(layout.get_scratch_size() as u64 + 1).to_le_bytes());
 
         let error = decode(&layout, &bytes).unwrap_err();
         assert!(error.to_string().contains("scratch size"), "{error}");
 
-        bytes[16..24].copy_from_slice(&(snapshot.scratch_size() as u64).to_le_bytes());
+        bytes[16..24].copy_from_slice(&(layout.get_scratch_size() as u64).to_le_bytes());
         bytes[24..32].copy_from_slice(&(snapshot.g2h_ring().len() as u64 - 1).to_le_bytes());
         bytes[32..40].copy_from_slice(&(snapshot.h2g_ring().len() as u64 + 1).to_le_bytes());
 
@@ -293,7 +302,7 @@ mod tests {
     #[test]
     fn transport_blob_rejects_noncanonical_rings() {
         let (layout, snapshot) = transport_snapshot();
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         bytes[HEADER_LEN] = 1;
 
         let error = decode(&layout, &bytes).unwrap_err();
@@ -321,7 +330,7 @@ mod tests {
         let layout = memory_layout();
         let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
 
-        let mut bytes = encode(&snapshot).unwrap();
+        let mut bytes = encode(&layout, &snapshot).unwrap();
         let addr_offset = HEADER_LEN + snapshot.g2h_ring().len() + Descriptor::ADDR_OFFSET;
 
         let ring_addr = case.g2h_layout.desc_table_addr();
