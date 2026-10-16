@@ -1265,8 +1265,10 @@ fn snapshot_size_smaller_than_layout_rejected() {
         cfg["layout"]["snapshot_size"] = Value::from(short);
         cfg["layout"]["pt_size"] = Value::from(mem - short);
         // Grow scratch to cover the larger pt tail so the scratch
-        // bound is not what trips.
-        cfg["layout"]["scratch_size"] = Value::from(mem + page);
+        // bound is not what trips. Whole host pages, so the host page
+        // check is not what trips either.
+        let host_page = crate::mem::layout::SandboxMemoryLayout::host_page_size() as u64;
+        cfg["layout"]["scratch_size"] = Value::from((mem + page).next_multiple_of(host_page));
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
