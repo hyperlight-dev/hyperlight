@@ -11,6 +11,7 @@ mod media_types;
 pub(crate) mod reference;
 mod transport;
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
@@ -144,6 +145,22 @@ fn read_layout_marker(path: &Path) -> crate::Result<()> {
         ));
     }
     Ok(())
+}
+
+
+/// Validate an existing OCI layout marker, if present.
+/// Returns whether the marker already exists.
+fn validate_existing_layout(path: &Path) -> crate::Result<bool> {
+    let marker = path.join("oci-layout");
+    let exists = marker
+        .try_exists()
+        .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", marker, e))?;
+
+    if exists {
+        read_layout_marker(path)?;
+    }
+
+    Ok(exists)
 }
 
 fn load_manifest(
@@ -397,37 +414,33 @@ impl Snapshot {
             }
         }
 
-        // Validate any pre-existing `oci-layout` marker before
-        // touching anything else, so a foreign layout (future
-        // version, hand-edited file) is reported without altering
-        // the directory.
+        // Reject unsupported layouts before writing snapshot data.
+        validate_existing_layout(path)?;
         let layout_marker = path.join("oci-layout");
-        let marker_existed = layout_marker
-            .try_exists()
-            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", layout_marker, e))?;
-        if marker_existed {
-            let bytes = read_bounded(&layout_marker, MAX_JSON_BLOB_SIZE).map_err(|e| {
-                crate::new_error!("save: failed to read existing oci-layout: {}", e)
+
+        // Generate content-addressed snapshot blobs outside the index lock.
+        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
+        let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
+
+        // Serialize layout validation and the index read-modify-write
+        // transaction across cooperating processes.
+        // Use a stable lock file, not index.json, which is atomically replaced.
+        let lock_path = path.join(".hyperlight-index.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| {
+                crate::new_error!("save: failed to open index lock {:?}: {}", lock_path, e)
             })?;
-            let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-                crate::new_error!("save: existing oci-layout is not valid JSON: {}", e)
-            })?;
-            match v.get("imageLayoutVersion").and_then(|s| s.as_str()) {
-                Some(s) if s == OCI_LAYOUT_VERSION => {}
-                Some(other) => {
-                    return Err(crate::new_error!(
-                        "save: existing imageLayoutVersion {:?} is unsupported (expected {:?})",
-                        other,
-                        OCI_LAYOUT_VERSION
-                    ));
-                }
-                None => {
-                    return Err(crate::new_error!(
-                        "save: existing oci-layout is missing imageLayoutVersion"
-                    ));
-                }
-            }
-        }
+        lock_file.lock().map_err(|e| {
+            crate::new_error!("save: failed to acquire index lock {:?}: {}", lock_path, e)
+        })?;
+        // File lock is released when lock_file is dropped on all exit paths.
+
+        // Revalidate under the lock in case the layout changed.
+        let marker_existed = validate_existing_layout(path)?;
 
         let index_path = path.join("index.json");
         let index_existed = index_path
@@ -447,9 +460,6 @@ impl Snapshot {
         } else {
             Vec::new()
         };
-
-        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
-        let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
 
         // Replacement is by tag, not by digest: a new snapshot may
         // hash to a different value but still claim the same logical
