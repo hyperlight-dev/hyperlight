@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-use itertools::Itertools;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
@@ -9,16 +8,16 @@ use crate::emit::{ResolvedBoundVar, State, kebab_to_cons, kebab_to_flags_const, 
 use crate::etypes::{self, Defined, Handleable, Tyvar, Value};
 use crate::rtypes;
 
-/// Construct a string that can be used "on the wire" to identify a
-/// given function between the guest/host.  This should be replaced
-/// with an integer index so that we can dispatch less dynamically in
-/// the future.
+/// Construct the string that identifies a function on the wire
+/// between the guest and host: `<instance>#<function>` for instance
+/// members, e.g. `wasi:http/types@0.2.0#[method]fields.get`, and the
+/// plain function name for functions imported or exported directly
+/// by the world.
 pub fn emit_fn_hl_name(s: &State, kebab: &str) -> String {
-    s.mod_cursor
-        .iter()
-        .map(|x| x.to_string())
-        .chain(std::iter::once(kebab.to_string()))
-        .join("::")
+    match &s.cur_instance {
+        Some(instance) => format!("{instance}#{kebab}"),
+        None => kebab.to_string(),
+    }
 }
 
 /// Emit code to unmarshal a value into a toplevel type (i.e. types
@@ -133,7 +132,7 @@ pub fn emit_hl_unmarshal_toplevel_value(
                 }
             });
             quote! {
-                let n = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                let n = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                 let #inid = &#id[4..];
                 match n {
                     #(#vcs,)*
@@ -148,7 +147,7 @@ pub fn emit_hl_unmarshal_toplevel_value(
                 quote! { #i => ( #tname::#case_name, 4) }
             });
             quote! {
-                let n = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                let n = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                 match n {
                     #(#vcs,)*
                     _ => panic!("invalid value for enum"),
@@ -193,15 +192,15 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             let (tid, width) = rtypes::numeric_rtype(vt);
             let blen = width as usize / 8;
             quote! {
-                (#tid::from_ne_bytes(#id[0..#blen].try_into().unwrap()), #blen)
+                (#tid::from_le_bytes(#id[0..#blen].try_into().unwrap()), #blen)
             }
         }
         Value::Char => quote! {
-            (unsafe { char::from_u32_unchecked(u32::from_ne_bytes(
+            (unsafe { char::from_u32_unchecked(u32::from_le_bytes(
                 #id[0..4].try_into().unwrap())) }, 4)
         },
         Value::String => quote! {
-            let n = u32::from_ne_bytes(#id[0..4].try_into().unwrap()) as usize;
+            let n = u32::from_le_bytes(#id[0..4].try_into().unwrap()) as usize;
             let s = ::alloc::string::ToString::to_string(::core::str::from_utf8(&#id[4..4 + n]).unwrap()); // todo: better error handling
             (s, n + 4)
         },
@@ -210,7 +209,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             let inid = format_ident!("{}_elem", id);
             let vtun = emit_hl_unmarshal_value(s, inid.clone(), vt);
             quote! {
-                let n = u32::from_ne_bytes(#id[0..4].try_into().unwrap()) as usize;
+                let n = u32::from_le_bytes(#id[0..4].try_into().unwrap()) as usize;
                 let mut #retid = alloc::vec::Vec::new();
                 let mut cursor = 4;
                 for i in 0..n {
@@ -270,7 +269,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             let inid = format_ident!("{}_body", id);
             let vtun = emit_hl_unmarshal_value(s, inid.clone(), vt);
             quote! {
-                let n = u8::from_ne_bytes(#id[0..1].try_into().unwrap());
+                let n = u8::from_le_bytes(#id[0..1].try_into().unwrap());
                 if n != 0 {
                     let #inid = &#id[1..];
                     let (x, b) = { #vtun };
@@ -293,7 +292,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                 quote! { ((), 0) }
             };
             quote! {
-                let i = u8::from_ne_bytes(#id[0..1].try_into().unwrap());
+                let i = u8::from_le_bytes(#id[0..1].try_into().unwrap());
                 let #inid = &#id[1..];
                 if i == 0 {
                     let (x, b) = { #vtun1 };
@@ -311,19 +310,19 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                 let rid = format_ident!("HostResource{}", vi);
                 if s.is_wasmtime_guest {
                     quote! {
-                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                        let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                         (::wasmtime::component::Resource::<#rid>::new_own(i), 4)
                     }
                 } else {
                     quote! {
-                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                        let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                         (#rid { rep: i }, 4)
                     }
                 }
             } else {
                 let rid = format_ident!("resource{}", vi);
                 quote! {
-                    let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                    let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                     let Some(v) = rts.#rid[i as usize].take() else {
                         // todo: better error handling
                         panic!("");
@@ -339,7 +338,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                 let rid = format_ident!("HostResource{}", vi);
                 if s.is_wasmtime_guest {
                     quote! {
-                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                        let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                         (::wasmtime::component::Resource::<#rid>::new_borrow(i), 4)
                     }
                 } else {
@@ -356,7 +355,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                     // AsRef<HostResourceXX> or something in the
                     // future...
                     quote! {
-                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                        let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
 
                         (#rid { rep: i }, 4)
                     }
@@ -364,7 +363,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             } else {
                 let rid = format_ident!("resource{}", vi);
                 quote! {
-                    let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                    let i = u32::from_le_bytes(#id[0..4].try_into().unwrap());
                     let Some(v) = rts.#rid[i as usize].borrow() else {
                         // todo: better error handling
                         panic!("");
@@ -474,7 +473,7 @@ pub fn emit_hl_marshal_toplevel_value(
                             let vtun = emit_hl_marshal_value(s, bodyid.clone(), ty);
                             quote! {
                                #tname::#case_name(#bodyid) => {
-                                    #retid.extend(u32::to_ne_bytes(#i));
+                                    #retid.extend(u32::to_le_bytes(#i));
                                     #retid.extend({ #vtun })
                                 }
                             }
@@ -482,7 +481,7 @@ pub fn emit_hl_marshal_toplevel_value(
                         None => {
                             quote! {
                                 #tname::#case_name => {
-                                    #retid.extend(u32::to_ne_bytes(#i));
+                                    #retid.extend(u32::to_le_bytes(#i));
                                 }
                             }
                         }
@@ -504,7 +503,7 @@ pub fn emit_hl_marshal_toplevel_value(
                 quote! { #tname::#case_name => #i }
             });
             quote! {
-                alloc::vec::Vec::from(u32::to_ne_bytes(match #id {
+                alloc::vec::Vec::from(u32::to_le_bytes(match #id {
                     #(#vcs,)*
                 }))
             }
@@ -528,10 +527,10 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
         },
         Value::S(_) | Value::U(_) | Value::F(_) => {
             let (tid, _) = rtypes::numeric_rtype(vt);
-            quote! { alloc::vec::Vec::from(#tid::to_ne_bytes(#id)) }
+            quote! { alloc::vec::Vec::from(#tid::to_le_bytes(#id)) }
         }
         Value::Char => quote! {
-            alloc::vec::Vec::from((#id as u32).to_ne_bytes())
+            alloc::vec::Vec::from((#id as u32).to_le_bytes())
         },
         Value::String => {
             let retid = format_ident!("{}_string", id);
@@ -539,7 +538,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
             quote! {
                 let mut #retid = alloc::vec::Vec::new();
                 let #bytesid = #id.into_bytes();
-                #retid.extend(alloc::vec::Vec::from(u32::to_ne_bytes(#bytesid.len() as u32)));
+                #retid.extend(alloc::vec::Vec::from(u32::to_le_bytes(#bytesid.len() as u32)));
                 #retid.extend(#bytesid);
                 #retid
             }
@@ -551,7 +550,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
             quote! {
                 let mut #retid = alloc::vec::Vec::new();
                 let n = #id.len();
-                #retid.extend(alloc::vec::Vec::from(u32::to_ne_bytes(n as u32)));
+                #retid.extend(alloc::vec::Vec::from(u32::to_le_bytes(n as u32)));
                 for #inid in #id {
                     #retid.extend({ #vtun })
                 }
@@ -598,11 +597,11 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
             quote! {
                 match #id {
                     ::core::option::Option::Some(#bodyid) => {
-                        let mut #retid = alloc::vec::Vec::from(u8::to_ne_bytes(1));
+                        let mut #retid = alloc::vec::Vec::from(u8::to_le_bytes(1));
                         #retid.extend({ #vtun });
                         #retid
                     },
-                    ::core::option::Option::None => alloc::vec::Vec::from(u8::to_ne_bytes(0))
+                    ::core::option::Option::None => alloc::vec::Vec::from(u8::to_le_bytes(0))
                 }
             }
         }
@@ -624,12 +623,12 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
             quote! {
                 match #id {
                     ::core::result::Result::Ok(#bodyid) => {
-                        let mut #retid = alloc::vec::Vec::from(u8::to_ne_bytes(0));
+                        let mut #retid = alloc::vec::Vec::from(u8::to_le_bytes(0));
                         #vtun1
                         #retid
                     },
                     ::core::result::Result::Err(#bodyid) => {
-                        let mut #retid = alloc::vec::Vec::from(u8::to_ne_bytes(1));
+                        let mut #retid = alloc::vec::Vec::from(u8::to_le_bytes(1));
                         #vtun2
                         #retid
                     },
@@ -646,14 +645,14 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                     quote! {}
                 };
                 quote! {
-                    alloc::vec::Vec::from(u32::to_ne_bytes(#id.rep #call))
+                    alloc::vec::Vec::from(u32::to_le_bytes(#id.rep #call))
                 }
             } else {
                 let rid = format_ident!("resource{}", vi);
                 quote! {
                     let i = rts.#rid.len();
                     rts.#rid.push_back(::hyperlight_common::resource::ResourceEntry::give(#id));
-                    alloc::vec::Vec::from(u32::to_ne_bytes(i as u32))
+                    alloc::vec::Vec::from(u32::to_le_bytes(i as u32))
                 }
             }
         }
@@ -667,7 +666,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                     quote! {}
                 };
                 quote! {
-                    alloc::vec::Vec::from(u32::to_ne_bytes(#id.rep #call))
+                    alloc::vec::Vec::from(u32::to_le_bytes(#id.rep #call))
                 }
             } else {
                 let rid = format_ident!("resource{}", vi);
@@ -676,7 +675,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                     let (lrg, re) = ::hyperlight_common::resource::ResourceEntry::lend(#id);
                     to_cleanup.push(Box::new(lrg));
                     rts.#rid.push_back(re);
-                    alloc::vec::Vec::from(u32::to_ne_bytes(i as u32))
+                    alloc::vec::Vec::from(u32::to_le_bytes(i as u32))
                 }
             }
         }
