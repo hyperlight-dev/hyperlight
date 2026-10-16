@@ -44,6 +44,28 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 impl HyperlightVm {
+    #[cfg(gdb)]
+    pub(crate) fn initialize_debug_vectors(
+        &mut self,
+        vectors: Option<u64>,
+    ) -> Result<(), CreateHyperlightVmError> {
+        if self.gdb_conn.is_none() || !matches!(self.next_action, NextAction::Initialise(_)) {
+            return Ok(());
+        }
+        let vectors = vectors.ok_or_else(|| {
+            VmError::Debug(crate::hypervisor::gdb::DebugError::Unsupported(
+                "guest binary lacks ARM64 debug vectors",
+            ))
+        })?;
+        let mut regs = self.vm.sregs().map_err(VmError::Register)?;
+        regs.vbar_el1 = vectors;
+        regs.sp_el1 = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
+            - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
+            + 1;
+        self.vm.set_sregs(&regs).map_err(VmError::Register)?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
