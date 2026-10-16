@@ -32,12 +32,8 @@ impl TestCase {
         let layout = memory_layout();
         let arena = layout.get_transport_arena();
         let (g2h_layout, h2g_layout) = ring_layouts(&layout).unwrap();
-        let to_gva = |gpa| {
-            hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
-                + (gpa - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE))
-        };
-        let g2h_pool_base = to_gva(arena.g2h_pool_addr());
-        let h2g_pool_base = to_gva(arena.h2g_pool_addr());
+        let g2h_pool_base = scratch_gva(arena.g2h_pool_addr());
+        let h2g_pool_base = scratch_gva(arena.h2g_pool_addr());
         let h2g = layout.get_h2g_queue_dims();
         let mem = HostMemOps::new(&scratch);
         let buffer_size = layout.get_h2g_buffer_size();
@@ -91,6 +87,12 @@ impl TestCase {
     }
 }
 
+/// The test scratch's GVA for `gpa`.
+fn scratch_gva(gpa: u64) -> u64 {
+    hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
+        + (gpa - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE))
+}
+
 pub(crate) fn memory_layout() -> SandboxMemoryLayout {
     let mut config = SandboxConfiguration::default();
     config.set_scratch_size(SCRATCH_SIZE);
@@ -138,7 +140,7 @@ fn snapshots_and_restores_rings() {
     let allocator = layout.get_first_free_scratch_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
-    let mbx_offset = layout.get_transport_arena().mbx_offset();
+    let mbx_offset = layout.mbx_scratch_offset();
     let cp = MailboxValue::CheckpointPending.as_bytes();
 
     restored.write::<u64>(allocator_offset, allocator).unwrap();
@@ -323,7 +325,8 @@ fn restores_with_finalized_layout() {
 #[test]
 fn uses_scratch_payloads_outside_pools() {
     let case = TestCase::new();
-    let addr = case.h2g_pool_base + memory_layout().get_h2g_queue_dims().pool_len() as u64;
+    // General scratch, below the arena: the allocator's first free page.
+    let addr = scratch_gva(memory_layout().get_first_free_scratch_gpa());
     case.mem.write(addr, &[1, 2, 3]).unwrap();
 
     let mut g2h_desc = Descriptor::new(addr, 3, 0, DescFlags::empty());

@@ -64,7 +64,8 @@ original virtual address to point to the new page.
 The page table entries to do this will likely need to be copied themselves, and so a
 ready supply of already-mapped scratch pages to use for replacement
 page tables is needed. Currently, the guest accomplishes this by
-keeping an identity mapping of the entire scratch memory around.
+keeping an identity mapping of scratch memory around, except one guard
+page below the reserved top pages.
 
 The host and the guest need to agree on the location of this mapping,
 so that (a) the host can create it when first setting up a blank guest
@@ -139,14 +140,20 @@ calls, i.e. there may be no calls in flight at the time of
 snapshotting. This is not enforced, but odd things may happen if it is
 violated.
 
-Host and guest calls use two virtqueues in a fixed transport arena at
-the bottom of scratch. The arena contains both rings and their
-fixed-slot buffer pools. Copied page tables follow the arena. Dynamic
-scratch allocations begin after the copied page tables.
+Host function calls and guest function calls use two virtqueues in a
+fixed transport arena below the reserved scratch-top pages. One
+unmapped guard page between them makes an amd64 exception stack
+overrun fault before it reaches the arena. On aarch64 nested faults
+lower SP past it, since the exception vectors store below SP before
+any check. The arena's address does not depend on the scratch size.
+The arena contains both rings and their fixed-slot buffer pools.
+Copied page tables start at the scratch base. Dynamic scratch
+allocations begin after the copied page tables and stop at the arena.
 
-The minimum scratch size is calculated by `min_scratch_size()` in the
-architecture-specific layout modules under `hyperlight_common`; see
-that function for the detailed breakdown of required overhead.
+The minimum scratch size is the architecture's fixed overhead
+(`min_scratch_size()` in the layout modules under `hyperlight_common`,
+which breaks it down) plus the transport arena and the guard page above
+it (`SandboxMemoryLayout::min_scratch`), plus the copied page tables.
 
 ## Creating a fresh guest
 

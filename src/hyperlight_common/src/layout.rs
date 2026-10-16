@@ -113,9 +113,33 @@ const _: () = {
     assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };
 
-/// Exclusive upper GPA boundary for dynamic scratch allocations.
-pub const fn scratch_allocator_limit_gpa() -> u64 {
+/// Unmapped pages between the transport arena and the reserved top pages.
+/// On amd64 an exception stack overrun faults in them before it reaches the
+/// arena. aarch64 exception vectors lower SP before their first store, so
+/// nested faults there can step past them.
+pub const SCRATCH_TRANSPORT_GAP_PAGES: usize = 1;
+
+/// Start of the reserved pages at the top of scratch. The transport arena
+/// sits [`SCRATCH_TRANSPORT_GAP_PAGES`] below it. A guest's page allocator
+/// stops at the arena GPA the host publishes.
+pub const fn scratch_reserved_top_gpa() -> u64 {
     (SCRATCH_TOP_GPA + 1 - SCRATCH_TOP_RESERVED_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// [`scratch_reserved_top_gpa`] in the scratch mapping.
+pub const fn scratch_reserved_top_gva() -> u64 {
+    SCRATCH_TOP_GVA as u64 + 1 - (SCRATCH_TOP_RESERVED_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// Exclusive end of the transport arena: the reserved top pages, less the
+/// guard pages between them.
+pub const fn scratch_transport_end_gpa() -> u64 {
+    scratch_reserved_top_gpa() - (SCRATCH_TRANSPORT_GAP_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// [`scratch_transport_end_gpa`] in the scratch mapping.
+pub const fn scratch_transport_end_gva() -> u64 {
+    scratch_reserved_top_gva() - (SCRATCH_TRANSPORT_GAP_PAGES * crate::vmem::PAGE_SIZE) as u64
 }
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
@@ -127,8 +151,9 @@ pub const fn scratch_base_gva(size: usize) -> u64 {
 
 /// Compute fixed scratch overhead for a sandbox, saturating at [`usize::MAX`].
 ///
-/// `transport_len` covers rings and buffer pools. Snapshot page tables and
-/// runtime allocations need additional scratch.
+/// `transport_len` covers the transport arena (rings, mailbox and buffer
+/// pools) and the [`SCRATCH_TRANSPORT_GAP_PAGES`] above it. Snapshot page
+/// tables and runtime allocations need additional scratch.
 pub fn min_scratch_size(transport_len: usize) -> usize {
     arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))

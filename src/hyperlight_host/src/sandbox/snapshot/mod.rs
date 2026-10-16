@@ -11,7 +11,10 @@ use std::sync::Arc;
 pub(crate) use file::host_cpu_vendor_golden_tag;
 pub use file::reference::{OciDigest, OciReference, OciTag};
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-use hyperlight_common::layout::{io_page, scratch_base_gpa, scratch_base_gva};
+use hyperlight_common::layout::{
+    SCRATCH_TOP_GVA, io_page, scratch_base_gpa, scratch_base_gva, scratch_reserved_top_gpa,
+    scratch_reserved_top_gva, scratch_transport_end_gva,
+};
 use hyperlight_common::vmem;
 use hyperlight_common::vmem::{
     BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId, TableOps,
@@ -282,20 +285,41 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
         };
         unsafe { vmem::map(pt_buf, mapping) };
     }
-    // Map the scratch region
-    let mapping = Mapping {
-        phys_base: scratch_base_gpa(scratch_size),
-        virt_base: scratch_base_gva(scratch_size),
-        len: scratch_size as u64,
-        kind: MappingKind::Basic(BasicMapping {
-            readable: true,
-            writable: true,
-            // assume that the guest will map these pages elsewhere if
-            // it actually needs to execute from them
-            executable: false,
-        }),
+    // Map the scratch region, except the guard pages under the reserved top
+    // pages. Left unmapped, they make an amd64 exception stack overrun fault
+    // before it reaches the transport arena.
+    let base_gpa = scratch_base_gpa(scratch_size);
+    let base_gva = scratch_base_gva(scratch_size);
+    let gap_gva = scratch_transport_end_gva();
+    let top_gva = scratch_reserved_top_gva();
+    let ranges = if base_gva < gap_gva {
+        [
+            (base_gpa, base_gva, gap_gva - base_gva),
+            (
+                scratch_reserved_top_gpa(),
+                top_gva,
+                SCRATCH_TOP_GVA as u64 + 1 - top_gva,
+            ),
+        ]
+    } else {
+        // Only tests build a scratch window too small to reach the gap.
+        [(base_gpa, base_gva, scratch_size as u64), (0, 0, 0)]
     };
-    unsafe { vmem::map(pt_buf, mapping) };
+    for (phys_base, virt_base, len) in ranges.into_iter().filter(|r| r.2 != 0) {
+        let mapping = Mapping {
+            phys_base,
+            virt_base,
+            len,
+            kind: MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                // assume that the guest will map these pages elsewhere if
+                // it actually needs to execute from them
+                executable: false,
+            }),
+        };
+        unsafe { vmem::map(pt_buf, mapping) };
+    }
 }
 
 impl Snapshot {

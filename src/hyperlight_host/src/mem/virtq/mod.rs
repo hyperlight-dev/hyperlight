@@ -140,7 +140,7 @@ impl VirtqSnapshot {
         scratch_mem: &HostSharedMemory,
     ) -> Result<(G2hConsumer, H2gConsumer)> {
         let (g2h_offset, h2g_offset) = ring_offsets(layout);
-        let mbx_offset = layout.get_transport_arena().mbx_offset();
+        let mbx_offset = layout.mbx_scratch_offset();
         let cp = MailboxValue::CheckpointComplete.as_bytes();
 
         write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
@@ -247,9 +247,7 @@ fn read_ring(scratch_mem: &HostSharedMemory, offset: usize, len: usize) -> Resul
 }
 
 fn ring_offsets(layout: &SandboxMemoryLayout) -> (usize, usize) {
-    let arena = layout.get_transport_arena();
-    let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
-    let g2h_offset = (arena.base_addr() - scratch_base) as usize;
-    let (h2g_offset, ..) = arena.to_offsets();
+    let g2h_offset = layout.arena_scratch_offset();
+    let (h2g_offset, ..) = layout.get_transport_arena().to_offsets();
     (g2h_offset, g2h_offset + h2g_offset)
 }

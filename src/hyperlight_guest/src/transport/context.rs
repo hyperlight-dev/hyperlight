@@ -12,7 +12,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_common::layout::SCRATCH_TOP_GVA;
+use hyperlight_common::layout::scratch_transport_end_gva;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::transport::{
     EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind,
@@ -119,23 +119,28 @@ impl GuestContext {
     /// The caller must run in an initialized single-vCPU Hyperlight guest and
     /// exclusively own both queues, their pools, and the writable `u64` mailbox
     /// at `mbx_gva`. The mailbox must lie in scratch, disjoint from both queues
-    /// and pools. Scratch must remain mapped while the context or any returned
-    /// buffer views exist.
+    /// and pools. Both rings and pools must lie in the transport arena, which
+    /// starts at the G2H ring and ends below the reserved scratch-top pages,
+    /// with the pools after the rings. Scratch must remain mapped while the
+    /// context or any returned buffer views exist.
     pub unsafe fn new(g2h: QueueConfig, h2g: QueueConfig, mbx_gva: u64) -> Result<Self> {
         // SAFETY: Generation has been initialized by host.
         let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
 
         let g2h_pool = g2h_pool(g2h.pool_gva, g2h.pool_pages, g2h.buffer_size)
             .with_context(|| "failed to create G2H pool")?;
+        // The G2H ring starts the transport arena.
+        let arena_gva = g2h.layout.desc_table_addr();
+        let scratch_gva = layout::scratch_base_gva();
         // SAFETY: The caller owns the pool's scratch pages.
-        let mem = unsafe { pool_mem(&g2h_pool) }
+        let mem = unsafe { pool_mem(&g2h_pool, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize G2H pool access")?;
         let g2h_producer = VirtqProducer::new(g2h.layout, mem, OutbNotifier, g2h_pool);
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
             .with_context(|| "failed to create H2G slot pool")?;
         // SAFETY: The caller owns this disjoint pool.
-        let mem = unsafe { pool_mem(&h2g_pool) }
+        let mem = unsafe { pool_mem(&h2g_pool, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize H2G pool access")?;
         // H2G prefill supplies writable buffers for host-initiated messages.
         let h2g_producer = VirtqProducer::new(h2g.layout, mem, NoopNotifier, h2g_pool);
@@ -548,24 +553,38 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
         .ok_or(AllocError::Overflow)
 }
 
-/// Validate pool placement and bind scratch access.
+/// Validate pool placement and bind access to the arena up to the pool's end.
+///
+/// The bounds start at the arena, whose address does not depend on the
+/// scratch size. The pools follow the rings, so a producer's rings and pool
+/// lie in [arena, end of its pool). That range must start in scratch above
+/// `scratch_gva`, where the copied page tables sit, and end below the guard
+/// page under the reserved scratch-top pages.
 ///
 /// # Safety
 ///
 /// Run on the initialized guest vCPU and own the pool's scratch.
-unsafe fn pool_mem(pool: &SlotPool) -> result::Result<GuestMemOps, AllocError> {
-    let scratch_gva = layout::scratch_base_gva();
-    let scratch_end = SCRATCH_TOP_GVA as u64 + 1;
+unsafe fn pool_mem(
+    pool: &SlotPool,
+    arena_gva: u64,
+    scratch_gva: u64,
+) -> result::Result<GuestMemOps, AllocError> {
+    let limit = scratch_transport_end_gva();
 
     let base = pool.base_addr();
     let end = base + pool.byte_len() as u64;
 
-    if !base.is_multiple_of(PAGE_SIZE as u64) || base < scratch_gva || end > scratch_end {
+    if !arena_gva.is_multiple_of(PAGE_SIZE as u64)
+        || arena_gva <= scratch_gva
+        || !base.is_multiple_of(PAGE_SIZE as u64)
+        || base < arena_gva
+        || end > limit
+    {
         return Err(AllocError::InvalidArg);
     }
 
-    // SAFETY: The validated pool lies in live scratch on the serialized guest vCPU.
-    unsafe { Ok(GuestMemOps::new(scratch_gva, scratch_end)) }
+    // SAFETY: The validated pool lies in the arena on the serialized guest vCPU.
+    unsafe { Ok(GuestMemOps::new(arena_gva, end)) }
 }
 
 /// Build the uniform H2G pool.
@@ -610,6 +629,27 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::ExternalValueSink;
 
     use super::*;
+
+    #[test]
+    fn pool_mem_binds_the_arena_below_the_reserved_top() {
+        let limit = scratch_transport_end_gva();
+        let page = PAGE_SIZE as u64;
+        let arena = limit - 8 * page;
+        let scratch = arena - 16 * page;
+        let pool = |base, pages| h2g_pool(base, pages, 256).unwrap();
+        // SAFETY: only bounds are computed. No memory is touched.
+        unsafe {
+            assert!(pool_mem(&pool(arena + 4 * page, 4), arena, scratch).is_ok());
+            // Into the guard page or the reserved pages.
+            assert!(pool_mem(&pool(arena + 4 * page, 5), arena, scratch).is_err());
+            // Below the arena.
+            assert!(pool_mem(&pool(arena - page, 1), arena, scratch).is_err());
+            // An arena below scratch, at its base, or not page aligned.
+            assert!(pool_mem(&pool(arena + 4 * page, 4), 0, scratch).is_err());
+            assert!(pool_mem(&pool(arena + 4 * page, 4), scratch, scratch).is_err());
+            assert!(pool_mem(&pool(arena + 4 * page, 4), arena + 8, scratch).is_err());
+        }
+    }
 
     fn encoded_message(external: &[u8]) -> EncodedMessage<'_> {
         let mut values = ExternalValues::new();

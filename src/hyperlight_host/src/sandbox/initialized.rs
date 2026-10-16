@@ -1264,6 +1264,23 @@ mod tests {
         assert!(sbox.mem_mgr.h2g_consumer.is_some());
     }
 
+    /// The page between the transport arena and the reserved top pages is
+    /// unmapped, so an exception stack overrun faults before it reaches the
+    /// arena.
+    #[test]
+    fn transport_guard_page_is_unmapped() {
+        use hyperlight_common::layout::{scratch_reserved_top_gva, scratch_transport_end_gva};
+
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        let guard = scratch_transport_end_gva();
+        let mut mapped = |gva: u64| sbox.call::<bool>("CheckMapped", gva).unwrap();
+        assert!(mapped(guard - hyperlight_common::vmem::PAGE_SIZE as u64));
+        assert!(!mapped(guard));
+        assert!(mapped(scratch_reserved_top_gva()));
+    }
+
     #[test]
     fn poison() {
         let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
@@ -1437,8 +1454,7 @@ mod tests {
             let defaults = SandboxConfiguration::default();
             let layout =
                 crate::mem::layout::SandboxMemoryLayout::new(defaults, 0, 0, None).unwrap();
-            hyperlight_common::layout::min_scratch_size(layout.get_transport_arena().size())
-                .next_multiple_of(page_size::get())
+            layout.min_scratch().next_multiple_of(page_size::get())
         } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())

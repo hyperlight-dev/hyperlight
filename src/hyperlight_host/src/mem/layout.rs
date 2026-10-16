@@ -34,17 +34,20 @@
 //!
 //! There is also a scratch region at the top of physical memory,
 //! which is mostly laid out as a large undifferentiated blob of
-//! memory, although the transport arena and copied page tables have
-//! fixed positions:
+//! memory. The copied page tables start at the scratch base, which moves
+//! with the scratch size. The transport arena's address does not depend
+//! on the scratch size:
 //!
 //! +-------------------------------------------+ (top of physical memory)
 //! |         Exception Stack, Metadata         |
-//! +-------------------------------------------+ (1 page below)
+//! +-------------------------------------------+ (reserved pages below)
+//! | Guard page (not in the guest page tables) |
+//! +-------------------------------------------+ (SCRATCH_TRANSPORT_GAP_PAGES)
+//! |              Transport Arena              |
+//! +-------------------------------------------+
 //! |              Scratch Memory               |
 //! +-------------------------------------------+
 //! |             Guest Page Tables             |
-//! +-------------------------------------------+
-//! |              Transport Arena              |
 //! +-------------------------------------------+ (scratch size)
 
 use std::fmt::Debug;
@@ -353,10 +356,9 @@ impl SandboxMemoryLayout {
             .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
         let h2g_dims = QueueDims::new(h2g_queue_size, h2g_pool_pages)
             .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
-        let arena_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size);
-        let transport_arena = TransportArena::new(arena_base_gpa, g2h_dims, h2g_dims)
+        let transport_arena = Self::transport_arena_for(g2h_dims, h2g_dims)
             .ok_or(MemoryRequestTooSmall(scratch_size, usize::MAX))?;
-        let min_scratch_size = hyperlight_common::layout::min_scratch_size(transport_arena.size());
+        let min_scratch_size = Self::min_scratch_for(&transport_arena);
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
@@ -378,6 +380,45 @@ impl SandboxMemoryLayout {
         };
         ret.set_snapshot_size(ret.get_memory_size()?);
         Ok(ret)
+    }
+
+    /// Fixed scratch overhead: the arena and the guard page above it count
+    /// as transport memory.
+    fn min_scratch_for(arena: &TransportArena) -> usize {
+        hyperlight_common::layout::min_scratch_size(
+            arena
+                .size()
+                .saturating_add(hyperlight_common::layout::SCRATCH_TRANSPORT_GAP_PAGES * PAGE_SIZE),
+        )
+    }
+
+    /// Smallest scratch for this layout before page tables.
+    pub(crate) fn min_scratch(&self) -> usize {
+        Self::min_scratch_for(&self.transport_arena)
+    }
+
+    /// The transport arena sits below the reserved top pages, at an
+    /// address that does not depend on the scratch size.
+    fn transport_arena_for(g2h: QueueDims, h2g: QueueDims) -> Option<TransportArena> {
+        let len = TransportArena::new(0, g2h, h2g)?.size() as u64;
+        let base = hyperlight_common::layout::scratch_transport_end_gpa().checked_sub(len)?;
+        TransportArena::new(base, g2h, h2g)
+    }
+
+    /// Scratch offset of the transport arena.
+    pub(crate) fn arena_scratch_offset(&self) -> usize {
+        debug_assert!(
+            self.transport_arena.base_addr()
+                > hyperlight_common::layout::scratch_base_gpa(self.scratch_size),
+            "the minimum scratch size keeps the arena above the scratch base"
+        );
+        (self.transport_arena.base_addr()
+            - hyperlight_common::layout::scratch_base_gpa(self.scratch_size)) as usize
+    }
+
+    /// Scratch offset of the checkpoint mailbox.
+    pub(crate) fn mbx_scratch_offset(&self) -> usize {
+        self.arena_scratch_offset() + self.transport_arena.mbx_offset()
     }
 
     pub(crate) fn heap_size(&self) -> usize {
@@ -454,9 +495,7 @@ impl SandboxMemoryLayout {
     /// `snapshot_size` (the guest-visible prefix of the blob) is an
     /// independent field and must be set separately.
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
-        let min_fixed_scratch =
-            hyperlight_common::layout::min_scratch_size(self.transport_arena.size());
-        let min_scratch = min_fixed_scratch.saturating_add(size);
+        let min_scratch = self.min_scratch().saturating_add(size);
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
         }
@@ -733,12 +772,12 @@ impl SandboxMemoryLayout {
     /// Offset from the beginning of the scratch region to the location
     /// where page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        self.transport_arena.size()
+        0
     }
 
     /// Base GPA to which the page tables are eagerly copied on restore.
     pub(crate) fn get_pt_base_gpa(&self) -> u64 {
-        self.transport_arena.end_addr()
+        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
     }
 
     /// First GPA available to the guest scratch allocator.
@@ -746,7 +785,7 @@ impl SandboxMemoryLayout {
         self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
     }
 
-    /// Exact transport placement in the fixed scratch prefix.
+    /// Exact transport placement below the reserved scratch-top pages.
     pub(crate) fn get_transport_arena(&self) -> TransportArena {
         self.transport_arena
     }
@@ -807,22 +846,26 @@ mod tests {
     }
 
     #[test]
-    fn transport_arena_starts_at_scratch_base() {
+    fn transport_arena_sits_below_the_reserved_top() {
         let cfg = SandboxConfiguration::default();
         let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
         let arena = layout.get_transport_arena();
         let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
 
-        assert_eq!(arena.base_addr(), scratch_base);
-        assert_eq!(layout.get_pt_base_gpa(), arena.end_addr());
-        assert_eq!(layout.get_pt_base_scratch_offset(), arena.size());
+        assert_eq!(
+            arena.end_addr()
+                + (hyperlight_common::layout::SCRATCH_TRANSPORT_GAP_PAGES * PAGE_SIZE) as u64,
+            hyperlight_common::layout::scratch_reserved_top_gpa()
+        );
+        assert_eq!(layout.get_pt_base_gpa(), scratch_base);
+        assert_eq!(layout.get_pt_base_scratch_offset(), 0);
 
         layout.set_pt_size(PAGE_SIZE).unwrap();
 
         assert_eq!(layout.get_transport_arena(), arena);
         assert_eq!(
             layout.get_first_free_scratch_gpa(),
-            arena.end_addr() + PAGE_SIZE as u64
+            scratch_base + PAGE_SIZE as u64
         );
     }
 
@@ -830,8 +873,7 @@ mod tests {
     fn transport_memory_is_part_of_minimum_scratch_size() {
         let mut cfg = SandboxConfiguration::default();
         let layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
-        let minimum =
-            hyperlight_common::layout::min_scratch_size(layout.get_transport_arena().size());
+        let minimum = layout.min_scratch();
         cfg.set_scratch_size(minimum);
         let mut layout = SandboxMemoryLayout::new(cfg, 4096, 0, None).unwrap();
 
@@ -982,23 +1024,23 @@ mod tests {
         pin_eq!(layout.get_scratch_size(), 0x30000);
         pin_eq!(layout.get_pt_size(), 0);
 
-        pin_eq!(layout.get_pt_base_scratch_offset(), 0x15000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0);
 
+        // The transport arena sits below the reserved top pages, at an
+        // address that does not depend on the scratch size. The page
+        // tables start at the scratch base. With the `SCRATCH_TOP` pins
+        // above, these fix the absolute addresses.
         let arena = layout.get_transport_arena();
-        let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x30000);
-        pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0);
-        pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x410);
-        pin_eq!(arena.mbx_addr() - scratch_base_gpa, 0x618);
-        pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x1000);
-        pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xd000);
-        pin_eq!(arena.end_addr() - scratch_base_gpa, 0x15000);
-
-        // The transport arena sits at the scratch base. The page tables
-        // follow it. With the `SCRATCH_TOP` pins above, these fix the
-        // absolute addresses.
+        let scratch_top = hyperlight_common::layout::SCRATCH_TOP_GPA as u64 + 1;
+        pin_eq!(scratch_top - arena.g2h_ring_addr(), 0x22000);
+        pin_eq!(arena.h2g_ring_addr() - arena.g2h_ring_addr(), 0x410);
+        pin_eq!(arena.mbx_addr() - arena.g2h_ring_addr(), 0x618);
+        pin_eq!(arena.g2h_pool_addr() - arena.g2h_ring_addr(), 0x1000);
+        pin_eq!(arena.h2g_pool_addr() - arena.g2h_ring_addr(), 0xd000);
+        pin_eq!(scratch_top - arena.end_addr(), 0xd000);
         pin_eq!(
-            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x30000),
-            0x15000
+            layout.get_pt_base_gpa(),
+            hyperlight_common::layout::scratch_base_gpa(0x30000)
         );
         // pt_size is zero here, so the first free scratch GPA equals
         // the page table base.
@@ -1007,8 +1049,8 @@ mod tests {
             layout.get_pt_base_gpa()
         );
 
-        // A second snapshot layout keeps the transport prefix fixed
-        // relative to its scratch base.
+        // A second snapshot layout, with a different scratch size, keeps
+        // the transport arena at the same address.
         let mut cfg = SandboxConfiguration::default();
         cfg.set_heap_size(0x5000);
         cfg.set_scratch_size(0x40000);
@@ -1027,20 +1069,20 @@ mod tests {
         pin_eq!(layout.get_scratch_size(), 0x40000);
         pin_eq!(layout.get_pt_size(), 0);
 
-        pin_eq!(layout.get_pt_base_scratch_offset(), 0x15000);
+        pin_eq!(layout.get_pt_base_scratch_offset(), 0);
 
         let arena = layout.get_transport_arena();
-        let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(0x40000);
-        pin_eq!(arena.g2h_ring_addr() - scratch_base_gpa, 0);
-        pin_eq!(arena.h2g_ring_addr() - scratch_base_gpa, 0x410);
-        pin_eq!(arena.mbx_addr() - scratch_base_gpa, 0x618);
-        pin_eq!(arena.g2h_pool_addr() - scratch_base_gpa, 0x1000);
-        pin_eq!(arena.h2g_pool_addr() - scratch_base_gpa, 0xd000);
-        pin_eq!(arena.end_addr() - scratch_base_gpa, 0x15000);
+        let scratch_top = hyperlight_common::layout::SCRATCH_TOP_GPA as u64 + 1;
+        pin_eq!(scratch_top - arena.g2h_ring_addr(), 0x22000);
+        pin_eq!(arena.h2g_ring_addr() - arena.g2h_ring_addr(), 0x410);
+        pin_eq!(arena.mbx_addr() - arena.g2h_ring_addr(), 0x618);
+        pin_eq!(arena.g2h_pool_addr() - arena.g2h_ring_addr(), 0x1000);
+        pin_eq!(arena.h2g_pool_addr() - arena.g2h_ring_addr(), 0xd000);
+        pin_eq!(scratch_top - arena.end_addr(), 0xd000);
 
         pin_eq!(
-            layout.get_pt_base_gpa() - hyperlight_common::layout::scratch_base_gpa(0x40000),
-            0x15000
+            layout.get_pt_base_gpa(),
+            hyperlight_common::layout::scratch_base_gpa(0x40000)
         );
         pin_eq!(
             layout.get_first_free_scratch_gpa(),
