@@ -1276,6 +1276,25 @@ fn snapshot_size_smaller_than_layout_rejected() {
 }
 
 #[test]
+fn snapshot_scratch_size_not_in_host_pages_rejected() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snap");
+    snapshot
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap();
+    rewrite_config(&path, |cfg| {
+        let size = cfg["layout"]["scratch_size"].as_u64().unwrap();
+        cfg["layout"]["scratch_size"] = Value::from(size + 2048);
+    });
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "is not a multiple of this host's");
+}
+
+#[test]
 fn snapshot_layout_pt_size_unaligned_rejected() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();

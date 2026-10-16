@@ -68,7 +68,9 @@ pub(crate) fn create_consumers(
 /// Validated ring images excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
-    /// Scratch size used to derive transport GVAs.
+    /// Scratch size of the snapshot's layout. The ring addresses do not
+    /// depend on it. The transport blob records it so the loader can check
+    /// it against the config.
     scratch_size: usize,
     /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
@@ -118,7 +120,15 @@ impl VirtqSnapshot {
         Self::new(layout, layout.get_scratch_size(), g2h_ring, h2g_ring)
     }
 
-    /// Scratch size used to interpret the saved ring addresses.
+    /// The same rings, for a snapshot whose scratch has `layout`'s size.
+    /// The ring addresses do not depend on the scratch size, so the rings
+    /// validated at capture stay valid.
+    pub(crate) fn into_resized(mut self, layout: &SandboxMemoryLayout) -> Self {
+        self.scratch_size = layout.get_scratch_size();
+        self
+    }
+
+    /// Scratch size of the snapshot's layout, as the transport blob records it.
     pub(crate) fn scratch_size(&self) -> usize {
         self.scratch_size
     }
