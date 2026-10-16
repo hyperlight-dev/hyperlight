@@ -208,7 +208,6 @@ impl<'a> DebugMemoryView<'a> {
 pub enum VcpuStopReason {
     Crash,
     DoneStep,
-    #[cfg(target_arch = "x86_64")]
     HwBp,
     #[cfg(target_arch = "aarch64")]
     Initial,
@@ -288,7 +287,6 @@ pub(crate) trait DebuggableVm: VirtualMachine {
     fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Enable/disable single stepping
-    #[cfg(target_arch = "x86_64")]
     fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
         if enable {
             Err(DebugError::Unsupported("single-step"))
@@ -309,14 +307,6 @@ pub(crate) trait DebuggableVm: VirtualMachine {
     }
 
     fn sync_instruction_cache(&mut self) -> std::result::Result<(), DebugError> {
-        Ok(())
-    }
-
-    fn register_sw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
-        Ok(())
-    }
-
-    fn unregister_sw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
         Ok(())
     }
 }

@@ -159,7 +159,10 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        any(target_os = "windows", feature = "hw-interrupts"),
+        all(
+            any(target_os = "windows", feature = "hw-interrupts"),
+            not(all(gdb, target_arch = "aarch64"))
+        ),
         expect(
             dead_code,
             reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
