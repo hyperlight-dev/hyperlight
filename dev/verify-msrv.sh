@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-cargo install -q jaq
+cargo install -q --locked --version 3.1.1 jaq
 for CRATE in "$@"; do
     VERSION=$(cargo metadata --format-version=1 2>/dev/null | jaq --raw-output '.packages[] | select(.name == "'$CRATE'").rust_version')
     if ! rustup toolchain list | grep -q "$VERSION"; then
