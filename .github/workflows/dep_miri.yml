@@ -53,6 +53,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f  # v2.0.0
         with:
           cache: "false"
+          # Miri's generated sysroot manifest emits a Cargo warning.
+          build-warnings: warn
 
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
         with:

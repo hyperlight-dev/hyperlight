@@ -58,7 +58,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@82d1f2ba0fe8d5ee996ae7452d1e5cc60a484c44  # v2.0.0
+      - uses: hyperlight-dev/ci-setup-workflow@4b7107a0f24c523f503c861ddeb8180d3a23e7f7  # v2.1.0
         with:
           additional-toolchain-directory: src/tests/rust_guests
         env:

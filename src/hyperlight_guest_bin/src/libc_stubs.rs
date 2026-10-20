@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+// These are guest libc shims that must match the C ABI exactly. They are exported as
+// `extern "C"` symbols so the guest can link against libc entry points, but they are not
+// normal Rust APIs and the Rust safety qualifier is intentionally not part of the ABI.
+//
+// Newer rustc warns about functions of this shape with `suspicious_runtime_symbol_definitions`,
+// even though the warning is a false positive here. We suppress it because the ABI contract is
+// the important thing. We also allow `unknown_lints` so older guest toolchains can still build
+// even though they do not know this lint's name yet.
+#![allow(
+    unknown_lints,
+    suspicious_runtime_symbol_definitions,
+    reason = "These symbols are intentionally exported with the C ABI; safety qualifiers do not affect it, and older compilers do not know this lint."
+)]
+
 use alloc::string::String;
 use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};

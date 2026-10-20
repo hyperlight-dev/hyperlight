@@ -31,10 +31,10 @@ fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
 
         if kind.is_dir() {
             fs::create_dir_all(&dst)
-                .with_context(|| format!("could not create include dir {:?}", &dst))?;
+                .with_context(|| format!("could not create include dir {:?}", dst))?;
             copy_includes(&dst, src)?;
         } else if Some(std::ffi::OsStr::new("h")) == src.extension() {
-            fs::copy(&src, &dst).with_context(|| format!("could not copy header {:?}", &src))?;
+            fs::copy(&src, &dst).with_context(|| format!("could not copy header {:?}", src))?;
         }
     }
 
@@ -213,6 +213,8 @@ fn generate_bindings(include_dir: &Path, out_dir: &Path) -> Result<()> {
         .header(include_dir.join("sys/time.h").to_string_lossy())
         .clang_arg(format!("-I{}", include_dir.display()))
         .clang_arg("-nostdlibinc")
+        // Preserve size_t in runtime function declarations for bindgen.
+        .clang_arg("-fno-builtin")
         .clang_arg(Target::get()?.clang_flag())
         .clang_arg("-fno-stack-protector")
         .clang_arg("-D_POSIX_MONOTONIC_CLOCK=1")
@@ -336,7 +338,7 @@ fn cargo_main() -> Result<()> {
         let binroot = PathBuf::from(binroot);
         let binpath = env::current_exe().expect("couldn't get build script path");
         fs::create_dir_all(&binroot)
-            .unwrap_or_else(|e| panic!("Could not create binary root {:?}: {}", &binroot, e));
+            .unwrap_or_else(|e| panic!("Could not create binary root {:?}: {}", binroot, e));
         fs::write(binroot.join(".out_dir"), out_dir).expect("Could not write out_dir");
         fs::copy(&binpath, binroot.join("clang")).expect("Could not copy to clang");
         fs::copy(&binpath, binroot.join("clang.exe")).expect("Could not copy to clang.exe");
