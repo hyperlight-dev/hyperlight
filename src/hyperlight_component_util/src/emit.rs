@@ -155,7 +155,7 @@ impl Trait {
     }
     /// See [`State::adjust_vars`].
     pub fn adjust_vars(&mut self, n: u32) {
-        for (_, (v, _)) in self.tvs.iter_mut() {
+        for (v, _) in self.tvs.values_mut() {
             if let Some(v) = v.as_mut() {
                 *v += n;
             }

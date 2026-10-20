@@ -864,7 +864,7 @@ fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Inst
         let mut stvs = BTreeMap::new();
         let _ = sv.cur_trait(); // make sure it exists
         let t = sv.cur_trait_immut();
-        for (ti, _) in t.supertraits.iter() {
+        for ti in t.supertraits.keys() {
             let t = sv.resolve_trait_immut(false, ti);
             stvs.insert(ti.clone(), t.tv_idxs());
         }

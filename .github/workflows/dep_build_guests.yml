@@ -81,9 +81,19 @@ jobs:
           }
           git checkout --detach ${{ inputs.ref }}
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - name: Select guest toolchain
+        id: guest-toolchain
+        run: |
+          # Older commits use the root toolchain for both host and guests.
+          if [[ -f src/tests/rust_guests/rust-toolchain.toml ]]; then
+            echo "directory=src/tests/rust_guests" >> "$GITHUB_OUTPUT"
+          else
+            echo "directory=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: hyperlight-dev/ci-setup-workflow@82d1f2ba0fe8d5ee996ae7452d1e5cc60a484c44  # v2.0.0
         with:
-          rust-toolchain: "1.94"
+          additional-toolchain-directory: ${{ steps.guest-toolchain.outputs.directory }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -94,8 +104,10 @@ jobs:
         id: sysroot-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
-          path: src/tests/rust_guests/target/sysroot
-          key: sysroot-linux-${{ inputs.arch }}-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
+          path: |
+            src/tests/rust_guests/target/sysroot
+            src/tests/rust_guests/target-non-pie/sysroot
+          key: sysroot-linux-${{ inputs.arch }}-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml', 'src/tests/rust_guests/rust-toolchain.toml', 'src/hyperlight_guest_capi/rust-toolchain.toml') }}
 
       # Priming builds cold, so the entry holds only what this commit needs.
       - name: Rust cache

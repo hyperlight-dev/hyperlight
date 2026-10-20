@@ -145,7 +145,7 @@ pub fn emit_decls(decls: proc_macro2::TokenStream, for_kebab: &str) -> proc_macr
         if let Ok(file) = syn::parse2(decls.clone()) {
             std::fs::write(&dbg_out, prettyplease::unparse(&file)).unwrap();
         } else {
-            let decls = format!("{}", &decls);
+            let decls = format!("{}", decls);
             std::fs::write(&dbg_out, &decls).unwrap();
         }
         quote::quote! { include!(#dbg_out); }

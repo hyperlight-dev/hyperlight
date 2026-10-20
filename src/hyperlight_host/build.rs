@@ -85,7 +85,7 @@ fn main() -> Result<()> {
 
         println!(
             "cargo:rustc-env=HYPERLIGHT_SURROGATE_DIR={}",
-            &surrogate_binary_dir.display()
+            surrogate_binary_dir.display()
         );
     }
 
