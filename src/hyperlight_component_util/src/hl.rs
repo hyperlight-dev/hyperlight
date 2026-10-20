@@ -13,7 +13,7 @@ use crate::rtypes;
 /// members, e.g. `wasi:http/types@0.2.0#[method]fields.get`, and the
 /// plain function name for functions imported or exported directly
 /// by the world.
-pub fn emit_fn_hl_name(s: &State, kebab: &str) -> String {
+pub fn emit_fn_hl_name<M>(s: &State<'_, '_, M>, kebab: &str) -> String {
     match &s.cur_instance {
         Some(instance) => format!("{instance}#{kebab}"),
         None => kebab.to_string(),
