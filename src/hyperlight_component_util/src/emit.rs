@@ -314,11 +314,12 @@ pub enum ResolvedBoundVar<'a> {
     },
 }
 
-/// A whole grab-bag of useful state to have while emitting Rust
+/// A whole grab-bag of useful state to have while emitting bindings.
+/// `M` holds the output. [`Mod`] holds Rust output.
 #[derive(Debug)]
-pub struct State<'a, 'b> {
-    /// A pointer to a [`Mod`] that everything we emit will end up in
-    pub root_mod: &'a mut Mod,
+pub struct State<'a, 'b, M = Mod> {
+    /// A pointer to the output that everything we emit will end up in
+    pub root_mod: &'a mut M,
     /// A cursor to the current submodule (under [`State::root_mod`]),
     /// where decls that we are looking at right now should end up
     pub mod_cursor: Vec<Ident>,
@@ -444,9 +445,9 @@ pub fn run_state<'b, F: for<'a> FnMut(&mut State<'a, 'b>)>(
     root_mod.into_tokens()
 }
 
-impl<'a, 'b> State<'a, 'b> {
+impl<'a, 'b, M> State<'a, 'b, M> {
     pub fn new(
-        root_mod: &'a mut Mod,
+        root_mod: &'a mut M,
         bound_vars: &'a mut VecDeque<BoundedTyvar<'b>>,
         vars_needs_vars: &'a mut VecDeque<BTreeSet<u32>>,
         is_guest: bool,
@@ -474,7 +475,7 @@ impl<'a, 'b> State<'a, 'b> {
             cur_instance: None,
         }
     }
-    pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
+    pub fn clone<'c>(&'c mut self) -> State<'c, 'b, M> {
         State {
             root_mod: self.root_mod,
             mod_cursor: self.mod_cursor.clone(),
@@ -497,6 +498,30 @@ impl<'a, 'b> State<'a, 'b> {
             cur_instance: self.cur_instance.clone(),
         }
     }
+    /// Resolve a type variable as far as possible: either this ends
+    /// up with a definition, in which case, let's get that, or it
+    /// ends up with a resource type, in which case we return the
+    /// resource index
+    ///
+    /// Distinct from [`Ctx::resolve_tv`], which is mostly concerned
+    /// with free variables, because this is concerned entirely with
+    /// bound variables.
+    pub fn resolve_bound_var(&self, n: u32) -> ResolvedBoundVar<'b> {
+        let noff = self.var_offset as u32 + n;
+        match &self.bound_vars[noff as usize].bound {
+            TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
+                self.resolve_bound_var(n + 1 + nn)
+            }
+            TypeBound::Eq(t) => ResolvedBoundVar::Definite {
+                final_bound_var: n,
+                ty: t.clone(),
+            },
+            TypeBound::SubResource => ResolvedBoundVar::Resource { rtidx: noff },
+        }
+    }
+}
+
+impl<'a, 'b> State<'a, 'b> {
     /// Obtain a reference to the [`Mod`] that we are currently
     /// generating code in, creating it if necessary
     pub fn cur_mod<'c>(&'c mut self) -> &'c mut Mod {
@@ -784,27 +809,6 @@ impl<'a, 'b> State<'a, 'b> {
             self.vars_needs_vars.push_front(BTreeSet::new());
         }
         self.root_mod.adjust_vars(n);
-    }
-    /// Resolve a type variable as far as possible: either this ends
-    /// up with a definition, in which case, let's get that, or it
-    /// ends up with a resource type, in which case we return the
-    /// resource index
-    ///
-    /// Distinct from [`Ctx::resolve_tv`], which is mostly concerned
-    /// with free variables, because this is concerned entirely with
-    /// bound variables.
-    pub fn resolve_bound_var(&self, n: u32) -> ResolvedBoundVar<'b> {
-        let noff = self.var_offset as u32 + n;
-        match &self.bound_vars[noff as usize].bound {
-            TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
-                self.resolve_bound_var(n + 1 + nn)
-            }
-            TypeBound::Eq(t) => ResolvedBoundVar::Definite {
-                final_bound_var: n,
-                ty: t.clone(),
-            },
-            TypeBound::SubResource => ResolvedBoundVar::Resource { rtidx: noff },
-        }
     }
 
     /// Construct a namespace path referring to the resource trait for
