@@ -28,8 +28,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   creation.
 * Use `talc` as the guest heap allocator. Guest init writes only the start and
   end of the heap, which speeds up sandbox creation.
+* **Breaking:** The guest heap has no fixed size. The guest maps heap pages
+  from scratch on first touch. Scratch backs heap pages written since the last
+  snapshot, shared with the stack, page tables, and transport. Allocations
+  succeed beyond the scratch size, and the guest aborts with `MallocFailed`
+  when a write needs a page and scratch is full. Snapshots no longer contain a
+  zero-filled heap region, which makes them smaller and faster to create,
+  save, and load.
 
 ### Removed
+* **Breaking:** `SandboxConfiguration::set_heap_size`,
+  `SandboxConfiguration::DEFAULT_HEAP_SIZE`, `SandboxBuilder::heap_size`, and
+  `SandboxBuilder::get_heap_size`.
 
 ### Fixed
 
