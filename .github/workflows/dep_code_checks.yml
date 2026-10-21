@@ -42,24 +42,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Check guest toolchains match
-        run: |
-          python3 - <<'PY'
-          import tomllib
-
-          def channel(path):
-              with open(path, "rb") as source:
-                  return tomllib.load(source)["toolchain"]["channel"]
-
-          if channel("src/tests/rust_guests/rust-toolchain.toml") != channel("src/hyperlight_guest_capi/rust-toolchain.toml"):
-              raise ValueError("Guest Rust toolchains must match")
-          PY
-
       - uses: hyperlight-dev/ci-setup-workflow@3935a41ca357d6acb4274edc072b75a73a19e2b3  # v2.3.0
         with:
           additional-toolchain-directory: src/tests/rust_guests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check guest toolchains match
+        run: |
+          guest=$(cd src/tests/rust_guests && rustup show active-toolchain)
+          capi=$(cd src/hyperlight_guest_capi && rustup show active-toolchain)
+          if [[ "${guest%% *}" != "${capi%% *}" ]]; then
+            echo "::error::Guest Rust toolchains must match"
+            exit 1
+          fi
 
       # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
