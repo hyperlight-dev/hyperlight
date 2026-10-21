@@ -29,8 +29,9 @@ use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
 };
 pub(super) use self::media_types::{
-    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_SNAPSHOT_CURRENT,
-    MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
+    MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
+    SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
@@ -642,7 +643,6 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
                 .clone(),
             layout: MemoryLayout {
-                heap_size: l.heap_size(),
                 code_size: l.code_size(),
                 code_virt_base: l.get_guest_code_gva() as u64,
                 init_data_size: l.init_data_size(),
@@ -789,8 +789,8 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V4 => {}
-            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 => {
+            MT_CONFIG_V5 => {}
+            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 => {
                 return Err(crate::new_error!(
                     "snapshot config media type {:?} is incompatible with snapshot ABI {}",
                     cfg_media,
@@ -801,7 +801,7 @@ impl Snapshot {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V4
+                    MT_CONFIG_V5
                 ));
             }
         }
@@ -936,7 +936,6 @@ impl Snapshot {
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
-        sbox_cfg.set_heap_size(cfg.layout.heap_size as u64);
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
         sbox_cfg.set_g2h_queue_size(cfg.layout.g2h_queue_size);
         sbox_cfg.set_h2g_queue_size(cfg.layout.h2g_queue_size);
@@ -1009,7 +1008,7 @@ impl Snapshot {
         }
 
         // The snapshot GPA span must cover at least the regions the
-        // layout fields describe (code, PEB, heap, init data),
+        // layout fields describe (code, PEB, init data),
         // otherwise the guest mapping is too short to back them.
         let required_memory_size = layout.get_memory_size()?;
         if memory.gpa_span_len() < required_memory_size {

@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 ### Changed
-* **Breaking:** Snapshots use ABI 7 and config schema v4. Existing snapshots
+* **Breaking:** Snapshots use ABI 8 and config schema v5. Existing snapshots
   must be regenerated.
 * **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
   `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read_exact(gpa, buffer)?`

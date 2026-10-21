@@ -282,16 +282,16 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(
         manifest["config"]["mediaType"],
-        "application/vnd.hyperlight.snapshot.config.v4+json"
+        "application/vnd.hyperlight.snapshot.config.v5+json"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"],
-        "application/vnd.hyperlight.snapshot.config.v4+json"
+        "application/vnd.hyperlight.snapshot.config.v5+json"
     );
-    assert_eq!(config["abi_version"], 7);
+    assert_eq!(config["abi_version"], 8);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {
@@ -2374,6 +2374,7 @@ fn legacy_config_versions_rejected() {
         "application/vnd.hyperlight.snapshot.config.v1+json",
         "application/vnd.hyperlight.snapshot.config.v2+json",
         "application/vnd.hyperlight.snapshot.config.v3+json",
+        "application/vnd.hyperlight.snapshot.config.v4+json",
     ] {
         let (_dir, path) = save_for_mutation();
         rewrite_manifest(&path, |m| {
@@ -2383,7 +2384,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 7");
+        assert_err_contains(err, "incompatible with snapshot ABI 8");
     }
 }
 
@@ -3172,13 +3173,13 @@ fn layout_field_too_large_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
         // 64 GiB exceeds MAX_MEMORY_SIZE for an individual region.
-        cfg["layout"]["heap_size"] = Value::from(64u64 * 1024 * 1024 * 1024);
+        cfg["layout"]["code_size"] = Value::from(64u64 * 1024 * 1024 * 1024);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "heap_size");
+    assert_err_contains(err, "code_size");
 }
 
 #[test]
