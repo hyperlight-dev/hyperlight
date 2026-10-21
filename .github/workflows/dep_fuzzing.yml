@@ -58,7 +58,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2bf5e01a09c1c75f81913a435212cdf88399d3e0  # v2.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@3935a41ca357d6acb4274edc072b75a73a19e2b3  # v2.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
