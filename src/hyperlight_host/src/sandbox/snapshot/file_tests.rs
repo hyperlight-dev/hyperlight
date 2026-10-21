@@ -3369,7 +3369,6 @@ fn persisted_non_default_layout_loads_and_runs() {
     let mut config = SandboxConfiguration::default();
     config.set_g2h_pool_pages(16);
     config.set_h2g_pool_pages(16);
-    config.set_heap_size(0x40_000);
     config.set_scratch_size(0x90_000);
     let mut source = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_pathbuf()),
@@ -3389,7 +3388,6 @@ fn persisted_non_default_layout_loads_and_runs() {
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
     assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
     assert_eq!(loaded.layout().get_h2g_pool_pages(), 16);
-    assert_eq!(loaded.layout().heap_size(), 0x40_000);
     assert_eq!(loaded.layout().get_scratch_size(), 0x90_000);
 
     let mut restored = Sandbox::from_snapshot(loaded, HostFunctions::default(), None).unwrap();
@@ -3409,7 +3407,6 @@ fn persisted_non_default_layout_loads_and_runs() {
 fn round_trip_preserves_transport_layout() {
     let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
         .scratch_size(512 * 1024)
-        .heap_size(512 * 1024)
         .g2h_queue_size(128)
         .h2g_queue_size(16)
         .g2h_buffer_size(8192)
@@ -3833,7 +3830,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     let original = snapshot.layout();
 
     let mut sbox2 = SandboxBuilder::from_snapshot(snapshot.clone())
-        .heap_size((original.heap_size() as u64) * 2)
         .scratch_size(original.get_scratch_size() * 2)
         .g2h_queue_size(128)
         .h2g_queue_size(16)
@@ -3848,7 +3844,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
 
     let new_snap = sbox2.snapshot().unwrap();
     let restored = new_snap.layout();
-    assert_eq!(restored.heap_size(), original.heap_size());
     assert_eq!(restored.get_scratch_size(), original.get_scratch_size());
     assert_eq!(restored.get_g2h_queue_size(), original.get_g2h_queue_size());
     assert_eq!(restored.get_h2g_queue_size(), original.get_h2g_queue_size());
