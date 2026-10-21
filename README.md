@@ -76,24 +76,50 @@ Or skip setup entirely with a codespace:
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hyperlight-dev/hyperlight)
 
+## Platform Support
+
+### Linux
+
+| Architecture | Hypervisor | General support | Debugger | Crashdumps |
+| ------------ | ---------- | --------------- | -------- | ---------- |
+| x86_64       | KVM        | ✅ Yes          | ✅ Yes   | ✅ Yes     |
+| x86_64       | MSHV       | ✅ Yes          | ✅ Yes   | ✅ Yes     |
+| aarch64      | KVM        | ✅ Yes          | ❌ No    | ❌ No      |
+| aarch64      | MSHV       | ❌ No           | ❌ No    | ❌ No      |
+
+### Windows
+
+| Architecture | Hypervisor | General support   | Debugger | Crashdumps |
+| ------------ | ---------- | ----------------- | -------- | ---------- |
+| x86_64       | WHP        | ✅ Yes            | ✅ Yes   | ✅ Yes     |
+| aarch64      | WHP        | 🚧 Experimental¹ | ❌ No    | ❌ No      |
+
+### macOS
+
+| Architecture | Hypervisor | General support | Debugger | Crashdumps |
+| ------------ | ---------- | --------------- | -------- | ---------- |
+| aarch64      | HVF        | ✅ Yes          | ❌ No    | ❌ No      |
+
+¹ Not yet covered by CI
+
 ## Repository Structure
 
-| Directory | Description |
-|---|---|
-| [src/hyperlight_host](./src/hyperlight_host) | Host library - creates and manages micro VMs |
-| [src/hyperlight_guest](./src/hyperlight_guest) | Guest platform primitives for paging, physical allocation, and host communication |
-| [src/hyperlight_guest_bin](./src/hyperlight_guest_bin) | Default guest runtime with entry point, panic handler, heap, logging, and exceptions |
-| [src/hyperlight_guest_capi](./src/hyperlight_guest_capi) | C API wrapper around `hyperlight_guest_bin` for use via FFI |
-| [src/hyperlight_libc](./src/hyperlight_libc) | C standard library for guests, built from picolibc |
-| [src/hyperlight_guest_macro](./src/hyperlight_guest_macro) | Macros for registering guest and host functions |
-| [src/hyperlight_guest_tracing](./src/hyperlight_guest_tracing) | Tracing support for guests |
-| [src/hyperlight_common](./src/hyperlight_common) | Shared code used by both host and guest |
-| [src/hyperlight_component_macro](./src/hyperlight_component_macro) | Proc macros for WIT-based host/guest bindings |
-| [src/hyperlight_component_util](./src/hyperlight_component_util) | Shared implementation for WIT binding generation |
-| [src/hyperlight_testing](./src/hyperlight_testing) | Shared test utilities |
-| [src/schema](./src/schema) | FlatBuffer schema definitions |
-| [src/trace_dump](./src/trace_dump) | Tool for dumping and visualizing trace data |
-| [src/tests](./src/tests) | Test guest programs (Rust and C) |
+| Directory                                                          | Description                                                                          |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| [src/hyperlight_host](./src/hyperlight_host)                       | Host library - creates and manages micro VMs                                         |
+| [src/hyperlight_guest](./src/hyperlight_guest)                     | Guest platform primitives for paging, physical allocation, and host communication    |
+| [src/hyperlight_guest_bin](./src/hyperlight_guest_bin)             | Default guest runtime with entry point, panic handler, heap, logging, and exceptions |
+| [src/hyperlight_guest_capi](./src/hyperlight_guest_capi)           | C API wrapper around `hyperlight_guest_bin` for use via FFI                          |
+| [src/hyperlight_libc](./src/hyperlight_libc)                       | C standard library for guests, built from picolibc                                   |
+| [src/hyperlight_guest_macro](./src/hyperlight_guest_macro)         | Macros for registering guest and host functions                                      |
+| [src/hyperlight_guest_tracing](./src/hyperlight_guest_tracing)     | Tracing support for guests                                                           |
+| [src/hyperlight_common](./src/hyperlight_common)                   | Shared code used by both host and guest                                              |
+| [src/hyperlight_component_macro](./src/hyperlight_component_macro) | Proc macros for WIT-based host/guest bindings                                        |
+| [src/hyperlight_component_util](./src/hyperlight_component_util)   | Shared implementation for WIT binding generation                                     |
+| [src/hyperlight_testing](./src/hyperlight_testing)                 | Shared test utilities                                                                |
+| [src/schema](./src/schema)                                         | FlatBuffer schema definitions                                                        |
+| [src/trace_dump](./src/trace_dump)                                 | Tool for dumping and visualizing trace data                                          |
+| [src/tests](./src/tests)                                           | Test guest programs (Rust and C)                                                     |
 
 ## Related Projects
 
