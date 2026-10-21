@@ -7,7 +7,9 @@ use core::sync::atomic::Ordering;
 use hyperlight_common::outb::Exception;
 use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE, PhysAddr, VirtAddr};
 use hyperlight_guest::exit::write_abort;
-use hyperlight_guest::layout::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
+use hyperlight_guest::layout::{
+    HEAP_GVA_END, HEAP_GVA_START, MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA,
+};
 
 use super::super::context::Context;
 use super::super::machine::ExceptionInfo;
@@ -46,10 +48,15 @@ pub type ExceptionHandler = fn(
     page_fault_address: u64,
 ) -> bool;
 
-fn handle_stack_pagefault(gva: u64) {
-    // TODO: perhaps we should have a sanity check that the
-    // stack grows only one page at a time, which should be
-    // ensured by our stack probing discipline?
+/// Maps a fresh scratch page at `gva` in the stack or heap range.
+///
+/// # Safety
+/// `gva` must be in the stack or heap range and must not be mapped. No
+/// other page table operation may run concurrently.
+unsafe fn handle_stack_or_heap_pagefault(gva: u64, executable: bool) {
+    // SAFETY: the scratch allocator is set up before any exception can
+    // occur, and the masked address is page aligned. The caller upholds
+    // the rest of the `map_region` contract.
     unsafe {
         let new_page = hyperlight_guest::prim_alloc::alloc_phys_pages(1);
         crate::paging::map_region(
@@ -59,7 +66,7 @@ fn handle_stack_pagefault(gva: u64) {
             MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
-                executable: false,
+                executable,
             }),
         );
         // This is mapping an entry for the first time, so we don't
@@ -114,10 +121,24 @@ fn try_handle_internal_pagefault(
     let error_code = unsafe { (&raw const (*exn_info).error_code).read_volatile() };
 
     let present = (error_code & (1 << 0)) != 0; // bit 0 is P
-    if !present && (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&gva) {
-        // The stack range needs no page table walk.
-        handle_stack_pagefault(gva);
-        return true;
+    if !present {
+        // The stack and heap ranges need no page table walk.
+        if (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&gva) {
+            // TODO: perhaps we should have a sanity check that the
+            // stack grows only one page at a time, which should be
+            // ensured by our stack probing discipline?
+            // SAFETY: the fault is not-present in the stack region,
+            // and exception handling is the only page table writer.
+            unsafe { handle_stack_or_heap_pagefault(gva, false) };
+            return true;
+        }
+        if (HEAP_GVA_START..HEAP_GVA_END).contains(&gva) {
+            let executable = crate::HEAP_EXECUTABLE.load(Ordering::Relaxed);
+            // SAFETY: the fault is not-present in the heap region, and
+            // exception handling is the only page table writer.
+            unsafe { handle_stack_or_heap_pagefault(gva, executable) };
+            return true;
+        }
     }
 
     let mut orig_mappings = crate::paging::virt_to_phys(gva);
