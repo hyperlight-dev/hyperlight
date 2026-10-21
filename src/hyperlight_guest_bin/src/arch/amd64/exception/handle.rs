@@ -113,18 +113,18 @@ fn try_handle_internal_pagefault(
 ) -> bool {
     let error_code = unsafe { (&raw const (*exn_info).error_code).read_volatile() };
 
+    let present = (error_code & (1 << 0)) != 0; // bit 0 is P
+    if !present && (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&gva) {
+        // The stack range needs no page table walk.
+        handle_stack_pagefault(gva);
+        return true;
+    }
+
     let mut orig_mappings = crate::paging::virt_to_phys(gva);
     let orig_mapping = orig_mappings.next();
 
-    let present = (error_code & (1 << 0)) != 0; // bit 0 is P
     if !present {
-        // If the fault was caused by a not-present page, check if we
-        // should populate it with a stack page
-        if (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&gva) {
-            handle_stack_pagefault(gva);
-            return true;
-        }
-        // Or, check if it is in any zero-init region
+        // Check if it is in any zero-init region
         if let Some(mapping) = orig_mapping
             && let MappingKind::ZeroInit(bm) = mapping.kind
         {
