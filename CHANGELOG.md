@@ -8,9 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+* **Breaking:** Generated libc bindings use `usize` for `size_t` arguments and return values, including `strlen` and `memcpy`. Rust callers that use `u64` or `c_ulong` need explicit conversions. The C ABI is unchanged.
+
 ### Removed
 
 ### Fixed
+
+* Guest libc accepts null buffers for zero-length writes.
 
 ## [v0.18.0] - 2026-10-13
 

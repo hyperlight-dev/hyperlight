@@ -17,6 +17,14 @@ use crate::common::{
 };
 
 #[test]
+fn libc_stubs_handle_empty_writes_and_clock_outputs() {
+    with_c_sandbox(|mut sandbox| {
+        let result: i32 = sandbox.call("CheckLibcStubs", ()).unwrap();
+        assert_eq!(result, 0);
+    });
+}
+
+#[test]
 fn pass_byte_array() {
     with_all_sandboxes(|mut sandbox| {
         const LEN: usize = 10;

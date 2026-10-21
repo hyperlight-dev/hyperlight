@@ -1,3 +1,5 @@
+#define _POSIX_MONOTONIC_CLOCK 1
+
 // Included from hyperlight_guest_capi/include
 #include "hyperlight_guest.h"
 // Included from hyperlight_libc/third_party/picolibc
@@ -6,6 +8,9 @@
 #include "stdlib.h"
 #include "assert.h"
 #include "stdio.h"
+#include "errno.h"
+#include "time.h"
+#include "unistd.h"
 
 #define GUEST_SCRATCH_SIZE (0x40000) // default scratch size
 #define MAX_BUFFER_SIZE (1024)
@@ -41,6 +46,23 @@ hl_ReturnValue *set_byte_array_to_zero(const hl_FunctionCall* params) {
 int print_output(const char *message) {
   int res = printf_f("%s", message);
   return res;
+}
+
+int check_libc_stubs(void) {
+  assert(write(1, NULL, 0) == 0);
+  assert(write(2, NULL, 0) == 0);
+  assert(write(1, NULL, 1) == -1 && errno == EINVAL);
+  assert(write(-1, "", 0) == -1 && errno == EBADF);
+
+  struct timespec before, after;
+  assert(clock_gettime(CLOCK_MONOTONIC, &before) == 0);
+  assert(clock_gettime(CLOCK_MONOTONIC, &after) == 0);
+  assert(after.tv_sec == before.tv_sec + 1);
+  assert(before.tv_nsec == 0 && after.tv_nsec == 0);
+  assert(clock_gettime(CLOCK_REALTIME, &after) == 0);
+  assert(clock_gettime(CLOCK_MONOTONIC, NULL) == -1 && errno == EINVAL);
+  assert(clock_gettime(-1, &after) == -1 && errno == EINVAL);
+  return 0;
 }
 
 __attribute__((optnone)) 
@@ -458,6 +480,7 @@ HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_function, Int, 1, String)
 HYPERLIGHT_WRAP_FUNCTION(print_output, Int, 1, String)
+HYPERLIGHT_WRAP_FUNCTION(check_libc_stubs, Int, 0)
 HYPERLIGHT_WRAP_FUNCTION(stack_allocate, Int, 1, Int)
 HYPERLIGHT_WRAP_FUNCTION(stack_overflow, Int, 1, Int)
 HYPERLIGHT_WRAP_FUNCTION(buffer_overrun, Int, 1, String)
@@ -500,6 +523,7 @@ void hyperlight_main(void)
     hl_register_function_definition("SetByteArrayToZero", set_byte_array_to_zero, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
     HYPERLIGHT_REGISTER_FUNCTION("GuestMethod1", guest_function);
     HYPERLIGHT_REGISTER_FUNCTION("PrintOutput", print_output);
+    HYPERLIGHT_REGISTER_FUNCTION("CheckLibcStubs", check_libc_stubs);
     HYPERLIGHT_REGISTER_FUNCTION("StackAllocate", stack_allocate);
     HYPERLIGHT_REGISTER_FUNCTION("StackOverflow", stack_overflow);
     HYPERLIGHT_REGISTER_FUNCTION("BufferOverrun", buffer_overrun);

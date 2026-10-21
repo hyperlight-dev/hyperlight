@@ -90,7 +90,7 @@
           # Hyperlight needs a variety of toolchains, since we use Nightly
           # for rustfmt and old toolchains to verify MSRV
           toolchains = lib.mapAttrs (_: customisedRustChannelOf) {
-            stable = {
+            "1.99.1" = {
               date = "2026-10-15";
               channel = "stable";
               sha256 = "fb152be80975c194aa5fc684b2aec3a6e14e2b855efe2faa4e5f8ae6e590f463";
@@ -112,9 +112,11 @@
             };
           };
 
+          host-toolchain = toolchains.${(builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel};
+
           rust-platform = makeRustPlatform {
-            cargo = toolchains.stable.rust;
-            rustc = toolchains.stable.rust;
+            cargo = host-toolchain.rust;
+            rustc = host-toolchain.rust;
           };
 
           manifests = {
@@ -212,7 +214,7 @@
               clauses = lib.strings.concatStringsSep "\n"
                 (lib.mapAttrsToList clause toolchains);
             in ''
-              base="${toolchains.stable.rust}"
+              base="${host-toolchain.rust}"
               requested="''${RUSTUP_TOOLCHAIN:-}"
               if [[ "$1" == +* ]]; then
                 requested="''${1#+}"
@@ -229,8 +231,7 @@
               fi
               case "+$requested" in
                 ${clauses}
-                +1.99.1) base="${toolchains.stable.rust}"; ;;
-                +) requested=stable; ;;
+                +stable | +stable-${host-toolchain.rust.toolchainVersionAttrs.date} | +) requested=stable; ;;
                 *) echo "Unsupported Rust toolchain: $requested" >&2; exit 1; ;;
               esac
               if [[ "$1" == install ]]; then exit 0; fi

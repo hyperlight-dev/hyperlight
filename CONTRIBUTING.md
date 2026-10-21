@@ -123,7 +123,7 @@ If you are using the [Rust Analyzer](https://rust-analyzer.github.io/manual.html
 
 The root `rust-toolchain.toml` pins the rust version for host builds and tools.
 
-Rust guests and the C API use Rust 1.94.1, pinned in
+Rust guests and the C API use the toolchains pinned in
 `src/tests/rust_guests/rust-toolchain.toml` and
 `src/hyperlight_guest_capi/rust-toolchain.toml`. These files should be kept in sync.
 

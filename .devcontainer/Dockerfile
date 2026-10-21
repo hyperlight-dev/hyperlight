@@ -55,7 +55,6 @@ ARG GUEST_RUST_TOOLCHAIN=1.94.1
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && rustup default ${RUST_TOOLCHAIN} \
-    && rustup component add clippy rustfmt --toolchain ${RUST_TOOLCHAIN} \
     && rustup target add x86_64-unknown-linux-gnu x86_64-unknown-linux-musl --toolchain ${RUST_TOOLCHAIN} \
     && rustup toolchain install ${GUEST_RUST_TOOLCHAIN} --component clippy,rustfmt,rust-src --target x86_64-unknown-none \
     && rustup toolchain add nightly-2026-09-22-x86_64-unknown-linux-gnu \

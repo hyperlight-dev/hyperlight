@@ -75,7 +75,7 @@ jobs:
           # The baseline pass checks out another commit, which needs its history.
           fetch-depth: ${{ inputs.baseline_ref == '' && 1 || 0 }}
 
-      - uses: hyperlight-dev/ci-setup-workflow@4b7107a0f24c523f503c861ddeb8180d3a23e7f7  # v2.1.0
+      - uses: hyperlight-dev/ci-setup-workflow@2bf5e01a09c1c75f81913a435212cdf88399d3e0  # v2.2.0
         with:
           additional-toolchain-directory: src/tests/rust_guests
         env:
