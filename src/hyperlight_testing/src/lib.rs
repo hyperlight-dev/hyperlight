@@ -176,14 +176,12 @@ pub fn simple_guest_for_fuzzing_as_string() -> Result<String> {
         .to_string())
 }
 
-/// Standard sandbox heap sizes for benchmarking and testing.
-/// These constants define common heap sizes used across benchmarks and tests
-/// to ensure consistency.
+/// Standard sandbox scratch sizes for benchmarks and tests.
 pub mod sandbox_sizes {
-    /// Small heap size: 8 MB
-    pub const SMALL_HEAP_SIZE: u64 = 8 * 1024 * 1024;
-    /// Medium heap size: 64 MB
-    pub const MEDIUM_HEAP_SIZE: u64 = 64 * 1024 * 1024;
-    /// Large heap size: 256 MB
-    pub const LARGE_HEAP_SIZE: u64 = 256 * 1024 * 1024;
+    /// Small scratch size: 8 MiB
+    pub const SMALL_SCRATCH_SIZE: usize = 8 * 1024 * 1024;
+    /// Medium scratch size: 64 MiB
+    pub const MEDIUM_SCRATCH_SIZE: usize = 64 * 1024 * 1024;
+    /// Large scratch size: 256 MiB
+    pub const LARGE_SCRATCH_SIZE: usize = 256 * 1024 * 1024;
 }

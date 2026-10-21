@@ -1237,7 +1237,9 @@ mod tests {
     use hyperlight_common::virtq::DescFlags;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
-    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    use hyperlight_testing::sandbox_sizes::{
+        LARGE_SCRATCH_SIZE, MEDIUM_SCRATCH_SIZE, SMALL_SCRATCH_SIZE,
+    };
     #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::simple_guest_as_pathbuf;
 
@@ -1540,20 +1542,19 @@ mod tests {
     fn test_page_tables_for_various_configurations() {
         let test_cases: [(&str, SandboxConfiguration); 4] = [
             ("default", { SandboxConfiguration::default() }),
-            ("small (8MB heap)", {
+            ("small (8MiB scratch)", {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(SMALL_HEAP_SIZE);
+                cfg.set_scratch_size(SMALL_SCRATCH_SIZE);
                 cfg
             }),
-            ("medium (64MB heap)", {
+            ("medium (64MiB scratch)", {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(MEDIUM_HEAP_SIZE);
+                cfg.set_scratch_size(MEDIUM_SCRATCH_SIZE);
                 cfg
             }),
-            ("large (256MB heap)", {
+            ("large (256MiB scratch)", {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(LARGE_HEAP_SIZE);
-                cfg.set_scratch_size(0x100000);
+                cfg.set_scratch_size(LARGE_SCRATCH_SIZE);
                 cfg
             }),
         ];
