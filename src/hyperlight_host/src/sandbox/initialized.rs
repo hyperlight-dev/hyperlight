@@ -289,7 +289,6 @@ impl Sandbox {
         if caller_supplied_config {
             warn_on_layout_override(&config, snapshot.layout());
         }
-        config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         config.set_g2h_queue_size(snapshot.layout().get_g2h_queue_size());
         config.set_h2g_queue_size(snapshot.layout().get_h2g_queue_size());
@@ -1307,11 +1306,6 @@ fn warn_on_layout_override(
     snapshot: &crate::mem::layout::SandboxMemoryLayout,
 ) {
     let mismatches: &[(&str, u64, u64)] = &[
-        (
-            "heap_size",
-            caller.get_heap_size(),
-            snapshot.heap_size() as u64,
-        ),
         (
             "scratch_size",
             caller.get_scratch_size() as u64,

@@ -1146,6 +1146,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
         )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET,
+            cfg!(feature = "executable_heap") as u64,
+        )?;
         // Record the G2H and H2G queue sizes, pool page counts, and buffer sizes.
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_G2H_QUEUE_SIZE_OFFSET,
