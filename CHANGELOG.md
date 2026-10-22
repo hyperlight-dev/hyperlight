@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   regions that the guest has not mapped into its page tables are lost.
 * `vmem::walk_va_spaces` merges adjacent mappings of the same kind into one
   mapping.
+* A new sandbox writes only the guest code, PEB and init data into its memory.
+  The host populates other pages on first guest touch, which speeds up sandbox
+  creation.
 
 ### Removed
 
