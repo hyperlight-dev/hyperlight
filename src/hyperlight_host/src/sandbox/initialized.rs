@@ -420,9 +420,46 @@ impl Sandbox {
             return Ok(snapshot.clone());
         }
 
+        let snapshot = Arc::new(self.capture_snapshot(self.mem_mgr.layout.get_scratch_size())?);
+        self.snapshot = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    /// Like [`Self::snapshot`], but restoring the snapshot gives the sandbox
+    /// a scratch region of `scratch_size` bytes, no larger than its own. A
+    /// sandbox can boot with the scratch its initialisation needs, then run
+    /// guest function calls from a snapshot with only the scratch they
+    /// need, which makes each restore cheaper.
+    ///
+    /// A size larger than the current scratch (`MemoryRequestTooBig`), too
+    /// small for the transport (`MemoryRequestTooSmall`), or not a whole
+    /// number of host pages is rejected before the guest is entered. Room
+    /// for the page tables depends on the guest's mappings and is checked
+    /// when the snapshot is built, after a pending transport checkpoint has
+    /// run in the guest: a size without it fails then, with
+    /// `MemoryRequestTooSmall`, and leaves the sandbox usable. Whether guest
+    /// function calls fit is not checked: one that needs more scratch fails
+    /// in the guest, and a later restore recovers the sandbox. Unless
+    /// `scratch_size` is the sandbox's own, this captures a new snapshot
+    /// each time, so callers should keep the result.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn snapshot_with_scratch_size(&mut self, scratch_size: usize) -> Result<Arc<Snapshot>> {
+        self.check_ready()?;
+        if scratch_size == self.mem_mgr.layout.get_scratch_size() {
+            return self.snapshot();
+        }
+        // Reject a bad size before the capture enters the guest.
+        self.mem_mgr.layout.with_scratch_size(scratch_size)?;
+        Ok(Arc::new(self.capture_snapshot(scratch_size)?))
+    }
+
+    /// Capture a snapshot whose scratch has `scratch_size` bytes: the
+    /// sandbox's own, or a smaller size.
+    fn capture_snapshot(&mut self, scratch_size: usize) -> Result<Snapshot> {
         if self.transport_dirty {
             self.checkpoint_transport_for_snapshot()?;
         }
+        let target = self.mem_mgr.layout.with_scratch_size(scratch_size)?;
 
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
@@ -459,7 +496,7 @@ impl Sandbox {
         })?)
             .into();
 
-        let memory_snapshot = self.mem_mgr.snapshot(
+        self.mem_mgr.snapshot(
             mapped_regions_vec,
             &root_pt_gpas,
             stack_top_gpa,
@@ -468,10 +505,8 @@ impl Sandbox {
             msrs,
             next_action,
             host_functions,
-        )?;
-        let snapshot = Arc::new(memory_snapshot);
-        self.snapshot = Some(snapshot.clone());
-        Ok(snapshot)
+            target,
+        )
     }
 
     fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
@@ -525,7 +560,10 @@ impl Sandbox {
     /// The restored state includes snapshot and scratch memory, vCPU state,
     /// stack state, the next VM action, captured MSRs on x86_64, and the removal
     /// of dynamic memory mappings. This discards leaked allocations, restores
-    /// allocator and lock state, and rolls back partial updates.
+    /// allocator and lock state, and rolls back partial updates. The sandbox
+    /// takes the snapshot's scratch size, which can differ from its own:
+    /// smaller for one from [`Self::snapshot_with_scratch_size`], larger when
+    /// restoring an earlier full-size snapshot.
     ///
     /// Restore failures have three status outcomes:
     ///
@@ -1296,6 +1334,111 @@ mod tests {
         assert!(sbox.mem_mgr.h2g_consumer.is_some());
     }
 
+    /// A snapshot can give a restored sandbox less scratch, and a sandbox
+    /// restored from it runs guest function calls and can go back to its
+    /// original size.
+    #[test]
+    fn snapshot_with_scratch_size_resizes_on_restore() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .scratch_size(8 << 20)
+            .build()
+            .unwrap();
+        let full = sbox.snapshot().unwrap();
+        // The sandbox's own size is a plain snapshot, already taken.
+        let same = sbox.snapshot_with_scratch_size(8 << 20).unwrap();
+        assert!(Arc::ptr_eq(&same, &full));
+        let small = sbox.snapshot_with_scratch_size(2 << 20).unwrap();
+        assert!(matches!(
+            sbox.snapshot_with_scratch_size(4096),
+            Err(HyperlightError::MemoryRequestTooSmall(..))
+        ));
+        assert!(matches!(
+            sbox.snapshot_with_scratch_size(16 << 20),
+            Err(HyperlightError::MemoryRequestTooBig(..))
+        ));
+        // Rejected sizes do not enter the guest: a pending transport
+        // checkpoint, which a capture would run, is still pending.
+        let echo: String = sbox.call("Echo", "still".to_string()).unwrap();
+        assert_eq!(echo, "still");
+        assert!(sbox.transport_dirty);
+        assert!(sbox.snapshot_with_scratch_size(4096).is_err());
+        assert!(sbox.snapshot_with_scratch_size(16 << 20).is_err());
+        assert!(sbox.transport_dirty);
+
+        // A size with room for the transport but not the page tables fails
+        // when the snapshot is built, and leaves the sandbox usable.
+        let page = crate::mem::layout::SandboxMemoryLayout::host_page_size();
+        let no_pt_room = sbox.mem_mgr.layout.min_scratch().next_multiple_of(page);
+        assert!(matches!(
+            sbox.snapshot_with_scratch_size(no_pt_room),
+            Err(HyperlightError::MemoryRequestTooSmall(..))
+        ));
+        let echo: String = sbox.call("Echo", "usable".to_string()).unwrap();
+        assert_eq!(echo, "usable");
+
+        for _ in 0..3 {
+            sbox.restore(small.clone()).unwrap();
+            assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 2 << 20);
+            let echo: String = sbox.call("Echo", "hello".to_string()).unwrap();
+            assert_eq!(echo, "hello");
+            sbox.call::<()>("AllocAndWritePattern", 32u64 << 10)
+                .unwrap();
+        }
+        // A snapshot of the resized sandbox keeps its size.
+        let again = sbox.snapshot().unwrap();
+        assert_eq!(again.layout().get_scratch_size(), 2 << 20);
+
+        // So does one saved to a file and loaded back.
+        let dir = tempfile::tempdir().unwrap();
+        let tag = crate::sandbox::snapshot::OciTag::new("small").unwrap();
+        small.save(dir.path(), &tag).unwrap();
+        let loaded = crate::sandbox::snapshot::Snapshot::checked_load(dir.path(), tag).unwrap();
+        sbox.restore(Arc::new(loaded)).unwrap();
+        assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 2 << 20);
+        let echo: String = sbox.call("Echo", "loaded".to_string()).unwrap();
+        assert_eq!(echo, "loaded");
+
+        sbox.restore(full).unwrap();
+        assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 8 << 20);
+        let echo: String = sbox.call("Echo", "back".to_string()).unwrap();
+        assert_eq!(echo, "back");
+    }
+
+    /// The guest's page allocator stops at the transport arena. A resized
+    /// sandbox that runs out of scratch aborts once an allocation reaches the
+    /// arena, with nothing handed out inside it, and a restore recovers it.
+    #[test]
+    fn running_out_of_scratch_stops_at_the_transport_arena() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .heap_size(8 << 20)
+            .scratch_size(8 << 20)
+            .build()
+            .unwrap();
+        let small = sbox.snapshot_with_scratch_size(2 << 20).unwrap();
+        sbox.restore(small.clone()).unwrap();
+        // 4 MiB of heap writes need 4 MiB of copy-on-write scratch.
+        let err = sbox
+            .call::<()>("AllocAndWritePattern", 4u64 << 20)
+            .unwrap_err();
+        assert!(
+            matches!(&err, HyperlightError::GuestAborted(code, msg)
+                if *code == ErrorCode::MallocFailed as u8 && msg.contains("Out of physical memory")),
+            "{err:?}"
+        );
+        let size = sbox.mem_mgr.scratch_mem.mem_size();
+        let offset = size - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let allocator = sbox.mem_mgr.scratch_mem.read::<u64>(offset).unwrap();
+        let arena = sbox.mem_mgr.layout.get_transport_arena();
+        // The failed allocation moved the pointer past the arena base. The
+        // limit is the arena, and nothing was handed out inside it.
+        assert!(allocator > arena.base_addr(), "{allocator:#x}");
+        assert!(allocator < arena.base_addr() + 0x4000, "{allocator:#x}");
+
+        sbox.restore(small).unwrap();
+        let echo: String = sbox.call("Echo", "recovered".to_string()).unwrap();
+        assert_eq!(echo, "recovered");
+    }
+
     #[test]
     fn poison() {
         let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
@@ -1469,8 +1612,7 @@ mod tests {
             let defaults = SandboxConfiguration::default();
             let layout =
                 crate::mem::layout::SandboxMemoryLayout::new(defaults, 0, 0, None).unwrap();
-            hyperlight_common::layout::min_scratch_size(layout.get_transport_arena().size())
-                .next_multiple_of(page_size::get())
+            layout.min_scratch().next_multiple_of(page_size::get())
         } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())

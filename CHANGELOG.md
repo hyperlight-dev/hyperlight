@@ -5,8 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* `Sandbox::snapshot_with_scratch_size` takes a snapshot that gives a restored sandbox a different scratch size. A guest can boot with the scratch its initialisation needs and run guest function calls from a snapshot with only the scratch they need, so each restore costs less. It cannot grow scratch.
 
 ### Changed
+* **Breaking:** The transport arena sits one free page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that free page. Snapshot ABI 7: existing snapshots must be regenerated.
 
 ### Removed
 

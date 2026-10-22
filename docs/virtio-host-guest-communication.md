@@ -42,16 +42,17 @@ optional writable response capacity.
 
 ## Transport arena
 
-Both rings, the transport mailbox, and both pools occupy one fixed prefix of
-guest scratch memory.
+Both rings, the transport mailbox, and both pools occupy one fixed range of
+guest scratch memory, below the reserved scratch-top pages with one free page
+between them. Its address does not depend on the scratch size. Guest page
+allocations stop at its base.
 
 ```text
- scratch base
-     |
-     v
- +----------+-----+----------+-----+-----+-----+----------+----------+
- | G2H ring | pad | H2G ring | pad | mbx | pad | G2H pool | H2G pool |
- +----------+-----+----------+-----+-----+-----+----------+----------+
+                                                           reserved top pages
+                                                                            |
+ +----------+-----+----------+-----+-----+-----+----------+----------+------+
+ | G2H ring | pad | H2G ring | pad | mbx | pad | G2H pool | H2G pool | free |
+ +----------+-----+----------+-----+-----+-----+----------+----------+------+
 ```
 
 The host derives this layout from `SandboxConfiguration`. Ring starts follow
@@ -527,8 +528,8 @@ both consumers.
 ## Placement and relocation limitations
 
 The fixed-pool runtime places both rings, the mailbox, and both pools in one
-host-owned arena at the scratch base. The guest reconstructs that layout from
-host metadata.
+host-owned arena below the reserved scratch-top pages. The guest reconstructs
+that layout from host metadata.
 
 Descriptors, pool owners, and producer state contain absolute GVAs. Restore
 adopts the snapshot's scratch size, queue geometry, and transport addresses,

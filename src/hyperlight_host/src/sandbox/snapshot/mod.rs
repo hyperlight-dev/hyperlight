@@ -439,12 +439,15 @@ impl Snapshot {
     #[allow(clippy::too_many_arguments)]
     /// Capture memory with optional validated transport images.
     ///
-    /// Page-table and snapshot sizes do not affect transport geometry.
+    /// `layout` is the sandbox's own: the live page tables and scratch are
+    /// read with it. `target` is the snapshot's: its page tables are built
+    /// for `target`'s scratch size, which may be smaller. Page-table and
+    /// snapshot sizes do not affect transport geometry.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new<S: SharedMemory>(
         shared_mem: &mut SnapshotSharedMemory<S>,
         scratch_mem: &mut S,
-        mut layout: SandboxMemoryLayout,
+        layout: SandboxMemoryLayout,
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
         root_pt_gpas: &[u64],
@@ -456,9 +459,11 @@ impl Snapshot {
         snapshot_generation: u64,
         host_functions: HostFunctionDetails,
         virtq: Option<VirtqSnapshot>,
+        mut target: SandboxMemoryLayout,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
+        let scratch_size = target.get_scratch_size();
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
                 // Phase 1: walk every PT root together. This detects
@@ -492,7 +497,7 @@ impl Snapshot {
                 // spaces' tables.
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
+                let pt_buf = GuestPageTableBuffer::new(target.get_pt_base_gpa() as usize);
                 // Allocate one root table per space and remember the
                 // addresses returned by `alloc_table` instead of
                 // assuming the buffer's physical layout.
@@ -587,7 +592,7 @@ impl Snapshot {
                 // Phase 3: Map the scratch region into each root.
                 for &root_addr in &root_addrs {
                     pt_buf.set_root(root_addr);
-                    map_specials(&pt_buf, layout.get_scratch_size());
+                    map_specials(&pt_buf, scratch_size);
                 }
                 pt_buf.set_root(pt_buf.initial_root());
 
@@ -598,7 +603,7 @@ impl Snapshot {
 
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
-                layout.set_pt_size(pt_data.len())?;
+                target.set_pt_size(pt_data.len())?;
                 snapshot_memory.extend(&pt_data);
                 Ok::<_, crate::HyperlightError>(snapshot_memory)
             })
@@ -609,13 +614,13 @@ impl Snapshot {
         // mapping of the snapshot region avoids overlap with
         // `map_file_cow` regions installed immediately after the
         // snapshot in guest PA space.
-        let guest_visible_size = memory.len() - layout.get_pt_size();
+        let guest_visible_size = memory.len() - target.get_pt_size();
         debug_assert!(guest_visible_size.is_multiple_of(page_size::get()));
-        layout.set_snapshot_size(guest_visible_size);
+        target.set_snapshot_size(guest_visible_size);
 
         Ok(Self {
             state: Arc::new(SnapshotState {
-                layout,
+                layout: target,
                 memory: ReadonlySharedMemory::from_bytes(&memory, guest_visible_size)?,
                 load_info,
                 stack_top_gva,
@@ -920,6 +925,7 @@ mod tests {
             1,
             HostFunctionDetails::default(),
             None,
+            mgr.layout,
         )
         .unwrap();
 
@@ -941,6 +947,7 @@ mod tests {
             2,
             HostFunctionDetails::default(),
             None,
+            mgr.layout,
         )
         .unwrap();
 

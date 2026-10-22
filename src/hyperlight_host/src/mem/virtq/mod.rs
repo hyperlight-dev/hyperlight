@@ -68,7 +68,9 @@ pub(crate) fn create_consumers(
 /// Validated ring images excluded from ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
-    /// Scratch size used to derive transport GVAs.
+    /// Scratch size of the snapshot's layout. The ring addresses do not
+    /// depend on it. The transport blob records it so the loader can check
+    /// it against the config.
     scratch_size: usize,
     /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
@@ -118,7 +120,15 @@ impl VirtqSnapshot {
         Self::new(layout, layout.get_scratch_size(), g2h_ring, h2g_ring)
     }
 
-    /// Scratch size used to interpret the saved ring addresses.
+    /// The same rings, for a snapshot whose scratch has `layout`'s size.
+    /// The ring addresses do not depend on the scratch size, so the rings
+    /// validated at capture stay valid.
+    pub(crate) fn into_resized(mut self, layout: &SandboxMemoryLayout) -> Self {
+        self.scratch_size = layout.get_scratch_size();
+        self
+    }
+
+    /// Scratch size of the snapshot's layout, as the transport blob records it.
     pub(crate) fn scratch_size(&self) -> usize {
         self.scratch_size
     }
@@ -140,7 +150,7 @@ impl VirtqSnapshot {
         scratch_mem: &HostSharedMemory,
     ) -> Result<(G2hConsumer, H2gConsumer)> {
         let (g2h_offset, h2g_offset) = ring_offsets(layout);
-        let mbx_offset = layout.get_transport_arena().mbx_offset();
+        let mbx_offset = layout.mbx_scratch_offset();
         let cp = MailboxValue::CheckpointComplete.as_bytes();
 
         write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
@@ -247,9 +257,7 @@ fn read_ring(scratch_mem: &HostSharedMemory, offset: usize, len: usize) -> Resul
 }
 
 fn ring_offsets(layout: &SandboxMemoryLayout) -> (usize, usize) {
-    let arena = layout.get_transport_arena();
-    let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
-    let g2h_offset = (arena.base_addr() - scratch_base) as usize;
-    let (h2g_offset, ..) = arena.to_offsets();
+    let g2h_offset = layout.arena_scratch_offset();
+    let (h2g_offset, ..) = layout.get_transport_arena().to_offsets();
     (g2h_offset, g2h_offset + h2g_offset)
 }
