@@ -22,24 +22,28 @@ path/
   blobs/sha256/
     <manifest-digest>                 OCI image manifest JSON
     <config-digest>                   Hyperlight config JSON
-    <snapshot-digest>                 raw memory bytes
-                                      (`memory_size` bytes)
+    <data-digest>                     one raw blob per snapshot blob:
+                                      guest data, then page tables
     <transport-digest>                canonical virtqueue rings
 ```
 
 Four blob kinds per tag:
 
 * **manifest** (`application/vnd.oci.image.manifest.v1+json`). Tiny JSON
-  pointer record selected via `index.json`. References one config and
-  two layers by digest.
-* **config** (`application/vnd.hyperlight.snapshot.config.v3+json`). The
+  pointer record selected via `index.json`. References one config,
+  the snapshot blobs, and one transport layer by digest.
+* **config** (`application/vnd.hyperlight.snapshot.config.v4+json`). The
   snapshot descriptor: arch, hypervisor, CPU vendor, ABI version,
   resume address and captured registers, memory and transport layout,
-  registered host functions, snapshot generation counter, and namespaced
-  application metadata. Loaded eagerly and fully parsed.
-* **layer / memory** (`application/vnd.hyperlight.snapshot.memory.v1`).
-  The raw guest memory image, exactly `memory_size` bytes. mmap'd on
-  restore.
+  registered host functions, the start address, data length, and page-table
+  length of each blob, the blob with the page tables for a restore, snapshot
+  generation counter, and namespaced application metadata.
+  Loaded eagerly and fully parsed.
+* **layers / data** (`application/vnd.hyperlight.snapshot.memory.v2`).
+  One raw, host-page-aligned blob per snapshot blob, in config order. Each
+  blob holds guest data followed by the page-table tree of the snapshot that
+  created it. Each blob is mmap'd on restore, and the guest maps only its
+  data.
 * **layer / transport**
   (`application/vnd.hyperlight.snapshot.transport.v1`). A bounded
   binary image of the canonical G2H and H2G rings. Loading checks ring
@@ -47,6 +51,8 @@ Four blob kinds per tag:
 
 The runtime queue protocol and canonical checkpoint are described in
 [Virtqueue host and guest communication](./virtio-host-guest-communication.md).
+
+Manifest layers are ordered data, then transport.
 
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
@@ -95,7 +101,7 @@ A single saved `Snapshot` consists of exactly:
   config blob for tooling visibility,
 * one **manifest** blob (referenced by that index entry),
 * one **config** blob (referenced by the manifest's `config` field),
-* one memory **layer** blob,
+* one or more data **layer** blobs,
 * one transport **layer** blob.
 
 Saving two snapshots under different tags into the same `path`
@@ -138,12 +144,12 @@ podman), `go-containerregistry` (crane), and `regclient`.
 ## Read semantics
 
 `Snapshot::load(path, reference)` reads a snapshot. It does not check
-the manifest, config, memory, or transport blobs against their sha256 digests.
+the manifest, config, data, or transport blobs against their sha256 digests.
 `reference` is an
 [`OciReference`], either a tag that matches the
 `org.opencontainers.image.ref.name` annotation or the manifest
 digest returned by `save`. `Snapshot::checked_load` adds the digest
-check on all four blobs, catching accidental corruption on disk.
+check on every blob, catching accidental corruption on disk.
 Both run every other check (OCI structure, descriptor sizes, schema
 versions, arch / hypervisor / CPU vendor / ABI tags, layout bounds,
 entrypoint bounds). The caller is responsible for trusting the source.
