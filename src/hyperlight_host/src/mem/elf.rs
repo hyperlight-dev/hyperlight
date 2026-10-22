@@ -88,6 +88,8 @@ pub(crate) struct ElfInfo {
     /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     guest_bin_version: Option<String>,
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    debug_vectors: Option<u64>,
 }
 
 #[cfg(feature = "mem_profile")]
@@ -248,6 +250,11 @@ impl ElfInfo {
         // Look for the hyperlight version note embedded by
         // hyperlight-guest-bin.
         let guest_bin_version = Self::read_version_note(&elf, &bytes);
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        let debug_vectors = elf.syms.iter().find_map(|symbol| {
+            (elf.strtab.get_at(symbol.st_name) == Some("hyperlight_debug_vectors"))
+                .then_some(symbol.st_value)
+        });
 
         let phdrs = std::mem::take(&mut elf.program_headers);
         let entry = elf.entry;
@@ -279,6 +286,8 @@ impl ElfInfo {
             relocs,
             is_pie,
             guest_bin_version,
+            #[cfg(all(gdb, target_arch = "aarch64"))]
+            debug_vectors,
         })
     }
 
@@ -410,11 +419,23 @@ impl ElfInfo {
                 }
             }
         }
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        let debug_vectors = self
+            .debug_vectors
+            .map(|address| {
+                address
+                    .checked_sub(base_va)
+                    .and_then(|offset| load_gva.checked_add(offset))
+                    .ok_or_else(|| new_error!("ARM64 debug vector address overflows"))
+            })
+            .transpose()?;
         cfg_if::cfg_if! {
             if #[cfg(feature = "mem_profile")] {
                 let va_size = self.get_va_size() as u64;
                 let base_svma = self.get_base_va();
                 Ok(LoadInfo {
+                    #[cfg(all(gdb, target_arch = "aarch64"))]
+                    debug_vectors,
                     info: Arc::new(UnwindInfo {
                         payload: self.payload,
                         load_addr: load_gva,
@@ -424,7 +445,10 @@ impl ElfInfo {
                     })
                 })
             } else {
-                Ok(LoadInfo {})
+                Ok(LoadInfo {
+                    #[cfg(all(gdb, target_arch = "aarch64"))]
+                    debug_vectors,
+                })
             }
         }
     }
