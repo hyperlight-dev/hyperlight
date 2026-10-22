@@ -314,11 +314,12 @@ pub enum ResolvedBoundVar<'a> {
     },
 }
 
-/// A whole grab-bag of useful state to have while emitting Rust
+/// A whole grab-bag of useful state to have while emitting bindings.
+/// `M` holds the output. [`Mod`] holds Rust output.
 #[derive(Debug)]
-pub struct State<'a, 'b> {
-    /// A pointer to a [`Mod`] that everything we emit will end up in
-    pub root_mod: &'a mut Mod,
+pub struct State<'a, 'b, M = Mod> {
+    /// A pointer to the output that everything we emit will end up in
+    pub root_mod: &'a mut M,
     /// A cursor to the current submodule (under [`State::root_mod`]),
     /// where decls that we are looking at right now should end up
     pub mod_cursor: Vec<Ident>,
@@ -414,6 +415,10 @@ pub struct State<'a, 'b> {
     /// When a name is in this set, the parent namespace is prepended to
     /// disambiguate the trait member name.
     pub colliding_import_names: HashSet<String>,
+    /// Full kebab name of the instance whose functions are being
+    /// emitted, e.g. `wasi:http/types@0.2.0`. Wire function names are
+    /// derived from it.
+    pub cur_instance: Option<String>,
 }
 
 /// Create a State with all of its &mut references pointing to
@@ -440,9 +445,9 @@ pub fn run_state<'b, F: for<'a> FnMut(&mut State<'a, 'b>)>(
     root_mod.into_tokens()
 }
 
-impl<'a, 'b> State<'a, 'b> {
+impl<'a, 'b, M> State<'a, 'b, M> {
     pub fn new(
-        root_mod: &'a mut Mod,
+        root_mod: &'a mut M,
         bound_vars: &'a mut VecDeque<BoundedTyvar<'b>>,
         vars_needs_vars: &'a mut VecDeque<BTreeSet<u32>>,
         is_guest: bool,
@@ -467,9 +472,10 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest,
             is_wasmtime_guest,
             colliding_import_names: HashSet::new(),
+            cur_instance: None,
         }
     }
-    pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
+    pub fn clone<'c>(&'c mut self) -> State<'c, 'b, M> {
         State {
             root_mod: self.root_mod,
             mod_cursor: self.mod_cursor.clone(),
@@ -489,8 +495,33 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
             colliding_import_names: self.colliding_import_names.clone(),
+            cur_instance: self.cur_instance.clone(),
         }
     }
+    /// Resolve a type variable as far as possible: either this ends
+    /// up with a definition, in which case, let's get that, or it
+    /// ends up with a resource type, in which case we return the
+    /// resource index
+    ///
+    /// Distinct from [`Ctx::resolve_tv`], which is mostly concerned
+    /// with free variables, because this is concerned entirely with
+    /// bound variables.
+    pub fn resolve_bound_var(&self, n: u32) -> ResolvedBoundVar<'b> {
+        let noff = self.var_offset as u32 + n;
+        match &self.bound_vars[noff as usize].bound {
+            TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
+                self.resolve_bound_var(n + 1 + nn)
+            }
+            TypeBound::Eq(t) => ResolvedBoundVar::Definite {
+                final_bound_var: n,
+                ty: t.clone(),
+            },
+            TypeBound::SubResource => ResolvedBoundVar::Resource { rtidx: noff },
+        }
+    }
+}
+
+impl<'a, 'b> State<'a, 'b> {
     /// Obtain a reference to the [`Mod`] that we are currently
     /// generating code in, creating it if necessary
     pub fn cur_mod<'c>(&'c mut self) -> &'c mut Mod {
@@ -522,6 +553,13 @@ impl<'a, 'b> State<'a, 'b> {
     pub fn with_cursor<'c>(&'c mut self, cursor: Vec<Ident>) -> State<'c, 'b> {
         let mut s = self.clone();
         s.mod_cursor = cursor;
+        s
+    }
+    /// Copy the state to emit the functions of the instance `wn`,
+    /// moving the module cursor to its namespace.
+    pub fn with_instance<'c>(&'c mut self, wn: &WitName) -> State<'c, 'b> {
+        let mut s = self.with_cursor(wn.namespace_idents());
+        s.cur_instance = Some(wn.kebab.to_string());
         s
     }
     /// Copy the state, replacing its [`State::cur_needs_vars`] reference,
@@ -772,27 +810,6 @@ impl<'a, 'b> State<'a, 'b> {
         }
         self.root_mod.adjust_vars(n);
     }
-    /// Resolve a type variable as far as possible: either this ends
-    /// up with a definition, in which case, let's get that, or it
-    /// ends up with a resource type, in which case we return the
-    /// resource index
-    ///
-    /// Distinct from [`Ctx::resolve_tv`], which is mostly concerned
-    /// with free variables, because this is concerned entirely with
-    /// bound variables.
-    pub fn resolve_bound_var(&self, n: u32) -> ResolvedBoundVar<'b> {
-        let noff = self.var_offset as u32 + n;
-        match &self.bound_vars[noff as usize].bound {
-            TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
-                self.resolve_bound_var(n + 1 + nn)
-            }
-            TypeBound::Eq(t) => ResolvedBoundVar::Definite {
-                final_bound_var: n,
-                ty: t.clone(),
-            },
-            TypeBound::SubResource => ResolvedBoundVar::Resource { rtidx: noff },
-        }
-    }
 
     /// Construct a namespace path referring to the resource trait for
     /// a resource with the given name
@@ -813,6 +830,8 @@ impl<'a, 'b> State<'a, 'b> {
 /// namespaces, an actual name, and possibly a SemVer version
 #[derive(Debug, Clone)]
 pub struct WitName<'a> {
+    /// The unparsed name
+    pub kebab: &'a str,
     pub namespaces: Vec<&'a str>,
     pub name: &'a str,
     pub _version: Vec<&'a str>,
@@ -844,6 +863,7 @@ pub fn split_wit_name(n: &str) -> WitName<'_> {
     let name = versioned_name.next().unwrap();
     namespaces.extend(slash_components.rev());
     WitName {
+        kebab: n,
         namespaces,
         name,
         _version: versioned_name.collect(),

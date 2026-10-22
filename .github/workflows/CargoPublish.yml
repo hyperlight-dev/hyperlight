@@ -52,7 +52,7 @@ jobs:
             VERSION="${VERSION#refs/heads/release/v}"
             echo "VERSION=$VERSION" >> $GITHUB_ENV
           fi
-          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
       - name: Determine which crates need publishing
         run: |
@@ -64,6 +64,7 @@ jobs:
             hyperlight-guest-bin \
             hyperlight-component-util \
             hyperlight-component-macro \
+            hyperlight-component-csharp \
             hyperlight-host \
             hyperlight-guest-tracing >> "$GITHUB_ENV"
 
@@ -133,6 +134,13 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_HOST != 'false'
+
+      - name: Publish hyperlight-component-csharp
+        continue-on-error: ${{ inputs.dry_run }}
+        run: cargo publish --manifest-path ./src/hyperlight_component_csharp/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+        if: env.PUBLISH_HYPERLIGHT_COMPONENT_CSHARP != 'false'
 
 
       # TODO: Do we want to publish hyperlight-guest-capi to crates.io given that it's not for Rust consumption?

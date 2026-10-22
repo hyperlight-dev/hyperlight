@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../../../..'))</RepoRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="Fakes.cs" />
+    <Compile Include="WireTests.cs" />
+    <Compile Include="EdgeTests.cs" />
+    <Compile Include="RuntimeTests.cs" />
+    <Compile Include="../../../hyperlight_component_csharp/src/Runtime.cs" Link="Runtime.cs" />
+    <None Include="../vectors.txt" Link="vectors.txt" CopyToOutputDirectory="PreserveNewest" />
+    <WitFixture Include="../wire.wit" Namespace="Hyperlight.Tests.Wire" GeneratedFile="Wire.g.cs" />
+    <WitFixture Include="edge.wit" Namespace="Hyperlight.Tests.Edge" GeneratedFile="Edge.g.cs" />
+  </ItemGroup>
+
+  <!-- Runs the generator under test on each fixture. -->
+  <Target Name="GenerateBindings" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedDir>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)generated/</GeneratedDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(GeneratedDir)" />
+    <Exec Command="cargo run --quiet -p hyperlight-component-csharp --example csharp_bindgen -- &quot;%(WitFixture.FullPath)&quot; %(WitFixture.Namespace) &quot;$(GeneratedDir)%(WitFixture.GeneratedFile)&quot;"
+          WorkingDirectory="$(RepoRoot)" />
+    <ItemGroup>
+      <Compile Include="$(GeneratedDir)%(WitFixture.GeneratedFile)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

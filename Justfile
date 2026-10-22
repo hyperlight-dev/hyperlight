@@ -149,7 +149,7 @@ code-checks-like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just clippy-exhaustive " + config } else { "" } }}
 
     @# Verify MSRV
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
     @# Check cargo features compile
     just check
@@ -157,6 +157,9 @@ code-checks-like-ci config=default-target hypervisor="kvm":
     @# Check compilation with no default features
     just test-compilation-no-default-features debug
     just test-compilation-no-default-features release
+
+    @# Test generated C# bindings
+    just test-csharp-bindings
 
 build-guests-like-ci config=default-target:
     @# Build and move Rust guests
@@ -297,8 +300,9 @@ test-integration target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
-    @# run component-util integration tests that exercise WIT input codegen
-    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
+    @# run component-util unit tests and the integration tests that exercise WIT input codegen
+    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib --test wasmtime_guest_codegen
+    {{ cargo-cmd }} test -p hyperlight-component-csharp --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
     @# run the rest of the integration tests. `snapshot_goldens` is in
     @# the glob but no-ops without a mode token, so it needs no golden
@@ -347,6 +351,10 @@ test-rust-tracing target=default-target features="":
 
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
+
+# generates and tests C# bindings for the component test fixtures. Needs the .NET 8 SDK or newer.
+test-csharp-bindings:
+    dotnet run --project src/tests/component_wire/csharp
 
 # Nextest runs one Miri process per job, each with its own interpreter, so
 # memory grows with the job count at roughly 0.4GB per job. Lower MIRI_JOBS on
@@ -426,6 +434,7 @@ clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-component-csharp {{ target }} {{ target-triple }}
     {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
@@ -435,7 +444,7 @@ clippy-package package target=default-target:
 
 # Verify Minimum Supported Rust Version
 verify-msrv:
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
 #####################
 ### RUST EXAMPLES ###
@@ -564,7 +573,7 @@ ensure-cargo-llvm-cov:
 
 # host-side packages to collect coverage for (guest/no_std crates are excluded because they
 # define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
-coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro -p hyperlight-component-csharp"
 
 # run all tests and examples with coverage instrumentation, collecting profdata without
 # generating a report. Mirrors test-like-ci + run-examples-like-ci to exercise all code paths
