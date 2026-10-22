@@ -1,4 +1,4 @@
 [toolchain]
 channel = "1.99.1"
-components = ["clippy", "rustfmt"]
+components = ["clippy"]
 targets = ["x86_64-unknown-linux-musl"]
