@@ -12,8 +12,6 @@
 //! +-------------------------------------------+
 //! |              Init Data                    | (GuestBlob size)
 //! +-------------------------------------------+
-//! |             Guest Heap                    |
-//! +-------------------------------------------+
 //! |                PEB Struct                 | (HyperlightPEB size)
 //! +-------------------------------------------+
 //! |               Guest Code                  |
@@ -29,8 +27,8 @@
 //! - `InitData` - some extra data that can be loaded onto the sandbox during
 //!   initialization.
 //!
-//! - `GuestHeap` - this is a buffer that is used for heap data in the guest. the length
-//!   of this field is returned by the `heap_size()` method of this struct
+//! The guest heap is outside this layout. The guest maps heap pages
+//! from scratch on first touch.
 //!
 //! There is also a scratch region at the top of physical memory,
 //! which is mostly laid out as a large undifferentiated blob of
@@ -55,7 +53,7 @@ use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::vmem::PAGE_SIZE;
 use tracing::{Span, instrument};
 
-use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
+use super::memory_region::MemoryRegionType::{Code, InitData, Peb};
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, GuestMemoryRegion, MemoryRegion_, MemoryRegionFlags,
     MemoryRegionVecBuilder,
@@ -66,8 +64,6 @@ use crate::{Result, new_error};
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
-    /// The heap size of this sandbox.
-    heap_size: usize,
     /// The size of the guest code section.
     code_size: usize,
     /// Guest virtual address of the code section.
@@ -99,7 +95,6 @@ impl Debug for SandboxMemoryLayout {
         )
         .field("Code Size", &format_args!("{:#x}", self.code_size))
         .field("Code GVA", &format_args!("{:#x}", self.code_gva))
-        .field("Heap Size", &format_args!("{:#x}", self.heap_size))
         .field(
             "Init Data Size",
             &format_args!("{:#x}", self.init_data_size),
@@ -116,11 +111,7 @@ impl Debug for SandboxMemoryLayout {
             &format_args!("{:#x}", self.guest_code_offset()),
         )
         .field("PEB Offset", &format_args!("{:#x}", self.peb_offset()))
-        .field("PEB Address", &format_args!("{:#x}", self.peb_address()));
-        ff.field(
-            "Guest Heap Buffer Offset",
-            &format_args!("{:#x}", self.guest_heap_buffer_offset()),
-        )
+        .field("PEB Address", &format_args!("{:#x}", self.peb_address()))
         .field(
             "Init Data Offset",
             &format_args!("{:#x}", self.init_data_offset()),
@@ -141,7 +132,7 @@ impl SandboxMemoryLayout {
     pub(crate) const BASE_ADDRESS: usize = 0x4000;
 
     /// Create a new `SandboxMemoryLayout` with the given
-    /// `SandboxConfiguration`, code size and stack/heap size.
+    /// `SandboxConfiguration` and code size.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         cfg: SandboxConfiguration,
@@ -149,7 +140,6 @@ impl SandboxMemoryLayout {
         init_data_size: usize,
         init_data_permissions: Option<MemoryRegionFlags>,
     ) -> Result<Self> {
-        let heap_size = usize::try_from(cfg.get_heap_size())?;
         let scratch_size = cfg.get_scratch_size();
         if scratch_size > Self::MAX_MEMORY_SIZE {
             return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
@@ -179,7 +169,6 @@ impl SandboxMemoryLayout {
         }
 
         let ret = Self {
-            heap_size,
             code_size,
             code_gva: Self::BASE_ADDRESS,
             init_data_size,
@@ -193,10 +182,6 @@ impl SandboxMemoryLayout {
         };
         ret.get_memory_size()?;
         Ok(ret)
-    }
-
-    pub(crate) fn heap_size(&self) -> usize {
-        self.heap_size
     }
 
     pub(crate) fn code_size(&self) -> usize {
@@ -280,32 +265,8 @@ impl SandboxMemoryLayout {
         }
 
         // PEB
-        let heap_offset =
+        let init_data_offset =
             builder.push_page_aligned(size_of::<HyperlightPEB>(), MemoryRegionFlags::READ, Peb);
-
-        let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset())?;
-
-        if heap_offset != expected_heap_offset {
-            return Err(new_error!(
-                "Guest Heap offset does not match expected Guest Heap offset expected:  {}, actual:  {}",
-                expected_heap_offset,
-                heap_offset
-            ));
-        }
-
-        // heap
-        #[cfg(feature = "executable_heap")]
-        let init_data_offset = builder.push_page_aligned(
-            self.heap_size,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-            Heap,
-        );
-        #[cfg(not(feature = "executable_heap"))]
-        let init_data_offset = builder.push_page_aligned(
-            self.heap_size,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            Heap,
-        );
 
         let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset())?;
 
@@ -423,10 +384,7 @@ impl SandboxMemoryLayout {
                 size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
                 ptr: guest_base + self.init_data_offset() as u64,
             },
-            guest_heap: GuestMemoryRegion {
-                size: self.heap_size as u64,
-                ptr: guest_base + self.guest_heap_buffer_offset() as u64,
-            },
+            heap_executable: cfg!(feature = "executable_heap") as u64,
         };
 
         let offset = self.peb_offset();
@@ -463,14 +421,9 @@ impl SandboxMemoryLayout {
         Self::BASE_ADDRESS + self.peb_offset()
     }
 
-    /// Offset of the guest heap buffer within the snapshot region.
-    pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
-        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE)
-    }
-
     /// Offset of the init data section within the snapshot region.
     pub(crate) fn init_data_offset(&self) -> usize {
-        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE)
+        (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE)
     }
 
     /// The code offset is always 0.
@@ -543,8 +496,6 @@ mod tests {
         // PEB
         let peb_and_array = size_of::<HyperlightPEB>();
         expected_size += peb_and_array.next_multiple_of(PAGE_SIZE);
-
-        expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE);
 
         expected_size.next_multiple_of(page_size::get())
     }
@@ -717,16 +668,17 @@ mod tests {
         );
 
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(0x2000);
         cfg.set_scratch_size(0x30000);
         let layout = SandboxMemoryLayout::new(cfg, 0x1000, 0, None).unwrap();
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x1000);
         pin_eq!(layout.peb_address(), 0x5000);
-        pin_eq!(layout.guest_heap_buffer_offset(), 0x2000);
-        pin_eq!(layout.init_data_offset(), 0x4000);
-        pin_eq!(layout.get_memory_size().unwrap(), 0x4000);
+        pin_eq!(layout.init_data_offset(), 0x2000);
+        pin_eq!(
+            layout.get_memory_size().unwrap(),
+            0x2000_usize.next_multiple_of(page_size::get())
+        );
 
         pin_eq!(layout.get_scratch_size(), 0x30000);
         pin_eq!(layout.get_pt_base_scratch_offset(), 0x15000);
@@ -750,18 +702,16 @@ mod tests {
         // A second snapshot layout keeps the transport prefix fixed
         // relative to its scratch base.
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(0x5000);
         cfg.set_scratch_size(0x40000);
         let layout = SandboxMemoryLayout::new(cfg, 0x3000, 0, None).unwrap();
 
         pin_eq!(layout.guest_code_offset(), 0);
         pin_eq!(layout.peb_offset(), 0x3000);
         pin_eq!(layout.peb_address(), 0x7000);
-        pin_eq!(layout.guest_heap_buffer_offset(), 0x4000);
-        pin_eq!(layout.init_data_offset(), 0x9000);
+        pin_eq!(layout.init_data_offset(), 0x4000);
         pin_eq!(
             layout.get_memory_size().unwrap(),
-            0x9000_usize.next_multiple_of(page_size::get())
+            0x4000_usize.next_multiple_of(page_size::get())
         );
 
         pin_eq!(layout.get_scratch_size(), 0x40000);

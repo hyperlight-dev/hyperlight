@@ -16,8 +16,8 @@ use super::file::{
     SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 7;
-const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v4+json";
+const EXPECTED_ABI_VERSION: u32 = 8;
+const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v5+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v2";
 const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
@@ -46,7 +46,7 @@ const _: () = {
 const _: () = {
     use hyperlight_common::mem::HyperlightPEB;
     use hyperlight_common::vmem::PAGE_SIZE;
-    // The loading host derives `guest_heap_buffer_offset`, and every
+    // The loading host derives `init_data_offset`, and every
     // offset after it, from the PEB's page-rounded size. Existing
     // snapshots place the PEB in a single page, so the only thing that
     // must hold is that the PEB keeps fitting in one page. Field layout

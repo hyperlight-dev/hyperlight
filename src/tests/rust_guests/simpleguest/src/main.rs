@@ -384,34 +384,13 @@ fn call_malloc(size: i32) -> i32 {
     size
 }
 
-#[guest_function("FillHeapAndCauseException")]
-fn fill_heap_and_cause_exception() {
-    let layout: Layout = Layout::new::<u8>();
-    let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    while !ptr.is_null() {
-        black_box(ptr);
-        ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    }
-
-    // trigger an undefined instruction exception
-    trigger_exception();
-}
-
+/// Allocates until scratch runs out and the guest aborts.
 #[guest_function("ExhaustHeap")]
 fn exhaust_heap() {
     let layout: Layout = Layout::new::<u8>();
-    let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    while !ptr.is_null() {
-        black_box(ptr);
-        ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    loop {
+        black_box(unsafe { alloc::alloc::alloc_zeroed(layout) });
     }
-
-    // after alloc::alloc_zeroed failure (null return when called in loop above)
-    // allocate a Vec to ensure OOM panic
-    let vec = Vec::<i32>::with_capacity(1);
-    black_box(vec);
-
-    panic!("function should have panicked before due to OOM")
 }
 
 #[guest_function("MallocAndFree")]

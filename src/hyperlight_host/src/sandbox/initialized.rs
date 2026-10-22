@@ -289,7 +289,6 @@ impl Sandbox {
         if caller_supplied_config {
             warn_on_layout_override(&config, snapshot.layout());
         }
-        config.set_heap_size(snapshot.layout().heap_size() as u64);
         config.set_scratch_size(snapshot.layout().get_scratch_size());
         config.set_g2h_queue_size(snapshot.layout().get_g2h_queue_size());
         config.set_h2g_queue_size(snapshot.layout().get_h2g_queue_size());
@@ -1284,11 +1283,6 @@ fn warn_on_layout_override(
 ) {
     let mismatches: &[(&str, u64, u64)] = &[
         (
-            "heap_size",
-            caller.get_heap_size(),
-            snapshot.heap_size() as u64,
-        ),
-        (
             "scratch_size",
             caller.get_scratch_size() as u64,
             snapshot.get_scratch_size() as u64,
@@ -1345,7 +1339,9 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_common::func::{Bytes, SupportedReturnType};
-    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    use hyperlight_testing::sandbox_sizes::{
+        LARGE_SCRATCH_SIZE, MEDIUM_SCRATCH_SIZE, SMALL_SCRATCH_SIZE,
+    };
     use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
     use super::normalize_page_table_roots;
@@ -1548,8 +1544,7 @@ mod tests {
     // Checks that 1,000 calls work with constrained guest memory.
     // This catches guest stack reset and heap leaks.
     #[test]
-    fn test_with_small_stack_and_heap() {
-        const HEAP_SIZE: u64 = 128 * 1024;
+    fn test_with_small_scratch() {
         // Leave room for runtime allocations and eagerly copied page tables.
         let scratch_size = {
             let defaults = SandboxConfiguration::default();
@@ -1560,7 +1555,6 @@ mod tests {
         } + 0x40000;
 
         let mut sbox1 = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            .heap_size(HEAP_SIZE)
             .scratch_size(scratch_size)
             .build()
             .unwrap();
@@ -1570,7 +1564,6 @@ mod tests {
         }
 
         let mut sbox2 = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            .heap_size(HEAP_SIZE)
             .scratch_size(scratch_size)
             .build()
             .unwrap();
@@ -2764,11 +2757,6 @@ mod tests {
                 |layout| layout.get_h2g_pool_pages(),
             ),
             (
-                "heap",
-                |cfg| cfg.set_heap_size(0x40_000),
-                |layout| layout.heap_size(),
-            ),
-            (
                 "scratch",
                 |cfg| cfg.set_scratch_size(0x90_000),
                 |layout| layout.get_scratch_size(),
@@ -2813,9 +2801,9 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_recovers_oom_with_larger_heap() {
+    fn snapshot_restore_recovers_oom_with_larger_scratch() {
         let mut source_cfg = SandboxConfiguration::default();
-        source_cfg.set_heap_size(0x20_000);
+        source_cfg.set_scratch_size(0x200_000);
         let path = simple_guest_as_pathbuf();
         let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
             .unwrap()
@@ -2823,10 +2811,8 @@ mod tests {
             .unwrap();
         let snapshot = source.snapshot().unwrap();
 
-        let mut target_cfg = SandboxConfiguration::default();
-        target_cfg.set_heap_size(40 * 1024);
         let path = simple_guest_as_pathbuf();
-        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
+        let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
             .unwrap()
             .evolve()
             .unwrap();
@@ -2836,38 +2822,41 @@ mod tests {
 
         target.restore(snapshot).unwrap();
         assert!(!target.status().is_poisoned());
-        assert_eq!(
-            target.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
-            0x10_000
-        );
+        target
+            .call::<()>("AllocAndWritePattern", 0x100_000u64)
+            .unwrap();
     }
 
     #[test]
-    fn snapshot_restore_applies_smaller_heap_limit() {
-        let mut source_cfg = SandboxConfiguration::default();
-        source_cfg.set_heap_size(40 * 1024);
+    fn snapshot_restore_applies_smaller_scratch_limit() {
         let path = simple_guest_as_pathbuf();
-        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(source_cfg))
+        let mut source = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
             .unwrap()
             .evolve()
             .unwrap();
         let snapshot = source.snapshot().unwrap();
 
         let mut target_cfg = SandboxConfiguration::default();
-        target_cfg.set_heap_size(0x20_000);
+        target_cfg.set_scratch_size(0x200_000);
         let path = simple_guest_as_pathbuf();
         let mut target = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(target_cfg))
             .unwrap()
             .evolve()
             .unwrap();
 
-        assert_eq!(
-            target.call::<i32>("CallMalloc", 0x10_000i32).unwrap(),
-            0x10_000
-        );
+        target
+            .call::<()>("AllocAndWritePattern", 0x100_000u64)
+            .unwrap();
         target.restore(snapshot).unwrap();
-        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
-        assert!(target.call::<i32>("CallMalloc", 0x10_000i32).is_err());
+        assert_eq!(
+            target.mem_mgr.layout.get_scratch_size(),
+            SandboxConfiguration::DEFAULT_SCRATCH_SIZE
+        );
+        assert!(
+            target
+                .call::<()>("AllocAndWritePattern", 0x100_000u64)
+                .is_err()
+        );
         assert!(target.status().is_poisoned());
     }
 
@@ -2907,7 +2896,7 @@ mod tests {
     #[test]
     fn snapshot_restore_alternates_different_layouts() {
         let mut small_cfg = SandboxConfiguration::default();
-        small_cfg.set_heap_size(40 * 1024);
+        small_cfg.set_scratch_size(0x70_000);
         let path = simple_guest_as_pathbuf();
         let mut small = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(small_cfg))
             .unwrap()
@@ -2917,7 +2906,6 @@ mod tests {
         let small_snapshot = small.snapshot().unwrap();
 
         let mut large_cfg = SandboxConfiguration::default();
-        large_cfg.set_heap_size(0x40_000);
         large_cfg.set_scratch_size(0x90_000);
         let path = simple_guest_as_pathbuf();
         let mut large = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(large_cfg))
@@ -2935,15 +2923,15 @@ mod tests {
 
         target.restore(small_snapshot.clone()).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
+        assert_eq!(target.mem_mgr.layout.get_scratch_size(), 0x70_000);
 
         target.restore(large_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 22);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 0x40_000);
+        assert_eq!(target.mem_mgr.layout.get_scratch_size(), 0x90_000);
 
         target.restore(small_snapshot).unwrap();
         assert_eq!(target.call::<i32>("GetStatic", ()).unwrap(), 11);
-        assert_eq!(target.mem_mgr.layout.heap_size(), 40 * 1024);
+        assert_eq!(target.mem_mgr.layout.get_scratch_size(), 0x70_000);
     }
 
     #[test]
@@ -3521,20 +3509,18 @@ mod tests {
         );
     }
 
-    /// Test that sandboxes can be created and evolved with different heap sizes
     #[test]
     fn test_sandbox_creation_various_sizes() {
-        let test_cases: [(&str, u64); 3] = [
-            ("small (8MB heap)", SMALL_HEAP_SIZE),
-            ("medium (64MB heap)", MEDIUM_HEAP_SIZE),
-            ("large (256MB heap)", LARGE_HEAP_SIZE),
+        let test_cases: [(&str, usize); 3] = [
+            ("small (8MiB scratch)", SMALL_SCRATCH_SIZE),
+            ("medium (64MiB scratch)", MEDIUM_SCRATCH_SIZE),
+            ("large (256MiB scratch)", LARGE_SCRATCH_SIZE),
         ];
 
-        for (name, heap_size) in test_cases {
+        for (name, scratch_size) in test_cases {
             let path = simple_guest_as_pathbuf();
             let sbox = SandboxBuilder::from_file(path)
-                .heap_size(heap_size)
-                .scratch_size(0x100000)
+                .scratch_size(scratch_size)
                 .build()
                 .unwrap_or_else(|e| panic!("Failed to create {} sandbox: {}", name, e));
 

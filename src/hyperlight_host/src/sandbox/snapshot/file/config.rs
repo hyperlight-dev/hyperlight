@@ -163,7 +163,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v4+json`.
+/// `application/vnd.hyperlight.snapshot.config.v5+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -222,7 +222,6 @@ pub(super) struct OciSnapshotConfig {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MemoryLayout {
-    pub(super) heap_size: usize,
     pub(super) code_size: usize,
     /// Virtual base address of the code region. A value of zero means the
     /// code region is identity mapped.
@@ -486,7 +485,6 @@ impl OciSnapshotConfig {
         // checked against the snapshot GPA span in `load_inner`.
         let max_region = SandboxMemoryLayout::MAX_MEMORY_SIZE;
         for (name, value) in [
-            ("heap_size", self.layout.heap_size),
             ("code_size", self.layout.code_size),
             ("init_data_size", self.layout.init_data_size),
             ("scratch_size", self.layout.scratch_size),
@@ -823,7 +821,6 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
             layout: MemoryLayout {
-                heap_size: 0,
                 code_size: 0,
                 code_virt_base: 0,
                 init_data_size: 0,
@@ -916,7 +913,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 7,
+  "abi_version": 8,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "host_page_size": 4096,
@@ -1076,7 +1073,6 @@ mod schema_pin {
     }
   ],
   "layout": {
-    "heap_size": 3,
     "code_size": 4,
     "code_virt_base": 0,
     "init_data_size": 5,
@@ -1113,7 +1109,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 7,
+  "abi_version": 8,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "host_page_size": 16384,
@@ -1129,7 +1125,6 @@ mod schema_pin {
     "sp_el1": 6
   },
   "layout": {
-    "heap_size": 3,
     "code_size": 4,
     "code_virt_base": 0,
     "init_data_size": 5,

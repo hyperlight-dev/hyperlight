@@ -462,7 +462,7 @@ mod tests {
         // Non default memory configuration
         let cfg = {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(0x1000);
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE * 2);
             Some(cfg)
         };
 
@@ -1154,30 +1154,7 @@ mod tests {
             let _evolved2 = sandbox2.evolve().expect("Failed to evolve sandbox2");
         }
 
-        // Test 2: Create snapshot with custom heap size
-        {
-            let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(16 * 1024 * 1024); // 16MB heap
-
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
-
-            let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
-                    .expect("Failed to create snapshot with custom heap size"),
-            );
-
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot with custom heap");
-
-            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
-        }
-
-        // Test 3: Create snapshot with custom scratch size
+        // Test 2: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024);
@@ -1200,10 +1177,9 @@ mod tests {
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 4: Create snapshot with custom heap and scratch sizes
+        // Test 3: Create several sandboxes from a snapshot with a custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
             cfg.set_scratch_size(512 * 1024); // 512KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
