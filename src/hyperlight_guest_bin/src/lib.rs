@@ -8,7 +8,6 @@ extern crate alloc;
 use core::fmt::Write;
 
 use arch::dispatch::dispatch_function;
-use buddy_system_allocator::LockedHeap;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
@@ -18,6 +17,8 @@ use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::guest_handle::handle::GuestHandle;
+use talc::TalcLock;
+use talc::source::Manual;
 
 // === Modules ===
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
@@ -50,10 +51,12 @@ mod init;
 pub use hyperlight_libc as libc;
 
 // Globals
+type GuestHeap = TalcLock<spin::Mutex<()>, Manual>;
+
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
-struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
+struct ProfiledLockedHeap(GuestHeap);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
-unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap<ORDER> {
+unsafe impl alloc::alloc::GlobalAlloc for ProfiledLockedHeap {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let addr = unsafe { self.0.alloc(layout) };
         unsafe {
@@ -107,11 +110,10 @@ unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap
 // === Globals ===
 #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
 #[global_allocator]
-pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
+pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
-pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
-    ProfiledLockedHeap(LockedHeap::<32>::empty());
+pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
@@ -268,10 +270,13 @@ pub(crate) extern "C" fn generic_init(
         let heap_allocator = &HEAP_ALLOCATOR;
         #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
         let heap_allocator = &HEAP_ALLOCATOR.0;
+        // SAFETY: the host reserves the PEB heap range for the guest heap, and
+        // init claims it once. Only this allocator writes to it.
         heap_allocator
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
-            .init(heap_start, heap_size);
+            .claim(heap_start as *mut u8, heap_size)
+            .expect("Failed to claim guest heap");
         peb_ptr
     };
 
