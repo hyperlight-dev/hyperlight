@@ -98,8 +98,8 @@ We use [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) over alternat
 
 The `coverage-run` recipe mirrors the `test-like-ci` + `run-examples-like-ci` workflows by running all test phases and examples with different feature combinations:
 
-1. **Default features** — all drivers enabled (kvm + mshv3 + build-metadata)
-2. **Single driver** — only one hypervisor driver + build-metadata
+1. **Default features** — all drivers enabled (kvm + mshv3)
+2. **Single driver** — only one hypervisor driver
 3. **Isolated tests** — tests that require running separately due to global state
 4. **Integration tests** — including `executable_heap` feature
 5. **Crashdump** — tests + example with the `crashdump` feature enabled

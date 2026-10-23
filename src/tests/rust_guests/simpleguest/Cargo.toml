@@ -13,6 +13,6 @@ tracing = { version = "0.1.41", default-features = false, features = ["log", "at
 
 [features]
 default = []
-trace_guest = ["hyperlight-guest-bin/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
-mem_profile = ["hyperlight-common/mem_profile", "hyperlight-guest-bin/mem_profile"]
+trace_guest = ["hyperlight-guest-bin/trace_guest"]
+mem_profile = ["hyperlight-guest-bin/mem_profile"]
 

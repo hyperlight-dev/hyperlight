@@ -14,8 +14,6 @@ use super::snapshot::Snapshot;
 use super::uninitialized_evolve::initialize_sandbox;
 use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
-#[cfg(feature = "build-metadata")]
-use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
@@ -142,9 +140,6 @@ impl UninitializedSandbox {
     //
     // This is ok for now as this is not a public function
     fn from_snapshot(snapshot: Arc<Snapshot>, cfg: Option<SandboxConfiguration>) -> Result<Self> {
-        #[cfg(feature = "build-metadata")]
-        log_build_details();
-
         // hyperlight is only supported on Windows 11 and Windows Server 2022 and later
         #[cfg(target_os = "windows")]
         check_windows_version()?;
@@ -165,7 +160,7 @@ impl UninitializedSandbox {
             pending_file_mappings: Vec::new(),
         };
 
-        crate::debug!("Sandbox created:  {:#?}", sandbox);
+        tracing::debug!("Sandbox created:  {:#?}", sandbox);
 
         Ok(sandbox)
     }
@@ -794,7 +789,6 @@ mod tests {
     ///    our subscriber's `Interest::sometimes()`
     /// 3. Clear recorded state and run the real test
     #[test]
-    #[cfg(feature = "build-metadata")]
     fn test_trace_trace() {
         use hyperlight_testing::tracing_subscriber::TracingSubscriber;
         use tracing::Level;
@@ -905,7 +899,6 @@ mod tests {
     #[ignore]
     // Tests that traces are emitted as log records when there is no trace
     // subscriber configured.
-    #[cfg(feature = "build-metadata")]
     fn test_log_trace() {
         use std::path::PathBuf;
 

@@ -26,16 +26,6 @@
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::expect_used))]
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::unwrap_used))]
 
-#[cfg(feature = "build-metadata")]
-use std::sync::Once;
-
-#[cfg(feature = "build-metadata")]
-/// The `built` crate is used to generate a `built.rs` file that contains
-/// information about the build environment. This information is used to
-/// populate the `built_info` module, which is re-exported here.
-pub(crate) mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
 /// Dealing with errors, including errors across VM boundaries
 pub mod error;
 /// Wrappers for host and guest functions.
@@ -134,68 +124,4 @@ macro_rules! log_then_return {
            tracing::error!("{}", __err);
            return Err(__err);
     };
-}
-
-/// Same as tracing::debug!, but will additionally print to stdout if the print_debug feature is enabled
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)+) =>
-    {
-        #[cfg(print_debug)]
-        println!($($arg)+);
-        tracing::debug!($($arg)+);
-    }
-}
-
-// LOG_ONCE is used to log information about the crate version once
-#[cfg(feature = "build-metadata")]
-static LOG_ONCE: Once = Once::new();
-
-#[cfg(feature = "build-metadata")]
-pub(crate) fn log_build_details() {
-    use tracing::info;
-    LOG_ONCE.call_once(|| {
-        info!("Package name: {}", built_info::PKG_NAME);
-        info!("Package version: {}", built_info::PKG_VERSION);
-        info!("Package features: {:?}", built_info::FEATURES);
-        info!("Target triple: {}", built_info::TARGET);
-        info!("Optimization level: {}", built_info::OPT_LEVEL);
-        info!("Profile: {}", built_info::PROFILE);
-        info!("Debug: {}", built_info::DEBUG);
-        info!("Rustc: {}", built_info::RUSTC);
-        info!("Built at: {}", built_info::BUILT_TIME_UTC);
-        match built_info::CI_PLATFORM.unwrap_or("") {
-            "" => info!("Not built on  a CI platform"),
-            other => info!("Built on : {}", other),
-        }
-        match built_info::GIT_COMMIT_HASH.unwrap_or("") {
-            "" => info!("No git commit hash found"),
-            other => info!("Git commit hash: {}", other),
-        }
-
-        let git = match built_info::GIT_HEAD_REF.unwrap_or("") {
-            "" => {
-                info!("No git head ref found");
-                false
-            }
-            other => {
-                info!("Git head ref: {}", other);
-                true
-            }
-        };
-        match built_info::GIT_VERSION.unwrap_or("") {
-            "" => info!("No git version found"),
-            other => info!("Git version: {}", other),
-        }
-        match built_info::GIT_DIRTY.unwrap_or(false) {
-            true => info!("Repo had uncommitted changes"),
-            false => {
-                if git {
-                    info!("Repo had no uncommitted changes")
-                } else {
-                    info!("No git repo found")
-                }
-            }
-        }
-    });
 }
