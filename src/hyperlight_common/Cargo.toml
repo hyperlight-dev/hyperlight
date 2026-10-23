@@ -35,7 +35,7 @@ tracing = ["dep:tracing"]
 fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []
-std = ["thiserror/std", "log/std", "tracing/std"]
+std = ["thiserror/std", "log/std", "tracing?/std"]
 
 [dev-dependencies]
 criterion = "0.8.1"
