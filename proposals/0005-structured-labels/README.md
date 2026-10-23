@@ -99,10 +99,10 @@ been filed specifically for the agenda, and whether any items need attention.
 | `lifecycle/blocked-on-author` | `S-waiting-on-author`      |
 | `lifecycle/confirmed`         | `S-confirmed`              |
 | `lifecycle/duplicate`         | (1)                        |
-| `lifecycle/fixed`             | `S-fixed`                  |
+| `lifecycle/fixed`             | (2)                        |
 | `lifecycle/needs-review`      | `S-needs-triage`           |
-| `lifecycle/not-a-bug`         | (2)                        |
-| `lifecycle/wont-fix`          | (3)                        |
+| `lifecycle/not-a-bug`         | (3)                        |
+| `lifecycle/wont-fix`          | (1)                        |
 | `question`                    | `C-question`               |
 | `ready-for-review`            | `S-waiting-on-review`      |
 | `regen-goldens`               | `S-needs-golden-regen`     |
@@ -113,9 +113,9 @@ been filed specifically for the agenda, and whether any items need attention.
 | `size/xl`                     | `E-hard`                   |
 | `size/xs`                     | `E-easy`                   |
 
-- 1: Link issue and close as not planned
-- 2: Explain the finding and close as not planned
-- 3: Close as not planned
+1. Link issue and close as "not planned"
+2. Close the issue as "completed"
+3. Explain the finding and close as "not planned"
 
 ### New labels
 
@@ -180,4 +180,16 @@ up for agendas to discuss as part of triage.
 ### Why is “participation” labeled with “E-”
 
 “Priority” is labeled “P-”, meaning participation needs a different prefix. Rust
-uses “E-” which seems as good as any other.
+uses “E-” for this, which seems as good as any other choice.
+
+### Why rename "lifecycle" to "status"
+
+The term "lifecycle" implies that it can only represent one state at any given
+time, e.g. *"Which state in the lifecycle are we on?"*. The term "status" does
+not imply that same restriction, and any item can have one or more status
+modifiers at any given time.
+
+This is nice, because it allows us to tag an item as `S-waiting-on-review`,
+while also being `S-nominated` for the next community meeting. In comparison:
+"nominated for the next meeting" does not feel like it would naturally be part
+of any "lifecycle".
