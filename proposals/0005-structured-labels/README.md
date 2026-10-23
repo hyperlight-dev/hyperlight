@@ -117,15 +117,7 @@ been filed specifically for the agenda, and whether any items need attention.
 - 2: Explain the finding and close as not planned
 - 3: Close as not planned
 
-### Rollout
-
-Inventory label producers and consumers across repositories before renaming labels.
-Coordinate updates to release-blocker queries, PR label checks, golden-regeneration
-checks, and CI issue creation with the label migration. Keep these paths working
-throughout the transition, using temporary support for both names where needed.
-Retire old names only after all producers and consumers use the proposed names.
-
-## New labels
+### New labels
 
 | Proposed label  | Description                                  |
 | --------------- | -------------------------------------------- |
@@ -141,6 +133,14 @@ Retire old names only after all producers and consumers use the proposed names.
 | `S-to-announce` | To announce in the next release              |
 | `S-needs-repro` | Needs a repro to confirm the bug             |
 | `S-nominated`   | Nominated for discussion in the next meeting |
+
+### Rollout
+
+Inventory label producers and consumers across repositories before renaming labels.
+Coordinate updates to release-blocker queries, PR label checks, golden-regeneration
+checks, and CI issue creation with the label migration. Keep these paths working
+throughout the transition, using temporary support for both names where needed.
+Retire old names only after all producers and consumers use the proposed names.
 
 ## Frequently asked questions
 
