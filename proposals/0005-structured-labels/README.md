@@ -117,6 +117,14 @@ been filed specifically for the agenda, and whether any items need attention.
 - 2: Explain the finding and close as not planned
 - 3: Close as not planned
 
+### Rollout
+
+Inventory label producers and consumers across repositories before renaming labels.
+Coordinate updates to release-blocker queries, PR label checks, golden-regeneration
+checks, and CI issue creation with the label migration. Keep these paths working
+throughout the transition, using temporary support for both names where needed.
+Retire old names only after all producers and consumers use the proposed names.
+
 ## New labels
 
 | Proposed label  | Description                                  |
@@ -149,7 +157,7 @@ lot - and I plan for us to use this a lot.
 
 Yes! In fact, they almost always should! For example, a bug about MSHV support
 on Linux should be tagged `O-mshv`, `O-linux`, `C-bug`, and
-`S-waiting-on-triage`.
+`S-needs-triage`.
 
 ### This seems complicated, do we really need it?
 
