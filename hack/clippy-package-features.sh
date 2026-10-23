@@ -37,7 +37,7 @@ fi
 EXCLUDED_FEATURES=("${REQUIRED_FEATURES[@]}")
 
 if [[ -n "${TARGET_TRIPLE}" && "$TARGET_TRIPLE" =~ aarch64 ]] || [[ -z "${TARGET_TRIPLE}" && "$(uname -m)" = "aarch64" ]]; then
-    EXCLUDED_FEATURES+=("crashdump" "trace_guest" "mem_profile" "hw-interrupts" "gdb" "i686-guest" "nanvix-unstable")
+    EXCLUDED_FEATURES+=("crashdump" "trace_guest" "mem_profile" "hw-interrupts" "gdb")
 fi
 
 # Get all features for the package (excluding default and required features)
