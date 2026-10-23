@@ -279,6 +279,14 @@ impl VirtualMachine for FaultInjectingVirtualMachine {
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE {
         self.inner().partition_handle()
     }
+
+    #[cfg(hvf)]
+    fn set_interrupt_handle(
+        &mut self,
+        handle: std::sync::Arc<dyn crate::hypervisor::InterruptHandleImpl>,
+    ) {
+        self.inner_mut().set_interrupt_handle(handle);
+    }
 }
 
 impl HyperlightVm {

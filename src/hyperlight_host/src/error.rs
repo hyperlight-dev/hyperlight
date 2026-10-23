@@ -193,8 +193,8 @@ pub enum HyperlightError {
     #[error("The sandbox was poisoned")]
     PoisonedSandbox,
 
-    /// The sandbox cannot safely perform further operations and must be discarded.
-    #[error("The sandbox is unrecoverable and must be discarded")]
+    /// The sandbox cannot safely perform further operations until it is recreated.
+    #[error("The sandbox is unrecoverable and must be recreated or discarded")]
     UnrecoverableSandbox,
 
     /// Raw pointer is less than base address
