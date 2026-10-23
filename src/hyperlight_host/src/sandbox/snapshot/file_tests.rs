@@ -190,6 +190,62 @@ fn snapshot_metadata_namespaces_are_independent() {
 // Round-trip via OCI layout on disk.
 
 #[test]
+fn concurrent_snapshot_saves_preserve_all_tags() {
+    use std::collections::HashSet;
+    use std::sync::Barrier;
+    use std::thread;
+
+    const WRITERS: usize = 8;
+
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("concurrent");
+    let barrier = Arc::new(Barrier::new(WRITERS));
+
+    let handles: Vec<_> = (0..WRITERS)
+        .map(|i| {
+            let snapshot = Arc::clone(&snapshot);
+            let barrier = Arc::clone(&barrier);
+            let path = path.clone();
+
+            thread::spawn(move || {
+                let tag = format!("writer-{i}");
+                barrier.wait();
+                snapshot.save(&path, &OciTag::new(&tag).unwrap()).unwrap();
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let index: Value =
+        serde_json::from_slice(&std::fs::read(path.join("index.json")).unwrap()).unwrap();
+
+    let tags: HashSet<String> = index["manifests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|manifest| {
+            manifest["annotations"]["org.opencontainers.image.ref.name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+
+    assert_eq!(tags.len(), WRITERS);
+
+    for i in 0..WRITERS {
+        assert!(
+            tags.contains(&format!("writer-{i}")),
+            "missing snapshot tag writer-{i}"
+        );
+    }
+}
+
+#[test]
 fn round_trip_save_load_call() {
     let snapshot = create_snapshot();
 
@@ -1541,6 +1597,15 @@ fn save_rejects_unsupported_existing_layout_version() {
         br#"{"imageLayoutVersion":"99.0.0"}"#,
     )
     .unwrap();
+    // Capture every existing entry and its bytes before the failed save.
+    let before: Vec<_> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+
     let err = snap
         .save(&path, &OciTag::new("latest").unwrap())
         .unwrap_err();
@@ -1549,9 +1614,17 @@ fn save_rejects_unsupported_existing_layout_version() {
         msg.contains("imageLayoutVersion") || msg.contains("unsupported"),
         "expected unsupported-version error, got: {msg}"
     );
-    assert!(
-        !path.join("index.json").exists(),
-        "save must not have written index.json"
+    let after: Vec<_> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+
+    assert_eq!(
+        before, after,
+        "unsupported layout must leave directory contents unchanged"
     );
 }
 
