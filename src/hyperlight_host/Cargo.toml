@@ -130,8 +130,6 @@ cc = "1.2"
 default = ["kvm", "mshv3", "hvf", "build-metadata"]
 function_call_metrics = []
 executable_heap = []
-# This feature enables printing of debug information to stdout in debug builds
-print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono", "dep:elfcore"]
 trace_guest = ["dep:opentelemetry", "dep:tracing-opentelemetry", "dep:hyperlight-guest-tracing", "hyperlight-common/trace_guest"]

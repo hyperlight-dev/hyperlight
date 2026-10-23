@@ -136,17 +136,6 @@ macro_rules! log_then_return {
     };
 }
 
-/// Same as tracing::debug!, but will additionally print to stdout if the print_debug feature is enabled
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)+) =>
-    {
-        #[cfg(print_debug)]
-        println!($($arg)+);
-        tracing::debug!($($arg)+);
-    }
-}
-
 // LOG_ONCE is used to log information about the crate version once
 #[cfg(feature = "build-metadata")]
 static LOG_ONCE: Once = Once::new();

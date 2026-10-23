@@ -56,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** `SandboxConfiguration::set_heap_size`,
   `SandboxConfiguration::DEFAULT_HEAP_SIZE`, `SandboxBuilder::heap_size`, and
   `SandboxBuilder::get_heap_size`.
+* **Breaking:** The `print_debug` cargo feature and the exported `hyperlight_host::debug!` macro. Use `tracing::debug!` with a subscriber.
 
 ### Fixed
 
