@@ -112,8 +112,8 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with default features
     just test {{config}}
 
-    @# with only one driver enabled + build-metadata
-    just test {{config}} build-metadata,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    @# with only one driver enabled
+    just test {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# with hw-interrupts enabled (+ explicit driver on Linux)
     {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
@@ -375,7 +375,6 @@ miri-tests: (ensure-cargo-nextest) (ensure-nightly-miri)
 check:
     {{ cargo-cmd }} check  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features crashdump  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
@@ -587,8 +586,8 @@ coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
     # tests with default features (all drivers; skip stress tests — too slow under instrumentation)
     cargo +{{nightly-toolchain}} test {{ coverage-packages }} --tests -- --skip stress_test
 
-    # tests with single driver + build-metadata
-    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+    # tests with single driver
+    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features --features {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
 
     # isolated tests (require running separately due to global state)
     cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored

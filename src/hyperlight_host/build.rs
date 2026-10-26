@@ -2,8 +2,6 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use anyhow::{Context, Result};
-#[cfg(feature = "build-metadata")]
-use built::write_built_file;
 
 fn main() -> Result<()> {
     // re-run the build if this script is changed (or deleted!),
@@ -155,8 +153,6 @@ fn main() -> Result<()> {
         mshv3: { all(feature = "mshv3", target_os = "linux") },
         hvf: { all(feature = "hvf", target_os = "macos") },
         crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
-        // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
-        print_debug: { all(feature = "print_debug", debug_assertions) },
         // the gdb feature (only temporarily!) needs to use
         // writable/un-shared snapshot memories.
         unshared_snapshot_mem: { gdb },
@@ -175,9 +171,6 @@ fn main() -> Result<()> {
         // we never have to `#[allow(dead_code)]` it.
         readable_shared_mem: { any(gdb, all(feature = "mem_profile", not(unshared_snapshot_mem))) },
     }
-
-    #[cfg(feature = "build-metadata")]
-    write_built_file()?;
 
     Ok(())
 }

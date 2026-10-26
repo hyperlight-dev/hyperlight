@@ -13,9 +13,6 @@ This crate provides picolibc for Hyperlight guests.
 It builds the picolibc library and generates bindings to the libc types and functions.
 """
 
-[features]
-default = []
-
 [dependencies]
 
 [lints]
