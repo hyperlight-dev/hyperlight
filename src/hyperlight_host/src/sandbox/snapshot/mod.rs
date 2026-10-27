@@ -31,9 +31,9 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::hypervisor::regs::MsrEntry;
 use crate::mem::exe::{ExeInfo, LoadInfo};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::mgr::{BackingSource, GuestBacking, GuestPageTableBuffer, GuestPhysicalMemoryView};
-use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory, ReadonlySharedMemory};
+use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
 use crate::mem::virtq::VirtqSnapshot;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
@@ -725,11 +725,9 @@ impl Snapshot {
     /// `root_pt_gpas` must be distinct.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
-        shared_mem: &SnapshotMemoryBacking<HostSharedMemory>,
-        scratch_mem: &HostSharedMemory,
+        memory_view: &GuestPhysicalMemoryView<'_>,
         layout: SandboxMemoryLayout,
         load_info: LoadInfo,
-        regions: Vec<MemoryRegion>,
         root_pt_gpas: &[u64],
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
@@ -749,8 +747,6 @@ impl Snapshot {
         // A larger scratch window also covers this band below the current
         // one, which `map_specials` would map over the guest's mappings.
         let grown_band = scratch_base_gva(scratch_size)..scratch_gva;
-        let memory_view =
-            GuestPhysicalMemoryView::with_dynamic(shared_mem, scratch_mem, &regions, layout);
         // Unbacked roots fail through `PageTableReader::finish`.
         if let Some(root) = root_pt_gpas
             .iter()
@@ -770,7 +766,7 @@ impl Snapshot {
         // `root_pt_gpas` order — which is also the topological
         // order of the `AnotherSpace` references — so
         // processing in iteration order is safe.
-        let op = PageTableReader::new(&memory_view, root_pt_gpas[0]);
+        let op = PageTableReader::new(memory_view, root_pt_gpas[0]);
         // SAFETY: Snapshot capture runs with the vCPU stopped, so the source
         // page tables cannot change during the walk.
         let walk = unsafe {
@@ -782,7 +778,7 @@ impl Snapshot {
             )
         };
         op.finish()?;
-        let source_layers = shared_mem.reusable_layers();
+        let source_layers = memory_view.snapshot().reusable_layers();
         let mut reused_layers = source_layers.map(|layers| vec![false; layers.len()]);
         let mut new_pages = Vec::new();
         for (_, mappings) in &walk {
@@ -1501,25 +1497,26 @@ mod tests {
         );
         let (mut manager, _) = manager.build().unwrap();
 
-        let snapshot = super::Snapshot::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[first_root, second_root],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            manager.layout.get_scratch_size(),
-        )
-        .unwrap();
+        let snapshot = manager
+            .with_guest_memory(&[], |memory| {
+                super::Snapshot::new(
+                    memory,
+                    manager.layout,
+                    LoadInfo::dummy(),
+                    &[first_root, second_root],
+                    0,
+                    default_sregs(),
+                    #[cfg(target_arch = "x86_64")]
+                    Vec::new(),
+                    super::NextAction::None,
+                    0,
+                    1,
+                    HostFunctionDetails::default(),
+                    None,
+                    manager.layout.get_scratch_size(),
+                )
+            })
+            .unwrap();
         let rebuilt_first_root = snapshot.root_pt_gpa();
         let rebuilt_second_root = rebuilt_first_root + PAGE_TABLE_SIZE as u64;
         let roots = [rebuilt_first_root, rebuilt_second_root];
@@ -1537,22 +1534,25 @@ mod tests {
         )));
 
         manager.restore_snapshot(&snapshot).unwrap();
-        let memory =
-            GuestPhysicalMemoryView::new(&manager.shared_mem, &manager.scratch_mem, manager.layout);
-        for (root, gva, expected) in [
-            (rebuilt_first_root, base, 0x11),
-            (rebuilt_second_root, base + PAGE_SIZE as u64, 0x22),
-        ] {
-            let reader = super::PageTableReader::new(&memory, root);
-            // SAFETY: The reader borrows the stopped manager's mapped memory.
-            let mapping = unsafe { vmem::virt_to_phys(&reader, gva, 1) }
-                .next()
-                .unwrap();
-            let gpa = mapping.phys_base + gva - mapping.virt_base;
-            let mut byte = [0u8; 1];
-            memory.read(gpa, &mut byte).unwrap();
-            assert_eq!(byte, [expected]);
-        }
+        manager
+            .with_guest_memory(&[], |memory| {
+                for (root, gva, expected) in [
+                    (rebuilt_first_root, base, 0x11),
+                    (rebuilt_second_root, base + PAGE_SIZE as u64, 0x22),
+                ] {
+                    let reader = super::PageTableReader::new(memory, root);
+                    // SAFETY: The reader borrows the stopped manager's mapped memory.
+                    let mapping = unsafe { vmem::virt_to_phys(&reader, gva, 1) }
+                        .next()
+                        .unwrap();
+                    let gpa = mapping.phys_base + gva - mapping.virt_base;
+                    let mut byte = [0u8; 1];
+                    memory.read(gpa, &mut byte).unwrap();
+                    assert_eq!(byte, [expected]);
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1568,23 +1568,23 @@ mod tests {
             .copy_from_slice(&invalid_entry, root_offset)
             .unwrap();
 
-        let result = super::Snapshot::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            manager.layout.get_scratch_size(),
-        );
+        let result = manager.with_guest_memory(&[], |memory| {
+            super::Snapshot::new(
+                memory,
+                manager.layout,
+                LoadInfo::dummy(),
+                &[pt_base],
+                0,
+                default_sregs(),
+                Vec::new(),
+                super::NextAction::None,
+                0,
+                1,
+                HostFunctionDetails::default(),
+                None,
+                manager.layout.get_scratch_size(),
+            )
+        });
         let error = match result {
             Ok(_) => panic!("capture unexpectedly accepted an unbacked page table"),
             Err(error) => error,
@@ -1599,23 +1599,29 @@ mod tests {
         // Create first snapshot with pattern A
         let pattern_a = vec![0xAA; page_size::get()];
         let pattern_a_memory = make_simple_pt_host_mem(&pattern_a, pt_base);
-        let snapshot_a = super::Snapshot::new(
+        let snapshot_a = GuestPhysicalMemoryView::with_memory(
             &pattern_a_memory,
             &mgr.scratch_mem,
+            &[],
             mgr.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            mgr.layout.get_scratch_size(),
+            |memory| {
+                super::Snapshot::new(
+                    memory,
+                    mgr.layout,
+                    LoadInfo::dummy(),
+                    &[pt_base],
+                    0,
+                    default_sregs(),
+                    #[cfg(target_arch = "x86_64")]
+                    Vec::new(),
+                    super::NextAction::None,
+                    0,
+                    1,
+                    HostFunctionDetails::default(),
+                    None,
+                    mgr.layout.get_scratch_size(),
+                )
+            },
         )
         .unwrap();
         assert_eq!(snapshot_a.snapshot_memory().layers().len(), 1);
@@ -1623,23 +1629,29 @@ mod tests {
         // Create second snapshot with pattern B
         let pattern_b = vec![0xBB; page_size::get()];
         let pattern_b_memory = make_simple_pt_host_mem(&pattern_b, pt_base);
-        let snapshot_b = super::Snapshot::new(
+        let snapshot_b = GuestPhysicalMemoryView::with_memory(
             &pattern_b_memory,
             &mgr.scratch_mem,
+            &[],
             mgr.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            2,
-            HostFunctionDetails::default(),
-            None,
-            mgr.layout.get_scratch_size(),
+            |memory| {
+                super::Snapshot::new(
+                    memory,
+                    mgr.layout,
+                    LoadInfo::dummy(),
+                    &[pt_base],
+                    0,
+                    default_sregs(),
+                    #[cfg(target_arch = "x86_64")]
+                    Vec::new(),
+                    super::NextAction::None,
+                    0,
+                    2,
+                    HostFunctionDetails::default(),
+                    None,
+                    mgr.layout.get_scratch_size(),
+                )
+            },
         )
         .unwrap();
 
@@ -1663,27 +1675,91 @@ mod tests {
     #[test]
     fn page_table_reader_reports_unbacked_memory() {
         let (manager, pt_base) = make_simple_pt_mgr();
-        let memory = crate::mem::mgr::GuestPhysicalMemoryView::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-        );
+        manager
+            .with_guest_memory(&[], |memory| {
+                let reader = super::PageTableReader::new(memory, pt_base);
+                assert!(reader.finish().is_ok());
 
-        let reader = super::PageTableReader::new(&memory, pt_base);
-        assert!(reader.finish().is_ok());
-
-        // A read off every backing is recorded rather than returned, so the
-        // walk keeps going against not-present entries until finish() asks.
-        // SAFETY: the reader borrows `memory`, which outlives this call.
-        let entry = unsafe {
-            <super::PageTableReader as vmem::TableReadOps>::read_entry(
-                &reader,
-                !(PAGE_SIZE as u64 - 1),
+                // A read off every backing is recorded rather than returned, so the
+                // walk keeps going against not-present entries until finish() asks.
+                // SAFETY: the reader borrows `memory`, which outlives this call.
+                let entry = unsafe {
+                    <super::PageTableReader as vmem::TableReadOps>::read_entry(
+                        &reader,
+                        !(PAGE_SIZE as u64 - 1),
+                    )
+                };
+                assert_eq!(entry, 0);
+                let error = reader.finish().unwrap_err().to_string();
+                assert!(error.contains("accessed unbacked memory"), "{error}");
+                Ok(())
+            })
+            .unwrap();
+    }
+    fn snapshot_with_scratch(
+        data_gpa: u64,
+        gvas: &[u64],
+        scratch_size: usize,
+    ) -> crate::Result<super::Snapshot> {
+        let (mgr, pt_base) = make_pt_mgr(data_gpa, gvas);
+        mgr.with_guest_memory(&[], |memory| {
+            super::Snapshot::new(
+                memory,
+                mgr.layout,
+                LoadInfo::dummy(),
+                &[pt_base],
+                0,
+                default_sregs(),
+                #[cfg(target_arch = "x86_64")]
+                Vec::new(),
+                super::NextAction::None,
+                0,
+                1,
+                HostFunctionDetails::default(),
+                None,
+                scratch_size,
             )
+        })
+    }
+
+    /// A snapshot can have more scratch than its sandbox, unless the larger
+    /// window would cover a guest mapping below the current one.
+    #[test]
+    fn larger_scratch_must_not_cover_guest_mappings() {
+        let scratch_size = crate::sandbox::SandboxConfiguration::default().get_scratch_size();
+        let larger = scratch_size * 2;
+        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+
+        let Ok(snapshot) = snapshot_with_scratch(base, &[base], larger) else {
+            panic!("a larger scratch window over no guest mapping is rejected");
         };
-        assert_eq!(entry, 0);
-        let error = reader.finish().unwrap_err().to_string();
-        assert!(error.contains("accessed unbacked memory"), "{error}");
+        assert_eq!(snapshot.layout().get_scratch_size(), larger);
+
+        let in_band = super::scratch_base_gva(scratch_size) - PAGE_SIZE as u64;
+        let Err(err) = snapshot_with_scratch(base, &[base, in_band], larger) else {
+            panic!("a larger scratch window covers a guest mapping");
+        };
+        assert!(err.to_string().contains(&format!("{in_band:#x}")), "{err}");
+
+        // The same mapping is kept when the scratch window does not grow.
+        assert!(snapshot_with_scratch(base, &[base, in_band], scratch_size).is_ok());
+    }
+
+    /// A larger scratch window must not cover a layer the capture keeps.
+    #[test]
+    #[cfg(not(unshared_snapshot_mem))]
+    fn larger_scratch_must_not_cover_kept_layers() {
+        let scratch_size = crate::sandbox::SandboxConfiguration::default().get_scratch_size();
+        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let high = super::scratch_base_gpa(scratch_size) - page_size::get() as u64;
+
+        let Err(err) = snapshot_with_scratch(high, &[base], scratch_size * 2) else {
+            panic!("a larger scratch window covers a kept layer");
+        };
+        assert!(err.to_string().contains(&format!("{high:#x}")), "{err}");
+
+        let snapshot = snapshot_with_scratch(high, &[base], scratch_size).unwrap();
+        assert_eq!(snapshot.snapshot_memory().layers()[0].gpa_start(), high);
     }
 
     #[test]
@@ -1695,24 +1771,24 @@ mod tests {
         manager.scratch_mem.write::<u64>(second, 0x2222).unwrap();
         let scratch_base =
             hyperlight_common::layout::scratch_base_gpa(manager.layout.get_scratch_size());
-        let memory = crate::mem::mgr::GuestPhysicalMemoryView::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-        );
-        let reader = super::PageTableReader::new(&memory, pt_base);
-        // SAFETY: the reader borrows `memory`, which outlives these calls.
-        let read = |offset: usize| unsafe {
-            <super::PageTableReader as vmem::TableReadOps>::read_entry(
-                &reader,
-                scratch_base + offset as u64,
-            )
-        };
+        manager
+            .with_guest_memory(&[], |memory| {
+                let reader = super::PageTableReader::new(memory, pt_base);
+                // SAFETY: the reader borrows `memory`, which outlives these calls.
+                let read = |offset: usize| unsafe {
+                    <super::PageTableReader as vmem::TableReadOps>::read_entry(
+                        &reader,
+                        scratch_base + offset as u64,
+                    )
+                };
 
-        assert_eq!(read(first), 0x1111);
-        assert_eq!(read(second), 0x2222);
-        assert_eq!(read(first), 0x1111);
-        assert!(reader.finish().is_ok());
+                assert_eq!(read(first), 0x1111);
+                assert_eq!(read(second), 0x2222);
+                assert_eq!(read(first), 0x1111);
+                assert!(reader.finish().is_ok());
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
@@ -1723,24 +1799,24 @@ mod tests {
             vec![root + 1],
             vec![u64::MAX - (PAGE_SIZE as u64 - 1)],
         ] {
-            let result = super::Snapshot::new(
-                &manager.shared_mem,
-                &manager.scratch_mem,
-                manager.layout,
-                LoadInfo::dummy(),
-                Vec::new(),
-                &roots,
-                0,
-                default_sregs(),
-                #[cfg(target_arch = "x86_64")]
-                Vec::new(),
-                super::NextAction::None,
-                0,
-                1,
-                HostFunctionDetails::default(),
-                None,
-                manager.layout.get_scratch_size(),
-            );
+            let result = manager.with_guest_memory(&[], |memory| {
+                super::Snapshot::new(
+                    memory,
+                    manager.layout,
+                    LoadInfo::dummy(),
+                    &roots,
+                    0,
+                    default_sregs(),
+                    #[cfg(target_arch = "x86_64")]
+                    Vec::new(),
+                    super::NextAction::None,
+                    0,
+                    1,
+                    HostFunctionDetails::default(),
+                    None,
+                    manager.layout.get_scratch_size(),
+                )
+            });
             assert!(result.is_err(), "invalid roots accepted: {roots:?}");
         }
     }
@@ -1837,25 +1913,26 @@ mod tests {
             .copy_from_slice(&vec![0x33; host_page_size], scratch_offset)
             .unwrap();
 
-        let captured = super::Snapshot::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            manager.layout.get_scratch_size(),
-        )
-        .unwrap();
+        let captured = manager
+            .with_guest_memory(&[], |memory| {
+                super::Snapshot::new(
+                    memory,
+                    manager.layout,
+                    LoadInfo::dummy(),
+                    &[pt_base],
+                    0,
+                    default_sregs(),
+                    #[cfg(target_arch = "x86_64")]
+                    Vec::new(),
+                    super::NextAction::None,
+                    0,
+                    1,
+                    HostFunctionDetails::default(),
+                    None,
+                    manager.layout.get_scratch_size(),
+                )
+            })
+            .unwrap();
 
         let layers = captured.snapshot_memory().layers();
         let delta_gpa = if reuses_source_layers {
@@ -1969,24 +2046,24 @@ mod tests {
         );
         let (manager, _) = manager.build().unwrap();
 
-        let result = super::Snapshot::new(
-            &manager.shared_mem,
-            &manager.scratch_mem,
-            manager.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            manager.layout.get_scratch_size(),
-        );
+        let result = manager.with_guest_memory(&[], |memory| {
+            super::Snapshot::new(
+                memory,
+                manager.layout,
+                LoadInfo::dummy(),
+                &[pt_base],
+                0,
+                default_sregs(),
+                #[cfg(target_arch = "x86_64")]
+                Vec::new(),
+                super::NextAction::None,
+                0,
+                1,
+                HostFunctionDetails::default(),
+                None,
+                manager.layout.get_scratch_size(),
+            )
+        });
         let error = match result {
             Ok(_) => panic!("capture unexpectedly accepted a page-table-tail leaf"),
             Err(error) => error,
@@ -2106,70 +2183,5 @@ mod tests {
             manager.scratch_mem.read::<u8>(scratch_offset).unwrap(),
             0x55
         );
-    }
-    fn snapshot_with_scratch(
-        data_gpa: u64,
-        gvas: &[u64],
-        scratch_size: usize,
-    ) -> crate::Result<super::Snapshot> {
-        let (mgr, pt_base) = make_pt_mgr(data_gpa, gvas);
-        super::Snapshot::new(
-            &mgr.shared_mem,
-            &mgr.scratch_mem,
-            mgr.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            &[pt_base],
-            0,
-            default_sregs(),
-            #[cfg(target_arch = "x86_64")]
-            Vec::new(),
-            super::NextAction::None,
-            0,
-            1,
-            HostFunctionDetails::default(),
-            None,
-            scratch_size,
-        )
-    }
-
-    /// A snapshot can have more scratch than its sandbox, unless the larger
-    /// window would cover a guest mapping below the current one.
-    #[test]
-    fn larger_scratch_must_not_cover_guest_mappings() {
-        let scratch_size = crate::sandbox::SandboxConfiguration::default().get_scratch_size();
-        let larger = scratch_size * 2;
-        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
-
-        let Ok(snapshot) = snapshot_with_scratch(base, &[base], larger) else {
-            panic!("a larger scratch window over no guest mapping is rejected");
-        };
-        assert_eq!(snapshot.layout().get_scratch_size(), larger);
-
-        let in_band = super::scratch_base_gva(scratch_size) - PAGE_SIZE as u64;
-        let Err(err) = snapshot_with_scratch(base, &[base, in_band], larger) else {
-            panic!("a larger scratch window covers a guest mapping");
-        };
-        assert!(err.to_string().contains(&format!("{in_band:#x}")), "{err}");
-
-        // The same mapping is kept when the scratch window does not grow.
-        assert!(snapshot_with_scratch(base, &[base, in_band], scratch_size).is_ok());
-    }
-
-    /// A larger scratch window must not cover a layer the capture keeps.
-    #[test]
-    #[cfg(not(unshared_snapshot_mem))]
-    fn larger_scratch_must_not_cover_kept_layers() {
-        let scratch_size = crate::sandbox::SandboxConfiguration::default().get_scratch_size();
-        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
-        let high = super::scratch_base_gpa(scratch_size) - page_size::get() as u64;
-
-        let Err(err) = snapshot_with_scratch(high, &[base], scratch_size * 2) else {
-            panic!("a larger scratch window covers a kept layer");
-        };
-        assert!(err.to_string().contains(&format!("{high:#x}")), "{err}");
-
-        let snapshot = snapshot_with_scratch(high, &[base], scratch_size).unwrap();
-        assert_eq!(snapshot.snapshot_memory().layers()[0].gpa_start(), high);
     }
 }

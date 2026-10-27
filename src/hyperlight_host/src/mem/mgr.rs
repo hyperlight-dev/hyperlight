@@ -111,41 +111,36 @@ pub(crate) struct GuestBacking {
     pub(crate) offset: usize,
 }
 
+/// Guest physical memory with scratch locked for exclusive access.
 pub(crate) struct GuestPhysicalMemoryView<'a> {
     snapshot: &'a SnapshotMemoryBacking<HostSharedMemory>,
-    scratch: &'a HostSharedMemory,
+    scratch: &'a [u8],
     dynamic: &'a [MemoryRegion],
     layout: SandboxMemoryLayout,
 }
 
 impl<'a> GuestPhysicalMemoryView<'a> {
-    #[cfg(any(test, feature = "mem_profile", feature = "trace_guest"))]
-    pub(crate) fn new(
-        snapshot: &'a SnapshotMemoryBacking<HostSharedMemory>,
-        scratch: &'a HostSharedMemory,
+    /// Runs `f` with a view of `snapshot`, `scratch` and `dynamic`. Scratch
+    /// stays locked until `f` returns.
+    pub(crate) fn with_memory<T>(
+        snapshot: &SnapshotMemoryBacking<HostSharedMemory>,
+        scratch: &HostSharedMemory,
+        dynamic: &[MemoryRegion],
         layout: SandboxMemoryLayout,
-    ) -> Self {
-        Self {
-            snapshot,
-            scratch,
-            dynamic: &[],
-            layout,
-        }
+        f: impl FnOnce(&GuestPhysicalMemoryView<'_>) -> Result<T>,
+    ) -> Result<T> {
+        scratch.with_exclusive_contents(|scratch| {
+            f(&GuestPhysicalMemoryView {
+                snapshot,
+                scratch,
+                dynamic,
+                layout,
+            })
+        })?
     }
 
-    /// Build a view that includes the sandbox's dynamic mappings.
-    pub(crate) fn with_dynamic(
-        snapshot: &'a SnapshotMemoryBacking<HostSharedMemory>,
-        scratch: &'a HostSharedMemory,
-        dynamic: &'a [MemoryRegion],
-        layout: SandboxMemoryLayout,
-    ) -> Self {
-        Self {
-            snapshot,
-            scratch,
-            dynamic,
-            layout,
-        }
+    pub(crate) fn snapshot(&self) -> &'a SnapshotMemoryBacking<HostSharedMemory> {
+        self.snapshot
     }
 
     pub(crate) fn resolve(&self, gpa: u64, len: usize) -> Option<GuestBacking> {
@@ -198,7 +193,11 @@ impl<'a> GuestPhysicalMemoryView<'a> {
                     .copy_layer_to_slice(layer_index, destination, offset)?
             }
             BackingSource::Scratch => {
-                self.scratch.copy_to_slice(destination, offset)?;
+                let source = offset
+                    .checked_add(destination.len())
+                    .and_then(|end| self.scratch.get(offset..end))
+                    .ok_or_else(|| new_error!("scratch read range is out of bounds"))?;
+                destination.copy_from_slice(source);
             }
             BackingSource::Dynamic(region_index) => {
                 let region = &self.dynamic[region_index];
@@ -241,7 +240,7 @@ impl<'a> GuestPhysicalMemoryView<'a> {
         let offset = backing.offset;
         let (base, backing_len) = match backing.source {
             BackingSource::Snapshot(layer_index) => self.snapshot.host_range(layer_index)?,
-            BackingSource::Scratch => (self.scratch.base_addr(), self.scratch.mem_size()),
+            BackingSource::Scratch => (self.scratch.as_ptr() as usize, self.scratch.len()),
             BackingSource::Dynamic(region_index) => {
                 let region = &self.dynamic[region_index];
                 #[allow(clippy::useless_conversion)]
@@ -266,21 +265,16 @@ impl<'a> GuestPhysicalMemoryView<'a> {
 }
 #[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
 pub(crate) struct GuestVirtualMemoryReader<'a> {
-    memory: GuestPhysicalMemoryView<'a>,
+    memory: &'a GuestPhysicalMemoryView<'a>,
     root_pt: u64,
     cached_page: Option<(u64, u64)>,
 }
 
 #[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
 impl<'a> GuestVirtualMemoryReader<'a> {
-    fn new(
-        snapshot: &'a SnapshotMemoryBacking<HostSharedMemory>,
-        scratch: &'a HostSharedMemory,
-        layout: SandboxMemoryLayout,
-        root_pt: u64,
-    ) -> Self {
+    fn new(memory: &'a GuestPhysicalMemoryView<'a>, root_pt: u64) -> Self {
         Self {
-            memory: GuestPhysicalMemoryView::new(snapshot, scratch, layout),
+            memory,
             root_pt,
             cached_page: None,
         }
@@ -295,7 +289,7 @@ impl<'a> GuestVirtualMemoryReader<'a> {
 
         use crate::sandbox::snapshot::PageTableReader;
 
-        let pt_buf = PageTableReader::new(&self.memory, self.root_pt);
+        let pt_buf = PageTableReader::new(self.memory, self.root_pt);
         // SAFETY: The vCPU is stopped for this outb, so its page tables cannot
         // change during the walk.
         let mapping = unsafe {
@@ -642,9 +636,30 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Runs `f` with a view of guest physical memory, including `dynamic`.
+    pub(crate) fn with_guest_memory<T>(
+        &self,
+        dynamic: &[MemoryRegion],
+        f: impl FnOnce(&GuestPhysicalMemoryView<'_>) -> Result<T>,
+    ) -> Result<T> {
+        GuestPhysicalMemoryView::with_memory(
+            &self.shared_mem,
+            &self.scratch_mem,
+            dynamic,
+            self.layout,
+            f,
+        )
+    }
+
     #[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
-    pub(crate) fn guest_virtual_memory_reader(&self, root_pt: u64) -> GuestVirtualMemoryReader<'_> {
-        GuestVirtualMemoryReader::new(&self.shared_mem, &self.scratch_mem, self.layout, root_pt)
+    pub(crate) fn with_guest_virtual_memory_reader<T>(
+        &self,
+        root_pt: u64,
+        f: impl FnOnce(&mut GuestVirtualMemoryReader<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_guest_memory(&[], |memory| {
+            f(&mut GuestVirtualMemoryReader::new(memory, root_pt))
+        })
     }
 
     /// Create a snapshot with the given mapped regions.
@@ -666,24 +681,27 @@ impl SandboxMemoryManager<HostSharedMemory> {
             _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
         };
 
-        let snapshot = Snapshot::new(
-            &self.shared_mem,
-            &self.scratch_mem,
-            self.layout,
-            crate::mem::exe::LoadInfo::dummy(),
-            mapped_regions,
-            root_pt_gpas,
-            rsp_gva,
-            sregs,
-            #[cfg(target_arch = "x86_64")]
-            msrs,
-            next_action,
-            self.original_entrypoint,
-            self.snapshot_count + 1,
-            host_functions,
-            virtq,
-            scratch_size,
-        )?;
+        let layout = self.layout;
+        let original_entrypoint = self.original_entrypoint;
+        let snapshot_generation = self.snapshot_count + 1;
+        let snapshot = self.with_guest_memory(&mapped_regions, |memory| {
+            Snapshot::new(
+                memory,
+                layout,
+                crate::mem::exe::LoadInfo::dummy(),
+                root_pt_gpas,
+                rsp_gva,
+                sregs,
+                #[cfg(target_arch = "x86_64")]
+                msrs,
+                next_action,
+                original_entrypoint,
+                snapshot_generation,
+                host_functions,
+                virtq,
+                scratch_size,
+            )
+        })?;
         self.snapshot_count = snapshot.snapshot_generation();
         Ok(snapshot)
     }
@@ -1150,56 +1168,58 @@ impl SandboxMemoryManager<HostSharedMemory> {
         use crate::sandbox::snapshot::PageTableReader;
 
         let len = hyperlight_common::layout::SCRATCH_TOP_GVA;
-        let memory = GuestPhysicalMemoryView::with_dynamic(
-            &self.shared_mem,
-            &self.scratch_mem,
-            mmap_regions,
-            self.layout,
-        );
-        let pt_buf = PageTableReader::new(&memory, root_pt);
-        let mut regions: Vec<CrashDumpRegion> = Vec::new();
-        let mut saw_mapping = false;
-        // SAFETY: Crash handling runs with the vCPU stopped, so its page tables
-        // cannot change during the walk.
-        for mapping in unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) } {
-            saw_mapping = true;
-            let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
-            let mut mapped = 0usize;
-            let mapping_len = usize::try_from(mapping.len)?;
-            while mapped < mapping_len {
-                let chunk_len = (mapping_len - mapped).min(hyperlight_common::vmem::PAGE_SIZE);
-                let gpa = mapping
-                    .phys_base
-                    .checked_add(u64::try_from(mapped)?)
-                    .ok_or_else(|| new_error!("crash-dump GPA overflows"))?;
-                let Some(host_region) = memory.host_range(gpa, chunk_len).ok() else {
-                    mapped += chunk_len;
-                    continue;
-                };
-                let virt_base = usize::try_from(mapping.virt_base)?
-                    .checked_add(mapped)
-                    .ok_or_else(|| new_error!("crash-dump GVA overflows"))?;
-                let virt_end = virt_base
-                    .checked_add(chunk_len)
-                    .ok_or_else(|| new_error!("crash-dump GVA range overflows"))?;
+        self.with_guest_memory(mmap_regions, |memory| {
+            let pt_buf = PageTableReader::new(memory, root_pt);
+            let mut regions: Vec<CrashDumpRegion> = Vec::new();
+            let mut saw_mapping = false;
+            // SAFETY: Crash handling runs with the vCPU stopped, so its page tables
+            // cannot change during the walk.
+            for mapping in unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
+            {
+                saw_mapping = true;
+                let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
+                let mut mapped = 0usize;
+                let mapping_len = usize::try_from(mapping.len)?;
+                while mapped < mapping_len {
+                    let chunk_len = (mapping_len - mapped).min(hyperlight_common::vmem::PAGE_SIZE);
+                    let gpa = mapping
+                        .phys_base
+                        .checked_add(u64::try_from(mapped)?)
+                        .ok_or_else(|| new_error!("crash-dump GPA overflows"))?;
+                    let Some(host_region) = memory.host_range(gpa, chunk_len).ok() else {
+                        mapped += chunk_len;
+                        continue;
+                    };
+                    let virt_base = usize::try_from(mapping.virt_base)?
+                        .checked_add(mapped)
+                        .ok_or_else(|| new_error!("crash-dump GVA overflows"))?;
+                    let virt_end = virt_base
+                        .checked_add(chunk_len)
+                        .ok_or_else(|| new_error!("crash-dump GVA range overflows"))?;
 
-                if !try_coalesce_region(&mut regions, virt_base, virt_end, host_region.start, flags)
-                {
-                    regions.push(CrashDumpRegion {
-                        guest_region: virt_base..virt_end,
-                        host_region,
+                    if !try_coalesce_region(
+                        &mut regions,
+                        virt_base,
+                        virt_end,
+                        host_region.start,
                         flags,
-                        region_type,
-                    });
+                    ) {
+                        regions.push(CrashDumpRegion {
+                            guest_region: virt_base..virt_end,
+                            host_region,
+                            flags,
+                            region_type,
+                        });
+                    }
+                    mapped += chunk_len;
                 }
-                mapped += chunk_len;
             }
-        }
-        if !saw_mapping {
-            return Err(new_error!("No page table mappings found (len {len})",));
-        }
+            if !saw_mapping {
+                return Err(new_error!("No page table mappings found (len {len})",));
+            }
 
-        Ok(regions)
+            Ok(regions)
+        })
     }
 
     /// Read guest memory at a Guest Virtual Address (GVA) by walking the
@@ -1222,8 +1242,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         root_pt: u64,
     ) -> Result<Vec<u8>> {
         let mut result = vec![0; len];
-        self.guest_virtual_memory_reader(root_pt)
-            .read_exact(gva, &mut result)?;
+        self.with_guest_virtual_memory_reader(root_pt, |reader| {
+            reader.read_exact(gva, &mut result)
+        })?;
         Ok(result)
     }
 }
@@ -1705,11 +1726,12 @@ mod tests {
     #[test]
     fn virtual_reader_reads_across_snapshot_layers() {
         let (manager, pt_base, base) = virtual_reader_manager();
-        let mut reader = manager.guest_virtual_memory_reader(pt_base);
         let mut bytes = [0u8; 2];
 
-        reader
-            .read_exact(base + PAGE_SIZE as u64 - 1, &mut bytes)
+        manager
+            .with_guest_virtual_memory_reader(pt_base, |reader| {
+                reader.read_exact(base + PAGE_SIZE as u64 - 1, &mut bytes)
+            })
             .unwrap();
 
         assert_eq!(bytes, [0x11, 0x22]);
@@ -1720,8 +1742,9 @@ mod tests {
         let (manager, root, base) = virtual_reader_manager();
         let mut bytes = [0; 2];
         manager
-            .guest_virtual_memory_reader(root)
-            .read_exact(base + 2 * PAGE_SIZE as u64 - 1, &mut bytes)
+            .with_guest_virtual_memory_reader(root, |reader| {
+                reader.read_exact(base + 2 * PAGE_SIZE as u64 - 1, &mut bytes)
+            })
             .unwrap();
         assert_eq!(bytes, [0x22, 0x33]);
     }
@@ -1729,22 +1752,25 @@ mod tests {
     #[test]
     fn virtual_reader_rejects_unmapped_and_overflowing_ranges() {
         let (manager, root, base) = virtual_reader_manager();
-        let mut reader = manager.guest_virtual_memory_reader(root);
-        assert!(
-            reader
-                .read_exact(base + 3 * PAGE_SIZE as u64, &mut [0])
-                .is_err()
-        );
-        assert!(reader.read_exact(u64::MAX, &mut [0; 2]).is_err());
-        assert!(reader.read_exact(u64::MAX, &mut []).is_ok());
+        manager
+            .with_guest_virtual_memory_reader(root, |reader| {
+                assert!(
+                    reader
+                        .read_exact(base + 3 * PAGE_SIZE as u64, &mut [0])
+                        .is_err()
+                );
+                assert!(reader.read_exact(u64::MAX, &mut [0; 2]).is_err());
+                assert!(reader.read_exact(u64::MAX, &mut []).is_ok());
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
     fn virtual_reader_reports_invalid_page_tables() {
         let (manager, _, base) = virtual_reader_manager();
         let error = manager
-            .guest_virtual_memory_reader(u64::MAX)
-            .read_exact(base, &mut [0])
+            .with_guest_virtual_memory_reader(u64::MAX, |reader| reader.read_exact(base, &mut [0]))
             .unwrap_err();
         assert!(error.to_string().contains("unbacked"));
     }
@@ -1781,55 +1807,63 @@ mod tests {
         let (dynamic, dynamic_guest) = dynamic.build();
         let dynamic_region = dynamic_guest.mapping_at(dynamic_gpa, MemoryRegionType::Scratch);
         let dynamic_regions = [dynamic_region];
-        let view =
-            GuestPhysicalMemoryView::with_dynamic(&snapshot, &scratch, &dynamic_regions, layout);
-        let mut byte = [0u8; 1];
+        GuestPhysicalMemoryView::with_memory(
+            &snapshot,
+            &scratch,
+            &dynamic_regions,
+            layout,
+            |view| {
+                let mut byte = [0u8; 1];
 
-        assert_eq!(
-            view.read(scratch_start, &mut byte).unwrap(),
-            GuestBacking {
-                source: BackingSource::Scratch,
-                offset: 0,
-            }
-        );
-        assert_eq!(byte, [0x11]);
-        assert_eq!(
-            view.read(
-                scratch_start + layout.get_scratch_size() as u64 - 1,
-                &mut byte,
-            )
-            .unwrap(),
-            GuestBacking {
-                source: BackingSource::Scratch,
-                offset: layout.get_scratch_size() - 1,
-            }
-        );
-        assert_eq!(byte, [0x22]);
-        assert_eq!(
-            view.read(dynamic_gpa, &mut byte).unwrap(),
-            GuestBacking {
-                source: BackingSource::Dynamic(0),
-                offset: 0,
-            }
-        );
-        assert_eq!(byte, [0x33]);
-        assert_eq!(
-            view.read(dynamic_gpa + host_page_size as u64 - 1, &mut byte)
-                .unwrap(),
-            GuestBacking {
-                source: BackingSource::Dynamic(0),
-                offset: host_page_size - 1,
-            }
-        );
-        assert_eq!(byte, [0x44]);
-        assert!(
-            view.resolve(dynamic_gpa + host_page_size as u64 - 1, 2)
-                .is_none()
-        );
-        assert!(
-            view.resolve(scratch_start + layout.get_scratch_size() as u64 - 1, 2,)
-                .is_none()
-        );
+                assert_eq!(
+                    view.read(scratch_start, &mut byte).unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Scratch,
+                        offset: 0,
+                    }
+                );
+                assert_eq!(byte, [0x11]);
+                assert_eq!(
+                    view.read(
+                        scratch_start + layout.get_scratch_size() as u64 - 1,
+                        &mut byte,
+                    )
+                    .unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Scratch,
+                        offset: layout.get_scratch_size() - 1,
+                    }
+                );
+                assert_eq!(byte, [0x22]);
+                assert_eq!(
+                    view.read(dynamic_gpa, &mut byte).unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Dynamic(0),
+                        offset: 0,
+                    }
+                );
+                assert_eq!(byte, [0x33]);
+                assert_eq!(
+                    view.read(dynamic_gpa + host_page_size as u64 - 1, &mut byte)
+                        .unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Dynamic(0),
+                        offset: host_page_size - 1,
+                    }
+                );
+                assert_eq!(byte, [0x44]);
+                assert!(
+                    view.resolve(dynamic_gpa + host_page_size as u64 - 1, 2)
+                        .is_none()
+                );
+                assert!(
+                    view.resolve(scratch_start + layout.get_scratch_size() as u64 - 1, 2,)
+                        .is_none()
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
 
         drop(dynamic);
         drop(dynamic_guest);

@@ -1306,6 +1306,19 @@ impl HostSharedMemory {
         Ok(())
     }
 
+    /// Run `f` with the contents as a plain slice. The write lock keeps every
+    /// other host access to this memory out until `f` returns.
+    pub(crate) fn with_exclusive_contents<T>(&self, f: impl FnOnce(&[u8]) -> T) -> Result<T> {
+        let guard = self.lock.try_write()?;
+        let exclusive = ExclusiveSharedMemory {
+            region: self.region.clone(),
+        };
+        let ret = f(exclusive.as_slice());
+        drop(exclusive);
+        drop(guard);
+        Ok(ret)
+    }
+
     /// Copy the contents of the slice into the sandbox at the
     /// specified offset
     pub fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {

@@ -24,7 +24,7 @@ use crate::HyperlightError;
 use crate::hypervisor::regs::CommonFpu;
 use crate::hypervisor::virtual_machine::{HypervisorError, RegisterError, VirtualMachine};
 use crate::mem::memory_region::MemoryRegion;
-use crate::mem::mgr::{BackingSource, GuestPhysicalMemoryView, SandboxMemoryManager};
+use crate::mem::mgr::{BackingSource, SandboxMemoryManager};
 use crate::mem::shared_mem::HostSharedMemory;
 
 #[derive(Debug, Error)]
@@ -109,15 +109,11 @@ impl<'a> DebugMemoryView<'a> {
         data: &mut [u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        GuestPhysicalMemoryView::with_dynamic(
-            &self.mem_mgr.shared_mem,
-            &self.mem_mgr.scratch_mem,
-            &self.guest_mmap_regions,
-            self.mem_mgr.layout,
-        )
-        .read(gpa, data)
-        .map(|_| ())
-        .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))
+        self.mem_mgr
+            .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                memory.read(gpa, data).map(|_| ())
+            })
+            .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))
     }
 
     /// Writes memory from the guest's address space with a maximum length of a PAGE_SIZE
@@ -133,14 +129,13 @@ impl<'a> DebugMemoryView<'a> {
         data: &[u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let backing = GuestPhysicalMemoryView::with_dynamic(
-            &self.mem_mgr.shared_mem,
-            &self.mem_mgr.scratch_mem,
-            &self.guest_mmap_regions,
-            self.mem_mgr.layout,
-        )
-        .resolve(gpa, data.len())
-        .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
+        let backing = self
+            .mem_mgr
+            .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                Ok(memory.resolve(gpa, data.len()))
+            })
+            .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?
+            .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
 
         // We can only safely write (without causing UB in the host
         // process) if the address is in the scratch region
