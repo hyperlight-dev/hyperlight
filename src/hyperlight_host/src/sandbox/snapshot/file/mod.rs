@@ -629,7 +629,7 @@ impl Snapshot {
             hypervisor: Hypervisor::current()
                 .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
             cpu_vendor: CpuVendor::current(),
-            host_page_size: page_size::get(),
+            layer_alignment: host_page_size(),
             stack_top_gva: self.state.stack_top_gva,
             entrypoint_addr,
             original_entrypoint_addr: self.state.original_entrypoint,

@@ -14,7 +14,7 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 #[cfg(target_arch = "x86_64")]
 use crate::hypervisor::regs::MsrEntry;
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::sandbox::snapshot::memory::SnapshotBlob;
+use crate::sandbox::snapshot::memory::{SnapshotBlob, host_page_size};
 
 // --- Arch and hypervisor identifiers --------------------------------
 
@@ -181,8 +181,9 @@ pub(super) struct OciSnapshotConfig {
     pub(super) hypervisor: Hypervisor,
     /// CPU vendor captured at snapshot time. Checked on load.
     pub(super) cpu_vendor: CpuVendor,
-    /// Host page size at capture. Blob storage is padded to it.
-    pub(super) host_page_size: usize,
+    /// Alignment of each layer's GPA and blob size: the larger of the host and
+    /// guest page sizes at capture. A loader must use the same alignment.
+    pub(super) layer_alignment: usize,
     /// Top of the guest stack, in guest virtual address space.
     pub(super) stack_top_gva: u64,
     /// Guest virtual address the loader resumes the paused call at.
@@ -473,11 +474,11 @@ impl OciSnapshotConfig {
                 self.hyperlight_version
             ));
         }
-        if self.host_page_size != page_size::get() {
+        if self.layer_alignment != host_page_size() {
             return Err(crate::new_error!(
-                "snapshot host page size mismatch: file uses {}, current host uses {}",
-                self.host_page_size,
-                page_size::get()
+                "snapshot layer alignment mismatch: file uses {}, current host uses {}",
+                self.layer_alignment,
+                host_page_size()
             ));
         }
         // Cap each layout field at `MAX_MEMORY_SIZE` so the later
@@ -815,7 +816,7 @@ mod tests {
             abi_version: SNAPSHOT_ABI_VERSION,
             hypervisor: Hypervisor::Mshv,
             cpu_vendor: CpuVendor::current(),
-            host_page_size: page_size::get(),
+            layer_alignment: host_page_size(),
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
@@ -906,6 +907,18 @@ mod tests {
         let err = cfg.validate_for_load().unwrap_err().to_string();
         assert!(err.contains("hypervisor mismatch"), "got: {err}");
     }
+
+    #[test]
+    fn validate_for_load_rejects_layer_alignment_mismatch() {
+        let Some(current) = Hypervisor::current() else {
+            return;
+        };
+        let mut cfg = gating_config();
+        cfg.hypervisor = current;
+        cfg.layer_alignment = 2 * host_page_size();
+        let err = cfg.validate_for_load().unwrap_err().to_string();
+        assert!(err.contains("layer alignment mismatch"), "got: {err}");
+    }
 }
 
 #[cfg(test)]
@@ -919,7 +932,7 @@ mod schema_pin {
   "abi_version": 8,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
-  "host_page_size": 4096,
+  "layer_alignment": 4096,
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
@@ -1116,7 +1129,7 @@ mod schema_pin {
   "abi_version": 8,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
-  "host_page_size": 16384,
+  "layer_alignment": 16384,
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
