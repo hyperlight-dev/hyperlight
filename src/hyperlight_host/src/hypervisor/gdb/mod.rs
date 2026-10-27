@@ -137,8 +137,8 @@ impl<'a> DebugMemoryView<'a> {
             .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?
             .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
 
-        // We can only safely write (without causing UB in the host
-        // process) if the address is in the scratch region
+        // gdb builds give each sandbox private writable copies of its snapshot
+        // layers. Dynamic regions are host memory the sandbox must not modify.
         match backing.source {
             BackingSource::Snapshot(layer_index) => self
                 .mem_mgr
