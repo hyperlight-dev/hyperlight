@@ -190,6 +190,41 @@ fn snapshot_metadata_namespaces_are_independent() {
 // Round-trip via OCI layout on disk.
 
 #[test]
+fn save_rejects_malformed_existing_index_without_writing_blobs() {
+    let snap = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("malformed-index");
+
+    std::fs::create_dir(&path).unwrap();
+
+    std::fs::write(
+        path.join("oci-layout"),
+        br#"{"imageLayoutVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+
+    std::fs::write(path.join("index.json"), b"not-json").unwrap();
+
+    let err = snap
+        .save(&path, &OciTag::new("latest").unwrap())
+        .unwrap_err();
+
+    assert!(err.to_string().contains("index.json"));
+
+    assert_eq!(std::fs::read(path.join("index.json")).unwrap(), b"not-json");
+
+    assert!(
+        !path.join("blobs").exists(),
+        "save wrote snapshot blobs before validating the index"
+    );
+
+    assert!(
+        !path.join(".hyperlight-index.lock").exists(),
+        "save created a lock file before validating the index"
+    );
+}
+
+#[test]
 fn concurrent_snapshot_saves_preserve_all_tags() {
     use std::collections::HashSet;
     use std::sync::Barrier;

@@ -147,7 +147,6 @@ fn read_layout_marker(path: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-
 /// Validate an existing OCI layout marker, if present.
 /// Returns whether the marker already exists.
 fn validate_existing_layout(path: &Path) -> crate::Result<bool> {
@@ -161,6 +160,47 @@ fn validate_existing_layout(path: &Path) -> crate::Result<bool> {
     }
 
     Ok(exists)
+}
+
+/// Validate and read an existing OCI index without modifying the layout.
+/// Called before writing blobs and again under the index lock.
+fn read_existing_index_manifests(index_path: &Path) -> crate::Result<Vec<Descriptor>> {
+    if !index_path
+        .try_exists()
+        .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", index_path, e))?
+    {
+        return Ok(Vec::new());
+    }
+
+    let bytes = read_bounded(index_path, MAX_JSON_BLOB_SIZE)
+        .map_err(|e| crate::new_error!("save: failed to read existing index.json: {}", e))?;
+
+    let existing: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
+        crate::new_error!(
+            "save: existing index.json is not a valid OCI image index: {}",
+            e
+        )
+    })?;
+
+    if existing.schema_version() != SCHEMA_VERSION {
+        return Err(crate::new_error!(
+            "save: unsupported OCI index schemaVersion {} (expected {})",
+            existing.schema_version(),
+            SCHEMA_VERSION
+        ));
+    }
+
+    if let Some(media_type) = existing.media_type()
+        && !matches!(media_type, MediaType::ImageIndex)
+    {
+        return Err(crate::new_error!(
+            "save: OCI index has unexpected media type {} (expected {})",
+            media_type,
+            MediaType::ImageIndex
+        ));
+    }
+
+    Ok(existing.manifests().to_vec())
 }
 
 fn load_manifest(
@@ -414,8 +454,10 @@ impl Snapshot {
             }
         }
 
-        // Reject unsupported layouts before writing snapshot data.
+        // Validate layout and index before writing snapshot blobs.
         validate_existing_layout(path)?;
+        let index_path = path.join("index.json");
+        read_existing_index_manifests(&index_path)?;
         let layout_marker = path.join("oci-layout");
 
         // Generate content-addressed snapshot blobs outside the index lock.
@@ -442,24 +484,7 @@ impl Snapshot {
         // Revalidate under the lock in case the layout changed.
         let marker_existed = validate_existing_layout(path)?;
 
-        let index_path = path.join("index.json");
-        let index_existed = index_path
-            .try_exists()
-            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", index_path, e))?;
-        let mut manifests: Vec<Descriptor> = if index_existed {
-            let bytes = read_bounded(&index_path, MAX_JSON_BLOB_SIZE).map_err(|e| {
-                crate::new_error!("save: failed to read existing index.json: {}", e)
-            })?;
-            let existing: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
-                crate::new_error!(
-                    "save: existing index.json is not a valid OCI image index: {}",
-                    e
-                )
-            })?;
-            existing.manifests().to_vec()
-        } else {
-            Vec::new()
-        };
+        let mut manifests = read_existing_index_manifests(&index_path)?;
 
         // Replacement is by tag, not by digest: a new snapshot may
         // hash to a different value but still claim the same logical
