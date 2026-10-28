@@ -2,7 +2,7 @@
 name = "hyperlight-host"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.95"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
