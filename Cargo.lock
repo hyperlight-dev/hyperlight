@@ -1304,7 +1304,7 @@ dependencies = [
  "log",
  "rustversion",
  "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-result",
 ]
 
 [[package]]
@@ -1868,7 +1868,7 @@ dependencies = [
  "uuid",
  "vmm-sys-util",
  "windows",
- "windows-result 0.100.0",
+ "windows-result",
  "windows-sys 0.61.2",
  "windows-version",
 ]
@@ -4681,7 +4681,7 @@ dependencies = [
  "windows-implement",
  "windows-interface",
  "windows-link 0.2.1",
- "windows-result 0.4.1",
+ "windows-result",
  "windows-strings",
 ]
 
@@ -4747,15 +4747,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
  "windows-link 0.2.1",
-]
-
-[[package]]
-name = "windows-result"
-version = "0.100.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44873a1ef61c85d5e2991db91fe656cfcf0731097e00dff1ac860f1cb3b752a0"
-dependencies = [
- "windows-link 0.100.0",
 ]
 
 [[package]]
