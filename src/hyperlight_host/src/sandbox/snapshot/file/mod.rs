@@ -11,6 +11,7 @@ mod media_types;
 pub(crate) mod reference;
 mod transport;
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
@@ -144,6 +145,62 @@ fn read_layout_marker(path: &Path) -> crate::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Validate an existing OCI layout marker, if present.
+/// Returns whether the marker already exists.
+fn validate_existing_layout(path: &Path) -> crate::Result<bool> {
+    let marker = path.join("oci-layout");
+    let exists = marker
+        .try_exists()
+        .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", marker, e))?;
+
+    if exists {
+        read_layout_marker(path)?;
+    }
+
+    Ok(exists)
+}
+
+/// Validate and read an existing OCI index without modifying the layout.
+/// Called before writing blobs and again under the index lock.
+fn read_existing_index_manifests(index_path: &Path) -> crate::Result<Vec<Descriptor>> {
+    if !index_path
+        .try_exists()
+        .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", index_path, e))?
+    {
+        return Ok(Vec::new());
+    }
+
+    let bytes = read_bounded(index_path, MAX_JSON_BLOB_SIZE)
+        .map_err(|e| crate::new_error!("save: failed to read existing index.json: {}", e))?;
+
+    let existing: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
+        crate::new_error!(
+            "save: existing index.json is not a valid OCI image index: {}",
+            e
+        )
+    })?;
+
+    if existing.schema_version() != SCHEMA_VERSION {
+        return Err(crate::new_error!(
+            "save: unsupported OCI index schemaVersion {} (expected {})",
+            existing.schema_version(),
+            SCHEMA_VERSION
+        ));
+    }
+
+    if let Some(media_type) = existing.media_type()
+        && !matches!(media_type, MediaType::ImageIndex)
+    {
+        return Err(crate::new_error!(
+            "save: OCI index has unexpected media type {} (expected {})",
+            media_type,
+            MediaType::ImageIndex
+        ));
+    }
+
+    Ok(existing.manifests().to_vec())
 }
 
 fn load_manifest(
@@ -397,59 +454,37 @@ impl Snapshot {
             }
         }
 
-        // Validate any pre-existing `oci-layout` marker before
-        // touching anything else, so a foreign layout (future
-        // version, hand-edited file) is reported without altering
-        // the directory.
-        let layout_marker = path.join("oci-layout");
-        let marker_existed = layout_marker
-            .try_exists()
-            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", layout_marker, e))?;
-        if marker_existed {
-            let bytes = read_bounded(&layout_marker, MAX_JSON_BLOB_SIZE).map_err(|e| {
-                crate::new_error!("save: failed to read existing oci-layout: {}", e)
-            })?;
-            let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-                crate::new_error!("save: existing oci-layout is not valid JSON: {}", e)
-            })?;
-            match v.get("imageLayoutVersion").and_then(|s| s.as_str()) {
-                Some(s) if s == OCI_LAYOUT_VERSION => {}
-                Some(other) => {
-                    return Err(crate::new_error!(
-                        "save: existing imageLayoutVersion {:?} is unsupported (expected {:?})",
-                        other,
-                        OCI_LAYOUT_VERSION
-                    ));
-                }
-                None => {
-                    return Err(crate::new_error!(
-                        "save: existing oci-layout is missing imageLayoutVersion"
-                    ));
-                }
-            }
-        }
-
+        // Validate layout and index before writing snapshot blobs.
+        validate_existing_layout(path)?;
         let index_path = path.join("index.json");
-        let index_existed = index_path
-            .try_exists()
-            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", index_path, e))?;
-        let mut manifests: Vec<Descriptor> = if index_existed {
-            let bytes = read_bounded(&index_path, MAX_JSON_BLOB_SIZE).map_err(|e| {
-                crate::new_error!("save: failed to read existing index.json: {}", e)
-            })?;
-            let existing: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
-                crate::new_error!(
-                    "save: existing index.json is not a valid OCI image index: {}",
-                    e
-                )
-            })?;
-            existing.manifests().to_vec()
-        } else {
-            Vec::new()
-        };
+        read_existing_index_manifests(&index_path)?;
+        let layout_marker = path.join("oci-layout");
 
+        // Generate content-addressed snapshot blobs outside the index lock.
         let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
         let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
+
+        // Serialize layout validation and the index read-modify-write
+        // transaction across cooperating processes.
+        // Use a stable lock file, not index.json, which is atomically replaced.
+        let lock_path = path.join(".hyperlight-index.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| {
+                crate::new_error!("save: failed to open index lock {:?}: {}", lock_path, e)
+            })?;
+        lock_file.lock().map_err(|e| {
+            crate::new_error!("save: failed to acquire index lock {:?}: {}", lock_path, e)
+        })?;
+        // File lock is released when lock_file is dropped on all exit paths.
+
+        // Revalidate under the lock in case the layout changed.
+        let marker_existed = validate_existing_layout(path)?;
+
+        let mut manifests = read_existing_index_manifests(&index_path)?;
 
         // Replacement is by tag, not by digest: a new snapshot may
         // hash to a different value but still claim the same logical
