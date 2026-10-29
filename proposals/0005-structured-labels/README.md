@@ -107,11 +107,11 @@ been filed specifically for the agenda, and whether any items need attention.
 | `ready-for-review`            | `S-waiting-on-review`      |
 | `regen-goldens`               | `S-needs-golden-regen`     |
 | `release-blocker`             | `P-release-blocker`        |
-| `size/l`                      | `E-hard`                   |
-| `size/m`                      | `E-medium`                 |
-| `size/s`                      | `E-easy`                   |
-| `size/xl`                     | `E-hard`                   |
-| `size/xs`                     | `E-easy`                   |
+| `size/l`                      | Deleted                    |
+| `size/m`                      | Deleted                    |
+| `size/s`                      | Deleted                    |
+| `size/xl`                     | Deleted                    |
+| `size/xs`                     | Deleted                    |
 
 1. Link issue and close as "not planned"
 2. Close the issue as "completed"
@@ -153,6 +153,36 @@ notation. A labeling system is not a programming language, but it’s still a
 system we interact with. Short, terse labels are nice when we use something a
 lot - and I plan for us to use this a lot.
 
+### Why keep both area and category labels?
+
+Area labels describe which part of the project an item affects. Category labels
+describe the type of issue or change. For example, an API bug fix gets `A-api`
+and `C-bug`. An API enhancement gets `A-api` and `C-enhancement`.
+
+We should keep these categories distinct. Documentation is an area, so a
+documentation fix gets `A-docs` and `C-bug`. A dependency update gets `C-deps`,
+with an area label only if it helps identify the affected part of the project.
+
+We should retain labels that support useful queries or automation. Existing
+labels do not each need a replacement.
+
+### How do we manage labels across the org?
+
+Area labels will differ between projects. Most other labels should be shared
+across the org.
+
+We should use GitHub's [organization default labels](https://docs.github.com/en/organizations/managing-organization-settings/managing-default-labels-for-repositories-in-your-organization)
+to give new repositories a shared starting set. However, changes to these defaults
+only apply to new repositories. We should coordinate updates to existing
+repositories as described in the rollout plan.
+
+### How do we keep labels from accumulating?
+
+We should regularly review our labels and archive those that have served their
+purpose. Archiving should preserve historical context while retiring labels
+from active use. Before retiring a label, we should check open issues and PRs,
+saved queries, and automation that depends on it.
+
 ### Can an issue have multiple labels?
 
 Yes! In fact, they almost always should! For example, a bug about MSHV support
@@ -176,6 +206,9 @@ and we should get back to.
 There is also the `S-needs-triage` label we’re proposing, which could be
 automatically added whenever a new item is created. This would be easy to pick
 up for agendas to discuss as part of triage.
+
+We likely want to experiment with further automation using Agents, and in
+particular using GitHub Agentic Workflows.
 
 ### Why is “participation” labeled with “E-”
 
