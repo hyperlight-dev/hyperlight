@@ -1437,6 +1437,102 @@ mod tests {
         }
     }
 
+    /// A held byte chunk keeps a slot in the transport arena live, mapped
+    /// through an alias page. A resize moves the scratch base but not the
+    /// arena. Held bytes, their release, and slot reuse must work after
+    /// snapshots taken at other scratch sizes.
+    #[test]
+    fn held_buffers_survive_resized_snapshots() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .scratch_size(8 << 20)
+            // Pin the default pool sizes so 32 holds always outnumber the slots.
+            .h2g_pool_pages(8)
+            .g2h_pool_pages(12)
+            .host_function("HostEchoByteChunks", |v: Vec<Bytes>| v)
+            .host_function("HostNoOp", || {})
+            .build()
+            .unwrap();
+        // Bytes differ between pages, chunks and holds, so a read from a
+        // shifted or stale page fails.
+        let chunks = |seed: u8| {
+            let mut first: Bytes = (0..11 * 1024usize)
+                .map(|i| (i ^ (i >> 8)) as u8 ^ seed)
+                .collect();
+            let second = first.split_off(6 * 1024);
+            vec![first, second]
+        };
+        // Chunk boundaries follow transport buffers, so compare bytes.
+        let read_back =
+            |sbox: &mut Sandbox, read: &str| sbox.call::<Vec<Bytes>>(read, ()).unwrap().concat();
+        let base = sbox.snapshot().unwrap();
+
+        for (seed, hold, read, release) in [
+            (
+                0x00,
+                "RetainGuestByteChunks",
+                "ReadRetainedGuestByteChunks",
+                "ReleaseGuestByteChunks",
+            ),
+            (
+                0x40,
+                "RetainHostByteChunks",
+                "ReadRetainedHostByteChunks",
+                "ReleaseHostByteChunks",
+            ),
+        ] {
+            sbox.restore(base.clone()).unwrap();
+            let held = chunks(seed);
+            let len: i32 = sbox.call(hold, held.clone()).unwrap();
+            assert_eq!(len, 11 * 1024);
+            assert_eq!(read_back(&mut sbox, read), held.concat());
+
+            // Shrink from the 8 MiB boot size, then grow from 2 MiB, with
+            // the chunks held in each snapshot.
+            for size in [2 << 20, 16 << 20] {
+                let snapshot = sbox.snapshot_with_options(&scratch(size)).unwrap();
+                // Other chunks are held at the restore, so only the snapshot
+                // can bring the first ones back, and the restore must drop
+                // the live ones.
+                assert_eq!(sbox.call::<i32>(release, ()).unwrap(), len);
+                assert_eq!(sbox.call::<i32>(hold, chunks(!seed)).unwrap(), len);
+                sbox.restore(snapshot).unwrap();
+                assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), size);
+
+                // Bytes through both pools, which recycle the held slots after
+                // a restore. The held chunks read from their captured copy, so
+                // this traffic must not change them.
+                let other = chunks(seed ^ 0x80);
+                let echoed: Vec<Bytes> =
+                    sbox.call("RoundTripHostByteChunks", other.clone()).unwrap();
+                assert_eq!(echoed.concat(), other.concat());
+                assert_eq!(read_back(&mut sbox, read), held.concat());
+            }
+            assert_eq!(sbox.call::<i32>(release, ()).unwrap(), len);
+            // The restores dropped the swapped-in chunks, so nothing is left.
+            assert!(read_back(&mut sbox, read).is_empty());
+
+            // Hold and release more times than either pool has slots, so a
+            // release that leaks its slot runs the pool dry.
+            for round in 1..=32 {
+                let next = chunks(seed + round);
+                assert_eq!(sbox.call::<i32>(hold, next.clone()).unwrap(), len);
+                assert_eq!(read_back(&mut sbox, read), next.concat());
+                assert_eq!(sbox.call::<i32>(release, ()).unwrap(), len);
+            }
+
+            // After the churn the sandbox can still resize, back to 8 MiB,
+            // and hold chunks there.
+            let back = sbox.snapshot_with_options(&scratch(8 << 20)).unwrap();
+            assert!(!sbox.transport_dirty);
+            sbox.restore(back).unwrap();
+            assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 8 << 20);
+            let last = chunks(seed + 0x21);
+            assert_eq!(sbox.call::<i32>(hold, last.clone()).unwrap(), len);
+            assert_eq!(read_back(&mut sbox, read), last.concat());
+            assert_eq!(sbox.call::<i32>(release, ()).unwrap(), len);
+        }
+    }
+
     /// The guest's page allocator stops at the transport arena. A resized
     /// sandbox that runs out of scratch aborts once an allocation reaches the
     /// arena, with nothing handed out inside it, and a restore recovers it.
