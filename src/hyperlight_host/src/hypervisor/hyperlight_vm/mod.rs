@@ -620,20 +620,23 @@ impl HyperlightVm {
                 #[cfg(feature = "trace_guest")]
                 {
                     tc.end_host_trace();
-                    // Handle the guest trace data if any
-                    let regs = self.vm.regs().map_err(RunVmError::GetRegs)?;
+                    // The guest reports trace batches only on OUT exits. Other exits
+                    // can hold stale registers and must not be checked.
+                    if let Ok(VmExit::IoOut(..)) = &result {
+                        let regs = self.vm.regs().map_err(RunVmError::GetRegs)?;
 
-                    // Only parse the trace if it has reported
-                    if tc.has_trace_data(&regs) {
-                        let root_pt = self.get_root_pt().map_err(RunVmError::PageTableAccess)?;
+                        if tc.has_trace_data(&regs) {
+                            let root_pt =
+                                self.get_root_pt().map_err(RunVmError::PageTableAccess)?;
 
-                        // If something goes wrong with parsing the trace data, we log the error and
-                        // continue execution instead of returning an error since this is not critical
-                        // to correct execution of the guest
-                        tc.handle_trace(&regs, mem_mgr, root_pt)
-                            .unwrap_or_else(|e| {
-                                tracing::error!("Cannot handle trace data: {}", e);
-                            });
+                            // If something goes wrong with parsing the trace data, we log the error and
+                            // continue execution instead of returning an error since this is not critical
+                            // to correct execution of the guest
+                            tc.handle_trace(&regs, mem_mgr, root_pt)
+                                .unwrap_or_else(|e| {
+                                    tracing::error!("Cannot handle trace data: {}", e);
+                                });
+                        }
                     }
                 }
                 result
