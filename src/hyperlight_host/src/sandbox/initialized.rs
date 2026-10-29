@@ -394,6 +394,11 @@ impl Sandbox {
     /// Creating a snapshot fails when it would exceed this limit or finds no room
     /// for the new layer. This check leaves the sandbox unchanged and ready.
     ///
+    /// The guest can map any page of a layer, including pages that a later layer
+    /// replaced. A sandbox restored from this snapshot, or from a saved copy, can
+    /// read guest data overwritten before the snapshot. Zeroing a secret does not
+    /// remove it from the snapshot.
+    ///
     /// Memory added through [`Self::map_region`] and [`Self::map_file_cow`] is
     /// copied into the snapshot only for pages the guest has mapped into its page
     /// tables. Capture then removes these regions from this sandbox. Pages the
