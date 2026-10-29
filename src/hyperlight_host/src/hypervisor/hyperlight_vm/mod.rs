@@ -578,6 +578,21 @@ impl HyperlightVm {
         self.interrupt_handle.clone()
     }
 
+    /// Drops `old` and moves its interrupt handle to this VM, so handles
+    /// obtained from `old` control this VM.
+    pub(crate) fn adopt_interrupt_handle(&mut self, mut old: HyperlightVm) {
+        // Redirect kills before `old` tears down its partition.
+        #[cfg(target_os = "windows")]
+        old.interrupt_handle
+            .set_partition(self.vm.partition_handle());
+        // `old` marks this VM's unused handle dropped, so the adopted handle
+        // never reports dropped.
+        std::mem::swap(&mut self.interrupt_handle, &mut old.interrupt_handle);
+        #[cfg(hvf)]
+        self.vm.set_interrupt_handle(self.interrupt_handle.clone());
+        drop(old);
+    }
+
     pub(crate) fn clear_cancel(&self) {
         self.interrupt_handle.state().clear_cancel();
     }

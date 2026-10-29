@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
 ### Changed
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975

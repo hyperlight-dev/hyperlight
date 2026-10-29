@@ -88,7 +88,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         hshm.finish_snapshot_checkpoint()?;
     }
 
-    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm, u_sbox.config);
 
     if let Some(log_level) = max_guest_log_level {
         sbox.log_level(log_level)?;

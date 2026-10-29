@@ -73,11 +73,6 @@ impl HostFunctions {
     pub(crate) fn inner_mut(&mut self) -> &mut FunctionRegistry {
         &mut self.0
     }
-
-    /// Borrow the inner registry immutably.
-    pub(crate) fn inner(&self) -> &FunctionRegistry {
-        &self.0
-    }
 }
 
 impl Default for HostFunctions {
