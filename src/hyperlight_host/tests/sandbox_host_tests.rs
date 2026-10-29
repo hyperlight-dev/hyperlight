@@ -12,7 +12,7 @@ use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
-    with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
+    with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from, with_rust_sandbox,
     with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
 };
 
@@ -197,6 +197,24 @@ fn multiple_parameters() {
         test_case!(sb, rx, "PrintNineArgs", (a, b, c, d, e, f, g, h, i));
         test_case!(sb, rx, "PrintTenArgs", (a, b, c, d, e, f, g, h, i, j));
         test_case!(sb, rx, "PrintElevenArgs", (a, b, c, d, e, f, g, h, i, j, k));
+    });
+}
+
+#[test]
+fn guest_function_with_thirty_two_parameters() {
+    with_rust_sandbox(|mut sandbox| {
+        let sum: i32 = sandbox
+            .call(
+                "SumThirtyTwoArgs",
+                (
+                    1_i32, 2_i32, 3_i32, 4_i32, 5_i32, 6_i32, 7_i32, 8_i32, 9_i32, 10_i32, 11_i32,
+                    12_i32, 13_i32, 14_i32, 15_i32, 16_i32, 17_i32, 18_i32, 19_i32, 20_i32, 21_i32,
+                    22_i32, 23_i32, 24_i32, 25_i32, 26_i32, 27_i32, 28_i32, 29_i32, 30_i32, 31_i32,
+                    32_i32,
+                ),
+            )
+            .unwrap();
+        assert_eq!(sum, (1..=32).sum::<i32>());
     });
 }
 

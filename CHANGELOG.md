@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 * Guest libc accepts null buffers for zero-length writes.
+* Fix calls to guest functions with more than 11 parameters. Registration accepts up to 32, but every call with more than 11 failed.
 
 ## [v0.18.0] - 2026-10-13
 

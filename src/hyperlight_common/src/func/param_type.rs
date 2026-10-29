@@ -66,6 +66,29 @@ macro_rules! impl_supported_param_type {
 for_each_param_type!(impl_supported_param_type);
 
 /// A trait to describe the tuple of parameters that a host function can take.
+///
+/// Functions take at most 32 parameters.
+///
+/// ```
+/// fn takes<T: hyperlight_common::func::ParameterTuple>() {}
+/// takes::<(
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+/// )>();
+/// ```
+///
+/// ```compile_fail
+/// fn takes<T: hyperlight_common::func::ParameterTuple>() {}
+/// takes::<(
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32, i32, i32, i32, i32, i32, i32, i32,
+///     i32,
+/// )>();
+/// ```
 pub trait ParameterTuple: Sized + Clone + Send + Sync + 'static {
     /// The number of parameters in the tuple
     const SIZE: usize;

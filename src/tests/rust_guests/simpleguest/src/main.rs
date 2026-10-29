@@ -326,6 +326,13 @@ fn print_eleven_args(arg1: String, arg2: i32, arg3: i64, arg4: String, arg5: Str
     host_print(message)
 }
 
+#[rustfmt::skip]
+#[allow(clippy::too_many_arguments)]
+#[guest_function("SumThirtyTwoArgs")]
+fn sum_thirty_two_args(a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, a14: i32, a15: i32, a16: i32, a17: i32, a18: i32, a19: i32, a20: i32, a21: i32, a22: i32, a23: i32, a24: i32, a25: i32, a26: i32, a27: i32, a28: i32, a29: i32, a30: i32, a31: i32, a32: i32) -> i32 {
+    a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 + a32
+}
+
 #[guest_function("BufferOverrun")]
 fn buffer_overrun(value: String) -> i32 {
     let c_str = value.as_str();
