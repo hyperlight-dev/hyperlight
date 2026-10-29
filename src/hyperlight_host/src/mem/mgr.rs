@@ -358,6 +358,13 @@ pub(crate) enum ExecutionMode {
     Restricted,
 }
 
+/// Scratch-top slots the host writes and the guest applies and clears on its
+/// next entry.
+const GUEST_REQUEST_OFFSETS: [u64; 2] = [
+    hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET,
+    hyperlight_common::layout::SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET,
+];
+
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
@@ -964,10 +971,22 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Installs memory produced by a capture without restoring runtime state.
+    ///
+    /// A capture with another scratch size moves the scratch base and page
+    /// tables. It gets new scratch, which the caller maps.
     pub(crate) fn install_captured_snapshot(
         &mut self,
         snapshot: &Snapshot,
-    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+    ) -> Result<(
+        SnapshotMemoryBacking<GuestSharedMemory>,
+        Option<GuestSharedMemory>,
+    )> {
+        if snapshot.layout().get_scratch_size() != self.scratch_mem.mem_size() {
+            let requests = self.guest_requests()?;
+            let memory = self.restore_snapshot(snapshot)?;
+            self.set_guest_requests(requests)?;
+            return Ok(memory);
+        }
         let allocator_offset = self.scratch_mem.mem_size()
             - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
         let used_scratch_end = self.scratch_mem.read::<u64>(allocator_offset)?;
@@ -975,7 +994,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.apply_snapshot_metadata(snapshot);
         self.update_snapshot_scratch_bookkeeping()?;
         self.zero_freed_scratch(used_scratch_end)?;
-        Ok(gsnapshot)
+        Ok((gsnapshot, None))
     }
 
     /// Zeroes the scratch pages freed by resetting the allocator.
@@ -1056,6 +1075,24 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.scratch_mem
             .write::<u64>(base_offset, value)
             .map_err(From::from)
+    }
+
+    fn guest_requests(&self) -> Result<[u64; 2]> {
+        let scratch_size = self.scratch_mem.mem_size();
+        let mut values = [0; 2];
+        for (value, offset) in values.iter_mut().zip(GUEST_REQUEST_OFFSETS) {
+            *value = self
+                .scratch_mem
+                .read::<u64>(scratch_size - offset as usize)?;
+        }
+        Ok(values)
+    }
+
+    fn set_guest_requests(&mut self, values: [u64; 2]) -> Result<()> {
+        for (value, offset) in values.into_iter().zip(GUEST_REQUEST_OFFSETS) {
+            self.update_scratch_bookkeeping_item(offset, value)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn request_libc_rng_reseed(&mut self, seed: u32) -> Result<()> {

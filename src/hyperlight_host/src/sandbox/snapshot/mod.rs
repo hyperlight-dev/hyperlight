@@ -73,9 +73,8 @@ pub struct SnapshotOptions {
 }
 
 impl SnapshotOptions {
-    /// Restoring the snapshot gives the sandbox a scratch region of
-    /// `scratch_size` bytes. By default it keeps the sandbox's current
-    /// size.
+    /// The snapshot, and the sandbox it is taken from, get a scratch region
+    /// of `scratch_size` bytes. By default the scratch size stays the same.
     ///
     /// A sandbox can boot with the scratch its initialisation needs, then
     /// run guest function calls from a snapshot with only the scratch they
