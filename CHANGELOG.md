@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
 
 * **Breaking:** Generated libc bindings use `usize` for `size_t` arguments and return values, including `strlen` and `memcpy`. Rust callers that use `u64` or `c_ulong` need explicit conversions. The C ABI is unchanged.
-* **Breaking:** Snapshots use ABI 8 and config schema v4. Existing snapshots
+* **Breaking:** Snapshots use ABI 9 and config schema v5. Existing snapshots
   must be regenerated.
 * **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
   `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read_exact(gpa, buffer)?`
