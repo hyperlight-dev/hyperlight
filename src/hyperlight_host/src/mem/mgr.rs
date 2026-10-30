@@ -15,15 +15,13 @@ use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
-use super::shared_mem::{
-    ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
-};
+use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::virtq::{self, G2hConsumer, H2gConsumer, VirtqSnapshot};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
-use crate::sandbox::snapshot::{NextAction, Snapshot};
+use crate::sandbox::snapshot::{NextAction, Snapshot, SnapshotMemoryBacking};
 use crate::{HyperlightError, Result, new_error};
 
 #[cfg(crashdump)]
@@ -97,41 +95,259 @@ fn try_coalesce_region(
     false
 }
 
-// It would be nice to have a simple type alias
-// `SnapshotSharedMemory<S: SharedMemory>` that abstracts over the
-// fact that the snapshot shared memory is `ReadonlySharedMemory`
-// normally, but there is (temporary) support for writable
-// `GuestSharedMemory` with `#[cfg(gdb)]`. Unfortunately, rustc gets
-// annoyed about an unused type parameter, unless one goes to a little
-// bit of effort to trick it...
-mod unused_hack {
-    #[cfg(not(unshared_snapshot_mem))]
-    use crate::mem::shared_mem::ReadonlySharedMemory;
-    use crate::mem::shared_mem::SharedMemory;
-    pub trait SnapshotSharedMemoryT {
-        type T<S: SharedMemory>;
-    }
-    pub struct SnapshotSharedMemory_;
-    impl SnapshotSharedMemoryT for SnapshotSharedMemory_ {
-        #[cfg(not(unshared_snapshot_mem))]
-        type T<S: SharedMemory> = ReadonlySharedMemory;
-        #[cfg(unshared_snapshot_mem)]
-        type T<S: SharedMemory> = S;
-    }
-    pub type SnapshotSharedMemory<S> = <SnapshotSharedMemory_ as SnapshotSharedMemoryT>::T<S>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackingSource {
+    /// Snapshot layer index.
+    Snapshot(usize),
+    Scratch,
+    /// Dynamic region index.
+    Dynamic(usize),
 }
-impl ReadonlySharedMemory {
-    pub(crate) fn to_mgr_snapshot_mem(
-        &self,
-    ) -> Result<SnapshotSharedMemory<ExclusiveSharedMemory>> {
-        #[cfg(not(unshared_snapshot_mem))]
-        let ret = self.clone();
-        #[cfg(unshared_snapshot_mem)]
-        let ret = self.copy_to_writable()?;
-        Ok(ret)
+
+/// A guest physical range resolved to its backing memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GuestBacking {
+    pub(crate) source: BackingSource,
+    pub(crate) offset: usize,
+}
+
+/// Guest physical memory with scratch locked for exclusive access.
+pub(crate) struct GuestPhysicalMemoryView<'a> {
+    snapshot: &'a SnapshotMemoryBacking<HostSharedMemory>,
+    scratch: &'a [u8],
+    dynamic: &'a [MemoryRegion],
+    layout: SandboxMemoryLayout,
+}
+
+impl<'a> GuestPhysicalMemoryView<'a> {
+    /// Runs `f` with a view of `snapshot`, `scratch` and `dynamic`. Scratch
+    /// stays locked until `f` returns.
+    pub(crate) fn with_memory<T>(
+        snapshot: &SnapshotMemoryBacking<HostSharedMemory>,
+        scratch: &HostSharedMemory,
+        dynamic: &[MemoryRegion],
+        layout: SandboxMemoryLayout,
+        f: impl FnOnce(&GuestPhysicalMemoryView<'_>) -> Result<T>,
+    ) -> Result<T> {
+        scratch.with_exclusive_contents(|scratch| {
+            f(&GuestPhysicalMemoryView {
+                snapshot,
+                scratch,
+                dynamic,
+                layout,
+            })
+        })?
+    }
+
+    pub(crate) fn snapshot(&self) -> &'a SnapshotMemoryBacking<HostSharedMemory> {
+        self.snapshot
+    }
+
+    pub(crate) fn resolve(&self, gpa: u64, len: usize) -> Option<GuestBacking> {
+        let end = gpa.checked_add(u64::try_from(len).ok()?)?;
+        let scratch_start =
+            hyperlight_common::layout::scratch_base_gpa(self.layout.get_scratch_size());
+        let scratch_end = scratch_start.checked_add(self.layout.get_scratch_size() as u64)?;
+        if scratch_start <= gpa && end <= scratch_end {
+            return Some(GuestBacking {
+                source: BackingSource::Scratch,
+                offset: usize::try_from(gpa - scratch_start).ok()?,
+            });
+        }
+        if let Some((layer_index, offset)) = self.snapshot.resolve(gpa, len) {
+            return Some(GuestBacking {
+                source: BackingSource::Snapshot(layer_index),
+                offset,
+            });
+        }
+        self.dynamic
+            .iter()
+            .enumerate()
+            .find_map(|(region_index, region)| {
+                let start = u64::try_from(region.guest_region.start).ok()?;
+                let region_end = u64::try_from(region.guest_region.end).ok()?;
+                if start <= gpa && end <= region_end {
+                    Some(GuestBacking {
+                        source: BackingSource::Dynamic(region_index),
+                        offset: usize::try_from(gpa - start).ok()?,
+                    })
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub(crate) fn read(&self, gpa: u64, destination: &mut [u8]) -> Result<GuestBacking> {
+        let backing = self
+            .resolve(gpa, destination.len())
+            .ok_or_else(|| new_error!("GPA range is not backed: {gpa:#x}"))?;
+        self.read_backing(backing, destination)?;
+        Ok(backing)
+    }
+
+    pub(crate) fn read_backing(&self, backing: GuestBacking, destination: &mut [u8]) -> Result<()> {
+        let offset = backing.offset;
+        match backing.source {
+            BackingSource::Snapshot(layer_index) => {
+                self.snapshot
+                    .copy_layer_to_slice(layer_index, destination, offset)?
+            }
+            BackingSource::Scratch => {
+                let source = offset
+                    .checked_add(destination.len())
+                    .and_then(|end| self.scratch.get(offset..end))
+                    .ok_or_else(|| new_error!("scratch read range is out of bounds"))?;
+                destination.copy_from_slice(source);
+            }
+            BackingSource::Dynamic(region_index) => {
+                let region = &self.dynamic[region_index];
+                #[allow(clippy::useless_conversion)]
+                let host_start: usize = region.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let host_end: usize = region.host_region.end.into();
+                let source_end = offset
+                    .checked_add(destination.len())
+                    .ok_or_else(|| new_error!("dynamic memory read range overflows"))?;
+                let host_len = host_end
+                    .checked_sub(host_start)
+                    .ok_or_else(|| new_error!("dynamic memory host range is invalid"))?;
+                if source_end > host_len {
+                    return Err(new_error!("dynamic memory read range is out of bounds"));
+                }
+                let source_start = host_start
+                    .checked_add(offset)
+                    .ok_or_else(|| new_error!("dynamic memory host address overflows"))?;
+                // SAFETY: Dynamic regions come from `Sandbox::map_region`, whose
+                // contract keeps them valid and unmodified for the sandbox's
+                // lifetime. The checks above bound this read.
+                unsafe {
+                    std::ptr::copy(
+                        source_start as *const u8,
+                        destination.as_mut_ptr(),
+                        destination.len(),
+                    )
+                };
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(crashdump)]
+    fn host_range(&self, gpa: u64, len: usize) -> Result<std::ops::Range<usize>> {
+        let backing = self
+            .resolve(gpa, len)
+            .ok_or_else(|| new_error!("GPA range is not backed: {gpa:#x}"))?;
+        let offset = backing.offset;
+        let (base, backing_len) = match backing.source {
+            BackingSource::Snapshot(layer_index) => self.snapshot.host_range(layer_index)?,
+            BackingSource::Scratch => (self.scratch.as_ptr() as usize, self.scratch.len()),
+            BackingSource::Dynamic(region_index) => {
+                let region = &self.dynamic[region_index];
+                #[allow(clippy::useless_conversion)]
+                let start: usize = region.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let end: usize = region.host_region.end.into();
+                (start, end - start)
+            }
+        };
+        let end_offset = offset
+            .checked_add(len)
+            .filter(|end| *end <= backing_len)
+            .ok_or_else(|| new_error!("resolved GPA range is out of bounds"))?;
+        let start = base
+            .checked_add(offset)
+            .ok_or_else(|| new_error!("resolved host address overflows"))?;
+        let end = base
+            .checked_add(end_offset)
+            .ok_or_else(|| new_error!("resolved host address overflows"))?;
+        Ok(start..end)
     }
 }
-pub(crate) use unused_hack::SnapshotSharedMemory;
+#[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
+pub(crate) struct GuestVirtualMemoryReader<'a> {
+    memory: &'a GuestPhysicalMemoryView<'a>,
+    root_pt: u64,
+    cached_page: Option<(u64, u64)>,
+}
+
+#[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
+impl<'a> GuestVirtualMemoryReader<'a> {
+    fn new(memory: &'a GuestPhysicalMemoryView<'a>, root_pt: u64) -> Self {
+        Self {
+            memory,
+            root_pt,
+            cached_page: None,
+        }
+    }
+
+    fn translate_page(&mut self, page_gva: u64) -> Result<u64> {
+        if let Some((cached_gva, cached_gpa)) = self.cached_page
+            && cached_gva == page_gva
+        {
+            return Ok(cached_gpa);
+        }
+
+        use crate::sandbox::snapshot::PageTableReader;
+
+        let pt_buf = PageTableReader::new(self.memory, self.root_pt);
+        // SAFETY: The vCPU is stopped for this outb, so its page tables cannot
+        // change during the walk.
+        let mapping = unsafe {
+            hyperlight_common::vmem::virt_to_phys(
+                &pt_buf,
+                page_gva,
+                hyperlight_common::vmem::PAGE_SIZE as u64,
+            )
+        }
+        .next();
+        // A suppressed read leaves a not-present entry behind, so ask before
+        // blaming the guest for an unmapped page.
+        pt_buf.finish()?;
+        let mapping = mapping.ok_or_else(|| new_error!("GVA page is not mapped: {page_gva:#x}"))?;
+        let mapping_offset = page_gva
+            .checked_sub(mapping.virt_base)
+            .ok_or_else(|| new_error!("page-table mapping starts after requested GVA"))?;
+        if mapping
+            .len
+            .checked_sub(mapping_offset)
+            .is_none_or(|len| len < hyperlight_common::vmem::PAGE_SIZE as u64)
+        {
+            return Err(new_error!(
+                "page-table mapping does not cover requested GVA page"
+            ));
+        }
+        let page_gpa = mapping
+            .phys_base
+            .checked_add(mapping_offset)
+            .ok_or_else(|| new_error!("guest physical address overflows"))?;
+        self.cached_page = Some((page_gva, page_gpa));
+        Ok(page_gpa)
+    }
+
+    pub(crate) fn read_exact(&mut self, gva: u64, destination: &mut [u8]) -> Result<()> {
+        gva.checked_add(u64::try_from(destination.len())?)
+            .ok_or_else(|| new_error!("guest virtual address overflows"))?;
+        let mut copied = 0usize;
+        while copied < destination.len() {
+            let current_gva = gva
+                .checked_add(u64::try_from(copied)?)
+                .ok_or_else(|| new_error!("guest virtual address overflows"))?;
+            let page_gva = current_gva / hyperlight_common::vmem::PAGE_SIZE as u64
+                * hyperlight_common::vmem::PAGE_SIZE as u64;
+            let page_offset = usize::try_from(current_gva - page_gva)?;
+            let chunk_len =
+                (destination.len() - copied).min(hyperlight_common::vmem::PAGE_SIZE - page_offset);
+            let gpa = self
+                .translate_page(page_gva)?
+                .checked_add(u64::try_from(page_offset)?)
+                .ok_or_else(|| new_error!("guest physical address overflows"))?;
+            self.memory
+                .read(gpa, &mut destination[copied..copied + chunk_len])?;
+            copied += chunk_len;
+        }
+        Ok(())
+    }
+}
 
 /// Guest operations the host accepts during a VM entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,11 +358,18 @@ pub(crate) enum ExecutionMode {
     Restricted,
 }
 
+/// Scratch-top slots the host writes and the guest applies and clears on its
+/// next entry.
+const GUEST_REQUEST_OFFSETS: [u64; 2] = [
+    hyperlight_common::layout::SCRATCH_TOP_LIBC_RNG_SEED_OFFSET,
+    hyperlight_common::layout::SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET,
+];
+
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
-    pub(crate) shared_mem: SnapshotSharedMemory<S>,
+    pub(crate) shared_mem: SnapshotMemoryBacking<S>,
     /// Scratch memory for the Sandbox
     pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
@@ -311,11 +534,16 @@ impl<S> SandboxMemoryManager<S>
 where
     S: SharedMemory,
 {
+    /// First GPA available to the guest scratch allocator.
+    pub(crate) fn first_free_scratch_gpa(&self) -> u64 {
+        self.layout.get_pt_base_gpa() + self.shared_mem.page_table_len() as u64
+    }
+
     /// Create a new `SandboxMemoryManager` with the given parameters
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         layout: SandboxMemoryLayout,
-        shared_mem: SnapshotSharedMemory<S>,
+        shared_mem: SnapshotMemoryBacking<S>,
         scratch_mem: S,
         next_action: NextAction,
     ) -> Self {
@@ -343,7 +571,7 @@ where
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
     pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
         let layout = *s.layout();
-        let shared_mem = s.memory().to_mgr_snapshot_mem()?;
+        let shared_mem = SnapshotMemoryBacking::from_snapshot(s.snapshot_memory().clone())?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
@@ -415,6 +643,32 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Runs `f` with a view of guest physical memory, including `dynamic`.
+    pub(crate) fn with_guest_memory<T>(
+        &self,
+        dynamic: &[MemoryRegion],
+        f: impl FnOnce(&GuestPhysicalMemoryView<'_>) -> Result<T>,
+    ) -> Result<T> {
+        GuestPhysicalMemoryView::with_memory(
+            &self.shared_mem,
+            &self.scratch_mem,
+            dynamic,
+            self.layout,
+            f,
+        )
+    }
+
+    #[cfg(any(feature = "mem_profile", feature = "trace_guest", test))]
+    pub(crate) fn with_guest_virtual_memory_reader<T>(
+        &self,
+        root_pt: u64,
+        f: impl FnOnce(&mut GuestVirtualMemoryReader<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_guest_memory(&[], |memory| {
+            f(&mut GuestVirtualMemoryReader::new(memory, root_pt))
+        })
+    }
+
     /// Create a snapshot with the given mapped regions.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn snapshot(
@@ -434,24 +688,27 @@ impl SandboxMemoryManager<HostSharedMemory> {
             _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
         };
 
-        let snapshot = Snapshot::new(
-            &mut self.shared_mem,
-            &mut self.scratch_mem,
-            self.layout,
-            crate::mem::exe::LoadInfo::dummy(),
-            mapped_regions,
-            root_pt_gpas,
-            rsp_gva,
-            sregs,
-            #[cfg(target_arch = "x86_64")]
-            msrs,
-            next_action,
-            self.original_entrypoint,
-            self.snapshot_count + 1,
-            host_functions,
-            virtq,
-            scratch_size,
-        )?;
+        let layout = self.layout;
+        let original_entrypoint = self.original_entrypoint;
+        let snapshot_generation = self.snapshot_count + 1;
+        let snapshot = self.with_guest_memory(&mapped_regions, |memory| {
+            Snapshot::new(
+                memory,
+                layout,
+                crate::mem::exe::LoadInfo::dummy(),
+                root_pt_gpas,
+                rsp_gva,
+                sregs,
+                #[cfg(target_arch = "x86_64")]
+                msrs,
+                next_action,
+                original_entrypoint,
+                snapshot_generation,
+                host_functions,
+                virtq,
+                scratch_size,
+            )
+        })?;
         self.snapshot_count = snapshot.snapshot_generation();
         Ok(snapshot)
     }
@@ -690,12 +947,79 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
     }
 
+    fn replace_snapshot_memory(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+        let new_snapshot_mem =
+            SnapshotMemoryBacking::from_snapshot(snapshot.snapshot_memory().clone())?;
+        let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+        self.shared_mem = hsnapshot;
+        Ok(gsnapshot)
+    }
+
+    fn apply_snapshot_metadata(&mut self, snapshot: &Snapshot) {
+        self.layout = *snapshot.layout();
+        // Inherit the snapshot's own generation number — the
+        // guest-visible counter reflects "which snapshot is the
+        // sandbox currently a clone of", not "how many restores have
+        // happened into this (possibly-reused) partition".
+        self.snapshot_count = snapshot.snapshot_generation();
+        // Carry the guest ELF entry point across restore so crashdumps
+        // report the restored image's entry.
+        self.original_entrypoint = snapshot.original_entrypoint();
+    }
+
+    /// Installs memory produced by a capture without restoring runtime state.
+    ///
+    /// A capture with another scratch size moves the scratch base and page
+    /// tables. It gets new scratch, which the caller maps.
+    pub(crate) fn install_captured_snapshot(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<(
+        SnapshotMemoryBacking<GuestSharedMemory>,
+        Option<GuestSharedMemory>,
+    )> {
+        if snapshot.layout().get_scratch_size() != self.scratch_mem.mem_size() {
+            let requests = self.guest_requests()?;
+            let memory = self.restore_snapshot(snapshot)?;
+            self.set_guest_requests(requests)?;
+            return Ok(memory);
+        }
+        let allocator_offset = self.scratch_mem.mem_size()
+            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let used_scratch_end = self.scratch_mem.read::<u64>(allocator_offset)?;
+        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
+        self.apply_snapshot_metadata(snapshot);
+        self.update_snapshot_scratch_bookkeeping()?;
+        self.zero_freed_scratch(used_scratch_end)?;
+        Ok((gsnapshot, None))
+    }
+
+    /// Zeroes the scratch pages freed by resetting the allocator.
+    fn zero_freed_scratch(&mut self, used_end_gpa: u64) -> Result<()> {
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_mem.mem_size());
+        // The guest controls the allocator value. Its allocator stops at the
+        // transport arena.
+        let end = used_end_gpa.min(self.layout.get_transport_arena().base_addr());
+        let start = self.first_free_scratch_gpa();
+        if end <= start {
+            return Ok(());
+        }
+        let start = usize::try_from(start - scratch_base)?;
+        let end = usize::try_from(end - scratch_base)?;
+        self.scratch_mem
+            .with_exclusivity(|scratch| scratch.as_mut_slice()[start..end].fill(0))?;
+        Ok(())
+    }
+
     /// Restore base memory after the caller checks snapshot compatibility.
     pub(crate) fn restore_snapshot(
         &mut self,
         snapshot: &Snapshot,
     ) -> Result<(
-        Option<SnapshotSharedMemory<GuestSharedMemory>>,
+        SnapshotMemoryBacking<GuestSharedMemory>,
         Option<GuestSharedMemory>,
     )> {
         let virtq = snapshot.virtq();
@@ -713,21 +1037,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // A panic during restricted dispatch can skip the mode reset.
         self.execution_mode = ExecutionMode::Unrestricted;
 
-        let gsnapshot = if *snapshot.memory() == self.shared_mem {
-            // If the snapshot memory is already the correct memory,
-            // which is readonly, don't bother with restoring it,
-            // since its contents must be the same.  Note that in the
-            // #[cfg(unshared_snapshot_mem)] case, this condition will
-            // never be true, since even immediately after a restore,
-            // self.shared_mem is a (writable) copy, not the original
-            // shared_mem.
-            None
-        } else {
-            let new_snapshot_mem = snapshot.memory().to_mgr_snapshot_mem()?;
-            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
-            self.shared_mem = hsnapshot;
-            Some(gsnapshot)
-        };
+        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             // zero_or_replace picks the fastest zeroing strategy for
@@ -744,15 +1054,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.scratch_mem = hscratch;
             Some(gscratch)
         };
-        self.layout = *snapshot.layout();
-        // Inherit the snapshot's own generation number — the
-        // guest-visible counter reflects "which snapshot is the
-        // sandbox currently a clone of", not "how many restores have
-        // happened into this (possibly-reused) partition".
-        self.snapshot_count = snapshot.snapshot_generation();
-        // Carry the guest ELF entry point across restore so crashdumps
-        // report the restored image's entry.
-        self.original_entrypoint = snapshot.original_entrypoint();
+        self.apply_snapshot_metadata(snapshot);
         self.update_scratch_bookkeeping()?;
         if let Some(virtq) = virtq {
             self.restore_virtq(virtq)?;
@@ -773,6 +1075,24 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.scratch_mem
             .write::<u64>(base_offset, value)
             .map_err(From::from)
+    }
+
+    fn guest_requests(&self) -> Result<[u64; 2]> {
+        let scratch_size = self.scratch_mem.mem_size();
+        let mut values = [0; 2];
+        for (value, offset) in values.iter_mut().zip(GUEST_REQUEST_OFFSETS) {
+            *value = self
+                .scratch_mem
+                .read::<u64>(scratch_size - offset as usize)?;
+        }
+        Ok(values)
+    }
+
+    fn set_guest_requests(&mut self, values: [u64; 2]) -> Result<()> {
+        for (value, offset) in values.into_iter().zip(GUEST_REQUEST_OFFSETS) {
+            self.update_scratch_bookkeeping_item(offset, value)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn request_libc_rng_reseed(&mut self, seed: u32) -> Result<()> {
@@ -799,9 +1119,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
         use hyperlight_common::layout::*;
         let scratch_size = self.scratch_mem.mem_size();
         self.update_scratch_bookkeeping_item(SCRATCH_TOP_SIZE_OFFSET, scratch_size as u64)?;
+        self.update_snapshot_scratch_bookkeeping()?;
+
+        Ok(())
+    }
+
+    fn update_snapshot_scratch_bookkeeping(&mut self) -> Result<()> {
+        use hyperlight_common::layout::*;
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_ALLOCATOR_OFFSET,
-            self.layout.get_first_free_scratch_gpa(),
+            self.first_free_scratch_gpa(),
         )?;
         // Record the GPA of the snapshot's copy of the page tables.
         // The copy lives at the tail of the snapshot blob; we copy it
@@ -857,23 +1184,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // `Snapshot::new`). Keeping them outside the KVM slot avoids
         // overlapping with `map_file_cow` regions installed
         // immediately after the snapshot in the guest PA space.
-        let snapshot_pt_end = self.shared_mem.mem_size();
-        let snapshot_pt_size = self.layout.get_pt_size();
-        let snapshot_pt_start =
-            snapshot_pt_end - snapshot_pt_size.next_multiple_of(page_size::get());
-        self.scratch_mem.with_exclusivity(|scratch| {
-            #[cfg(not(unshared_snapshot_mem))]
-            let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];
-            #[cfg(unshared_snapshot_mem)]
-            let bytes = {
-                let mut bytes = vec![0u8; snapshot_pt_size];
-                self.shared_mem
-                    .copy_to_slice(&mut bytes, snapshot_pt_start)?;
-                bytes
-            };
-            #[allow(clippy::needless_borrow)]
-            scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
-        })??;
+        let page_tables = self.shared_mem.page_table_bytes();
+        let offset = self.layout.get_pt_base_scratch_offset();
+        self.scratch_mem
+            .with_exclusivity(|scratch| scratch.copy_from_slice(page_tables, offset))??;
 
         Ok(())
     }
@@ -888,55 +1202,61 @@ impl SandboxMemoryManager<HostSharedMemory> {
         root_pt: u64,
         mmap_regions: &[MemoryRegion],
     ) -> Result<Vec<CrashDumpRegion>> {
-        use crate::sandbox::snapshot::SharedMemoryPageTableBuffer;
+        use crate::sandbox::snapshot::PageTableReader;
 
         let len = hyperlight_common::layout::SCRATCH_TOP_GVA;
+        self.with_guest_memory(mmap_regions, |memory| {
+            let pt_buf = PageTableReader::new(memory, root_pt);
+            let mut regions: Vec<CrashDumpRegion> = Vec::new();
+            let mut saw_mapping = false;
+            // SAFETY: Crash handling runs with the vCPU stopped, so its page tables
+            // cannot change during the walk.
+            for mapping in unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
+            {
+                saw_mapping = true;
+                let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
+                let mut mapped = 0usize;
+                let mapping_len = usize::try_from(mapping.len)?;
+                while mapped < mapping_len {
+                    let chunk_len = (mapping_len - mapped).min(hyperlight_common::vmem::PAGE_SIZE);
+                    let gpa = mapping
+                        .phys_base
+                        .checked_add(u64::try_from(mapped)?)
+                        .ok_or_else(|| new_error!("crash-dump GPA overflows"))?;
+                    let Some(host_region) = memory.host_range(gpa, chunk_len).ok() else {
+                        mapped += chunk_len;
+                        continue;
+                    };
+                    let virt_base = usize::try_from(mapping.virt_base)?
+                        .checked_add(mapped)
+                        .ok_or_else(|| new_error!("crash-dump GVA overflows"))?;
+                    let virt_end = virt_base
+                        .checked_add(chunk_len)
+                        .ok_or_else(|| new_error!("crash-dump GVA range overflows"))?;
 
-        let regions = self.shared_mem.with_contents(|snapshot| {
-            self.scratch_mem.with_contents(|scratch| {
-                let pt_buf =
-                    SharedMemoryPageTableBuffer::new(snapshot, scratch, self.layout, root_pt);
-
-                let mappings: Vec<_> =
-                    unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
-                        .collect();
-
-                if mappings.is_empty() {
-                    return Err(new_error!("No page table mappings found (len {len})",));
-                }
-
-                let mut regions: Vec<CrashDumpRegion> = Vec::new();
-                for mapping in &mappings {
-                    let virt_base = mapping.virt_base as usize;
-                    let virt_end = (mapping.virt_base + mapping.len) as usize;
-
-                    if let Some(resolved) = self.layout.resolve_gpa(mapping.phys_base, mmap_regions)
-                    {
-                        let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
-                        let resolved = resolved.with_memories(snapshot, scratch);
-                        let contents = resolved.as_ref();
-                        let host_base = contents.as_ptr() as usize;
-                        let host_len = (mapping.len as usize).min(contents.len());
-
-                        if try_coalesce_region(&mut regions, virt_base, virt_end, host_base, flags)
-                        {
-                            continue;
-                        }
-
+                    if !try_coalesce_region(
+                        &mut regions,
+                        virt_base,
+                        virt_end,
+                        host_region.start,
+                        flags,
+                    ) {
                         regions.push(CrashDumpRegion {
                             guest_region: virt_base..virt_end,
-                            host_region: host_base..host_base + host_len,
+                            host_region,
                             flags,
                             region_type,
                         });
                     }
+                    mapped += chunk_len;
                 }
+            }
+            if !saw_mapping {
+                return Err(new_error!("No page table mappings found (len {len})",));
+            }
 
-                Ok(regions)
-            })
-        })???;
-
-        Ok(regions)
+            Ok(regions)
+        })
     }
 
     /// Read guest memory at a Guest Virtual Address (GVA) by walking the
@@ -953,109 +1273,30 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// * `root_pt` - The root page table physical address (CR3)
     #[cfg(feature = "trace_guest")]
     pub(crate) fn read_guest_memory_by_gva(
-        &mut self,
+        &self,
         gva: u64,
         len: usize,
         root_pt: u64,
     ) -> Result<Vec<u8>> {
-        use hyperlight_common::vmem::PAGE_SIZE;
-
-        use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
-
-        self.shared_mem.with_contents(|snap| {
-            self.scratch_mem.with_contents(|scratch| {
-                let pt_buf = SharedMemoryPageTableBuffer::new(snap, scratch, self.layout, root_pt);
-
-                // Walk page tables to get all mappings that cover the GVA range
-                let mappings: Vec<_> = unsafe {
-                    hyperlight_common::vmem::virt_to_phys(&pt_buf, gva, len as u64)
-                }
-                .collect();
-
-                if mappings.is_empty() {
-                    return Err(new_error!(
-                        "No page table mappings found for GVA {:#x} (len {})",
-                        gva,
-                        len,
-                    ));
-                }
-
-                // Resulting vector of bytes to return
-                let mut result = Vec::with_capacity(len);
-                let mut current_gva = gva;
-
-                for mapping in &mappings {
-                    // The page table walker should only return valid mappings
-                    // that cover our current read position.
-                    if mapping.virt_base > current_gva {
-                        return Err(new_error!(
-                            "Page table walker returned mapping with virt_base {:#x} > current read position {:#x}",
-                            mapping.virt_base,
-                            current_gva,
-                        ));
-                    }
-
-                    // Calculate the offset within this page where to start copying
-                    let page_offset = (current_gva - mapping.virt_base) as usize;
-
-                    let bytes_remaining = len - result.len();
-                    let available_in_page = PAGE_SIZE - page_offset;
-                    let bytes_to_copy = bytes_remaining.min(available_in_page);
-
-                    // Translate the GPA to host memory
-                    let gpa = mapping.phys_base + page_offset as u64;
-                    let (mem, offset) = access_gpa(snap, scratch, self.layout, gpa)
-                        .ok_or_else(|| {
-                            new_error!(
-                                "Failed to resolve GPA {:#x} to host memory (GVA {:#x})",
-                                gpa,
-                                gva
-                            )
-                        })?;
-
-                    let slice = mem
-                        .get(offset..offset + bytes_to_copy)
-                        .ok_or_else(|| {
-                            new_error!(
-                                "GPA {:#x} resolved to out-of-bounds host offset {} (need {} bytes)",
-                                gpa,
-                                offset,
-                                bytes_to_copy
-                            )
-                        })?;
-
-                    result.extend_from_slice(slice);
-                    current_gva += bytes_to_copy as u64;
-                }
-
-                if result.len() != len {
-                    tracing::error!(
-                        "Page table walker returned mappings that don't cover the full requested length: got {}, expected {}",
-                        result.len(),
-                        len,
-                    );
-                    return Err(new_error!(
-                        "Could not read full GVA range: got {} of {} bytes {:?}",
-                        result.len(),
-                        len,
-                        mappings
-                    ));
-                }
-
-                Ok(result)
-            })
-        })??
+        let mut result = vec![0; len];
+        self.with_guest_virtual_memory_reader(root_pt, |reader| {
+            reader.read_exact(gva, &mut result)
+        })?;
+        Ok(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_common::transport::{
         MsgHeader, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
     };
     use hyperlight_common::virtq::DescFlags;
+    use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     #[cfg(target_arch = "x86_64")]
@@ -1064,26 +1305,32 @@ mod tests {
     use super::*;
     #[cfg(target_arch = "x86_64")]
     use crate::GuestBinary;
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::memory_region::MemoryRegionType;
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
     use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, SCRATCH_SIZE, TestCase, memory_layout};
-    #[cfg(target_arch = "x86_64")]
     use crate::sandbox::SandboxConfiguration;
+    #[cfg(target_arch = "x86_64")]
+    use crate::sandbox::snapshot::Snapshot;
+    use crate::sandbox::snapshot::memory::tests::flat_memory;
+    use crate::sandbox::snapshot::{SnapshotBlob, SnapshotMemory};
 
     fn manager(case: &TestCase) -> SandboxMemoryManager<HostSharedMemory> {
         let host_page_size = page_size::get();
-
-        #[cfg(not(unshared_snapshot_mem))]
-        let shared_mem =
-            ReadonlySharedMemory::from_bytes(&vec![0; host_page_size], host_page_size).unwrap();
-
-        #[cfg(unshared_snapshot_mem)]
-        let shared_mem = ExclusiveSharedMemory::new(host_page_size)
-            .unwrap()
-            .build()
-            .0;
+        let layout = memory_layout();
+        let snapshot = Arc::new(flat_memory(
+            &vec![0; host_page_size],
+            &[0; PAGE_SIZE],
+            SandboxMemoryLayout::BASE_ADDRESS as u64,
+            hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size()),
+        ));
 
         let mut mgr = SandboxMemoryManager::new(
-            memory_layout(),
-            shared_mem,
+            layout,
+            SnapshotMemoryBacking::from_snapshot(snapshot)
+                .unwrap()
+                .build()
+                .0,
             case.scratch.clone(),
             NextAction::None,
         );
@@ -1391,5 +1638,271 @@ mod tests {
 
         assert!(mgr.g2h_consumer.is_some());
         assert!(mgr.h2g_consumer.is_some());
+    }
+
+    #[test]
+    fn snapshot_memory_backing_reads_across_layers() {
+        let host_page_size = page_size::get();
+        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let scratch = base + (4 * host_page_size) as u64;
+        let layer = |gpa_start: u64, value: u8| {
+            let data_len = host_page_size;
+            let mut storage = ExclusiveSharedMemory::new(data_len).unwrap();
+            storage
+                .copy_from_slice(&vec![value; host_page_size], 0)
+                .unwrap();
+            let storage = storage.freeze(data_len).unwrap();
+            Arc::new(SnapshotBlob::new(storage, gpa_start, 0, scratch).unwrap())
+        };
+        let first = layer(base, 0x11);
+        let second = layer(base + host_page_size as u64, 0x22);
+        let memory = Arc::new(
+            SnapshotMemory::new(
+                Box::new([first, second]),
+                crate::sandbox::snapshot::memory::tests::stub_page_tables(),
+            )
+            .unwrap(),
+        );
+        let (snapshot, _) = SnapshotMemoryBacking::from_snapshot(memory)
+            .unwrap()
+            .build();
+        let mut bytes = [0; 2];
+
+        snapshot
+            .read_snapshot_gpa(base + host_page_size as u64 - 1, &mut bytes)
+            .unwrap();
+
+        assert_eq!(bytes, [0x11, 0x22]);
+        assert!(
+            snapshot
+                .read_snapshot_gpa(base + 2 * host_page_size as u64 - 1, &mut bytes)
+                .is_err()
+        );
+    }
+
+    fn virtual_reader_manager() -> (SandboxMemoryManager<HostSharedMemory>, u64, u64) {
+        let cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, 0, None).unwrap();
+        let host_page_size = page_size::get();
+        let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let second_gpa = base + host_page_size as u64;
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+        let scratch_gpa = scratch_base + layout.get_scratch_size() as u64 - 0x10000;
+        let pt_base = layout.get_pt_base_gpa();
+        let pt_buf = GuestPageTableBuffer::new(pt_base as usize);
+        let kind = MappingKind::Basic(BasicMapping {
+            readable: true,
+            writable: false,
+            executable: false,
+        });
+        // SAFETY: The local page-table buffer has no concurrent writers.
+        unsafe {
+            vmem::map(
+                &pt_buf,
+                Mapping {
+                    phys_base: base,
+                    virt_base: base,
+                    len: PAGE_SIZE as u64,
+                    kind,
+                },
+            );
+            vmem::map(
+                &pt_buf,
+                Mapping {
+                    phys_base: second_gpa,
+                    virt_base: base + PAGE_SIZE as u64,
+                    len: PAGE_SIZE as u64,
+                    kind,
+                },
+            );
+            vmem::map(
+                &pt_buf,
+                Mapping {
+                    phys_base: scratch_gpa,
+                    virt_base: base + 2 * PAGE_SIZE as u64,
+                    len: PAGE_SIZE as u64,
+                    kind,
+                },
+            );
+        }
+        let page_tables = pt_buf.into_bytes();
+        layout.ensure_page_tables_fit(page_tables.len()).unwrap();
+
+        let first_storage =
+            ReadonlySharedMemory::from_bytes(&vec![0x11; host_page_size], host_page_size).unwrap();
+        let first = Arc::new(SnapshotBlob::new(first_storage, base, 0, scratch_base).unwrap());
+
+        let second_storage =
+            ReadonlySharedMemory::from_bytes(&vec![0x22; host_page_size], host_page_size).unwrap();
+        let second =
+            Arc::new(SnapshotBlob::new(second_storage, second_gpa, 0, scratch_base).unwrap());
+        let memory = Arc::new(
+            SnapshotMemory::new(
+                Box::new([first, second]),
+                crate::sandbox::snapshot::memory::tests::page_tables_from_bytes(&page_tables),
+            )
+            .unwrap(),
+        );
+        let manager = SandboxMemoryManager::new(
+            layout,
+            SnapshotMemoryBacking::from_snapshot(memory).unwrap(),
+            ExclusiveSharedMemory::new(layout.get_scratch_size()).unwrap(),
+            NextAction::None,
+        );
+        let (manager, _) = manager.build().unwrap();
+        manager
+            .scratch_mem
+            .copy_from_slice(
+                &vec![0x33; PAGE_SIZE],
+                (scratch_gpa - scratch_base) as usize,
+            )
+            .unwrap();
+        (manager, pt_base, base)
+    }
+
+    #[test]
+    fn virtual_reader_reads_across_snapshot_layers() {
+        let (manager, pt_base, base) = virtual_reader_manager();
+        let mut bytes = [0u8; 2];
+
+        manager
+            .with_guest_virtual_memory_reader(pt_base, |reader| {
+                reader.read_exact(base + PAGE_SIZE as u64 - 1, &mut bytes)
+            })
+            .unwrap();
+
+        assert_eq!(bytes, [0x11, 0x22]);
+    }
+
+    #[test]
+    fn virtual_reader_reads_snapshot_and_cow_scratch_across_pages() {
+        let (manager, root, base) = virtual_reader_manager();
+        let mut bytes = [0; 2];
+        manager
+            .with_guest_virtual_memory_reader(root, |reader| {
+                reader.read_exact(base + 2 * PAGE_SIZE as u64 - 1, &mut bytes)
+            })
+            .unwrap();
+        assert_eq!(bytes, [0x22, 0x33]);
+    }
+
+    #[test]
+    fn virtual_reader_rejects_unmapped_and_overflowing_ranges() {
+        let (manager, root, base) = virtual_reader_manager();
+        manager
+            .with_guest_virtual_memory_reader(root, |reader| {
+                assert!(
+                    reader
+                        .read_exact(base + 3 * PAGE_SIZE as u64, &mut [0])
+                        .is_err()
+                );
+                assert!(reader.read_exact(u64::MAX, &mut [0; 2]).is_err());
+                assert!(reader.read_exact(u64::MAX, &mut []).is_ok());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn virtual_reader_reports_invalid_page_tables() {
+        let (manager, _, base) = virtual_reader_manager();
+        let error = manager
+            .with_guest_virtual_memory_reader(u64::MAX, |reader| reader.read_exact(base, &mut [0]))
+            .unwrap_err();
+        assert!(error.to_string().contains("unbacked"));
+    }
+
+    #[test]
+    fn guest_physical_memory_view_resolves_scratch_and_dynamic_edges() {
+        let host_page_size = page_size::get();
+        let layout =
+            SandboxMemoryLayout::new(SandboxConfiguration::default(), PAGE_SIZE, 0, None).unwrap();
+        let scratch_start = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+        let snapshot = Arc::new(flat_memory(
+            &[0u8; PAGE_SIZE],
+            &[0; PAGE_SIZE],
+            SandboxMemoryLayout::BASE_ADDRESS as u64,
+            scratch_start,
+        ));
+        let (snapshot, _) = SnapshotMemoryBacking::from_snapshot(snapshot)
+            .unwrap()
+            .build();
+
+        let mut scratch = ExclusiveSharedMemory::new(layout.get_scratch_size()).unwrap();
+        scratch.copy_from_slice(&[0x11], 0).unwrap();
+        scratch
+            .copy_from_slice(&[0x22], layout.get_scratch_size() - 1)
+            .unwrap();
+        let (scratch, _) = scratch.build();
+
+        let dynamic_gpa = SandboxMemoryLayout::BASE_ADDRESS as u64 + host_page_size as u64;
+        let mut dynamic = ExclusiveSharedMemory::new(host_page_size).unwrap();
+        dynamic.copy_from_slice(&[0x33], 0).unwrap();
+        dynamic
+            .copy_from_slice(&[0x44], host_page_size - 1)
+            .unwrap();
+        let (dynamic, dynamic_guest) = dynamic.build();
+        let dynamic_region = dynamic_guest.mapping_at(dynamic_gpa, MemoryRegionType::Scratch);
+        let dynamic_regions = [dynamic_region];
+        GuestPhysicalMemoryView::with_memory(
+            &snapshot,
+            &scratch,
+            &dynamic_regions,
+            layout,
+            |view| {
+                let mut byte = [0u8; 1];
+
+                assert_eq!(
+                    view.read(scratch_start, &mut byte).unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Scratch,
+                        offset: 0,
+                    }
+                );
+                assert_eq!(byte, [0x11]);
+                assert_eq!(
+                    view.read(
+                        scratch_start + layout.get_scratch_size() as u64 - 1,
+                        &mut byte,
+                    )
+                    .unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Scratch,
+                        offset: layout.get_scratch_size() - 1,
+                    }
+                );
+                assert_eq!(byte, [0x22]);
+                assert_eq!(
+                    view.read(dynamic_gpa, &mut byte).unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Dynamic(0),
+                        offset: 0,
+                    }
+                );
+                assert_eq!(byte, [0x33]);
+                assert_eq!(
+                    view.read(dynamic_gpa + host_page_size as u64 - 1, &mut byte)
+                        .unwrap(),
+                    GuestBacking {
+                        source: BackingSource::Dynamic(0),
+                        offset: host_page_size - 1,
+                    }
+                );
+                assert_eq!(byte, [0x44]);
+                assert!(
+                    view.resolve(dynamic_gpa + host_page_size as u64 - 1, 2)
+                        .is_none()
+                );
+                assert!(
+                    view.resolve(scratch_start + layout.get_scratch_size() as u64 - 1, 2,)
+                        .is_none()
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        drop(dynamic);
+        drop(dynamic_guest);
     }
 }

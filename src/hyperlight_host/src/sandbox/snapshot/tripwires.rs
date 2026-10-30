@@ -16,9 +16,9 @@ use super::file::{
     SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 7;
-const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v3+json";
-const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v1";
+const EXPECTED_ABI_VERSION: u32 = 8;
+const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v4+json";
+const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v2";
 const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
 

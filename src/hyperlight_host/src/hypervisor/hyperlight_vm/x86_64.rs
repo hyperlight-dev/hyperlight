@@ -41,7 +41,7 @@ use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::snapshot::NextAction;
+use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 
@@ -55,7 +55,7 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
+        snapshot_mem: SnapshotMemoryBacking<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         _root_pt_addr: u64,
         next_action: NextAction,
@@ -102,8 +102,7 @@ impl HyperlightVm {
         })
         .map_err(VmError::Register)?;
 
-        let snapshot_slot = 0u32;
-        let scratch_slot = 1u32;
+        let scratch_slot = 0u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
@@ -115,7 +114,7 @@ impl HyperlightVm {
             next_slot: scratch_slot + 1,
             freed_slots: Vec::new(),
 
-            snapshot_slot,
+            snapshot_mappings: Vec::new(),
             snapshot_memory: None,
             scratch_slot,
             scratch_memory: None,
@@ -868,7 +867,7 @@ mod tests {
     use crate::mem::memory_region::MemoryRegionFlags;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
     use crate::mem::ptr::RawPtr;
-    use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
+    use crate::mem::shared_mem::ExclusiveSharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::host_funcs::FunctionRegistry;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
@@ -1415,7 +1414,7 @@ mod tests {
 
     fn create_test_layout(code_size: usize) -> (SandboxMemoryLayout, Box<[u8]>) {
         let config = SandboxConfiguration::default();
-        let mut layout = SandboxMemoryLayout::new(config, code_size, 4096, None).unwrap();
+        let layout = SandboxMemoryLayout::new(config, code_size, 4096, None).unwrap();
 
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
@@ -1453,7 +1452,7 @@ mod tests {
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 
         let pt_bytes = pt_buf.into_bytes();
-        layout.set_pt_size(pt_bytes.len()).unwrap();
+        layout.ensure_page_tables_fit(pt_bytes.len()).unwrap();
         (layout, pt_bytes)
     }
 
@@ -1466,18 +1465,20 @@ mod tests {
 
         let mem_size = layout.get_memory_size().unwrap();
         let mut snapshot_contents = vec![0u8; mem_size];
-        let snapshot_pt_start = mem_size - layout.get_pt_size();
-        snapshot_contents[snapshot_pt_start..].copy_from_slice(&pt_bytes);
         snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
         layout.write_peb(&mut snapshot_contents).unwrap();
-        let ro_mem =
-            ReadonlySharedMemory::from_bytes(&snapshot_contents, snapshot_pt_start).unwrap();
+        let snapshot_memory = crate::sandbox::snapshot::memory::tests::flat_memory(
+            &snapshot_contents,
+            &pt_bytes,
+            SandboxMemoryLayout::BASE_ADDRESS as u64,
+            hyperlight_common::layout::scratch_base_gpa(config.get_scratch_size()),
+        );
 
         let scratch_mem = ExclusiveSharedMemory::new(config.get_scratch_size()).unwrap();
         let mem_mgr = SandboxMemoryManager::new(
             layout,
-            ro_mem.to_mgr_snapshot_mem().unwrap(),
+            SnapshotMemoryBacking::from_snapshot(Arc::new(snapshot_memory)).unwrap(),
             scratch_mem,
             NextAction::Initialise(layout.get_guest_code_gva() as u64),
         );
@@ -2128,11 +2129,11 @@ mod tests {
 
             const CODE_SIZE_BOUND: usize = 512;
 
-            let (layout, _) = create_test_layout(CODE_SIZE_BOUND);
+            let (layout, pt_bytes) = create_test_layout(CODE_SIZE_BOUND);
             let scratch_size = layout.get_scratch_size();
             let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size);
             let scratch_base_gva = hyperlight_common::layout::scratch_base_gva(scratch_size);
-            let fxsave_gpa = layout.get_first_free_scratch_gpa();
+            let fxsave_gpa = layout.get_pt_base_gpa() + pt_bytes.len() as u64;
             let fxsave_offset = usize::try_from(fxsave_gpa - scratch_base_gpa).unwrap();
             let fxsave_gva = scratch_base_gva + fxsave_offset as u64;
             let flag_gva = fxsave_gva + 512;
@@ -2195,7 +2196,7 @@ mod tests {
 
             // Reuse common test setup - initialise() will run the code
             let ctx = create_test_vm_context(&code);
-            assert_eq!(ctx.hshm.layout.get_first_free_scratch_gpa(), fxsave_gpa);
+            assert_eq!(ctx.hshm.first_free_scratch_gpa(), fxsave_gpa);
 
             FxsaveTestContext { ctx, fxsave_offset }
         }
