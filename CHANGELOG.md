@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * A new sandbox writes only the guest code, PEB and init data into its memory.
   The host populates other pages on first guest touch, which speeds up sandbox
   creation.
+* Use `talc` as the guest heap allocator. Guest init writes only the start and
+  end of the heap, which speeds up sandbox creation.
 
 * **Breaking:** The transport arena sits one unmapped guard page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that guard page. Snapshot ABI 7: existing snapshots must be regenerated.
 
