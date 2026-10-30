@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+#[cfg(gdb)]
+use super::SoftwareBreakpoints;
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
     InitializeError,
@@ -17,9 +19,11 @@ use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(gdb)]
-use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
+use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(not(gdb))]
+use crate::hypervisor::virtual_machine::VirtualMachine;
 #[cfg(hvf)]
 use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
@@ -27,8 +31,7 @@ use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::virtual_machine::whp::WhpVm;
 use crate::hypervisor::virtual_machine::{
-    HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
-    get_available_hypervisor,
+    HypervisorType, RegisterError, ResetVcpuError, VmError, get_available_hypervisor,
 };
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
@@ -39,6 +42,28 @@ use crate::sandbox::snapshot::NextAction;
 use crate::sandbox::trace::MemTraceInfo;
 
 impl HyperlightVm {
+    #[cfg(gdb)]
+    pub(crate) fn initialize_debug_vectors(
+        &mut self,
+        vectors: Option<u64>,
+    ) -> Result<(), CreateHyperlightVmError> {
+        if self.gdb_conn.is_none() || !matches!(self.next_action, NextAction::Initialise(_)) {
+            return Ok(());
+        }
+        let vectors = vectors.ok_or_else(|| {
+            VmError::Debug(crate::hypervisor::gdb::DebugError::Unsupported(
+                "guest binary lacks ARM64 debug vectors",
+            ))
+        })?;
+        let mut regs = self.vm.sregs().map_err(VmError::Register)?;
+        regs.vbar_el1 = vectors;
+        regs.sp_el1 = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
+            - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
+            + 1;
+        self.vm.set_sregs(&regs).map_err(VmError::Register)?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
@@ -49,10 +74,12 @@ impl HyperlightVm {
         rsp_gva: u64,
         page_size: usize,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
-        #[cfg(gdb)] _gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        // TODO: support gdb on aarch64
+        #[cfg(gdb)]
+        type VmType = Box<dyn DebuggableVm>;
+        #[cfg(not(gdb))]
         type VmType = Box<dyn VirtualMachine>;
         #[cfg(hvf)]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
@@ -102,9 +129,26 @@ impl HyperlightVm {
 
             vm_can_reset_vcpu,
             pending_tlb_flush: false,
+
+            #[cfg(gdb)]
+            gdb_conn,
+            #[cfg(gdb)]
+            sw_breakpoints: SoftwareBreakpoints::default(),
+            #[cfg(gdb)]
+            pending_software_step: None,
+            #[cfg(gdb)]
+            initial_debug_stop_pending: false,
         };
         ret.update_snapshot_mapping(snapshot_mem)?;
         ret.update_scratch_mapping(scratch_mem)?;
+
+        #[cfg(gdb)]
+        if ret.gdb_conn.is_some() {
+            ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
+            ret.vm.set_debug(true).map_err(VmError::Debug)?;
+            ret.initial_debug_stop_pending = true;
+        }
+
         Ok(ret)
     }
 
@@ -133,6 +177,10 @@ impl HyperlightVm {
             pstate: 0b11 << 6 | 0b100,
         };
         self.vm.set_regs(&regs)?;
+
+        #[cfg(gdb)]
+        self.handle_initial_debug_stop(mem_mgr)
+            .map_err(super::RunVmError::DebugHandler)?;
 
         self.run(mem_mgr, host_funcs)
             .map_err(InitializeError::Run)?;
@@ -171,6 +219,9 @@ impl HyperlightVm {
         self.vm
             .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
+        #[cfg(gdb)]
+        self.handle_initial_debug_stop(mem_mgr)
+            .map_err(super::RunVmError::DebugHandler)?;
         let result = self
             .run(mem_mgr, host_funcs)
             .map_err(DispatchGuestCallError::Run);

@@ -3,6 +3,9 @@
 
 use crate::vmem::bits;
 
+/// HVC immediate for forwarding guest exceptions to the WHP debugger.
+pub const DEBUG_EXCEPTION_HVC: u16 = 0x485a;
+
 const ESR_EC_UNKNOWN: u64 = 0b000000; // udf generates this
 const ESR_EC_DATA_ABORT_LOWER_EL: u64 = 0b100100;
 const ESR_EC_DATA_ABORT_SAME_EL: u64 = 0b100101;
