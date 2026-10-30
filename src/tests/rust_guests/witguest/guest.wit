@@ -3,9 +3,14 @@ package test:wit;
 world test {
   import roundtrip;
   import host-resource;
+  import now: func() -> u64;
   export roundtrip;
   export test-host-resource;
   export failable;
+  export run: func(input: string) -> result<string, string>;
+  export extra: interface {
+    ping: func(x: u8) -> u8;
+  }
 }
 
 interface roundtrip {
@@ -62,13 +67,40 @@ interface roundtrip {
   }
   roundtrip-flags-large: func(x: largeflags) -> largeflags;
   variant testvariant {
-    variant-a, variant-b(string), variant-c(char),
+    variant-a, variant-b(string), variant-c(char), variant-d(testrecord),
   }
   roundtrip-variant: func(x: testvariant) -> testvariant;
   enum testenum {
     enum-a, enum-b, enum-c
   }
   roundtrip-enum: func(x: testenum) -> testenum;
+
+  flags mediumflags {
+    m0, m1, m2, m3, m4, m5, m6, m7, m8, m9,
+  }
+  roundtrip-flags-medium: func(x: mediumflags) -> mediumflags;
+  roundtrip-nested-option: func(x: option<option<string>>) -> option<option<string>>;
+  roundtrip-nested-list: func(x: list<list<string>>) -> list<list<string>>;
+  roundtrip-record-list: func(x: list<testrecord>) -> list<testrecord>;
+  roundtrip-result-unit: func(x: result<_, string>) -> result<_, string>;
+  roundtrip-result-empty: func(x: result) -> result;
+  roundtrip-two-args: func(first: u32, second: string) -> tuple<u32, string>;
+  roundtrip-no-args: func() -> u32;
+
+  /// Composite field types, which are encoded by the record's codec.
+  record testcomposite {
+    nested: option<option<u32>>,
+    records: list<testrecord>,
+    fixed: list<u8, 3>,
+    res: result<testrecord, string>,
+    tup: tuple<string, u8, testrecord>,
+    choice: testvariant,
+    kind: testenum,
+    mask: mediumflags,
+    c: char,
+    b: bool,
+  }
+  roundtrip-composite: func(x: testcomposite) -> testcomposite;
 }
 
 interface host-resource {
