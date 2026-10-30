@@ -60,6 +60,8 @@ guest are not supported.
 
 ## Tests
 
-The Rust host bindings are tested against
+The Rust and C# host bindings are both tested against
 [`witguest`](../src/tests/rust_guests/witguest), which implements
 [`guest.wit`](../src/tests/rust_guests/witguest/guest.wit).
+[`edge.wit`](../src/tests/csharp_host/edge.wit) covers C# naming cases. After
+`just guests`, `just test-csharp-bindings` runs the C# tests.
