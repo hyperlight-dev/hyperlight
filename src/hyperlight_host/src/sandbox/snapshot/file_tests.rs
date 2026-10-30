@@ -282,16 +282,16 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(
         manifest["config"]["mediaType"],
-        "application/vnd.hyperlight.snapshot.config.v4+json"
+        "application/vnd.hyperlight.snapshot.config.v5+json"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"],
-        "application/vnd.hyperlight.snapshot.config.v4+json"
+        "application/vnd.hyperlight.snapshot.config.v5+json"
     );
-    assert_eq!(config["abi_version"], 8);
+    assert_eq!(config["abi_version"], 9);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {
@@ -2388,6 +2388,7 @@ fn legacy_config_versions_rejected() {
         "application/vnd.hyperlight.snapshot.config.v1+json",
         "application/vnd.hyperlight.snapshot.config.v2+json",
         "application/vnd.hyperlight.snapshot.config.v3+json",
+        "application/vnd.hyperlight.snapshot.config.v4+json",
     ] {
         let (_dir, path) = save_for_mutation();
         rewrite_manifest(&path, |m| {
@@ -2397,7 +2398,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 8");
+        assert_err_contains(err, "incompatible with snapshot ABI 9");
     }
 }
 
@@ -3186,13 +3187,13 @@ fn layout_field_too_large_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
         // 64 GiB exceeds MAX_MEMORY_SIZE for an individual region.
-        cfg["layout"]["heap_size"] = Value::from(64u64 * 1024 * 1024 * 1024);
+        cfg["layout"]["code_size"] = Value::from(64u64 * 1024 * 1024 * 1024);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "heap_size");
+    assert_err_contains(err, "code_size");
 }
 
 #[test]
@@ -3368,7 +3369,6 @@ fn persisted_non_default_layout_loads_and_runs() {
     let mut config = SandboxConfiguration::default();
     config.set_g2h_pool_pages(16);
     config.set_h2g_pool_pages(16);
-    config.set_heap_size(0x40_000);
     config.set_scratch_size(0x90_000);
     let mut source = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_pathbuf()),
@@ -3388,7 +3388,6 @@ fn persisted_non_default_layout_loads_and_runs() {
     let loaded = Arc::new(Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap());
     assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
     assert_eq!(loaded.layout().get_h2g_pool_pages(), 16);
-    assert_eq!(loaded.layout().heap_size(), 0x40_000);
     assert_eq!(loaded.layout().get_scratch_size(), 0x90_000);
 
     let mut restored = Sandbox::from_snapshot(loaded, HostFunctions::default(), None).unwrap();
@@ -3408,7 +3407,6 @@ fn persisted_non_default_layout_loads_and_runs() {
 fn round_trip_preserves_transport_layout() {
     let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
         .scratch_size(512 * 1024)
-        .heap_size(512 * 1024)
         .g2h_queue_size(128)
         .h2g_queue_size(16)
         .g2h_buffer_size(8192)
@@ -3832,7 +3830,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
     let original = snapshot.layout();
 
     let mut sbox2 = SandboxBuilder::from_snapshot(snapshot.clone())
-        .heap_size((original.heap_size() as u64) * 2)
         .scratch_size(original.get_scratch_size() * 2)
         .g2h_queue_size(128)
         .h2g_queue_size(16)
@@ -3847,7 +3844,6 @@ fn from_snapshot_silently_ignores_layout_overrides() {
 
     let new_snap = sbox2.snapshot().unwrap();
     let restored = new_snap.layout();
-    assert_eq!(restored.heap_size(), original.heap_size());
     assert_eq!(restored.get_scratch_size(), original.get_scratch_size());
     assert_eq!(restored.get_g2h_queue_size(), original.get_g2h_queue_size());
     assert_eq!(restored.get_h2g_queue_size(), original.get_h2g_queue_size());

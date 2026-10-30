@@ -17,6 +17,7 @@ use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::guest_handle::handle::GuestHandle;
+use hyperlight_guest::layout::{HEAP_GVA_END, HEAP_GVA_START};
 use talc::TalcLock;
 use talc::source::Manual;
 
@@ -264,18 +265,20 @@ pub(crate) extern "C" fn generic_init(
         #[allow(static_mut_refs)]
         let peb_ptr = GUEST_HANDLE.peb().unwrap();
 
-        let heap_start = (*peb_ptr).guest_heap.ptr as usize;
-        let heap_size = (*peb_ptr).guest_heap.size as usize;
         #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
         #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
         let heap_allocator = &HEAP_ALLOCATOR.0;
-        // SAFETY: the host reserves the PEB heap range for the guest heap, and
-        // init claims it once. Only this allocator writes to it.
+        // SAFETY: nothing else uses the heap range, and init claims it
+        // once. The fault handlers, installed before this point, map
+        // each page from scratch on first touch.
         heap_allocator
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
-            .claim(heap_start as *mut u8, heap_size)
+            .claim(
+                HEAP_GVA_START as *mut u8,
+                (HEAP_GVA_END - HEAP_GVA_START) as usize,
+            )
             .expect("Failed to claim guest heap");
         peb_ptr
     };
