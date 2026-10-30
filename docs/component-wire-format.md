@@ -1,8 +1,10 @@
 # Component wire format
 
 Bindings generated from WIT exchange values in this format. It is used by
-`host_bindgen!`, `guest_bindgen!` and the hyperlight-wasm guest runtime. The
-host and guest must be built from the same Hyperlight version.
+`host_bindgen!`, `guest_bindgen!`, the hyperlight-wasm guest runtime, and the
+C# generator in
+[`hyperlight-component-csharp`](../src/hyperlight_component_csharp). The host
+and guest must be built from the same Hyperlight version.
 
 ## Calls
 

@@ -63,6 +63,7 @@ When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/
 - `hyperlight-guest-bin`
 - `hyperlight-component-util`
 - `hyperlight-component-macro`
+- `hyperlight-component-csharp`
 - `hyperlight-host`
 - `hyperlight-guest-tracing`
 
