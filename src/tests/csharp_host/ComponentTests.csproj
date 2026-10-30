@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../../..'))</RepoRoot>
+    <!-- The Hyperlight build profile, debug or release, of the native library and guest. -->
+    <HyperlightProfile Condition="'$(HyperlightProfile)' == ''">debug</HyperlightProfile>
+    <CargoProfile>$(HyperlightProfile)</CargoProfile>
+    <CargoProfile Condition="'$(HyperlightProfile)' == 'debug'">dev</CargoProfile>
+    <NativeLibrary Condition="$([MSBuild]::IsOSPlatform('Windows'))">hyperlight_csharp_test_native.dll</NativeLibrary>
+    <NativeLibrary Condition="!$([MSBuild]::IsOSPlatform('Windows'))">libhyperlight_csharp_test_native.so</NativeLibrary>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="Sandbox.cs" />
+    <Compile Include="Fakes.cs" />
+    <Compile Include="WitTests.cs" />
+    <Compile Include="EdgeTests.cs" />
+    <Compile Include="RuntimeTests.cs" />
+    <Compile Include="../../hyperlight_component_csharp/src/Runtime.cs" Link="Runtime.cs" />
+    <WitFixture Include="../rust_guests/witguest/guest.wit" Namespace="Hyperlight.Tests.Wit" GeneratedFile="Wit.g.cs" />
+    <WitFixture Include="edge.wit" Namespace="Hyperlight.Tests.Edge" GeneratedFile="Edge.g.cs" />
+    <AssemblyMetadata Include="WitGuest" Value="$(RepoRoot)src/tests/rust_guests/bin/$(HyperlightProfile)/witguest" />
+  </ItemGroup>
+
+  <!-- Runs the generator under test on each fixture. -->
+  <Target Name="GenerateBindings" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedDir>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)generated/</GeneratedDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(GeneratedDir)" />
+    <Exec Command="cargo run --quiet -p hyperlight-component-csharp --example csharp_bindgen -- &quot;%(WitFixture.FullPath)&quot; %(WitFixture.Namespace) &quot;$(GeneratedDir)%(WitFixture.GeneratedFile)&quot;"
+          WorkingDirectory="$(RepoRoot)" />
+    <ItemGroup>
+      <Compile Include="$(GeneratedDir)%(WitFixture.GeneratedFile)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Builds the native library that runs the guest and copies it next to the tests. -->
+  <Target Name="BuildNative" BeforeTargets="Build">
+    <Exec Command="cargo build --quiet -p hyperlight-csharp-test-native --profile=$(CargoProfile)" WorkingDirectory="$(RepoRoot)" />
+    <Copy SourceFiles="$(RepoRoot)target/$(HyperlightProfile)/$(NativeLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

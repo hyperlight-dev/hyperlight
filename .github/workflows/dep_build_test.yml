@@ -200,6 +200,11 @@ jobs:
           RUST_LOG: debug
         run: just test-rust-tracing ${{ inputs.config }}
 
+      # The X64 runner images have the .NET SDK.
+      - name: Test generated C# bindings
+        if: inputs.arch == 'X64'
+        run: just test-csharp-bindings ${{ inputs.config }}
+
       - name: Install oras
         if: runner.os != 'Windows' || inputs.arch != 'arm64'
         uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4  # v2.0.2

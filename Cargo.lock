@@ -1752,6 +1752,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperlight-csharp-test-native"
+version = "0.0.0"
+dependencies = [
+ "hyperlight-host",
+]
+
+[[package]]
 name = "hyperlight-fuzz"
 version = "0.0.0"
 dependencies = [

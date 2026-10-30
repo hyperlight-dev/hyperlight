@@ -133,6 +133,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# test the tracing related features
     {{ if os() == "linux" { "RUST_LOG=debug just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
+    @# test generated C# bindings against witguest
+    {{ if arch() == "x86_64" { "just test-csharp-bindings " + config } else { "" } }}
+
 code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
@@ -349,6 +352,10 @@ test-rust-tracing target=default-target features="":
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
+# runs the C# binding tests against witguest. Needs the .NET 8 SDK or newer and the guests from `just guests`.
+test-csharp-bindings target=default-target:
+    dotnet run --project src/tests/csharp_host --property:HyperlightProfile={{ target }}
+
 # Nextest runs one Miri process per job, each with its own interpreter, so
 # memory grows with the job count at roughly 0.4GB per job. Lower MIRI_JOBS on
 # a machine with many cores but little RAM.
@@ -428,6 +435,7 @@ clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-csharp {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-csharp-test-native {{ target }} {{ target-triple }}
     {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
