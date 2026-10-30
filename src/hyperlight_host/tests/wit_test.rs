@@ -16,7 +16,7 @@ mod bindings {
     hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/guest.wit");
 }
 
-use bindings::test::wit::roundtrip::{Testrecord, Testvariant};
+use bindings::test::wit::roundtrip::{Testcomposite, Testrecord, Testvariant};
 use bindings::*;
 
 impl PartialEq for Testrecord {
@@ -31,8 +31,24 @@ impl PartialEq for Testvariant {
             (Testvariant::VariantA, Testvariant::VariantA) => true,
             (Testvariant::VariantB(s1), Testvariant::VariantB(s2)) => s1 == s2,
             (Testvariant::VariantC(c1), Testvariant::VariantC(c2)) => c1 == c2,
+            (Testvariant::VariantD(r1), Testvariant::VariantD(r2)) => r1 == r2,
             _ => false,
         }
+    }
+}
+
+impl PartialEq for Testcomposite {
+    fn eq(&self, other: &Self) -> bool {
+        self.nested == other.nested
+            && self.records == other.records
+            && self.fixed == other.fixed
+            && self.res == other.res
+            && self.tup == other.tup
+            && self.choice == other.choice
+            && self.kind == other.kind
+            && self.mask == other.mask
+            && self.c == other.c
+            && self.b == other.b
     }
 }
 
@@ -51,6 +67,24 @@ impl Clone for Testvariant {
             Self::VariantA => Self::VariantA,
             Self::VariantB(s) => Self::VariantB(s.clone()),
             Self::VariantC(c) => Self::VariantC(*c),
+            Self::VariantD(r) => Self::VariantD(r.clone()),
+        }
+    }
+}
+
+impl Clone for Testcomposite {
+    fn clone(&self) -> Self {
+        Self {
+            nested: self.nested,
+            records: self.records.clone(),
+            fixed: self.fixed,
+            res: self.res.clone(),
+            tup: self.tup.clone(),
+            choice: self.choice.clone(),
+            kind: self.kind,
+            mask: self.mask.clone(),
+            c: self.c,
+            b: self.b,
         }
     }
 }
@@ -189,6 +223,37 @@ impl test::wit::Roundtrip<Negative> for Host {
     }
 
     fn roundtrip_no_result(&mut self, _x: u32) {}
+
+    fn roundtrip_flags_medium(
+        &mut self,
+        x: test::wit::roundtrip::Mediumflags,
+    ) -> test::wit::roundtrip::Mediumflags {
+        x
+    }
+    fn roundtrip_nested_option(&mut self, x: Option<Option<String>>) -> Option<Option<String>> {
+        x
+    }
+    fn roundtrip_nested_list(&mut self, x: Vec<Vec<String>>) -> Vec<Vec<String>> {
+        x
+    }
+    fn roundtrip_record_list(&mut self, x: Vec<Testrecord>) -> Vec<Testrecord> {
+        x
+    }
+    fn roundtrip_result_unit(&mut self, x: Result<(), String>) -> Result<(), String> {
+        x
+    }
+    fn roundtrip_result_empty(&mut self, x: Result<(), ()>) -> Result<(), ()> {
+        x
+    }
+    fn roundtrip_two_args(&mut self, first: u32, second: String) -> (u32, String) {
+        (first, second)
+    }
+    fn roundtrip_no_args(&mut self) -> u32 {
+        42
+    }
+    fn roundtrip_composite(&mut self, x: Testcomposite) -> Testcomposite {
+        x
+    }
 }
 
 struct TestResource {
@@ -272,6 +337,9 @@ impl test::wit::TestImports<Negative> for Host {
     type HostResource = Self;
     fn host_resource(&mut self) -> &mut Self {
         self
+    }
+    fn now(&mut self) -> u64 {
+        7
     }
 }
 
@@ -483,12 +551,50 @@ mod wit_test {
             Just(VariantA),
             any::<String>().prop_map(VariantB),
             any::<char>().prop_map(VariantC),
+            arb_testrecord().prop_map(VariantD),
         ]
     }
 
     fn arb_testenum() -> impl Strategy<Value = roundtrip::Testenum> {
         use roundtrip::Testenum::*;
         prop_oneof![Just(EnumA), Just(EnumB), Just(EnumC),]
+    }
+
+    prop_compose! {
+        fn arb_mediumflags()(
+            m0: bool, m1: bool, m2: bool, m3: bool, m4: bool,
+            m5: bool, m6: bool, m7: bool, m8: bool, m9: bool,
+        ) -> roundtrip::Mediumflags {
+            roundtrip::Mediumflags { m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 }
+        }
+    }
+
+    fn arb_testrecords() -> impl Strategy<Value = Vec<roundtrip::Testrecord>> {
+        proptest::collection::vec(arb_testrecord(), 0..4)
+    }
+
+    fn arb_nested_list() -> impl Strategy<Value = Vec<Vec<String>>> {
+        proptest::collection::vec(proptest::collection::vec(".*", 0..4), 0..4)
+    }
+
+    prop_compose! {
+        fn arb_testcomposite()(
+            nested: Option<Option<u32>>,
+            records in arb_testrecords(),
+            fixed: [u8; 3],
+            res in prop_oneof![
+                arb_testrecord().prop_map(Ok),
+                any::<String>().prop_map(Err),
+            ],
+            tup in (any::<String>(), any::<u8>(), arb_testrecord()),
+            choice in arb_testvariant(),
+            kind in arb_testenum(),
+            mask in arb_mediumflags(),
+            c: char,
+            b: bool,
+        ) -> roundtrip::Testcomposite {
+            roundtrip::Testcomposite { nested, records, fixed, res, tup, choice, kind, mask, c, b }
+        }
     }
 
     /// 32 instead of default 256 to speed up ci
@@ -544,6 +650,37 @@ mod wit_test {
     make_test! { roundtrip_fix_list_string, : [String; 4] }
     make_test! { roundtrip_fix_array_of_lists, : [Vec<u8>; 3] }
     make_test! { roundtrip_fix_array_of_string_lists, : [Vec<String>; 2] }
+    make_test! { roundtrip_flags_medium, in arb_mediumflags() }
+    make_test! { roundtrip_nested_option, : Option<Option<String>> }
+    make_test! { roundtrip_nested_list, in arb_nested_list() }
+    make_test! { roundtrip_record_list, in arb_testrecords() }
+    make_test! { roundtrip_result_unit, : Result<(), String> }
+    make_test! { roundtrip_result_empty, : Result<(), ()> }
+    make_test! { roundtrip_composite, in arb_testcomposite() }
+
+    #[test]
+    fn test_roundtrip_two_args() {
+        let result = sb().roundtrip().roundtrip_two_args(5, "five".to_string());
+        assert_eq!(result.unwrap(), (5, "five".to_string()));
+    }
+
+    #[test]
+    fn test_roundtrip_no_args() {
+        assert_eq!(sb().roundtrip().roundtrip_no_args().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_world_functions() {
+        use crate::bindings::Extra;
+
+        let mut sb = sb();
+        assert_eq!(sb.run("go".to_string()).unwrap(), Ok("go 7".to_string()));
+        assert_eq!(
+            sb.run(String::new()).unwrap(),
+            Err("empty input".to_string())
+        );
+        assert_eq!(sb.extra().ping(0xa5).unwrap(), 0xa5);
+    }
 
     #[test]
     fn test_roundtrip_no_result() {

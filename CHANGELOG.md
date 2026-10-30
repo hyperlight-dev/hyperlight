@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 * `Sandbox::snapshot_with_options` takes a snapshot with `SnapshotOptions`. `SnapshotOptions::scratch_size` gives the sandbox, and later restores of the snapshot, a different scratch size. A guest can boot with the scratch its initialisation needs and run guest function calls from a snapshot with only the scratch they need, so each restore costs less. It can also give a guest more scratch than it booted with.
+* `hyperlight-component-csharp` crate for generating C# host bindings from WIT worlds by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
 
 ### Changed
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
@@ -33,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   creation.
 
 * **Breaking:** The transport arena sits one unmapped guard page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that guard page. Snapshot ABI 7: existing snapshots must be regenerated.
+
+* **Breaking:** `hyperlight-component-macro`: `host_bindgen!` and `guest_bindgen!` encode values little-endian and qualify function names with their interface, such as `wasi:http/types@0.2.0#[method]fields.get` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
 
 ### Removed
 

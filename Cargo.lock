@@ -1715,6 +1715,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperlight-component-csharp"
+version = "0.18.0"
+dependencies = [
+ "hyperlight-component-util",
+ "proc-macro2",
+]
+
+[[package]]
 name = "hyperlight-component-macro"
 version = "0.18.0"
 dependencies = [
@@ -1741,6 +1749,13 @@ dependencies = [
  "wat",
  "wit-component",
  "wit-parser",
+]
+
+[[package]]
+name = "hyperlight-csharp-test-native"
+version = "0.0.0"
+dependencies = [
+ "hyperlight-host",
 ]
 
 [[package]]
