@@ -1559,6 +1559,7 @@ unsafe impl Send for ReadonlySharedMemory {}
 unsafe impl Sync for ReadonlySharedMemory {}
 
 impl ReadonlySharedMemory {
+    #[cfg(any(test, hvf))]
     pub(crate) fn from_bytes(contents: &[u8], guest_mapped_size: usize) -> Result<Self> {
         if guest_mapped_size > contents.len() || !guest_mapped_size.is_multiple_of(page_size::get())
         {
