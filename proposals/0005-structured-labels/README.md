@@ -92,7 +92,7 @@ been filed specifically for the agenda, and whether any items need attention.
 | `help-wanted`                 | `E-help-wanted`            |
 | `kind/bugfix`                 | `C-bug`                    |
 | `kind/dependencies`           | `C-deps`                   |
-| `kind/documentation`          | `C-docs`                   |
+| `kind/documentation`          | `A-docs`                   |
 | `kind/enhancement`            | `C-enhancement`            |
 | `kind/refactor`               | `C-refactor`               |
 | `lifecycle/blocked`           | `S-blocked`                |
@@ -104,8 +104,8 @@ been filed specifically for the agenda, and whether any items need attention.
 | `lifecycle/not-a-bug`         | (3)                        |
 | `lifecycle/wont-fix`          | (1)                        |
 | `question`                    | `C-question`               |
-| `ready-for-review`            | `S-waiting-on-review`      |
-| `regen-goldens`               | `S-needs-golden-regen`     |
+| `ready-for-review`            | `S-needs-review`           |
+| `regen-goldens`               | `S-needs-goldens`          |
 | `release-blocker`             | `P-release-blocker`        |
 | `size/l`                      | Deleted                    |
 | `size/m`                      | Deleted                    |
@@ -119,20 +119,20 @@ been filed specifically for the agenda, and whether any items need attention.
 
 ### New labels
 
-| Proposed label  | Description                                  |
-| --------------- | -------------------------------------------- |
-| `O-x86_64`      | Specific to x86-64 processors                |
-| `O-aarch64`     | Specific to 64-bit Arm processors            |
-| `O-kvm`         | Linux KVM backend                            |
-| `O-mshv`        | Linux MSHV backend for Microsoft Hyper-V     |
-| `O-whp`         | Windows Hypervisor Platform backend          |
-| `O-hvf`         | macOS Hypervisor Framework backend           |
-| `O-linux`       | Linux host support                           |
-| `O-windows`     | Windows host support                         |
-| `O-macos`       | macOS host support                           |
-| `S-to-announce` | To announce in the next release              |
-| `S-needs-repro` | Needs a repro to confirm the bug             |
-| `S-nominated`   | Nominated for discussion in the next meeting |
+| Proposed label         | Description                                  |
+| ---------------------- | -------------------------------------------- |
+| `O-x86_64`             | Specific to x86-64 processors                |
+| `O-aarch64`            | Specific to 64-bit Arm processors            |
+| `O-kvm`                | Linux KVM backend                            |
+| `O-mshv`               | Linux MSHV backend for Microsoft Hyper-V     |
+| `O-whp`                | Windows Hypervisor Platform backend          |
+| `O-hvf`                | macOS Hypervisor Framework backend           |
+| `O-linux`              | Linux host support                           |
+| `O-windows`            | Windows host support                         |
+| `O-macos`              | macOS host support                           |
+| `S-needs-announcement` | To announce in the next release              |
+| `S-needs-repro`        | Needs a repro to confirm the bug             |
+| `S-nominated`          | Nominated for discussion in the next meeting |
 
 ### Rollout
 
@@ -200,7 +200,8 @@ is spell out the system in whole.
 
 In the Rust project, Rustbot automatically tags issues with
 `S-waiting-on-review` and `S-waiting-on-author` depending on who has last
-responded. This makes it easier to e.g. scan for items which are blocked on us
+responded. Our equivalent labels are `S-needs-review` and `S-waiting-on-author`.
+This makes it easier to e.g. scan for items which are blocked on us
 and we should get back to.
 
 There is also the `S-needs-triage` label we’re proposing, which could be
@@ -222,7 +223,7 @@ time, e.g. *"Which state in the lifecycle are we on?"*. The term "status" does
 not imply that same restriction, and any item can have one or more status
 modifiers at any given time.
 
-This is nice, because it allows us to tag an item as `S-waiting-on-review`,
+This is nice, because it allows us to tag an item as `S-needs-review`,
 while also being `S-nominated` for the next community meeting. In comparison:
 "nominated for the next meeting" does not feel like it would naturally be part
 of any "lifecycle".
