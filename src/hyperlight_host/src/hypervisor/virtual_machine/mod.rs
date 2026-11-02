@@ -540,6 +540,13 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
+
+    /// Replaces the interrupt handle that `run_vcpu` updates.
+    #[cfg(hvf)]
+    fn set_interrupt_handle(
+        &mut self,
+        handle: std::sync::Arc<dyn crate::hypervisor::InterruptHandleImpl>,
+    );
 }
 
 /// Why an MSR failed the read-then-write-back probe that restore relies on.
