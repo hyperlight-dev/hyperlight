@@ -4780,6 +4780,47 @@ mod tests {
             );
         }
 
+        /// KVM ignores a host TSC write within one second of the value it
+        /// expects, so restores closer together than that exercise the KVM path.
+        /// The 500 ms gaps tolerate host stalls shorter than that. WHP is
+        /// excluded because it keeps elapsed time on hosts with `TSC_ADJUST`.
+        #[test]
+        #[cfg(any(kvm, mshv3))]
+        fn restore_rewinds_tsc() {
+            let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .build()
+                .unwrap();
+            let snapshot = sbox.snapshot().unwrap();
+
+            for restore in 0..3 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let before: u64 = sbox.call("ReadTsc", ()).unwrap();
+                sbox.restore(snapshot.clone()).unwrap();
+                let after: u64 = sbox.call("ReadTsc", ()).unwrap();
+                assert!(
+                    after < before,
+                    "restore {restore} did not rewind TSC (before={before}, after={after})"
+                );
+            }
+        }
+
+        /// KVM syncs a host TSC write of zero to the current offset.
+        #[test]
+        #[cfg(kvm)]
+        fn restore_handles_zero_tsc() {
+            let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .build()
+                .unwrap();
+            sbox.vm
+                .restore_msrs(&[crate::hypervisor::regs::MsrEntry {
+                    index: MSR_TSC,
+                    value: 0,
+                }])
+                .unwrap();
+            let tsc: u64 = sbox.call("ReadTsc", ()).unwrap();
+            assert!(tsc < 1 << 62, "TSC jumped to {tsc:#x} after restoring zero");
+        }
+
         #[test]
         fn snapshot_msr_values_survive_full_in_memory_lifecycle() {
             let mut source = SandboxBuilder::from_file(simple_guest_as_pathbuf())

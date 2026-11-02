@@ -1344,6 +1344,13 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
+#[guest_function("ReadTsc")]
+#[cfg(target_arch = "x86_64")]
+fn read_tsc() -> u64 {
+    // SAFETY: RDTSC reads the time-stamp counter and has no memory effects.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
 #[guest_function("ReadMSR")]
 #[cfg(target_arch = "x86_64")]
 fn read_msr(msr: u32) -> u64 {

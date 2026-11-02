@@ -562,14 +562,27 @@ impl VirtualMachine for KvmVm {
     }
 
     fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
-        let entries: Vec<kvm_msr_entry> = msrs
-            .iter()
-            .map(|e| kvm_msr_entry {
+        let mut entries = Vec::with_capacity(msrs.len() + 1);
+        for e in msrs {
+            let mut value = e.value;
+            if e.index == MSR_TSC {
+                // KVM syncs a zero write instead of applying it.
+                value = value.max(1);
+                // KVM ignores a host TSC write within one second of the last write
+                // plus elapsed time. A write half the counter range away first makes
+                // the next one exact.
+                entries.push(kvm_msr_entry {
+                    index: MSR_TSC,
+                    data: value.wrapping_add(1 << 63),
+                    ..Default::default()
+                });
+            }
+            entries.push(kvm_msr_entry {
                 index: e.index,
-                data: e.value,
+                data: value,
                 ..Default::default()
-            })
-            .collect();
+            });
+        }
         if entries.is_empty() {
             return Ok(());
         }
