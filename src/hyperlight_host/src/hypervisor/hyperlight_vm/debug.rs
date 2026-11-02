@@ -343,7 +343,7 @@ impl HyperlightVm {
         tracing::debug!("Read addr: {:X} len: {:X}", gva, data.len());
 
         while !data.is_empty() {
-            let gpa = self.vm.translate_gva(gva)?;
+            let gpa = self.vm.translate_gva(gva, mem_access)?;
             let read_len = std::cmp::min(
                 data.len(),
                 page_size::get() - (gpa as usize & (page_size::get() - 1)),
@@ -365,7 +365,7 @@ impl HyperlightVm {
         tracing::debug!("Write addr: {:X} len: {:X}", gva, data.len());
 
         while !data.is_empty() {
-            let gpa = self.vm.translate_gva(gva)?;
+            let gpa = self.vm.translate_gva(gva, mem_access)?;
             let write_len = std::cmp::min(
                 data.len(),
                 page_size::get() - (gpa as usize & (page_size::get() - 1)),

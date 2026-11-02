@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-// TODO(aarch64): implement KVM backend
-
 use std::sync::LazyLock;
 
 use hyperlight_common::outb::VmAction;
@@ -12,6 +10,8 @@ use kvm_bindings::{
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(gdb)]
+use crate::hypervisor::gdb::{DebugError, DebugMemoryView, DebuggableVm, VcpuStopReason};
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError,
@@ -20,6 +20,9 @@ use crate::hypervisor::virtual_machine::{
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
     LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+#[cfg(gdb)]
+const HARDWARE_BREAKPOINTS: usize = 2;
 
 /// Return `true` if the KVM API is available
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -37,6 +40,8 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
+    #[cfg(gdb)]
+    debug_state: kvm_bindings::kvm_guest_debug,
 }
 
 impl KvmVm {
@@ -76,7 +81,12 @@ impl KvmVm {
             .create_vcpu(0)
             .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
 
-        let mut to_ret = Self { vm_fd, vcpu_fd };
+        let mut to_ret = Self {
+            vm_fd,
+            vcpu_fd,
+            #[cfg(gdb)]
+            debug_state: kvm_bindings::kvm_guest_debug::default(),
+        };
         to_ret
             .vcpu_init()
             .map_err(CreateVmError::SetPartitionProperty)?;
@@ -102,6 +112,18 @@ impl KvmVm {
         };
         self.vcpu_fd.set_kvm_immediate_exit(0u8);
         ret
+    }
+
+    #[cfg(gdb)]
+    fn apply_debug_state(
+        &mut self,
+        state: kvm_bindings::kvm_guest_debug,
+    ) -> Result<(), DebugError> {
+        self.vcpu_fd
+            .set_guest_debug(&state)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
+        self.debug_state = state;
+        Ok(())
     }
 }
 
@@ -201,6 +223,21 @@ impl VirtualMachine for KvmVm {
             break exit;
         };
         match exit {
+            #[cfg(gdb)]
+            Ok(VcpuExit::Debug(debug)) => {
+                let reason = match debug.hsr >> 26 {
+                    0x30 => VcpuStopReason::HwBp,
+                    0x32 => VcpuStopReason::DoneStep,
+                    0x3c => VcpuStopReason::SwBp,
+                    _ => {
+                        return Ok(VmExit::Unknown(format!(
+                            "Unknown KVM debug syndrome: {:#x}",
+                            debug.hsr
+                        )));
+                    }
+                };
+                Ok(VmExit::Debug { reason })
+            }
             Ok(VcpuExit::MmioWrite(addr, data)) => {
                 let io_page_gpa = const { hyperlight_common::layout::io_page().unwrap().0 };
                 if addr >= io_page_gpa
@@ -260,25 +297,28 @@ impl VirtualMachine for KvmVm {
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
+        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, SP_EL1, X};
         let mut x: [u64; 31] = [0; 31];
         for (i, xi) in X.iter().enumerate() {
             x[i] = xi.get(RegisterError::GetSregs, &self.vcpu_fd)?;
         }
+        let pstate = PSTATE.get(RegisterError::GetSregs, &self.vcpu_fd)?;
+        let sp = if pstate & 1 == 0 { SP } else { SP_EL1 };
         Ok(CommonRegisters {
             x,
-            sp: SP.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            sp: sp.get(RegisterError::GetSregs, &self.vcpu_fd)?,
             pc: PC.get(RegisterError::GetSregs, &self.vcpu_fd)?,
-            pstate: PSTATE.get(RegisterError::GetSregs, &self.vcpu_fd)?,
+            pstate,
         })
     }
 
     fn set_regs(&mut self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
-        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, X};
+        use crate::hypervisor::regs::kvm_reg::{PC, PSTATE, SP, SP_EL1, X};
         for (i, xi) in X.iter().enumerate() {
             xi.set(RegisterError::SetSregs, &self.vcpu_fd, regs.x[i])?;
         }
-        SP.set(RegisterError::SetSregs, &self.vcpu_fd, regs.sp)?;
+        let sp = if regs.pstate & 1 == 0 { SP } else { SP_EL1 };
+        sp.set(RegisterError::SetSregs, &self.vcpu_fd, regs.sp)?;
         PC.set(RegisterError::SetSregs, &self.vcpu_fd, regs.pc)?;
         PSTATE.set(RegisterError::SetSregs, &self.vcpu_fd, regs.pstate)?;
 
@@ -366,6 +406,143 @@ impl VirtualMachine for KvmVm {
                 .map_err(ResetVcpuError::Unknown)
                 .unwrap_or_else(|e| e)
         })?;
+        #[cfg(gdb)]
+        if self.debug_state.control != 0 {
+            self.vcpu_fd
+                .set_guest_debug(&self.debug_state)
+                .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
+        }
         Ok(())
+    }
+}
+
+#[cfg(gdb)]
+impl DebuggableVm for KvmVm {
+    fn translate_gva(&self, gva: u64, memory: &DebugMemoryView<'_>) -> Result<u64, DebugError> {
+        use crate::hypervisor::regs::kvm_reg::TTBR0_EL1;
+
+        let root = TTBR0_EL1.get(RegisterError::GetSregs, &self.vcpu_fd)? & 0x0000_ffff_ffff_f000;
+        memory.translate_gva(gva, root)
+    }
+
+    fn set_debug(&mut self, enable: bool) -> Result<(), DebugError> {
+        use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW, KVM_GUESTDBG_USE_SW_BP};
+
+        let state = if enable {
+            let mut state = self.debug_state;
+            state.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW | KVM_GUESTDBG_USE_SW_BP;
+            state
+        } else {
+            kvm_bindings::kvm_guest_debug::default()
+        };
+        self.apply_debug_state(state)
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> Result<(), DebugError> {
+        let mut state = self.debug_state;
+        if enable {
+            state.control |= kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+        } else {
+            state.control &= !kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+        }
+        self.apply_debug_state(state)
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<(), DebugError> {
+        if !addr.is_multiple_of(4) {
+            return Err(DebugError::Unsupported(
+                "unaligned ARM64 hardware breakpoint",
+            ));
+        }
+        let mut state = self.debug_state;
+        let slots = &state.arch.dbg_bcr[..HARDWARE_BREAKPOINTS];
+        if slots
+            .iter()
+            .enumerate()
+            .any(|(i, control)| control & 1 != 0 && state.arch.dbg_bvr[i] == addr)
+        {
+            return Ok(());
+        }
+        let slot = slots
+            .iter()
+            .position(|control| control & 1 == 0)
+            .ok_or(DebugError::TooManyHwBreakpoints(HARDWARE_BREAKPOINTS))?;
+        state.arch.dbg_bvr[slot] = addr;
+        state.arch.dbg_bcr[slot] = (15 << 5) | (3 << 1) | 1;
+        self.apply_debug_state(state)
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<(), DebugError> {
+        let mut state = self.debug_state;
+        let slot = state.arch.dbg_bcr[..HARDWARE_BREAKPOINTS]
+            .iter()
+            .enumerate()
+            .position(|(i, control)| control & 1 != 0 && state.arch.dbg_bvr[i] == addr)
+            .ok_or(DebugError::HwBreakpointNotFound(addr))?;
+        state.arch.dbg_bcr[slot] = 0;
+        state.arch.dbg_bvr[slot] = 0;
+        self.apply_debug_state(state)
+    }
+}
+
+#[cfg(all(test, gdb))]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn hardware_breakpoints_survive_reset_and_detach_clears_debug_state() {
+        let mut vm = KvmVm::new().unwrap();
+        vm.set_debug(true).unwrap();
+        vm.add_hw_breakpoint(0).unwrap();
+        vm.add_hw_breakpoint(0).unwrap();
+        vm.add_hw_breakpoint(0x1000).unwrap();
+        assert!(matches!(
+            vm.add_hw_breakpoint(0x2000),
+            Err(DebugError::TooManyHwBreakpoints(2))
+        ));
+        assert!(vm.add_hw_breakpoint(1).is_err());
+        vm.remove_hw_breakpoint(0).unwrap();
+        assert!(matches!(
+            vm.remove_hw_breakpoint(0),
+            Err(DebugError::HwBreakpointNotFound(0))
+        ));
+        vm.add_hw_breakpoint(0x2000).unwrap();
+        vm.set_single_step(true).unwrap();
+        vm.reset_vcpu().unwrap();
+        assert_ne!(
+            vm.debug_state.control & kvm_bindings::KVM_GUESTDBG_SINGLESTEP,
+            0
+        );
+        assert_eq!(&vm.debug_state.arch.dbg_bvr[..2], &[0x2000, 0x1000]);
+        vm.set_debug(false).unwrap();
+        assert_eq!(vm.debug_state.control, 0);
+        assert!(
+            vm.debug_state
+                .arch
+                .dbg_bcr
+                .iter()
+                .all(|&control| control == 0)
+        );
+    }
+
+    #[test]
+    fn register_writes_preserve_the_inactive_stack_pointer() {
+        use crate::hypervisor::regs::kvm_reg::{SP, SP_EL1};
+
+        let mut vm = KvmVm::new().unwrap();
+        for (pstate, sp) in [(0x3c4, 0x1000), (0x3c5, 0x2000)] {
+            vm.set_regs(&CommonRegisters {
+                pstate,
+                sp,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(vm.regs().unwrap().sp, sp);
+        }
+        assert_eq!(SP.get(RegisterError::GetRegs, &vm.vcpu_fd).unwrap(), 0x1000);
+        assert_eq!(
+            SP_EL1.get(RegisterError::GetRegs, &vm.vcpu_fd).unwrap(),
+            0x2000
+        );
     }
 }

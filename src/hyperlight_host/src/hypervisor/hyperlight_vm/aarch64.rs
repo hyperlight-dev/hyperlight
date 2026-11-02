@@ -47,14 +47,17 @@ impl HyperlightVm {
         &mut self,
         vectors: Option<u64>,
     ) -> Result<(), CreateHyperlightVmError> {
-        if self.gdb_conn.is_none() || !matches!(self.next_action, NextAction::Initialise(_)) {
+        if self.gdb_conn.is_none()
+            || cfg!(kvm)
+            || !matches!(self.next_action, NextAction::Initialise(_))
+        {
             return Ok(());
         }
-        let vectors = vectors.ok_or_else(|| {
-            VmError::Debug(crate::hypervisor::gdb::DebugError::Unsupported(
+        let vectors = vectors.ok_or(VmError::Debug(
+            crate::hypervisor::gdb::DebugError::Unsupported(
                 "guest binary lacks ARM64 debug vectors",
-            ))
-        })?;
+            ),
+        ))?;
         let mut regs = self.vm.sregs().map_err(VmError::Register)?;
         regs.vbar_el1 = vectors;
         regs.sp_el1 = hyperlight_common::layout::SCRATCH_TOP_GVA as u64

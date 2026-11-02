@@ -1101,7 +1101,11 @@ impl VirtualMachine for WhpVm {
 
 #[cfg(gdb)]
 impl DebuggableVm for WhpVm {
-    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
+    fn translate_gva(
+        &self,
+        gva: u64,
+        _memory: &crate::hypervisor::gdb::DebugMemoryView<'_>,
+    ) -> std::result::Result<u64, DebugError> {
         let mut gpa = 0;
         let mut result = WHV_TRANSLATE_GVA_RESULT::default();
 

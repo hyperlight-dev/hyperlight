@@ -370,6 +370,51 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     #[serial]
+    fn test_gdb_code_writes_and_self_loop() {
+        let (out_file_path, cmd_file_path, manifest_dir) =
+            gdb_test_paths("gdb-aarch64-code-writes");
+        let cmd = format!(
+            "set osabi none
+                file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :8080
+                set pagination off
+                set logging file {out_file_path}
+                set logging enabled on
+                hbreak simpleguest::no_op
+                continue
+                delete 1
+                set language c
+                set $loop_pc = $pc
+                set $instruction = *(unsigned int *)$pc
+                set *(unsigned int *)$pc = 0x14000000
+                stepi
+                if $pc != $loop_pc
+                    echo Self-loop step missed its destination\\n
+                    quit 1
+                end
+                set *(unsigned int *)$pc = $instruction
+                set $return_pc = $x30
+                stepi
+                if $pc != $return_pc
+                    echo Restored RET missed its destination\\n
+                    quit 1
+                end
+                echo Code writes and self-loop stepping passed\\n
+                set logging enabled off
+                detach
+                quit
+            "
+        );
+        let checker =
+            |contents: String| contents.contains("Code writes and self-loop stepping passed");
+        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
+        cleanup(&out_file_path, &cmd_file_path);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[serial]
     fn test_gdb_single_step() {
         let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-aarch64-step");
         let cmd = format!(
