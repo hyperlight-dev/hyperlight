@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use hyperlight_common::vmem::PAGE_SIZE;
+
 use super::{
     HandleDebugError, HyperlightVm, RecvDbgMsgError, SendDbgMsgError, VcpuStopReason, VmError,
 };
@@ -344,10 +346,7 @@ impl HyperlightVm {
 
         while !data.is_empty() {
             let gpa = self.vm.translate_gva(gva, mem_access)?;
-            let read_len = std::cmp::min(
-                data.len(),
-                page_size::get() - (gpa as usize & (page_size::get() - 1)),
-            );
+            let read_len = std::cmp::min(data.len(), PAGE_SIZE - (gva as usize & (PAGE_SIZE - 1)));
             mem_access.read(&mut data[..read_len], gpa)?;
             data = &mut data[read_len..];
             gva += read_len as u64;
@@ -366,10 +365,7 @@ impl HyperlightVm {
 
         while !data.is_empty() {
             let gpa = self.vm.translate_gva(gva, mem_access)?;
-            let write_len = std::cmp::min(
-                data.len(),
-                page_size::get() - (gpa as usize & (page_size::get() - 1)),
-            );
+            let write_len = std::cmp::min(data.len(), PAGE_SIZE - (gva as usize & (PAGE_SIZE - 1)));
             mem_access
                 .write(&data[..write_len], gpa)
                 .map_err(ProcessDebugRequestError::WriteMemory)?;
@@ -544,5 +540,133 @@ mod tests {
             breakpoints.get(0x4000),
             Some([0x11, 0x22, 0x33, 0x44].as_slice())
         );
+    }
+
+    #[cfg(all(kvm, target_arch = "aarch64"))]
+    mod memory_access_tests {
+        use hyperlight_common::vmem::PAGE_SIZE;
+
+        use super::super::*;
+        use crate::hypervisor::gdb::DebugCommChannel;
+        use crate::mem::layout::SandboxMemoryLayout;
+        use crate::mem::mgr::SandboxMemoryManager;
+        use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory};
+        use crate::sandbox::SandboxConfiguration;
+        use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
+
+        fn noncontiguous_pages() -> (HyperlightVm, SandboxMemoryManager<HostSharedMemory>, u64) {
+            let mut config = SandboxConfiguration::default();
+            config.set_scratch_size(config.get_scratch_size().next_multiple_of(page_size::get()));
+            let layout = SandboxMemoryLayout::new(config, PAGE_SIZE, 0, None).unwrap();
+            let snapshot = crate::sandbox::snapshot::memory::tests::flat_memory(
+                &vec![0; page_size::get()],
+                &[0; PAGE_SIZE],
+                SandboxMemoryLayout::BASE_ADDRESS.next_multiple_of(page_size::get()) as u64,
+                hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size()),
+            );
+            let memory = SandboxMemoryManager::new(
+                layout,
+                SnapshotMemoryBacking::from_snapshot(std::sync::Arc::new(snapshot)).unwrap(),
+                ExclusiveSharedMemory::new(layout.get_scratch_size()).unwrap(),
+                NextAction::None,
+            );
+            let (memory, guest_memory) = memory.build().unwrap();
+            let (_debugger, connection) = DebugCommChannel::unbounded();
+            let mut vm = HyperlightVm::new(
+                guest_memory.shared_mem,
+                guest_memory.scratch_mem,
+                guest_memory.layout.get_pt_base_gpa(),
+                guest_memory.next_action,
+                0,
+                page_size::get(),
+                &config,
+                Some(connection),
+                #[cfg(feature = "mem_profile")]
+                crate::sandbox::trace::MemTraceInfo::new(crate::mem::exe::LoadInfo::dummy().info)
+                    .unwrap(),
+            )
+            .unwrap();
+            let root = memory.first_free_scratch_gpa();
+            let access = DebugMemoryView::new(&memory, Vec::new());
+            let mut tables = [0; 4 * PAGE_SIZE];
+            for level in 0..3 {
+                let entry = (root + (level as u64 + 1) * PAGE_SIZE as u64) | 3;
+                tables[level * PAGE_SIZE..level * PAGE_SIZE + 8]
+                    .copy_from_slice(&entry.to_le_bytes());
+            }
+            for page in 0..3 {
+                let entry = (root + (4 + 2 * page) as u64 * PAGE_SIZE as u64) | 3;
+                let offset = 3 * PAGE_SIZE + (page + 1) * 8;
+                tables[offset..offset + 8].copy_from_slice(&entry.to_le_bytes());
+                access
+                    .write(&vec![page as u8 + 1; PAGE_SIZE], entry & !0xfff)
+                    .unwrap();
+            }
+            for page in [5, 7] {
+                access
+                    .write(&[0xee; PAGE_SIZE], root + page * PAGE_SIZE as u64)
+                    .unwrap();
+            }
+            access.write(&tables, root).unwrap();
+            let registers = vm.get_snapshot_sregs().unwrap();
+            vm.apply_sregs(root, &registers).unwrap();
+            (vm, memory, root)
+        }
+
+        #[test]
+        fn reads_translate_each_noncontiguous_guest_page() {
+            let (mut vm, memory, _) = noncontiguous_pages();
+            let access = DebugMemoryView::new(&memory, Vec::new());
+            let address = (2 * PAGE_SIZE - 3) as u64;
+            let DebugResponse::ReadAddr(data) = vm
+                .process_dbg_request(DebugMsg::ReadAddr(address, PAGE_SIZE + 8), &access)
+                .unwrap()
+            else {
+                panic!("missing memory read response");
+            };
+            assert_eq!(&data[..3], &[1; 3]);
+            assert!(data[3..3 + PAGE_SIZE].iter().all(|&byte| byte == 2));
+            assert_eq!(&data[3 + PAGE_SIZE..], &[3; 5]);
+        }
+
+        #[test]
+        fn writes_preserve_gaps_between_noncontiguous_guest_pages() {
+            let (mut vm, memory, root) = noncontiguous_pages();
+            let access = DebugMemoryView::new(&memory, Vec::new());
+            let address = (2 * PAGE_SIZE - 3) as u64;
+            assert!(matches!(
+                vm.process_dbg_request(
+                    DebugMsg::WriteAddr(address, vec![0xab; PAGE_SIZE + 8]),
+                    &access,
+                )
+                .unwrap(),
+                DebugResponse::WriteAddr
+            ));
+            let mut data = [0; PAGE_SIZE];
+            for page in [5, 7] {
+                access
+                    .read(&mut data, root + page * PAGE_SIZE as u64)
+                    .unwrap();
+                assert!(data.iter().all(|&byte| byte == 0xee));
+            }
+            for (page, prefix, suffix) in [(4, PAGE_SIZE - 3, 0), (6, 0, 0), (8, 0, PAGE_SIZE - 5)]
+            {
+                access
+                    .read(&mut data, root + page * PAGE_SIZE as u64)
+                    .unwrap();
+                let original = ((page - 4) / 2 + 1) as u8;
+                assert!(data[..prefix].iter().all(|&byte| byte == original));
+                assert!(
+                    data[prefix..PAGE_SIZE - suffix]
+                        .iter()
+                        .all(|&byte| byte == 0xab)
+                );
+                assert!(
+                    data[PAGE_SIZE - suffix..]
+                        .iter()
+                        .all(|&byte| byte == original)
+                );
+            }
+        }
     }
 }

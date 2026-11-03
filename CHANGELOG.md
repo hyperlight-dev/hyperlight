@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hardware and software breakpoint GDB debugging for Windows ARM64 guests.
 
 ### Fixed
+* GDB memory reads and writes translate each guest page on hosts with larger pages.
 * ARM64 GDB snapshot recovery handles cancellation and crash detach. Snapshot checkpointing rejects software breakpoints before replacing memory.
 * WHP ARM64 cache synchronization code is read-only to guests.
 
