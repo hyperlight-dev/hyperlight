@@ -987,9 +987,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.set_guest_requests(requests)?;
             return Ok(memory);
         }
-        let allocator_offset = self.scratch_mem.mem_size()
-            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
-        let used_scratch_end = self.scratch_mem.read::<u64>(allocator_offset)?;
+        let used_scratch_end = self.used_scratch_end_gpa()?;
         let gsnapshot = self.replace_snapshot_memory(snapshot)?;
         self.apply_snapshot_metadata(snapshot);
         self.update_snapshot_scratch_bookkeeping()?;
@@ -997,12 +995,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok((gsnapshot, None))
     }
 
-    /// Zeroes the scratch pages freed by resetting the allocator.
-    fn zero_freed_scratch(&mut self, used_end_gpa: u64) -> Result<()> {
+    /// The end of the scratch the guest has allocated: its allocator's next
+    /// free page. The guest controls that value, so it is held to the
+    /// transport arena, where the guest's allocator stops.
+    fn used_scratch_end_gpa(&self) -> Result<u64> {
+        let offset = self.scratch_mem.mem_size()
+            - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        let end = self.scratch_mem.read::<u64>(offset)?;
+        Ok(end.min(self.layout.get_transport_arena().base_addr()))
+    }
+
+    /// Zeroes the scratch pages freed by resetting the allocator, up to
+    /// `end`, the allocator's end as `used_scratch_end_gpa` read it.
+    fn zero_freed_scratch(&mut self, end: u64) -> Result<()> {
         let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_mem.mem_size());
-        // The guest controls the allocator value. Its allocator stops at the
-        // transport arena.
-        let end = used_end_gpa.min(self.layout.get_transport_arena().base_addr());
         let start = self.first_free_scratch_gpa();
         if end <= start {
             return Ok(());
