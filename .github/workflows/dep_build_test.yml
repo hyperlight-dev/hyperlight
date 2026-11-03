@@ -126,6 +126,35 @@ jobs:
           name: c-guests-${{ inputs.arch }}-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
 
+      # For helping with debugging.
+      - name: Log CPU
+        continue-on-error: true
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              echo "Kernel: $(uname -r)"
+              (dmesg || sudo -n dmesg) 2>/dev/null | grep -m1 'Host Build' || true
+              lscpu
+              sed '/^$/q' /proc/cpuinfo
+              ;;
+            Windows)
+              pwsh -NoProfile -Command '
+                "OS: " + [System.Environment]::OSVersion.VersionString
+                Get-ChildItem "$env:SystemRoot\System32\hv*64.exe" | ForEach-Object { "Installed hypervisor: {0} {1}" -f $_.Name, $_.VersionInfo.ProductVersion }
+                reg query "HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+                # RUNNER_ARCH is X64 on Windows ARM64 runners because they run the x64 runner under emulation.
+                if ([System.Runtime.Intrinsics.X86.X86Base]::IsSupported) {
+                  $r = [System.Runtime.Intrinsics.X86.X86Base]::CpuId(0x40000002, 0)
+                  "Running hypervisor: {0}.{1}.{2}.{3}" -f ($r.Item2 -shr 16), ($r.Item2 -band 0xFFFF), $r.Item1, ($r.Item4 -band 0xFFFFFF)
+                  foreach ($leaf in 1, 7, 0xD, 0x80000001, 0x80000008) {
+                    $r = [System.Runtime.Intrinsics.X86.X86Base]::CpuId($leaf, 0)
+                    "CPUID {0:X8}: {1:X8} {2:X8} {3:X8} {4:X8}" -f $leaf, $r.Item1, $r.Item2, $r.Item3, $r.Item4
+                  }
+                }'
+              ;;
+            macOS) sysctl machdep.cpu hw.optional ;;
+          esac
+
       - name: Build
         run: just build ${{ inputs.config }}
 
