@@ -1005,6 +1005,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(end.min(self.layout.get_transport_arena().base_addr()))
     }
 
+    /// Bytes of scratch the guest has allocated since the allocator was
+    /// last reset, at build, restore or snapshot.
+    pub(crate) fn scratch_allocated_bytes(&self) -> Result<u64> {
+        Ok(self
+            .used_scratch_end_gpa()?
+            .saturating_sub(self.first_free_scratch_gpa()))
+    }
+
     /// Zeroes the scratch pages freed by resetting the allocator, up to
     /// `end`, the allocator's end as `used_scratch_end_gpa` read it.
     fn zero_freed_scratch(&mut self, end: u64) -> Result<()> {
