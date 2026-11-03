@@ -67,6 +67,13 @@ impl HyperlightVm {
         !self.sw_breakpoints.0.is_empty()
     }
 
+    /// Discard software debug state when poisoned guest memory will be replaced.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn discard_software_breakpoints(&mut self) {
+        self.sw_breakpoints.0.clear();
+        self.pending_software_step = None;
+    }
+
     pub(super) fn handle_debug(
         &mut self,
         mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
@@ -92,13 +99,16 @@ impl HyperlightVm {
                     let response = match req {
                         DebugMsg::DisableDebug => {
                             detach = true;
-                            // Remove software breakpoint state so restore does not reject recovery.
                             #[cfg(target_arch = "aarch64")]
                             match self.process_dbg_request(DebugMsg::DisableDebug, &mem_access) {
                                 Ok(response) => response,
                                 Err(error) => {
                                     tracing::error!("Failed to clean up after detach: {error}");
-                                    DebugResponse::ErrorOccurred
+                                    self.vm
+                                        .set_debug(false)
+                                        .map_err(ProcessDebugRequestError::from)?;
+                                    self.discard_software_breakpoints();
+                                    DebugResponse::DisableDebug
                                 }
                             }
                             #[cfg(not(target_arch = "aarch64"))]

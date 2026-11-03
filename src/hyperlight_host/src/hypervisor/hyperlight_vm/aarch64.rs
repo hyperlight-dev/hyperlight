@@ -249,6 +249,12 @@ impl HyperlightVm {
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
+        #[cfg(gdb)]
+        if self.gdb_conn.is_some() {
+            self.vm
+                .set_single_step(false)
+                .map_err(|error| ResetVcpuError::Unknown(error.to_string()))?;
+        }
         self.vm.reset_vcpu()?;
         self.apply_sregs(cr3, sregs)?;
         Ok(())

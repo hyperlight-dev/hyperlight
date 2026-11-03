@@ -583,7 +583,8 @@ impl WhpVm {
             .copy_from_slice(&DEBUG_CACHE_SYNC_CODE, 0)
             .map_err(|e| CreateVmError::InitializeDebug(e.to_string()))?;
         let (host_memory, guest_memory) = memory.build();
-        let region = guest_memory.mapping_at(DEBUG_CACHE_SYNC_GPA, MemoryRegionType::Scratch);
+        let mut region = guest_memory.mapping_at(DEBUG_CACHE_SYNC_GPA, MemoryRegionType::Scratch);
+        region.flags.remove(MemoryRegionFlags::WRITE);
 
         // SAFETY: Both shared-memory handles are retained for the VM lifetime.
         unsafe { self.map_memory((u32::MAX, &region)) }
@@ -1320,6 +1321,54 @@ mod debug_tests {
 
     #[test]
     #[serial]
+    fn guest_cannot_write_cache_sync_trampoline() {
+        let mut vm = WhpVm::new().unwrap();
+        let memory = vm._debug_cache_sync_host_memory.as_ref().unwrap();
+        let mut original = [0; 4];
+        memory.copy_to_slice(&mut original, 0).unwrap();
+        let mut code = Vec::new();
+        for instruction in [
+            0xb900_0001u32,              // str w1, [x0]
+            0xd400_0002 | (0x485b << 5), // hvc #0x485b
+        ] {
+            code.extend_from_slice(&instruction.to_le_bytes());
+        }
+        memory.copy_from_slice(&code, 0x20).unwrap();
+        vm.sync_instruction_cache().unwrap();
+        vm.set_registers(
+            &[WHV_ARM64_REGISTER_SCTLR_EL1],
+            &[Align16(WHV_REGISTER_VALUE {
+                Reg64: crate::hypervisor::regs::SCTLR_EL1_RES1,
+            })],
+        )
+        .unwrap();
+        let mut regs = CommonRegisters {
+            pc: DEBUG_CACHE_SYNC_GPA + 0x20,
+            pstate: 0x3c5,
+            ..Default::default()
+        };
+        regs.x[0] = DEBUG_CACHE_SYNC_GPA;
+        regs.x[1] = u64::from(!u32::from_le_bytes(original));
+        vm.set_regs(&regs).unwrap();
+        let exit = vm.run_vcpu().unwrap();
+        assert!(
+            matches!(&exit, VmExit::Unknown(message) if message.starts_with("Unsupported ARM64 hypercall immediate 0x485b "))
+                || matches!(exit, VmExit::MmioWrite(DEBUG_CACHE_SYNC_GPA))
+        );
+        let mut actual = [0; 4];
+        vm._debug_cache_sync_host_memory
+            .as_ref()
+            .unwrap()
+            .copy_to_slice(&mut actual, 0)
+            .unwrap();
+        assert_eq!(
+            actual, original,
+            "guest execution overwrote the cache-sync trampoline"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn asynchronous_vectors_ignore_stale_debug_syndromes() {
         if !is_hypervisor_present() {
             return;
@@ -1345,12 +1394,14 @@ mod debug_tests {
         let offset = (segment.p_offset + address - segment.p_vaddr) as usize;
         let mut vectors = bytes[offset..offset + 0x800].to_vec();
         let mut handler_stops = Vec::new();
-        for (index, vector) in vectors.chunks_exact_mut(0x80).enumerate() {
+        for (index, vector) in vectors.as_chunks_mut::<0x80>().0.iter_mut().enumerate() {
             // Stop at the ordinary handler's context-save call.
             let call = vector
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .position(|instruction| {
-                    u32::from_le_bytes(instruction.try_into().unwrap()) & 0xfc00_0000 == 0x9400_0000
+                    u32::from_le_bytes(*instruction) & 0xfc00_0000 == 0x9400_0000
                 })
                 .unwrap()
                 * 4;
@@ -1358,7 +1409,17 @@ mod debug_tests {
             handler_stops.push(DEBUG_CACHE_SYNC_GPA + 0x800 + (index * 0x80 + call) as u64);
         }
 
+        let (_stack_host_memory, stack_guest_memory) = ExclusiveSharedMemory::new(page_size::get())
+            .unwrap()
+            .build();
+        let mut stack_region = stack_guest_memory.mapping_at(
+            DEBUG_CACHE_SYNC_GPA - page_size::get() as u64,
+            MemoryRegionType::Scratch,
+        );
+        stack_region.flags.remove(MemoryRegionFlags::EXECUTE);
         let mut vm = WhpVm::new().unwrap();
+        // SAFETY: Both stack handles outlive the VM.
+        unsafe { vm.map_memory((u32::MAX - 1, &stack_region)) }.unwrap();
         vm._debug_cache_sync_host_memory
             .as_ref()
             .unwrap()
@@ -1381,7 +1442,7 @@ mod debug_tests {
                 }
                 let mut regs = CommonRegisters {
                     pc: DEBUG_CACHE_SYNC_GPA + 0x800 + (index * 0x80) as u64,
-                    sp: DEBUG_CACHE_SYNC_GPA + 0x800,
+                    sp: DEBUG_CACHE_SYNC_GPA,
                     pstate: 0x3c5,
                     ..Default::default()
                 };

@@ -164,32 +164,19 @@ impl<'a> DebugMemoryView<'a> {
     ) -> std::result::Result<(), DebugMemoryAccessError> {
         #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
         {
-            use std::ffi::c_void;
-
             use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
             use windows::Win32::System::Threading::GetCurrentProcess;
 
-            use crate::mem::shared_mem::SharedMemory;
-
-            let resolved = self
+            let range = self
                 .mem_mgr
-                .layout
-                .resolve_gpa(gpa, &self.guest_mmap_regions)
-                .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
-            let address = match resolved.base {
-                BaseGpaRegion::Snapshot(()) => self.mem_mgr.shared_mem.base_ptr(),
-                BaseGpaRegion::Scratch(()) => self.mem_mgr.scratch_mem.base_ptr(),
-                BaseGpaRegion::Mmap(region) => {
-                    let base: usize = region.host_region.start.into();
-                    base as *mut u8
-                }
-            }
-            .wrapping_add(resolved.offset);
+                .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                    memory.host_range(gpa, len)
+                })
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
 
-            // SAFETY: The current process handle is valid and `address..address
-            // + len` lies inside a live sandbox memory mapping.
+            // SAFETY: The current process handle is valid and the range belongs to a live sandbox mapping.
             unsafe {
-                FlushInstructionCache(GetCurrentProcess(), Some(address.cast::<c_void>()), len)
+                FlushInstructionCache(GetCurrentProcess(), Some(range.start as *const _), len)
                     .map_err(|e| DebugMemoryAccessError::FlushInstructionCache(e.to_string()))?;
             }
         }
