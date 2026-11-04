@@ -1,0 +1,79 @@
+// C# naming and type cases checked by EdgeTests.cs.
+package test:edge;
+
+interface types {
+    record r { r: u8, to-string: u8 }
+    record p { x: u32 }
+    type q = p;
+    type l = list<q>;
+    record lists { id: u32, names: list<string>, pair: tuple<u8, list<u8>> }
+    variant v { none, class(string), items(list<u32>), value(u8) }
+}
+
+interface ops {
+    use types.{r, l, lists, v};
+    keyword: func(class: r) -> r;
+    alias: func(x: l) -> l;
+    nested-lists: func(x: lists) -> lists;
+    cases: func(x: v) -> v;
+    single: func(x: tuple<u16>) -> tuple<u16>;
+}
+
+// Imported and exported, so its types have two copies.
+interface shared {
+    record s { x: u32 }
+    echo: func(x: s) -> s;
+    finalize: func();
+    to-string: func() -> u32;
+}
+
+interface %world {
+    w: func();
+}
+
+world edge {
+    import test:dep/t@1.0.0;
+    import test:dep/t@2.0.0;
+    import shared;
+    import a:b-c/types;
+    import a-b:c/types;
+    export ops;
+    export shared;
+    export shared: func();
+    export %world;
+    export other: interface {
+        g: func();
+    }
+    export register-imports: interface {
+        r: func();
+    }
+    export edge-component: interface {
+        c: func();
+    }
+}
+
+package a:b-c {
+    interface types {
+        f: func() -> u8;
+    }
+}
+
+package a-b:c {
+    interface types {
+        g: func() -> u8;
+    }
+}
+
+package test:dep@1.0.0 {
+    interface t {
+        record r { x: u32 }
+        f: func(x: r) -> u32;
+    }
+}
+
+package test:dep@2.0.0 {
+    interface t {
+        record r { x: u32 }
+        f: func(x: r) -> u32;
+    }
+}

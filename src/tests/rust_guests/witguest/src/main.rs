@@ -153,6 +153,48 @@ impl test::wit::Roundtrip<Positive> for Guest {
     fn roundtrip_no_result(&mut self, x: u32) {
         (Host {}).roundtrip_no_result(x)
     }
+    fn roundtrip_flags_medium(
+        &mut self,
+        x: test::wit::roundtrip::Mediumflags,
+    ) -> test::wit::roundtrip::Mediumflags {
+        (Host {}).roundtrip_flags_medium(x)
+    }
+    fn roundtrip_nested_option(&mut self, x: Option<Option<String>>) -> Option<Option<String>> {
+        (Host {}).roundtrip_nested_option(x)
+    }
+    fn roundtrip_nested_list(&mut self, x: Vec<Vec<String>>) -> Vec<Vec<String>> {
+        (Host {}).roundtrip_nested_list(x)
+    }
+    fn roundtrip_record_list(
+        &mut self,
+        x: Vec<test::wit::roundtrip::Testrecord>,
+    ) -> Vec<test::wit::roundtrip::Testrecord> {
+        (Host {}).roundtrip_record_list(x)
+    }
+    fn roundtrip_result_unit(
+        &mut self,
+        x: ::core::result::Result<(), String>,
+    ) -> ::core::result::Result<(), String> {
+        (Host {}).roundtrip_result_unit(x)
+    }
+    fn roundtrip_result_empty(
+        &mut self,
+        x: ::core::result::Result<(), ()>,
+    ) -> ::core::result::Result<(), ()> {
+        (Host {}).roundtrip_result_empty(x)
+    }
+    fn roundtrip_two_args(&mut self, first: u32, second: String) -> (u32, String) {
+        (Host {}).roundtrip_two_args(first, second)
+    }
+    fn roundtrip_no_args(&mut self) -> u32 {
+        (Host {}).roundtrip_no_args()
+    }
+    fn roundtrip_composite(
+        &mut self,
+        x: test::wit::roundtrip::Testcomposite,
+    ) -> test::wit::roundtrip::Testcomposite {
+        (Host {}).roundtrip_composite(x)
+    }
 }
 
 use alloc::string::ToString;
@@ -212,6 +254,25 @@ impl test::wit::TestExports<Positive, Host> for Guest {
     type Failable = Self;
     fn failable(&mut self) -> &mut Self {
         self
+    }
+    type Extra = Self;
+    fn extra(&mut self) -> &mut Self {
+        self
+    }
+    fn run(&mut self, input: String) -> ::core::result::Result<String, String> {
+        if input.is_empty() {
+            return Err("empty input".to_string());
+        }
+        Ok(alloc::format!(
+            "{input} {}",
+            <Host as test::wit::TestImports<Negative>>::now(&mut Host {})
+        ))
+    }
+}
+
+impl Extra<Positive> for Guest {
+    fn ping(&mut self, x: u8) -> u8 {
+        x
     }
 }
 

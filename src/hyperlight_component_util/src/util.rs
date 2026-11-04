@@ -89,9 +89,13 @@ impl WitSource {
     }
 }
 
+/// Resolve `path` against the crate being built, or the working
+/// directory outside a cargo build.
 fn manifest_path(path: &std::path::Path) -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    std::path::Path::new(&manifest_dir).join(path)
+    match std::env::var_os("CARGO_MANIFEST_DIR") {
+        Some(dir) => std::path::Path::new(&dir).join(path),
+        None => path.to_path_buf(),
+    }
 }
 
 /// Read and parse a WIT type from a supported bindgen input.
