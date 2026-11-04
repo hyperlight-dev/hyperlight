@@ -52,6 +52,9 @@ regenerated.
 ABI 9 removes the heap region from snapshot memory. Earlier snapshots must
 be regenerated.
 
+ABI 10 moves the executable heap flag from the scratch-top metadata into the
+PEB. Earlier snapshots must be regenerated.
+
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
 

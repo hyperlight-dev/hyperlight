@@ -461,6 +461,7 @@ impl SandboxMemoryLayout {
                 size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
                 ptr: guest_base + self.init_data_offset() as u64,
             },
+            heap_executable: cfg!(feature = "executable_heap") as u64,
         };
 
         let offset = self.peb_offset();

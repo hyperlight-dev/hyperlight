@@ -926,7 +926,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 9,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "layer_alignment": 4096,
@@ -1122,7 +1122,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 9,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "layer_alignment": 16384,

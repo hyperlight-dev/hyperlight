@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Changed
+* **Breaking:** Snapshots use ABI 10. Existing snapshots must be regenerated.
+
 ## [v0.19.0] - 2026-11-04
 
 ### Added
