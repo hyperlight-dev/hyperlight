@@ -37,11 +37,13 @@ const ACTIVE_SPANS_CAPACITY: usize = 64;
 fn send_to_host(data: &[u8]) {
     unsafe {
         core::arch::asm!("out dx, al",
+            // Clear the marker so later exits do not report this batch again
+            "mov r8d, 0",
             // Port value for tracing
             in("dx") OutBAction::TraceBatch as u16,
             in("al") 0u8,
             // Additional magic number to identify the action
-            in("r8") OutBAction::TraceBatch as u64,
+            inout("r8") OutBAction::TraceBatch as u64 => _,
             in("r9") data.as_ptr() as u64,
             in("r10") data.len() as u64,
         );

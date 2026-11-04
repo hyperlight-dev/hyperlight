@@ -152,11 +152,11 @@ applies to later guest calls and is reapplied after snapshot restore.
 When the storage space is filled, the guest triggers a VM Exit that sends the guest pointers to the host. The host can access the guest memory, get the data and parse it to create the `spans` and `events` using the `opentelemetry` crate which allows specifying the starting and ending timestamps
 which are captured in the guest using the `TSC`.
 
-To improve performance, for each VMExit, the guest adds metadata for the host to be able to report the tracing data and free space.
+To improve performance, each OUT exit also carries any pending trace data. The guest sets `r8` to the `TraceBatch` marker, with the buffer pointer in `r9` and its length in `r10`. It clears `r8` after the exit, so each batch is reported once.
 
 ##### Host
 
-When a guest exits, the host checks for metadata from the guest reporting tracing data.
+On each OUT exit, the host checks `r8` for the `TraceBatch` marker. Other exits carry no trace data.
 If tracing data is found, the host starts parsing it and reconstructing a tree which represents the spans hierarchy.
 
 Additionally, the host also adds new children `span`s to the guest's reported active span, emphasizing the spans created on the host as a result of a temporary VM Exit. This helps visualize a call into the guest with context propagated across the VM boundary.

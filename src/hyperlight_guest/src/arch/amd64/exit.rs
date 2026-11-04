@@ -17,12 +17,14 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
     #[cfg(feature = "trace_guest")]
     {
         if let Some((ptr, len)) = hyperlight_guest_tracing::serialized_data() {
-            // If tracing is enabled and there is data to send, send it along with the OUT action
+            // If tracing is enabled and there is data to send, send it along with the OUT action.
+            // Clearing r8 after the exit keeps later exits from reporting this batch again.
             unsafe {
                 asm!("out dx, eax",
+                    "mov r8d, 0",
                     in("dx") port,
                     in("eax") val,
-                    in("r8") OutBAction::TraceBatch as u64,
+                    inout("r8") OutBAction::TraceBatch as u64 => _,
                     in("r9") ptr,
                     in("r10") len,
                     options(preserves_flags, nostack)
