@@ -1560,6 +1560,12 @@ mod tests {
         for i in 0..8 {
             expected_fpu.fpr[i][10..16].copy_from_slice(&got_fpu.fpr[i][10..16]);
         }
+        // The x87 error pointers are undefined while FSW.ES is clear, and AMD
+        // CPUs save them as 0 in that state.
+        assert_eq!(fpu.fsw & (1 << 7), 0);
+        expected_fpu.last_opcode = got_fpu.last_opcode;
+        expected_fpu.last_ip = got_fpu.last_ip;
+        expected_fpu.last_dp = got_fpu.last_dp;
         assert_eq!(got_fpu, expected_fpu);
 
         // Verify xsave was set by checking key dirty values in the legacy region.
