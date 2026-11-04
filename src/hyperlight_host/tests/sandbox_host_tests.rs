@@ -47,7 +47,6 @@ fn fragmented_control_round_trip_releases_buffers() {
 
     with_all_guests(|path| {
         let mut sbox = SandboxBuilder::from_file(path)
-            .heap_size(256 * 1024)
             .scratch_size(512 * 1024)
             .build()
             .unwrap();
@@ -344,13 +343,16 @@ fn c_fallback_error_overrides_null() {
     });
 }
 
+/// Scratch small enough that leaked call results exhaust it.
+const LEAK_TEST_SCRATCH_SIZE: usize = 400 * 1024;
+
 #[test]
 fn c_registered_error_drops_returned_value() {
     with_c_sandbox_from(
-        |builder| builder.heap_size(64 * 1024),
+        |builder| builder.scratch_size(LEAK_TEST_SCRATCH_SIZE),
         |mut sbox| {
-            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
-            for _ in 0..8 {
+            // 32 leaked 16 KiB results would exceed `LEAK_TEST_SCRATCH_SIZE`.
+            for _ in 0..32 {
                 let error = sbox
                     .call::<Vec<u8>>("ReturnValueWithError", ())
                     .unwrap_err();
@@ -371,10 +373,10 @@ fn c_registered_error_drops_returned_value() {
 #[test]
 fn c_fallback_error_drops_returned_value() {
     with_c_sandbox_from(
-        |builder| builder.heap_size(64 * 1024),
+        |builder| builder.scratch_size(LEAK_TEST_SCRATCH_SIZE),
         |mut sbox| {
-            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
-            for _ in 0..8 {
+            // 32 leaked 16 KiB results would exceed `LEAK_TEST_SCRATCH_SIZE`.
+            for _ in 0..32 {
                 let error = sbox
                     .call::<Vec<u8>>("FallbackValueWithError", ())
                     .unwrap_err();

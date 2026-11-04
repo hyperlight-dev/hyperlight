@@ -47,13 +47,6 @@ pub struct SandboxConfiguration {
     /// Guest gdb debug port
     #[cfg(gdb)]
     guest_debug_info: Option<DebugInfo>,
-    /// The heap size to use in the guest sandbox. If set to 0, the heap
-    /// size will be determined from the PE file header
-    ///
-    /// Note: this is a C-compatible struct, so even though this optional
-    /// field should be represented as an `Option`, that type is not
-    /// FFI-safe, so it cannot be.
-    heap_size_override: u64,
     /// Delay between interrupt retries. This duration specifies how long to wait
     /// between attempts to send signals to the thread running the sandbox's VCPU.
     /// Multiple retries may be necessary because signals only interrupt the VCPU
@@ -103,9 +96,8 @@ impl SandboxConfiguration {
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
-    /// The default heap size of a hyperlight sandbox
-    pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// Scratch backs the default heap, transport pools, page tables, and exception stack.
+    /// Scratch backs the guest heap and stack, transport pools, page
+    /// tables, and exception stack.
     /// The size is 16 KiB aligned for macOS hosts.
     /// TODO: revisit when https://github.com/hyperlight-dev/hyperlight/issues/1925 is fixed
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x64000;
@@ -139,7 +131,6 @@ impl SandboxConfiguration {
     /// Create a new configuration for a sandbox with the given sizes.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn new(
-        heap_size_override: Option<u64>,
         scratch_size: usize,
         interrupt_retry_delay: Duration,
         interrupt_vcpu_sigrtmin_offset: u8,
@@ -147,7 +138,6 @@ impl SandboxConfiguration {
         #[cfg(crashdump)] guest_core_dump: bool,
     ) -> Self {
         Self {
-            heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
             max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
             g2h_queue_size: Self::DEFAULT_G2H_QUEUE_SIZE,
@@ -167,12 +157,6 @@ impl SandboxConfiguration {
             #[cfg(target_arch = "x86_64")]
             guest_msrs_count: 0,
         }
-    }
-
-    /// Set the heap size to use in the guest sandbox. If set to 0, the heap size will be determined from the PE file header
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_heap_size(&mut self, heap_size: u64) {
-        self.heap_size_override = heap_size;
     }
 
     /// Sets the interrupt retry delay
@@ -290,7 +274,8 @@ impl SandboxConfiguration {
         self.scratch_size
     }
 
-    /// Set the size of the scratch regiong
+    /// Set how much writable memory to offer the guest. Scratch backs the
+    /// guest heap and stack.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_scratch_size(&mut self, scratch_size: usize) {
         self.scratch_size = scratch_size;
@@ -419,19 +404,6 @@ impl SandboxConfiguration {
         self.guest_debug_info
     }
 
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn heap_size_override_opt(&self) -> Option<u64> {
-        (self.heap_size_override > 0).then_some(self.heap_size_override)
-    }
-
-    /// If self.heap_size_override is non-zero, return it. Otherwise,
-    /// return exe_info.heap_reserve()
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_heap_size(&self) -> u64 {
-        self.heap_size_override_opt()
-            .unwrap_or(Self::DEFAULT_HEAP_SIZE)
-    }
-
     fn normalize_queue_size(size: usize) -> usize {
         size.clamp(Self::MIN_QUEUE_SIZE, Self::MAX_QUEUE_SIZE)
             .next_power_of_two()
@@ -450,7 +422,6 @@ impl Default for SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn default() -> Self {
         Self::new(
-            None,
             Self::DEFAULT_SCRATCH_SIZE,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
             Self::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
@@ -553,10 +524,8 @@ mod tests {
 
     #[test]
     fn overrides() {
-        const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
         const SCRATCH_SIZE_OVERRIDE: usize = 0x60000;
         let mut cfg = SandboxConfiguration::new(
-            Some(HEAP_SIZE_OVERRIDE),
             SCRATCH_SIZE_OVERRIDE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
@@ -566,14 +535,10 @@ mod tests {
             true,
         );
 
-        let heap_size = cfg.get_heap_size();
         let scratch_size = cfg.get_scratch_size();
-        assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
         assert_eq!(SCRATCH_SIZE_OVERRIDE, scratch_size);
 
-        cfg.heap_size_override = 2048;
         cfg.scratch_size = 0x40000;
-        assert_eq!(2048, cfg.heap_size_override);
         assert_eq!(0x40000, cfg.scratch_size);
         assert_eq!(
             SandboxConfiguration::DEFAULT_G2H_QUEUE_SIZE,
@@ -666,23 +631,15 @@ mod tests {
         assert_eq!(3, cfg.get_h2g_pool_pages());
     }
 
+    #[cfg(gdb)]
     mod proptests {
         use proptest::prelude::*;
 
         use super::SandboxConfiguration;
-        #[cfg(gdb)]
         use crate::sandbox::config::DebugInfo;
 
         proptest! {
             #[test]
-            fn heap_size_override(size in 0x1000..=0x10000u64) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(size);
-                prop_assert_eq!(size, cfg.heap_size_override);
-            }
-
-            #[test]
-            #[cfg(gdb)]
             fn guest_debug_info(port in 9000..=u16::MAX) {
                 let mut cfg = SandboxConfiguration::default();
                 let debug_info = DebugInfo { port };

@@ -18,32 +18,36 @@ use hyperlight_host::func::Registerable;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
 use hyperlight_host::sandbox::{Sandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_host::{GuestBinary, HostFunctions, SandboxBuilder};
-use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+use hyperlight_testing::sandbox_sizes::{
+    LARGE_SCRATCH_SIZE, MEDIUM_SCRATCH_SIZE, SMALL_SCRATCH_SIZE,
+};
 use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
 
-/// Sandbox heap sizes and scratch budgets for benchmarking.
-/// Larger heaps need extra scratch for page tables.
+/// Sandbox scratch sizes for benchmarking.
 #[derive(Clone, Copy)]
 enum SandboxSize {
     /// Default configuration (uses hyperlight defaults)
     Default,
-    /// Small heap: 8 MB
+    /// Small scratch: 8 MiB
     Small,
-    /// Medium heap: 64 MB
+    /// Medium scratch: 64 MiB
     Medium,
-    /// Large heap: 256 MB
+    /// Large scratch: 256 MiB
     Large,
 }
 
 impl SandboxSize {
     /// Returns a builder for the simple guest, configured for this sandbox size.
     fn builder(&self) -> SandboxBuilder {
-        let builder = SandboxBuilder::from_file(simple_guest_as_pathbuf());
+        SandboxBuilder::from_file(simple_guest_as_pathbuf()).scratch_size(self.scratch_size())
+    }
+
+    fn scratch_size(&self) -> usize {
         match self {
-            Self::Default => builder,
-            Self::Small => builder.heap_size(SMALL_HEAP_SIZE),
-            Self::Medium => builder.heap_size(MEDIUM_HEAP_SIZE).scratch_size(0x80000),
-            Self::Large => builder.heap_size(LARGE_HEAP_SIZE).scratch_size(0x100000),
+            Self::Default => SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
+            Self::Small => SMALL_SCRATCH_SIZE,
+            Self::Medium => MEDIUM_SCRATCH_SIZE,
+            Self::Large => LARGE_SCRATCH_SIZE,
         }
     }
 
@@ -223,6 +227,24 @@ fn bench_guest_call_interrupt_latency(b: &mut criterion::Bencher, size: SandboxS
     });
 }
 
+/// Writes half of scratch to heap the guest has not touched since the last restore.
+fn bench_guest_call_heap_first_touch(b: &mut criterion::Bencher, size: SandboxSize) {
+    let touch_size = (size.scratch_size() / 2) as u64;
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter_custom(|iters| {
+        let mut total_duration = Duration::ZERO;
+        for _ in 0..iters {
+            sbox.restore(snapshot.clone()).unwrap();
+            let start = Instant::now();
+            sbox.call::<()>("AllocAndWritePattern", touch_size).unwrap();
+            total_duration += start.elapsed();
+        }
+        total_duration
+    });
+}
+
 fn guest_calls_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("guest_calls");
 
@@ -251,6 +273,13 @@ fn guest_calls_benchmark(c: &mut Criterion) {
     group.bench_function("interrupt_latency".to_string(), |b| {
         bench_guest_call_interrupt_latency(b, SandboxSize::Default)
     });
+
+    // Default scratch is mostly fixed reservations, so half of it does not fit.
+    for size in [SandboxSize::Small, SandboxSize::Medium, SandboxSize::Large] {
+        group.bench_function(format!("heap_first_touch/{}", size.name()), |b| {
+            bench_guest_call_heap_first_touch(b, size)
+        });
+    }
 
     group.finish();
 }
@@ -480,7 +509,6 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let mut config = SandboxConfiguration::default();
         config.set_h2g_buffer_size(4 * MIB);
         config.set_h2g_pool_pages((2 * SIZE + 8 * MIB).div_ceil(PAGE_SIZE));
-        config.set_heap_size(SIZE as u64 * 15);
         config.set_scratch_size(9 * SIZE);
 
         let sandbox = UninitializedSandbox::new(

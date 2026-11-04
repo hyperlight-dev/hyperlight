@@ -27,7 +27,7 @@ With this background in mind, it's well worth focusing on the "lifecycle" of a V
 At the highest level, Hyperlight takes roughly the following steps to create and run arbitrary code inside a VM:
 
 1. Loads a specially built, statically linked binary (currently, the [PE](https://en.wikipedia.org/wiki/Portable_Executable) and [ELF](https://en.wikipedia.org/wiki/Executable_and_Linkable_Format) executable formats are supported) into memory. This is the code that is executed inside a virtual machine.
-2. Allocates additional memory regions, for example stack and heap for the guest, as well as some regions used for communication between the host and the guest.
+2. Allocates a scratch memory region. The guest maps its stack and heap from scratch on first touch. Scratch also holds the regions used for communication between the host and the guest.
 3. Creates a Virtual Machine and maps shared memory into it
 5. Create one virtual CPU (vCPU) within the newly created VM
 6. Write appropriate values to the new vCPUs registers.

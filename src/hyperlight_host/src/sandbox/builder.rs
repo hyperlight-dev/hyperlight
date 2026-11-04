@@ -55,7 +55,7 @@ impl Source {
 /// # use hyperlight_host::{Result, SandboxBuilder};
 /// # fn example() -> Result<()> {
 /// let mut sandbox = SandboxBuilder::from_file("guest.bin")
-///     .heap_size(1024 * 1024)
+///     .scratch_size(1024 * 1024)
 ///     .host_function("Add", |a: i32, b: i32| a + b)
 ///     .build()?;
 ///
@@ -120,7 +120,7 @@ impl SandboxBuilder {
 
     /// Build a sandbox restoring the guest from `snapshot`.
     ///
-    /// The snapshot's layout overrides heap, scratch, and transport settings.
+    /// The snapshot's layout overrides scratch and transport settings.
     pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
         Self::with_source(Source::Snapshot(snapshot))
     }
@@ -304,20 +304,8 @@ impl SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Set the guest heap size. A size of 0 selects
-    /// [`SandboxConfiguration::DEFAULT_HEAP_SIZE`].
-    pub fn heap_size(mut self, size: u64) -> Self {
-        self.cfg.set_heap_size(size);
-        self
-    }
-
-    /// The guest heap size, defaulting to
-    /// [`SandboxConfiguration::DEFAULT_HEAP_SIZE`] when no override is set.
-    pub fn get_heap_size(&self) -> u64 {
-        self.cfg.get_heap_size()
-    }
-
-    /// Set how much writable memory to offer the guest.
+    /// Set how much writable memory to offer the guest. Scratch backs the
+    /// guest heap and stack.
     pub fn scratch_size(mut self, size: usize) -> Self {
         self.cfg.set_scratch_size(size);
         self

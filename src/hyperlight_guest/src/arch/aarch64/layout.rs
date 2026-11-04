@@ -5,6 +5,11 @@
 pub const MAIN_STACK_TOP_GVA: u64 = 0x0000_ff00_0000_0000;
 pub const MAIN_STACK_LIMIT_GVA: u64 = 0x0000_fe00_0000_0000;
 
+/// Guest heap. Pages are mapped from scratch on first touch. The range
+/// is 512 GiB aligned so it sits under one level 0 table entry.
+pub const HEAP_GVA_START: u64 = 0x0000_fd80_0000_0000;
+pub const HEAP_GVA_END: u64 = 0x0000_fe00_0000_0000;
+
 pub fn scratch_size() -> u64 {
     let addr = crate::layout::scratch_size_gva();
     unsafe { addr.read_volatile() }

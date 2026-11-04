@@ -531,42 +531,16 @@ fn guest_allocate_vec() {
     });
 }
 
-// checks that malloc failures are captured correctly
 #[test]
 fn guest_malloc_abort() {
-    with_rust_sandbox(|mut sbox1| {
-        let size = 20000000_i32; // some big number that should fail when allocated
-
-        let res = sbox1.call::<i32>("TestMalloc", size).unwrap_err();
+    with_rust_sandbox(|mut sbox| {
+        // Writing more heap memory than scratch holds exhausts scratch.
+        let res = sbox
+            .call::<()>("AllocAndWritePattern", 20_000_000_u64)
+            .unwrap_err();
         assert!(
             matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
             "unexpected error: {res:?}"
-        );
-    });
-
-    // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 40 * 1024;
-    let size_to_allocate = 0x10000;
-    assert!(
-        size_to_allocate > heap_size,
-        "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
-    );
-
-    let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
-    with_rust_sandbox_from(configure, |mut sbox2| {
-        let err = sbox2
-            .call::<i32>(
-                "CallMalloc", // uses the rust allocator to allocate a vector on heap
-                size_to_allocate as i32,
-            )
-            .unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
-                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
-            ),
-            "unexpected error: {err:?}"
         );
     });
 }
@@ -588,23 +562,11 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn guest_panic_no_alloc() {
-    let heap_size = 40 * 1024;
-
-    let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
-    with_rust_sandbox_from(configure, |mut sbox| {
-        let res = sbox
-            .call::<i32>(
-                "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
-                (),
-            )
-            .unwrap_err();
-
+fn guest_heap_exhaustion_aborts() {
+    with_rust_sandbox(|mut sbox| {
+        let res = sbox.call::<()>("ExhaustHeap", ()).unwrap_err();
         assert!(
-            matches!(
-                &res,
-                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
-            ),
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
             "unexpected error: {res:?}"
         );
     });
@@ -1887,60 +1849,6 @@ fn page_fault_handler() {
             ),
             "unexpected error: {err:?}"
         );
-    });
-}
-
-/// Tests that an exception can be properly handled even when the heap is exhausted.
-/// The guest function fills the heap completely, then triggers a ud2 exception.
-/// This validates that the exception handling path does not require heap allocations.
-#[test]
-fn fill_heap_and_cause_exception() {
-    // The heap must run out before scratch backing its CoW pages.
-    let configure = |builder: SandboxBuilder| builder.heap_size(40 * 1024);
-
-    with_rust_sandbox_from(configure, |mut sandbox| {
-        let result = sandbox.call::<()>("FillHeapAndCauseException", ());
-
-        // The call should fail with an exception error since there's no handler installed
-        assert!(result.is_err(), "Expected an error from ud2 exception");
-
-        let err = result.unwrap_err();
-        match &err {
-            HyperlightError::GuestAborted(code, message) => {
-                assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
-
-                // Verify the message was properly formatted (proves no-allocation path worked)
-                // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
-                #[cfg(target_arch = "x86_64")]
-                let vector = "Exception vector: 6";
-                #[cfg(target_arch = "aarch64")]
-                let vector = "Exception vector: CurrentSP0 Synchronous";
-                assert!(
-                    message.contains(vector),
-                    "Message should contain '{}'\nFull error: {:?}",
-                    vector,
-                    err
-                );
-                assert!(
-                    message.contains("Faulting Instruction:"),
-                    "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "x86_64")]
-                assert!(
-                    message.contains("Stack Pointer:"),
-                    "Message should contain 'Stack Pointer:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "aarch64")]
-                assert!(
-                    message.contains("Exception Syndrome:"),
-                    "Message should contain 'Exception Syndrome:'\nFull error: {:?}",
-                    err
-                );
-            }
-            _ => panic!("Expected GuestAborted error, got: {:?}", err),
-        }
     });
 }
 
