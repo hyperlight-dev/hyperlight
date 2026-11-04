@@ -120,7 +120,8 @@ impl SandboxBuilder {
 
     /// Build a sandbox restoring the guest from `snapshot`.
     ///
-    /// The snapshot's layout overrides scratch and transport settings.
+    /// The snapshot's layout overrides scratch and transport settings. The
+    /// snapshot keeps its executable heap setting.
     pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
         Self::with_source(Source::Snapshot(snapshot))
     }
@@ -314,6 +315,14 @@ impl SandboxBuilder {
     /// How much writable memory is offered to the guest.
     pub fn get_scratch_size(&self) -> usize {
         self.cfg.get_scratch_size()
+    }
+
+    /// Set whether guest heap pages are mapped executable.
+    ///
+    /// See [`SandboxConfiguration::set_executable_heap`].
+    pub fn executable_heap(mut self, executable: bool) -> Self {
+        self.cfg.set_executable_heap(executable);
+        self
     }
 
     /// Set the G2H virtqueue descriptor count.

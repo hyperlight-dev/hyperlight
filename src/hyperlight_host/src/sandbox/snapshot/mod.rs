@@ -675,7 +675,7 @@ impl Snapshot {
             &mut data[layout.guest_code_offset()..],
         )?;
 
-        layout.write_peb(data)?;
+        layout.write_peb(data, cfg.get_executable_heap())?;
 
         blob.map(|x| layout.write_init_data(data, x.data))
             .transpose()?;

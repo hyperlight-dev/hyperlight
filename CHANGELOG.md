@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* Add `SandboxConfiguration::set_executable_heap` and `SandboxBuilder::executable_heap` to choose per sandbox whether guest heap pages are executable. The `executable_heap` cargo feature sets the default.
+
 ### Changed
 * **Breaking:** Snapshots use ABI 10. Existing snapshots must be regenerated.
 
