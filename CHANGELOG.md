@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 * Guest libc accepts null buffers for zero-length writes.
 * Fix calls to guest functions with more than 11 parameters. Registration accepts up to 32, but every call with more than 11 failed.
+* Fix restore on KVM not rewinding the guest TSC when restores are less than a second apart.
 
 ## [v0.18.0] - 2026-10-13
 
