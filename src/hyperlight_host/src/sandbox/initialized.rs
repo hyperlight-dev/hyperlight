@@ -1279,6 +1279,35 @@ impl Sandbox {
     pub fn status(&self) -> SandboxStatus {
         self.status
     }
+
+    /// Returns how many bytes of scratch memory the guest has allocated
+    /// since the sandbox was last restored or snapshotted.
+    /// Before the first restore or snapshot, this includes allocations
+    /// made during guest initialisation.
+    ///
+    /// Host-reserved scratch, such as the transport and exception stack,
+    /// is excluded.
+    ///
+    /// The guest controls this value. A malicious guest can make it
+    /// report less or more scratch than it actually allocated.
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::SandboxBuilder;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox = SandboxBuilder::from_file("guest.bin").build()?;
+    /// let snapshot = sandbox.snapshot()?;
+    /// sandbox.call::<()>("WriteSomething", ())?;
+    /// println!(
+    ///     "guest-reported scratch allocation: {} bytes",
+    ///     sandbox.scratch_allocated_bytes()?
+    /// );
+    /// sandbox.restore(snapshot)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn scratch_allocated_bytes(&self) -> Result<u64> {
+        self.mem_mgr.scratch_allocated_bytes()
+    }
 }
 
 impl Callable for Sandbox {
@@ -1671,6 +1700,35 @@ mod tests {
         sbox.restore(small).unwrap();
         let echo: String = sbox.call("Echo", "recovered".to_string()).unwrap();
         assert_eq!(echo, "recovered");
+    }
+
+    /// The scratch a guest has allocated covers every page it wrote, grows
+    /// as it writes more, and starts again from zero at a snapshot and at a
+    /// restore.
+    #[test]
+    fn scratch_allocated_bytes_counts_written_pages() {
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .heap_size(8 << 20)
+            .scratch_size(16 << 20)
+            .build()
+            .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+        assert_eq!(sbox.scratch_allocated_bytes().unwrap(), 0);
+
+        sbox.call::<()>("AllocAndWritePattern", 1u64 << 20).unwrap();
+        let one = sbox.scratch_allocated_bytes().unwrap();
+        assert!(one >= 1 << 20, "{one}");
+        // The new pattern is built before the old one is dropped.
+        sbox.call::<()>("AllocAndWritePattern", 2u64 << 20).unwrap();
+        let three = sbox.scratch_allocated_bytes().unwrap();
+        assert!(three >= 3 << 20, "{three}");
+
+        sbox.restore(snapshot).unwrap();
+        assert_eq!(sbox.scratch_allocated_bytes().unwrap(), 0);
+        sbox.call::<()>("AllocAndWritePattern", 1u64 << 20).unwrap();
+        assert_eq!(sbox.scratch_allocated_bytes().unwrap(), one);
+        sbox.snapshot().unwrap();
+        assert_eq!(sbox.scratch_allocated_bytes().unwrap(), 0);
     }
 
     /// A resized capture installs like any capture. The sandbox keeps its
@@ -3121,6 +3179,15 @@ mod tests {
                     allocator,
                 )
                 .unwrap();
+            // The getter holds a corrupt allocator to the scratch the guest
+            // can allocate.
+            let arena = sbox.mem_mgr.layout.get_transport_arena().base_addr();
+            let allocated = if allocator == 0 {
+                0
+            } else {
+                arena - first_free
+            };
+            assert_eq!(sbox.scratch_allocated_bytes().unwrap(), allocated);
 
             // `map_region` drops the cached snapshot without running the guest.
             let map_mem = allocate_guest_memory();
