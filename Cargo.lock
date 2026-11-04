@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-csharp"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "hyperlight-component-util",
  "proc-macro2",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "itertools 0.15.0",
  "prettyplease 0.3.0",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "flatbuffers",
  "hyperlight-common",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-macro"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "hyperlight-common",
  "spin",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "bindgen 0.73.2",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-libc"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "bindgen 0.73.2",
@@ -1918,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cbindgen",
  "flatbuffers",

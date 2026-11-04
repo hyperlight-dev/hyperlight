@@ -1702,7 +1702,6 @@ mod tests {
     #[test]
     fn scratch_allocated_bytes_counts_written_pages() {
         let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            .heap_size(8 << 20)
             .scratch_size(16 << 20)
             .build()
             .unwrap();

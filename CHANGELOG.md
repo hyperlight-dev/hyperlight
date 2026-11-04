@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.19.0] - 2026-11-04
+
 ### Added
 * `Sandbox::snapshot_with_options` takes a snapshot with `SnapshotOptions`. `SnapshotOptions::scratch_size` gives the sandbox, and later restores of the snapshot, a different scratch size. A guest can boot with the scratch its initialisation needs and run guest function calls from a snapshot with only the scratch they need, so each restore costs less. It can also give a guest more scratch than it booted with.
 * `Sandbox::scratch_allocated_bytes` returns how much scratch the guest has allocated since the sandbox was last restored or snapshotted. The guest controls the value it is read from.
@@ -459,7 +461,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.18.0...HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.19.0...HEAD>
+[v0.19.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.18.0...v0.19.0>
 [v0.18.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.17.0...v0.18.0>
 [v0.17.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...v0.17.0>
 [v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
