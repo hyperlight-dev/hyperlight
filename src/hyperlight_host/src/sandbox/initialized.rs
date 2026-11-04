@@ -4832,10 +4832,8 @@ mod tests {
 
         /// KVM ignores a host TSC write within one second of the value it
         /// expects, so restores closer together than that exercise the KVM path.
-        /// The 500 ms gaps tolerate host stalls shorter than that. WHP is
-        /// excluded because it keeps elapsed time on hosts with `TSC_ADJUST`.
+        /// The 500 ms gaps tolerate host stalls shorter than that.
         #[test]
-        #[cfg(any(kvm, mshv3))]
         fn restore_rewinds_tsc() {
             let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
                 .build()

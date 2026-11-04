@@ -180,13 +180,9 @@ MTRRs cannot be read.
 
 ### TSC
 
-Hyper-V stores `TSC` and `TSC_ADJUST` independently. While time runs, it
-preserves `TSC - TSC_ADJUST`: writing `TSC` also changes `TSC_ADJUST`, while
-writing `TSC_ADJUST` changes the internal TSC offset.
-
-Restore writes `TSC` before `TSC_ADJUST`. The two writes remove the guest's
-delta without freezing partition time. KVM also restores `TSC` so all backends
-use the same guest-time semantics.
+Restore sets the guest TSC back to its snapshot value. MSHV and WHP partitions
+disable `TscAdjustSupport`. That feature makes a write to `TSC` or `TSC_ADJUST`
+move the other by the same amount, so restoring both would undo the rewind.
 
 ## Retained-state inventory
 
