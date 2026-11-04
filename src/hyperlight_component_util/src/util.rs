@@ -49,7 +49,7 @@ impl WitSource {
                     panic!("failed to parse WIT input '{}': {err:#}", path.display())
                 });
 
-                wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                wit_component::encode(&resolve, package, false).unwrap_or_else(|err| {
                     panic!(
                         "failed to encode WIT input '{}' as a wasm component type: {err:#}",
                         path.display()
@@ -79,7 +79,7 @@ impl WitSource {
                                 .unwrap_or_else(|err| {
                                     panic!("failed to parse inline WIT input: {err:#}")
                                 });
-                        wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                        wit_component::encode(&resolve, package, false).unwrap_or_else(|err| {
                             panic!("failed to encode inline WIT input as a wasm component type: {err:#}")
                         })
                     }
