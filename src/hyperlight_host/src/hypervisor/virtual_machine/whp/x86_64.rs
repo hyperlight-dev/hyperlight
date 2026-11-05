@@ -32,6 +32,7 @@ use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::{
     get_surrogate_process_manager, surrogates_disabled,
 };
+use crate::hypervisor::virtual_machine::partition_features::{PROCESSOR_FEATURES, XSAVE_FEATURES};
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::{self, TimerThread};
 use crate::hypervisor::virtual_machine::{
@@ -62,6 +63,24 @@ pub(crate) fn is_hypervisor_present() -> bool {
             false
         }
     }
+}
+
+/// `value` holds the union field that matches `code`.
+fn set_partition_property(
+    partition: WHV_PARTITION_HANDLE,
+    code: WHV_PARTITION_PROPERTY_CODE,
+    value: WHV_PARTITION_PROPERTY,
+) -> Result<(), CreateVmError> {
+    // SAFETY: `value` is a readable buffer of the size passed.
+    unsafe {
+        WHvSetPartitionProperty(
+            partition,
+            code,
+            &value as *const _ as *const c_void,
+            std::mem::size_of_val(&value) as u32,
+        )
+    }
+    .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))
 }
 
 /// Maps an MSR index to the WHP register used for host reset.
@@ -278,15 +297,15 @@ impl WhpVm {
             Self::check_lapic_emulation_support()?;
 
             let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-            WHvSetPartitionProperty(
+            set_partition_property(
                 p,
                 WHvPartitionPropertyCodeProcessorCount,
-                &NUM_CPU as *const _ as *const _,
-                std::mem::size_of_val(&NUM_CPU) as _,
-            )
-            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+                WHV_PARTITION_PROPERTY {
+                    ProcessorCount: NUM_CPU,
+                },
+            )?;
 
-            Self::disable_tsc_adjust(p)?;
+            Self::configure_partition(p)?;
 
             #[cfg(feature = "hw-interrupts")]
             Self::enable_lapic_emulation(p)?;
@@ -322,37 +341,77 @@ impl WhpVm {
         })
     }
 
-    /// `TscAdjustSupport` makes a write to `TSC` or `TSC_ADJUST` move the other
-    /// by the same amount, so restoring both would undo the TSC rewind.
-    fn disable_tsc_adjust(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
-        // Bit 18 of `WHV_PROCESSOR_FEATURES1`, the second bank.
-        const TSC_ADJUST_SUPPORT: u64 = 1 << 18;
-
+    /// Limits the guest to the processor features in `partition_features` and gives it its own
+    /// speculation domain. The hypervisor then flushes branch predictors when the guest exits.
+    fn configure_partition(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
         let mut banks = WHV_PROCESSOR_FEATURES_BANKS {
-            BanksCount: 2,
+            BanksCount: PROCESSOR_FEATURES.len() as u32,
             ..Default::default()
         };
-        let size = std::mem::size_of_val(&banks) as u32;
-        // SAFETY: `banks` is a buffer of `size` bytes, and every view of its
-        // union is plain `u64` data.
+        // SAFETY: `banks` is a writable buffer of the size passed, and every view of its union is
+        // plain `u64` data.
         unsafe {
             WHvGetPartitionProperty(
                 partition,
                 WHvPartitionPropertyCodeProcessorFeaturesBanks,
                 &mut banks as *mut _ as *mut c_void,
-                size,
+                std::mem::size_of_val(&banks) as u32,
                 None,
             )
             .map_err(|e| CreateVmError::GetPartitionProperty(e.into()))?;
-            banks.Anonymous.AsUINT64[1] &= !TSC_ADJUST_SUPPORT;
-            WHvSetPartitionProperty(
-                partition,
-                WHvPartitionPropertyCodeProcessorFeaturesBanks,
-                &banks as *const _ as *const c_void,
-                size,
-            )
-            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))
+            for (bank, enabled) in banks.Anonymous.AsUINT64.iter_mut().zip(PROCESSOR_FEATURES) {
+                *bank &= enabled;
+            }
         }
+        set_partition_property(
+            partition,
+            WHvPartitionPropertyCodeProcessorFeaturesBanks,
+            WHV_PARTITION_PROPERTY {
+                ProcessorFeaturesBanks: banks,
+            },
+        )?;
+
+        let mut xsave = WHV_PROCESSOR_XSAVE_FEATURES::default();
+        // SAFETY: `xsave` is a writable buffer of the size passed, and every view of its union is
+        // plain `u64` data.
+        unsafe {
+            WHvGetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeProcessorXsaveFeatures,
+                &mut xsave as *mut _ as *mut c_void,
+                std::mem::size_of_val(&xsave) as u32,
+                None,
+            )
+            .map_err(|e| CreateVmError::GetPartitionProperty(e.into()))?;
+            xsave.AsUINT64 &= XSAVE_FEATURES;
+        }
+        set_partition_property(
+            partition,
+            WHvPartitionPropertyCodeProcessorXsaveFeatures,
+            WHV_PARTITION_PROPERTY {
+                ProcessorXsaveFeatures: xsave,
+            },
+        )?;
+
+        // The guest uses no Hyper-V enlightenments.
+        set_partition_property(
+            partition,
+            WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+            WHV_PARTITION_PROPERTY {
+                SyntheticProcessorFeaturesBanks: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
+                    BanksCount: 1,
+                    ..Default::default()
+                },
+            },
+        )?;
+
+        set_partition_property(
+            partition,
+            WHvPartitionPropertyCodeSeparateSecurityDomain,
+            WHV_PARTITION_PROPERTY {
+                SeparateSecurityDomain: windows::core::BOOL(1),
+            },
+        )
     }
 
     fn get_registers(
@@ -1301,17 +1360,13 @@ impl WhpVm {
 
     /// Enable LAPIC emulation on the given partition.
     fn enable_lapic_emulation(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
-        let apic_mode = WHvX64LocalApicEmulationModeXApic;
-        unsafe {
-            WHvSetPartitionProperty(
-                partition,
-                WHvPartitionPropertyCodeLocalApicEmulationMode,
-                &apic_mode as *const _ as *const _,
-                std::mem::size_of_val(&apic_mode) as _,
-            )
-            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-        }
-        Ok(())
+        set_partition_property(
+            partition,
+            WHvPartitionPropertyCodeLocalApicEmulationMode,
+            WHV_PARTITION_PROPERTY {
+                LocalApicEmulationMode: WHvX64LocalApicEmulationModeXApic,
+            },
+        )
     }
 
     /// Initialize the LAPIC via the bulk interrupt-controller state API.
@@ -1486,6 +1541,29 @@ unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange
     }
 
     unsafe { Ok(std::mem::transmute_copy(&address)) }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+
+    #[test]
+    fn partition_has_own_security_domain() {
+        let vm = WhpVm::new().unwrap();
+        let mut value = windows::core::BOOL(0);
+        // SAFETY: `value` is a writable buffer of the size passed.
+        unsafe {
+            WHvGetPartitionProperty(
+                vm.partition,
+                WHvPartitionPropertyCodeSeparateSecurityDomain,
+                &mut value as *mut _ as *mut c_void,
+                std::mem::size_of_val(&value) as u32,
+                None,
+            )
+        }
+        .unwrap();
+        assert!(value.as_bool());
+    }
 }
 
 #[cfg(test)]

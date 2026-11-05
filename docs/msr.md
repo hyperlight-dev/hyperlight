@@ -37,7 +37,7 @@ The backend owns discovery because register mappings and capabilities differ.
 Sorting, deduplication, baseline capture, snapshot validation, and the fallback
 to the destination baseline are shared in `MsrResetState`.
 
-Every reset entry must represent guest-writable retained state the host can read
+Every reset entry must represent guest-writable state the host can read
 and write. On the Hyper-V backends the candidate table is derived from the
 Hyper-V source and must be audited when that source, register mappings, or
 feature exposure changes. VM creation probes each entry with a host read and a
@@ -125,48 +125,26 @@ poisons the sandbox.
 ## Hyper-V backends
 
 MSHV and WHP cannot filter guest MSR access, so restore scrubs a broad set of
-retained MSRs to the destination baseline before writing the saved core and
-declared-MSR values. The scrub set is built from:
+MSRs that hold guest state to the destination baseline before writing the saved
+core and declared-MSR values. The scrub set is built from:
 
-* Retained-state candidates the backend maps and can read, including state
-  reachable only through the VP register API such as active SSP.
+* Candidates the backend maps and can read, including state reachable only
+  through the VP register API such as active SSP.
 * MTRRs required by the virtual CPU's `MTRRCAP`.
 
 The candidate table is not an intercept list. Hyper-V also intercepts read-only,
-command, and host-derived MSRs that retain no guest-controlled value. An entry
+command, and host-derived MSRs that keep no guest-controlled value. An entry
 belongs in the table only when guest execution can leave state that affects
-later execution.
+later execution. The table ignores the host's MSR index list. That list does
+not show which MSRs keep guest state.
+
+Guest CPU features limit which MSRs MSHV and WHP guests can reach. See
+[Guest CPU features](./guest-cpu.md).
 
 A future partition-scrub hypercall will reset all MSRs directly and replace the
 candidate table. WHP has kernel support. MSHV support is in progress. The saved
 set stays the core plus the declared MSRs across that migration, so restore
 behavior does not change.
-
-### MSHV
-
-MSHV enables the processor features supported by the host unless a partition
-feature mask disables them. Its guest-visible MSR surface therefore varies by
-host CPU.
-
-MSHV maps `IA32_XSS` through `MSR_IA32_REGISTER_U_XSS`. It maps `IA32_MPERF`
-and `IA32_APERF` through the per-VP `MCount` and `ACount` registers. TSX,
-WAITPKG, CET, XFD, MPX, and deadline-timer state enter the reset set when the
-host exposes and maps them.
-
-The host's enumerated MSR index list does not identify retained state, so it
-does not define the reset set.
-
-On capable Intel hosts MSHV can expose ENQCMD and PASID. PASID is a supervisor
-XSAVE component, so XSAVE restore owns it.
-
-### WHP
-
-WHP's default feature banks disable speculation control, experimental
-`DEBUGCTL` bits, and performance monitoring. Its supported feature mask omits
-ENQCMD and defines no FRED feature, so WHP does not expose PASID or FRED.
-
-WHP maps supported MSRs to `WHV_REGISTER_NAME` values. The same mapping is used
-for snapshot reads and restore writes.
 
 ### MTRRs
 
@@ -178,17 +156,12 @@ clear.
 VM creation fails if `VCNT` exceeds the supported maximum of 16 or required
 MTRRs cannot be read.
 
-### TSC
+## Guest-state inventory
 
-Restore sets the guest TSC back to its snapshot value. MSHV and WHP partitions
-disable `TscAdjustSupport`. That feature makes a write to `TSC` or `TSC_ADJUST`
-move the other by the same amount, so restoring both would undo the rewind.
+These MSRs hold guest-writable state. A backend resets each one the host
+exposes. MSHV and WHP guests lack the features behind many of them.
 
-## Retained-state inventory
-
-These MSRs are reset when supported by the selected backend and host.
-
-| MSR (index) | Retained state |
+| MSR (index) | State |
 | --- | --- |
 | SYSENTER CS, ESP, EIP (`0x174`-`0x176`) | System-call entry state. |
 | STAR, LSTAR, CSTAR, SFMASK (`0xC000_0081`-`0xC000_0084`) | System-call target state. |
@@ -239,12 +212,5 @@ CPU. It is a regression tool, not a complete inventory of vendor MSRs.
   MSHV gains kernel support. WHP already has it.
 * Exercise MSHV and WHP on more CPU models. Their reachable MSR surfaces depend
   on host features.
-* Disable optional stateful features the guest does not need, so the guest
-  cannot retain that state. This shrinks the reset set toward the always-present
-  core (SYSENTER, syscall targets, KERNEL_GS_BASE, PAT, DEBUGCTL, TSC, MTRRs),
-  which every host can read. The reset set then becomes fixed, so the discovery
-  probe that drops host-unsupported entries becomes unnecessary, and the audit
-  surface shrinks. Do not add a minimum feature set unless the goal is to bar
-  some host CPUs from running Hyperlight.
 * Extend the inventory when Hyperlight enables new CPU features such as
   perfmon, FRED, or nested virtualization.

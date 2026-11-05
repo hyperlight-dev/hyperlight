@@ -59,6 +59,10 @@ host page size, and log level. Earlier snapshots must be regenerated.
 ABI 11 encodes control data with postcard and carries its length in a 16-byte
 message header. Earlier snapshots must be regenerated.
 
+ABI 12 runs MSHV and WHP guests with the CPU features in
+`partition_features.rs`. Earlier snapshots can hold MSRs of features those
+guests lack and must be regenerated.
+
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
 
