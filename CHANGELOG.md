@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Changed
+* **Breaking:** Expose one processor feature set to MSHV and WHP guests. Leave out speculation control, TSX, CET, AMX, and other stateful features Hyperlight guests do not use.
+* Run WHP guests in their own speculation domain.
+
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 

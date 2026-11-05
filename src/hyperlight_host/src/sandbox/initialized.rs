@@ -4870,6 +4870,148 @@ mod tests {
         }
 
         #[test]
+        #[cfg(any(mshv3, target_os = "windows"))]
+        #[allow(unused_unsafe)]
+        fn cpuid_follows_partition_features() {
+            #[cfg(kvm)]
+            if matches!(
+                crate::hypervisor::virtual_machine::get_available_hypervisor(),
+                Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+            ) {
+                return;
+            }
+            const EAX: usize = 0;
+            const EBX: usize = 1;
+            const ECX: usize = 2;
+            const EDX: usize = 3;
+
+            let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .build()
+                .unwrap();
+            let mut cpuid = |leaf: u32, subleaf: u32| -> [u32; 4] {
+                let bytes: Vec<u8> = sbox.call("Cpuid", (leaf, subleaf)).unwrap();
+                std::array::from_fn(|i| {
+                    u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
+                })
+            };
+
+            // (leaf, subleaf, register, bit, feature)
+            let hidden = [
+                (1, 0, ECX, 24, "TSC_DEADLINE"),
+                (6, 0, ECX, 0, "APERF/MPERF"),
+                (7, 0, EBX, 1, "TSC_ADJUST"),
+                (7, 0, EBX, 4, "HLE"),
+                (7, 0, EBX, 11, "RTM"),
+                (7, 0, EBX, 14, "MPX"),
+                (7, 0, ECX, 5, "WAITPKG"),
+                (7, 0, ECX, 7, "CET_SS"),
+                (7, 0, EDX, 20, "CET_IBT"),
+                (7, 0, EDX, 22, "AMX_BF16"),
+                (7, 0, EDX, 24, "AMX_TILE"),
+                (7, 0, EDX, 25, "AMX_INT8"),
+                (7, 0, EDX, 26, "IBRS/IBPB"),
+                (7, 0, EDX, 27, "STIBP"),
+                (7, 0, EDX, 28, "L1D_FLUSH"),
+                (7, 0, EDX, 31, "SSBD"),
+                (7, 2, EDX, 0, "PSFD"),
+                (7, 2, EDX, 4, "BHI_CTRL"),
+                (0xD, 1, EAX, 4, "XFD"),
+                (0x8000_0008, 0, EBX, 4, "RDPRU"),
+                (0x8000_0008, 0, EBX, 12, "AMD IBPB"),
+                (0x8000_0008, 0, EBX, 14, "AMD IBRS"),
+                (0x8000_0008, 0, EBX, 15, "AMD STIBP"),
+                (0x8000_0008, 0, EBX, 24, "AMD SSBD"),
+                (0x8000_0008, 0, EBX, 25, "VIRT_SSBD"),
+            ];
+            for (leaf, subleaf, reg, bit, feature) in hidden {
+                let value = cpuid(leaf, subleaf)[reg];
+                assert_eq!(value & (1 << bit), 0, "{feature} is exposed");
+            }
+
+            const XCR0_ALLOWED: u64 = 0b1110_0111;
+            let xcr0 = cpuid(0xD, 0);
+            let xcr0 = u64::from(xcr0[EAX]) | u64::from(xcr0[EDX]) << 32;
+            assert_eq!(
+                xcr0 & !XCR0_ALLOWED,
+                0,
+                "XCR0 allows state beyond x87, SSE, AVX, and AVX-512"
+            );
+            assert_eq!(cpuid(0xD, 1)[ECX], 0, "IA32_XSS allows supervisor state");
+
+            // Each kept feature the host supports must reach the guest. Invariant TSC is not
+            // checked because a nested Hyper-V hides it from child partitions.
+            let kept = [
+                (1, 0, ECX, 0, "SSE3"),
+                (1, 0, ECX, 1, "PCLMULQDQ"),
+                (1, 0, ECX, 9, "SSSE3"),
+                (1, 0, ECX, 12, "FMA"),
+                (1, 0, ECX, 13, "CMPXCHG16B"),
+                (1, 0, ECX, 17, "PCID"),
+                (1, 0, ECX, 19, "SSE4.1"),
+                (1, 0, ECX, 20, "SSE4.2"),
+                (1, 0, ECX, 22, "MOVBE"),
+                (1, 0, ECX, 23, "POPCNT"),
+                (1, 0, ECX, 25, "AES"),
+                (1, 0, ECX, 26, "XSAVE"),
+                (1, 0, ECX, 28, "AVX"),
+                (1, 0, ECX, 29, "F16C"),
+                (1, 0, ECX, 30, "RDRAND"),
+                (7, 0, EBX, 0, "FSGSBASE"),
+                (7, 0, EBX, 3, "BMI1"),
+                (7, 0, EBX, 5, "AVX2"),
+                (7, 0, EBX, 7, "SMEP"),
+                (7, 0, EBX, 8, "BMI2"),
+                (7, 0, EBX, 9, "ERMS"),
+                (7, 0, EBX, 10, "INVPCID"),
+                (7, 0, EBX, 16, "AVX512F"),
+                (7, 0, EBX, 17, "AVX512DQ"),
+                (7, 0, EBX, 18, "RDSEED"),
+                (7, 0, EBX, 19, "ADX"),
+                (7, 0, EBX, 20, "SMAP"),
+                (7, 0, EBX, 21, "AVX512_IFMA"),
+                (7, 0, EBX, 23, "CLFLUSHOPT"),
+                (7, 0, EBX, 28, "AVX512CD"),
+                (7, 0, EBX, 30, "AVX512BW"),
+                (7, 0, EBX, 31, "AVX512VL"),
+                (7, 0, ECX, 1, "AVX512_VBMI"),
+                (7, 0, ECX, 2, "UMIP"),
+                (7, 0, ECX, 6, "AVX512_VBMI2"),
+                (7, 0, ECX, 8, "GFNI"),
+                (7, 0, ECX, 9, "VAES"),
+                (7, 0, ECX, 10, "VPCLMULQDQ"),
+                (7, 0, ECX, 11, "AVX512_VNNI"),
+                (7, 0, ECX, 12, "AVX512_BITALG"),
+                (7, 0, ECX, 14, "AVX512_VPOPCNTDQ"),
+                (7, 0, ECX, 22, "RDPID"),
+                (7, 0, EDX, 4, "FSRM"),
+                (7, 0, EDX, 8, "AVX512_VP2INTERSECT"),
+                (7, 0, EDX, 10, "MD_CLEAR"),
+                (7, 0, EDX, 23, "AVX512_FP16"),
+                (7, 1, EAX, 4, "AVX_VNNI"),
+                (7, 1, EAX, 5, "AVX512_BF16"),
+                (0xD, 1, EAX, 0, "XSAVEOPT"),
+                (0xD, 1, EAX, 1, "XSAVEC"),
+                (0x8000_0001, 0, ECX, 0, "LAHF/SAHF"),
+                (0x8000_0001, 0, ECX, 5, "LZCNT"),
+                (0x8000_0001, 0, ECX, 6, "SSE4A"),
+                (0x8000_0001, 0, ECX, 8, "PREFETCHW"),
+                (0x8000_0001, 0, ECX, 11, "XOP"),
+                (0x8000_0001, 0, ECX, 16, "FMA4"),
+                (0x8000_0001, 0, EDX, 26, "1 GB pages"),
+                (0x8000_0001, 0, EDX, 27, "RDTSCP"),
+            ];
+            for (leaf, subleaf, reg, bit, feature) in kept {
+                // SAFETY: CPUID has no memory effects.
+                let host = unsafe { std::arch::x86_64::__cpuid_count(leaf, subleaf) };
+                let host = [host.eax, host.ebx, host.ecx, host.edx][reg];
+                if host & (1 << bit) != 0 {
+                    let value = cpuid(leaf, subleaf)[reg];
+                    assert_ne!(value & (1 << bit), 0, "{feature} is hidden");
+                }
+            }
+        }
+
+        #[test]
         fn snapshot_msr_values_survive_full_in_memory_lifecycle() {
             let mut source = SandboxBuilder::from_file(simple_guest_as_pathbuf())
                 .guest_msrs(&[KERNEL_GS_BASE])

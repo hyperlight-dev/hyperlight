@@ -13,8 +13,9 @@ use mshv_bindings::LapicState;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, SpecialRegisters, StandardRegisters, XSave, Xcrs,
-    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES,
+    SpecialRegisters, StandardRegisters, XSave, Xcrs, hv_message_type,
+    hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
@@ -44,6 +45,7 @@ use crate::hypervisor::regs::{
 };
 #[cfg(test)]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
+use crate::hypervisor::virtual_machine::partition_features::{PROCESSOR_FEATURES, XSAVE_FEATURES};
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
@@ -171,14 +173,20 @@ impl MshvVm {
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
 
+        // The kernel takes masks of disabled features.
         #[allow(unused_mut)]
-        let mut pr: mshv_create_partition_v2 = Default::default();
-        // The default has no partition flags. Hardware interrupts add only the
-        // LAPIC required by request_virtual_interrupt.
+        let mut pr = mshv_create_partition_v2 {
+            pt_flags: 1u64 << MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES,
+            pt_num_cpu_fbanks: PROCESSOR_FEATURES.len() as u16,
+            pt_cpu_fbanks: PROCESSOR_FEATURES.map(|bank| !bank),
+            pt_disabled_xsave: !XSAVE_FEATURES,
+            ..Default::default()
+        };
+        // Hardware interrupts add the LAPIC required by request_virtual_interrupt.
         #[cfg(feature = "hw-interrupts")]
         {
             use mshv_bindings::MSHV_PT_BIT_LAPIC;
-            pr.pt_flags = 1u64 << MSHV_PT_BIT_LAPIC;
+            pr.pt_flags |= 1u64 << MSHV_PT_BIT_LAPIC;
         }
         // It's important to use create_vm_with_args() (not create_vm()),
         // because create_vm() sets up a SynIC partition by default.

@@ -45,3 +45,5 @@ This project is composed internally of several components, depicted in the below
 * [Hyperlight Surrogate Development Notes](./hyperlight-surrogate-development-notes.md)
 * [Debugging Hyperlight](./debugging-hyperlight.md)
 * [Signal Handling in Hyperlight](./signal-handlers-development-notes.md)
+* [MSR state across restore](./msr.md)
+* [Guest CPU features](./guest-cpu.md)
