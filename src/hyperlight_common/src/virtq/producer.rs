@@ -681,6 +681,7 @@ pub struct ChainBuilder<M: MemOps> {
     wr_caps: SmallVec<[usize; 4]>,
     writable_avail: bool,
     max_descs: usize,
+    keep_free: usize,
 }
 
 impl<M: MemOps> ChainBuilder<M> {
@@ -692,6 +693,7 @@ impl<M: MemOps> ChainBuilder<M> {
             wr_caps: SmallVec::new(),
             writable_avail: false,
             max_descs,
+            keep_free: 0,
         }
     }
 
@@ -727,6 +729,17 @@ impl<M: MemOps> ChainBuilder<M> {
         self
     }
 
+    /// Keep room for `n` single-slot chains after this one.
+    ///
+    /// [`build`](Self::build) leaves `n` ring descriptors and `n` pool slots free, or reports
+    /// [`VirtqError::Backpressure`]. [`writable_avail`](Self::writable_avail) stops at the kept
+    /// room. A kept slot can be in either tier, so each kept chain must fit the smallest slot.
+    /// Only `build` checks the room. Submission checks the chain alone.
+    pub fn keep_free(mut self, n: usize) -> Self {
+        self.keep_free = n;
+        self
+    }
+
     /// Allocate buffers and return a [`SendChain`] for writing.
     ///
     /// # Errors
@@ -740,7 +753,7 @@ impl<M: MemOps> ChainBuilder<M> {
             return Err(VirtqError::InvalidState);
         }
 
-        // Count explicit descriptors against the captured ring budget.
+        // Count explicit and kept descriptors against the captured ring budget.
         let slot_size = self.pool.slot_size();
         let rd_capacity = self.rd_caps.iter().try_fold(0usize, |total, &cap| {
             total.checked_add(cap).ok_or(AllocError::Overflow)
@@ -759,6 +772,7 @@ impl<M: MemOps> ChainBuilder<M> {
         let remaining_descs = self
             .max_descs
             .checked_sub(desc_count)
+            .and_then(|descs| descs.checked_sub(self.keep_free))
             .ok_or(VirtqError::Backpressure)?;
 
         // Reserve explicit records before taking slots. OwnedChain handles rollback.
@@ -802,9 +816,19 @@ impl<M: MemOps> ChainBuilder<M> {
             }
         }
 
+        // Keep slots free after the explicit allocations. OwnedChain handles rollback.
+        if owned.pool.num_free() < self.keep_free {
+            return Err(VirtqError::Backpressure);
+        }
+
         // Use spare descriptors for upper-tier slots left after the explicit allocations.
         if self.writable_avail {
-            let extra = owned.pool.num_free_upper().min(remaining_descs);
+            let spare_slots = owned.pool.num_free() - self.keep_free;
+            let extra = owned
+                .pool
+                .num_free_upper()
+                .min(spare_slots)
+                .min(remaining_descs);
             owned
                 .buffers
                 .try_reserve_exact(extra)
@@ -2666,6 +2690,78 @@ mod tests {
         drop(chain);
 
         assert_eq!(pool.num_live(), 0);
+    }
+
+    #[test]
+    fn chain_avail_leaves_kept_slots() {
+        let builder = make_chain(1, 3, 4096, 8);
+        let pool = builder.pool.clone();
+
+        let chain = builder
+            .keep_free(2)
+            .readable(128)
+            .writable_avail()
+            .build()
+            .unwrap();
+
+        assert_eq!(chain.rd_desc_count(), 1);
+        assert_eq!(chain.wr_desc_count(), 1);
+        assert_eq!(pool.num_free(), 2);
+    }
+
+    #[test]
+    fn chain_avail_leaves_kept_descriptors() {
+        let builder = make_chain(1, 3, 4096, 3);
+        let pool = builder.pool.clone();
+
+        let chain = builder
+            .keep_free(1)
+            .readable(128)
+            .writable_avail()
+            .build()
+            .unwrap();
+
+        assert_eq!(chain.rd_desc_count(), 1);
+        assert_eq!(chain.wr_desc_count(), 1);
+        assert_eq!(pool.num_free_upper(), 2);
+    }
+
+    #[test]
+    fn chain_keep_free_leaves_descriptors() {
+        let builder = make_chain(2, 3, 4096, 2);
+        let pool = builder.pool.clone();
+
+        let result = builder.keep_free(1).readable(128).readable(128).build();
+
+        assert!(matches!(result, Err(VirtqError::Backpressure)));
+        assert_eq!(pool.num_live(), 0);
+
+        let chain = make_chain(2, 3, 4096, 2)
+            .keep_free(1)
+            .readable(128)
+            .build()
+            .unwrap();
+
+        assert_eq!(chain.desc_count(), 1);
+    }
+
+    #[test]
+    fn chain_keep_free_leaves_slots() {
+        let builder = make_chain(1, 1, 4096, 4);
+        let pool = builder.pool.clone();
+
+        let result = builder.keep_free(1).readable(128).readable(4096).build();
+
+        assert!(matches!(result, Err(VirtqError::Backpressure)));
+        assert_eq!(pool.num_live(), 0);
+
+        // The lower slot holds the kept room.
+        let builder = make_chain(1, 1, 4096, 4);
+        let pool = builder.pool.clone();
+        let chain = builder.keep_free(1).readable(4096).build().unwrap();
+
+        assert_eq!(chain.desc_count(), 1);
+        assert_eq!(pool.num_free_lower(), 1);
     }
 
     #[test]

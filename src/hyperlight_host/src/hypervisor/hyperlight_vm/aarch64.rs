@@ -167,11 +167,9 @@ impl HyperlightVm {
         self.vm
             .set_regs(&regs)
             .map_err(DispatchGuestCallError::SetupRegs)?;
-        let result = self
-            .run(mem_mgr, host_funcs)
-            .map_err(DispatchGuestCallError::Run);
+        self.run(mem_mgr, host_funcs)?;
         self.pending_tlb_flush = false;
-        result
+        Ok(())
     }
 
     pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {

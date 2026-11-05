@@ -5,7 +5,8 @@ use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::log_level::GuestLogFilter;
-use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MailboxValue, MsgKind};
+use hyperlight_common::stream::{DEFAULT_WINDOW, Mux, Side};
+use hyperlight_common::transport::{Buf, EncodedMessage, MailboxValue, MsgKind, PendingMessage};
 use hyperlight_common::virtq::ReplyChain;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(crashdump)]
@@ -382,6 +383,10 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) g2h_consumer: Option<G2hConsumer>,
     /// H2G consumer bound to the current scratch mapping.
     pub(crate) h2g_consumer: Option<H2gConsumer>,
+    /// The stream session's Mux. Function calls and results move readers through it.
+    pub(crate) mux: Mux,
+    /// Reusable control storage for outgoing messages.
+    pub(crate) encode_buffer: Vec<u8>,
     /// Correlation ID sequence survives consumer replacement and manager cloning.
     next_guest_cid: u32,
 }
@@ -398,6 +403,8 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            mux: Mux::new(Side::Host, DEFAULT_WINDOW),
+            encode_buffer: Vec::new(),
             next_guest_cid: self.next_guest_cid,
         }
     }
@@ -543,6 +550,8 @@ where
             snapshot_count: 0,
             g2h_consumer: None,
             h2g_consumer: None,
+            mux: Mux::new(Side::Host, DEFAULT_WINDOW),
+            encode_buffer: Vec::new(),
             next_guest_cid: 1,
         }
     }
@@ -597,6 +606,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            mux: self.mux,
+            encode_buffer: self.encode_buffer,
             next_guest_cid: self.next_guest_cid,
         };
         let guest_mgr = SandboxMemoryManager {
@@ -609,6 +620,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
+            mux: Mux::new(Side::Host, DEFAULT_WINDOW),
+            encode_buffer: Vec::new(),
             next_guest_cid: self.next_guest_cid,
         };
         host_mgr.update_scratch_bookkeeping()?;
@@ -623,6 +636,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 
         Ok((host_mgr, guest_mgr))
     }
+}
+
+/// Borrow `consumer`, or fail without poisoning when it is not attached.
+fn attached<C>(consumer: &mut Option<C>) -> Result<&mut C> {
+    consumer
+        .as_mut()
+        .ok_or_else(|| new_error!("virtqueue consumer is not attached"))
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
@@ -724,52 +744,106 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Write a guest function call into the H2G virtqueue.
+    /// Write a guest function call into the H2G virtqueue, then flush pending stream records.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_guest_function_call(&mut self, call: &FunctionCall) -> Result<u32> {
+    pub(crate) fn write_guest_function_call(&mut self, call: FunctionCall) -> Result<u32> {
         let cid = self.next_guest_cid;
+        let bufsz = self.layout.get_h2g_buffer_size();
+        let consumer = attached(&mut self.h2g_consumer)?;
 
-        let mut buffer = Vec::new();
-        let mut externals = ExternalValues::new();
+        let pending = PendingMessage::new_call(call, cid, &mut self.mux)?;
+        let encoded = pending.encode(&mut self.encode_buffer)?;
 
-        let control = call.encode(&mut buffer, &mut externals)?;
+        let res = Self::write_h2g_message(consumer, bufsz, &encoded);
+        if let Err(err) = res {
+            if err.is_poison_error() {
+                pending.fail();
+            }
 
-        let Some(msg) = EncodedMessage::new(MsgKind::Request, cid, control, externals) else {
-            return Err(new_error!("H2G request exceeds the wire payload limit"));
-        };
+            return Err(err);
+        }
 
-        self.write_h2g_message(&msg)?;
+        pending.settle(Ok(()))?;
 
         self.next_guest_cid = cid.wrapping_add(1);
         if self.next_guest_cid == 0 {
             self.next_guest_cid = 1;
         }
 
+        self.flush_h2g_streams()?;
         Ok(cid)
     }
 
-    fn write_h2g_message(&mut self, message: &EncodedMessage<'_>) -> Result<()> {
-        let consumer = self.h2g_consumer.as_mut().ok_or_else(|| {
-            HyperlightError::TransportError("H2G consumer is not attached".into())
-        })?;
+    /// Publish pending stream records into the posted H2G buffers, one buffer per message.
+    pub(crate) fn flush_h2g_streams(&mut self) -> Result<()> {
+        let bufsz = self.layout.get_h2g_buffer_size();
+        let consumer = attached(&mut self.h2g_consumer)?;
 
-        let buffer_size = self.layout.get_h2g_buffer_size();
-        let buffer_count = message.total_len().div_ceil(buffer_size);
+        while let Some(pending) = PendingMessage::next_stream(&mut self.mux, bufsz) {
+            let encoded = pending.encode(&mut self.encode_buffer).map_err(|err| {
+                HyperlightError::TransportError(format!(
+                    "Failed to encode H2G stream message: {err}"
+                ))
+            })?;
 
+            let res = Self::try_write_h2g_message(consumer, bufsz, 0, &encoded);
+            drop(encoded);
+
+            match res {
+                // Commit outgoing stream changes.
+                Ok(true) => pending.settle(Ok(()))?,
+                // Dropping the message leaves its records pending.
+                Ok(false) => break,
+                Err(err) => {
+                    pending.fail();
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write `message` into posted H2G buffers of `buffer_size` bytes.
+    ///
+    /// Too few posted buffers is an admission error, which does not poison.
+    fn write_h2g_message(
+        consumer: &mut H2gConsumer,
+        buffer_size: usize,
+        message: &EncodedMessage<'_>,
+    ) -> Result<()> {
         // Keep a buffer for a control call that releases retained external bytes.
-        let control_reserve = usize::from(message.external_len() != 0);
+        let reserve = usize::from(message.external_len() != 0);
+
+        if !Self::try_write_h2g_message(consumer, buffer_size, reserve, message)? {
+            let buf_cnt = message.total_len().div_ceil(buffer_size);
+            return Err(new_error!(
+                "H2G capacity cannot provide {buf_cnt} buffers with {reserve} spare"
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Write `message` into posted H2G buffers of `buffer_size` bytes, keeping `reserve` more
+    /// posted.
+    ///
+    /// Returns `false` and writes nothing when too few buffers are posted.
+    fn try_write_h2g_message(
+        consumer: &mut H2gConsumer,
+        buffer_size: usize,
+        reserve: usize,
+        message: &EncodedMessage<'_>,
+    ) -> Result<bool> {
+        let buffer_count = message.total_len().div_ceil(buffer_size);
 
         // H2G receive buffers are writable-only, so any readable payload is malformed.
         let maybe_buffers = consumer
-            .poll_batch(buffer_count, control_reserve, 0)
-            .map_err(|error| {
-                HyperlightError::TransportError(format!("H2G poll failed: {error}"))
-            })?;
+            .poll_batch(buffer_count, reserve, 0)
+            .map_err(|err| HyperlightError::TransportError(format!("H2G poll failed: {err}")))?;
 
         let Some(buffers) = maybe_buffers else {
-            return Err(new_error!(
-                "H2G capacity cannot provide {buffer_count} buffers with {control_reserve} spare"
-            ));
+            return Ok(false);
         };
 
         // The message is a contiguous sequence of bytes, but the buffers are a chain of possibly
@@ -804,19 +878,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
 
         debug_assert!(!message.has_remaining());
-        Ok(())
+        Ok(true)
     }
 
-    /// Read a guest function result from the G2H virtqueue.
+    /// Read a guest function result and the messages that follow it from the G2H virtqueue.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_h2g_result_from_g2h(&mut self, cid: u32) -> Result<FunctionCallResult> {
         let max_recv_len = self.layout.get_g2h_queue_dims().pool_len();
-
-        let Some(consumer) = self.g2h_consumer.as_mut() else {
-            return Err(HyperlightError::TransportError(
-                "G2H consumer is not attached".into(),
-            ));
-        };
+        let consumer = attached(&mut self.g2h_consumer)?;
+        let mut result = None;
 
         loop {
             let maybe_next = consumer.poll(max_recv_len).map_err(|err| {
@@ -824,14 +894,25 @@ impl SandboxMemoryManager<HostSharedMemory> {
             })?;
 
             let Some((recv, reply)) = maybe_next else {
-                return Err(HyperlightError::TransportError(
-                    "G2H has no guest function result after halt".into(),
-                ));
+                break;
             };
 
             let mut message = virtq::RecvMessage::new(recv).map_err(|err| {
-                HyperlightError::TransportError(format!("Failed to read G2H result header: {err}"))
+                HyperlightError::TransportError(format!("Failed to read G2H message header: {err}"))
             })?;
+
+            if message.kind() != MsgKind::Response {
+                virtq::recv_one_way(consumer, &mut self.mux, message, reply)
+                    .map_err(|err| HyperlightError::TransportError(format!("{err:#}")))?;
+
+                continue;
+            }
+
+            if result.is_some() {
+                return Err(HyperlightError::TransportError(
+                    "G2H has more than one guest function result".into(),
+                ));
+            }
 
             if !matches!(&reply, ReplyChain::Ack(_)) {
                 return Err(HyperlightError::TransportError(
@@ -839,56 +920,58 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 ));
             }
 
-            match message.kind() {
-                MsgKind::Log => {
-                    if message.cid() != 0 {
-                        return Err(HyperlightError::TransportError(
-                            "G2H log has a correlation ID".into(),
-                        ));
-                    }
-
-                    let log = message.decode_log().map_err(|err| {
-                        HyperlightError::TransportError(format!("Failed to read G2H log: {err}"))
-                    })?;
-
-                    consumer
-                        .complete(message.into_chain(), reply)
-                        .map_err(|err| {
-                            HyperlightError::TransportError(format!(
-                                "Failed to complete G2H log: {err}"
-                            ))
-                        })?;
-
-                    crate::sandbox::outb::emit_guest_log(&log);
-                }
-                MsgKind::Response => {
-                    if message.cid() != cid {
-                        return Err(HyperlightError::TransportError(
-                            "G2H guest function result correlation ID mismatch".into(),
-                        ));
-                    }
-
-                    let result = message.decode_result();
-                    consumer
-                        .complete(message.into_chain(), reply)
-                        .map_err(|err| {
-                            HyperlightError::TransportError(format!(
-                                "Failed to complete G2H guest function result: {err}"
-                            ))
-                        })?;
-
-                    return result.map_err(|err| {
-                        HyperlightError::TransportError(format!(
-                            "Failed to decode G2H guest function result: {err}"
-                        ))
-                    });
-                }
-                kind => {
-                    return Err(HyperlightError::TransportError(format!(
-                        "Expected G2H guest function result, got {kind:?}"
-                    )));
-                }
+            if message.cid() != cid {
+                return Err(HyperlightError::TransportError(
+                    "G2H guest function result correlation ID mismatch".into(),
+                ));
             }
+
+            let decoded = message.decode_result(&mut self.mux);
+
+            consumer
+                .complete(message.into_chain(), reply)
+                .map_err(|err| {
+                    HyperlightError::TransportError(format!(
+                        "Failed to complete G2H guest function result: {err}"
+                    ))
+                })?;
+
+            result = Some(decoded.map_err(|err| {
+                HyperlightError::TransportError(format!(
+                    "Failed to decode G2H guest function result: {err}"
+                ))
+            })?);
+        }
+
+        result.ok_or_else(|| {
+            HyperlightError::TransportError("G2H has no guest function result after halt".into())
+        })
+    }
+
+    /// Apply the one-way messages a progress turn left in the G2H virtqueue.
+    ///
+    /// A guest function result is a transport error.
+    #[cfg(feature = "streams")]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn read_progress_from_g2h(&mut self) -> Result<()> {
+        let max_recv_len = self.layout.get_g2h_queue_dims().pool_len();
+        let consumer = attached(&mut self.g2h_consumer)?;
+
+        loop {
+            let maybe_next = consumer.poll(max_recv_len).map_err(|err| {
+                HyperlightError::TransportError(format!("G2H poll failed: {err}"))
+            })?;
+
+            let Some((recv, reply)) = maybe_next else {
+                return Ok(());
+            };
+
+            let message = virtq::RecvMessage::new(recv).map_err(|err| {
+                HyperlightError::TransportError(format!("Failed to read G2H message header: {err}"))
+            })?;
+
+            virtq::recv_one_way(consumer, &mut self.mux, message, reply)
+                .map_err(|err| HyperlightError::TransportError(format!("{err:#}")))?;
         }
     }
 
@@ -1019,6 +1102,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.g2h_consumer = None;
         self.h2g_consumer = None;
+        self.mux = Mux::new(Side::Host, DEFAULT_WINDOW);
 
         let gsnapshot = self.replace_snapshot_memory(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
@@ -1277,11 +1361,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
 mod tests {
     use std::assert_matches;
     use std::sync::Arc;
+    #[cfg(feature = "streams")]
+    use std::{
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
 
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
-    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+    use hyperlight_common::flatbuffer_wrappers::function_types::{
+        ParameterValue, ReturnType, ReturnValue,
+    };
+    #[cfg(feature = "streams")]
+    use hyperlight_common::stream::{self, StreamWriter};
     use hyperlight_common::transport::MsgHeader;
-    use hyperlight_common::virtq::{DescFlags, RingProducer};
+    use hyperlight_common::virtq::{BufferChainBuilder, DescFlags, MemOps, RingProducer};
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::sandbox_sizes::{
@@ -1337,6 +1430,29 @@ mod tests {
         )
     }
 
+    /// A call passing `params` and then a reader whose stream holds `data`, with its open writer.
+    #[cfg(feature = "streams")]
+    fn h2g_stream_call(
+        mut params: Vec<ParameterValue>,
+        data: &[u8],
+    ) -> (FunctionCall, StreamWriter<u8>) {
+        let (reader, mut writer) = stream::new::<u8>();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        let written = pin!(writer.write(data)).poll(&mut cx);
+        assert!(matches!(written, Poll::Ready(Ok(len)) if len == data.len()));
+
+        params.push(ParameterValue::StreamReader(reader));
+        let call = FunctionCall::new(
+            "call".to_string(),
+            Some(params),
+            FunctionCallType::Guest,
+            ReturnType::Void,
+        );
+
+        (call, writer)
+    }
+
     #[test]
     fn rejects_invalid_h2g_descriptors() {
         for (len, expected) in [
@@ -1351,7 +1467,7 @@ mod tests {
             desc.len = len;
             case.set_h2g_desc(0, desc);
 
-            let error = mgr.write_guest_function_call(&h2g_call(0)).unwrap_err();
+            let error = mgr.write_guest_function_call(h2g_call(0)).unwrap_err();
 
             assert!(error.to_string().contains(expected), "{error:#}");
             assert!(error.is_poison_error());
@@ -1369,7 +1485,7 @@ mod tests {
         case.set_h2g_desc(1, desc);
 
         let error = mgr
-            .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE + 1024))
+            .write_guest_function_call(h2g_call(H2G_BUFFER_SIZE + 1024))
             .unwrap_err();
 
         assert!(error.to_string().contains("Memory write"), "{error:#}");
@@ -1385,13 +1501,37 @@ mod tests {
         let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
 
         let error = mgr
-            .write_guest_function_call(&h2g_call(H2G_BUFFER_SIZE * 4))
+            .write_guest_function_call(h2g_call(H2G_BUFFER_SIZE * 4))
             .unwrap_err();
 
         assert!(error.to_string().contains("H2G capacity"), "{error:#}");
         assert!(!error.is_poison_error());
         assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 1);
+    }
+
+    /// Admission fails before the transfer commits, so dropping the call closes its reader.
+    #[cfg(feature = "streams")]
+    #[test]
+    fn insufficient_h2g_capacity_closes_readers() {
+        let case = TestCase::new();
+        let mut mgr = manager(&case);
+        let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
+        let params = vec![ParameterValue::VecBytes(vec![0xa5; H2G_BUFFER_SIZE * 4])];
+        let (call, mut writer) = h2g_stream_call(params, b"hello");
+
+        let error = mgr.write_guest_function_call(call).unwrap_err();
+
+        assert!(error.to_string().contains("H2G capacity"), "{error:#}");
+        assert!(!error.is_poison_error());
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
+        assert!(!mgr.mux.has_live_streams());
+
+        let mut cx = Context::from_waker(Waker::noop());
+        let written = pin!(writer.write(b"!")).poll(&mut cx);
+
+        assert_eq!(written, Poll::Ready(Err(stream::StreamError::ReaderClosed)));
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 1);
     }
 
     #[test]
@@ -1413,6 +1553,56 @@ mod tests {
         assert!(matches!(error, HyperlightError::TransportError(_)));
     }
 
+    /// The drain continues past the result, so a malformed Stream message after it is fatal.
+    #[test]
+    fn malformed_g2h_stream_message_is_fatal() {
+        let case = TestCase::new();
+        let mut mgr = manager(&case);
+        mgr.g2h_consumer = Some(case.g2h_consumer());
+
+        let mut guest = Mux::new(Side::Guest, DEFAULT_WINDOW);
+        let mut buffer = Vec::new();
+        let result = FunctionCallResult::new(Ok(ReturnValue::Int(7)));
+        let pending = PendingMessage::new_result(result, 1, &mut guest).unwrap();
+        let response: Vec<u8> = pending
+            .encode(&mut buffer)
+            .unwrap()
+            .chunks()
+            .flatten()
+            .copied()
+            .collect();
+
+        // An unknown record tag.
+        let mut records = MsgHeader::new(MsgKind::Stream, 0, 1, 1).as_bytes().to_vec();
+        records.push(5);
+
+        let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
+        let mut addr = case.g2h_pool_base;
+
+        for message in [&response, &records] {
+            case.mem.write(addr, message).unwrap();
+
+            let chain = BufferChainBuilder::new()
+                .readable(addr, message.len() as u32)
+                .build()
+                .unwrap();
+
+            producer.submit_available(&chain).unwrap();
+            addr += message.len() as u64;
+        }
+
+        let Err(error) = mgr.read_h2g_result_from_g2h(1) else {
+            panic!("expected a malformed G2H stream message");
+        };
+
+        assert!(
+            error.to_string().contains("Invalid G2H stream message"),
+            "{error:#}"
+        );
+        assert!(error.is_poison_error());
+        assert!(matches!(error, HyperlightError::TransportError(_)));
+    }
+
     #[test]
     fn writes_dense_h2g_request_and_reserves_control_buffer() {
         let case = TestCase::new();
@@ -1421,7 +1611,7 @@ mod tests {
         let buffers: Vec<_> = (0..4).map(|index| case.h2g_desc(index).addr).collect();
 
         let cid = mgr
-            .write_guest_function_call(&h2g_call(external_len))
+            .write_guest_function_call(h2g_call(external_len))
             .unwrap();
 
         let used = mgr.h2g_consumer.as_ref().unwrap().avail_cursor().head();
@@ -1438,11 +1628,59 @@ mod tests {
         assert_eq!(external, vec![0xa5; external_len]);
 
         let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();
-        let error = mgr.write_guest_function_call(&h2g_call(1)).unwrap_err();
+        let error = mgr.write_guest_function_call(h2g_call(1)).unwrap_err();
 
         assert!(error.to_string().contains("H2G capacity"), "{error:#}");
         assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor(), cursor);
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 2);
+    }
+
+    /// Stream messages follow the Request and can take the buffer it keeps spare.
+    #[cfg(feature = "streams")]
+    #[test]
+    fn flushes_h2g_stream_message_after_request() {
+        let case = TestCase::new();
+        let mut mgr = manager(&case);
+        let buffers: Vec<_> = (0..4).map(|index| case.h2g_desc(index).addr).collect();
+        let params = vec![ParameterValue::VecBytes(vec![0xa5; H2G_BUFFER_SIZE * 2])];
+        let (call, _writer) = h2g_stream_call(params, b"hello");
+
+        let cid = mgr.write_guest_function_call(call).unwrap();
+        assert_eq!(mgr.h2g_consumer.as_ref().unwrap().avail_cursor().head(), 4);
+
+        let wire = case.h2g_buffer(0, buffers[0]);
+        let header = MsgHeader::from_bytes(&wire[..MsgHeader::SIZE]).unwrap();
+        assert_eq!(header.kind, MsgKind::Request);
+        assert_eq!(header.cid, cid);
+
+        let wire = case.h2g_buffer(3, buffers[3]);
+        let header = MsgHeader::from_bytes(&wire[..MsgHeader::SIZE]).unwrap();
+        assert_eq!(header.kind, MsgKind::Stream);
+        assert_eq!(header.cid, 0);
+
+        let data = &wire[MsgHeader::SIZE + header.control_len as usize..];
+        assert_eq!(data, b"hello");
+    }
+
+    /// The Request is already published, so a failed stream write poisons and fails the Mux.
+    #[cfg(feature = "streams")]
+    #[test]
+    fn failed_h2g_stream_flush_is_fatal() {
+        let case = TestCase::new();
+        let mut mgr = manager(&case);
+        let mut desc = case.h2g_desc(1);
+
+        desc.flags &= !DescFlags::WRITE.bits();
+        desc.len = 0;
+        case.set_h2g_desc(1, desc);
+
+        let (call, _writer) = h2g_stream_call(Vec::new(), b"hello");
+        let error = mgr.write_guest_function_call(call).unwrap_err();
+
+        assert!(error.to_string().contains("not writable"), "{error:#}");
+        assert!(error.is_poison_error());
+        assert!(matches!(error, HyperlightError::TransportError(_)));
+        assert!(PendingMessage::next_stream(&mut mgr.mux, H2G_BUFFER_SIZE).is_none());
     }
 
     #[test]
@@ -1461,7 +1699,7 @@ mod tests {
         let case = TestCase::new();
         let mut mgr = manager(&case);
         mgr.g2h_consumer = Some(case.g2h_consumer());
-        mgr.write_guest_function_call(&h2g_call(0)).unwrap();
+        mgr.write_guest_function_call(h2g_call(0)).unwrap();
 
         let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
         producer.submit_one(case.g2h_pool_base, 64, true).unwrap();
@@ -1492,7 +1730,7 @@ mod tests {
         let consumer = mgr.h2g_consumer.as_ref().unwrap();
         assert_eq!(consumer.avail_cursor(), h2g_avail);
         assert_eq!(consumer.used_cursor(), h2g_used);
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 2);
 
         assert_matches!(producer.poll_used(), Ok(_));
     }
@@ -1519,10 +1757,10 @@ mod tests {
         mgr.next_guest_cid = u32::MAX;
 
         assert_eq!(
-            mgr.write_guest_function_call(&h2g_call(0)).unwrap(),
+            mgr.write_guest_function_call(h2g_call(0)).unwrap(),
             u32::MAX
         );
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 1);
     }
 
     #[test]
@@ -1530,7 +1768,7 @@ mod tests {
         let case = TestCase::new();
         let mut mgr = manager(&case);
         mgr.g2h_consumer = Some(case.g2h_consumer());
-        mgr.write_guest_function_call(&h2g_call(0)).unwrap();
+        mgr.write_guest_function_call(h2g_call(0)).unwrap();
 
         let cloned = mgr.clone();
 
@@ -1547,13 +1785,13 @@ mod tests {
         let mut mgr = manager(&case);
         mgr.g2h_consumer = Some(case.g2h_consumer());
         let captured = VirtqSnapshot::bootstrap(&mgr.layout).unwrap();
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 1);
 
         mgr.g2h_consumer = None;
         mgr.h2g_consumer = None;
         mgr.restore_virtq(&captured).unwrap();
 
-        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+        assert_eq!(mgr.write_guest_function_call(h2g_call(0)).unwrap(), 2);
     }
 
     /// Build a snapshot for the given configuration and verify the

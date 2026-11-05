@@ -20,8 +20,8 @@ use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
 #[cfg(target_arch = "x86_64")]
-use core::sync::atomic::{AtomicBool, AtomicU32};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -33,6 +33,7 @@ use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+use hyperlight_guest::stream::{self, StreamError, StreamReader};
 #[cfg(target_arch = "x86_64")]
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
@@ -501,6 +502,130 @@ fn release_host_byte_chunks() -> i32 {
             chunks.iter().map(Bytes::len).sum::<usize>() as i32
         })
     }
+}
+
+/// Return a reader of `data`. The producer closes the stream, or aborts it when `abort` is set.
+#[guest_function("StreamBytes")]
+fn stream_bytes(data: Vec<u8>, abort: bool) -> StreamReader<u8> {
+    stream::produce(async move |writer| {
+        writer.write_all(&data).await?;
+
+        if abort {
+            Err(StreamError::Aborted)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+/// Return a reader of the bytes read from `input`.
+#[guest_function("EchoStream")]
+fn echo_stream(mut input: StreamReader<u8>) -> StreamReader<u8> {
+    stream::produce(async move |output| {
+        while let Some(chunk) = input.read_chunk().await? {
+            output.write_chunk(chunk).await?;
+        }
+
+        Ok::<_, StreamError>(())
+    })
+}
+
+/// Fill a window, then panic after the host returns credit.
+#[guest_function("StreamPanic")]
+fn stream_panic() -> StreamReader<u8> {
+    let len = hyperlight_common::stream::DEFAULT_WINDOW.get() as usize + 1;
+    let data = vec![0; len];
+
+    stream::produce::<_, StreamError>(async move |writer| {
+        writer.write_all(&data).await?;
+        panic!("stream task panic");
+    })
+}
+
+/// Return a reader of `len` bytes. Byte `i` is `i % 251`, so windows do not repeat the pattern.
+/// The producer builds a chunk at a time, so guest memory stays bounded for any `len`.
+#[guest_function("StreamPattern")]
+fn stream_pattern(len: u32) -> StreamReader<u8> {
+    const CHUNK_LEN: u32 = 4096;
+
+    stream::produce(async move |writer| {
+        let mut start = 0;
+
+        while start < len {
+            let end = len.min(start.saturating_add(CHUNK_LEN));
+            let chunk: Vec<u8> = (start..end).map(|i| (i % 251) as u8).collect();
+            writer.write_chunk(chunk.into()).await?;
+            start = end;
+        }
+
+        Ok::<_, StreamError>(())
+    })
+}
+
+/// The `StreamThenWait` producers that have not dropped.
+static LIVE_PRODUCERS: AtomicU32 = AtomicU32::new(0);
+
+/// Counts in [`LIVE_PRODUCERS`] until dropped.
+struct LiveProducer;
+
+impl LiveProducer {
+    fn new() -> Self {
+        LIVE_PRODUCERS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for LiveProducer {
+    fn drop(&mut self) {
+        LIVE_PRODUCERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Return a reader of `data`. The producer then waits until the reader closes.
+#[guest_function("StreamThenWait")]
+fn stream_then_wait(data: Vec<u8>) -> StreamReader<u8> {
+    let live = LiveProducer::new();
+
+    stream::produce(async move |writer| {
+        let _live = live;
+        writer.write_all(&data).await?;
+        core::future::pending::<core::result::Result<(), StreamError>>().await
+    })
+}
+
+#[guest_function("LiveProducers")]
+fn live_producers() -> u32 {
+    LIVE_PRODUCERS.load(Ordering::Relaxed)
+}
+
+/// The reader of the `StartLocalTask` producer.
+static mut LOCAL_READER: Option<StreamReader<u8>> = None;
+
+/// Start a producer that never finishes, and keep its reader in the guest.
+#[guest_function("StartLocalTask")]
+fn start_local_task() {
+    let reader = stream::produce(async |_writer| {
+        core::future::pending::<core::result::Result<(), StreamError>>().await
+    });
+
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { LOCAL_READER = Some(reader) };
+}
+
+/// Drop the `StartLocalTask` reader, which ends its producer in this call's turn.
+#[guest_function("StopLocalTask")]
+fn stop_local_task() {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { LOCAL_READER = None };
+}
+
+#[host_function("HostStream")]
+fn host_stream() -> Result<StreamReader<u8>>;
+
+/// Return the reader that the host function `HostStream` returns.
+#[guest_function("ForwardHostStream")]
+fn forward_host_stream() -> Result<StreamReader<u8>> {
+    host_stream()
 }
 
 #[guest_function("EchoI32")]
@@ -1827,11 +1952,11 @@ fn dispatch(function_call: FunctionCall) -> Result<ReturnValue> {
 
     let result = call_host_function::<i32>(
         "HostPrint",
-        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
+        Some(vec![ParameterValue::String(message.to_string())]),
         ReturnType::Int,
     )?;
     let function_name = function_call.function_name.clone();
-    let param_len = function_call.parameters.clone().unwrap_or_default().len();
+    let param_len = function_call.parameters.as_ref().map_or(0, Vec::len);
     let call_type = function_call.function_call_type().clone();
 
     if function_name != "ThisIsNotARealFunctionButTheNameIsImportant"

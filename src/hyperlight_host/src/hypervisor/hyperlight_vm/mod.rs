@@ -138,9 +138,9 @@ impl DispatchGuestCallError {
     pub(crate) fn promote(self) -> (HyperlightError, bool) {
         let should_poison = self.is_poison_error();
         let promoted_error = match self {
-            DispatchGuestCallError::Run(RunVmError::ExecutionCancelledByHost) => {
-                HyperlightError::ExecutionCanceledByHost()
-            }
+            DispatchGuestCallError::Run(
+                RunVmError::CancelledBeforeEntry | RunVmError::ExecutionCancelledByHost,
+            ) => HyperlightError::ExecutionCanceledByHost(),
 
             DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
                 HandleOutbError::GuestAborted { code, message },
@@ -175,6 +175,9 @@ pub enum InitializeError {
 /// Errors that can occur during VM execution in the run loop
 #[derive(Debug, thiserror::Error)]
 pub enum RunVmError {
+    /// Cancellation was observed before the first vCPU entry of this dispatch.
+    #[error("Execution was cancelled before guest entry")]
+    CancelledBeforeEntry,
     #[cfg(crashdump)]
     #[error("Crashdump generation error: {0}")]
     CrashdumpGeneration(Box<HyperlightError>),
@@ -628,6 +631,8 @@ impl HyperlightVm {
         #[cfg(feature = "trace_guest")]
         let mut tc = crate::sandbox::trace::TraceContext::new();
 
+        let mut entered = false;
+
         let result = loop {
             // ===== KILL() TIMING POINT 2: Before set_tid() =====
             // If kill() is called and ran to completion BEFORE this line executes:
@@ -647,6 +652,7 @@ impl HyperlightVm {
                 // ==== KILL() TIMING POINT 3: Before calling run() ====
                 // If kill() is called and ran to completion BEFORE this line executes:
                 //    - Will still do a VM entry, but signals will be sent until VM exits
+                entered = true;
                 let result = self.vm.run_vcpu(
                     #[cfg(feature = "trace_guest")]
                     &mut tc,
@@ -792,6 +798,11 @@ impl HyperlightVm {
                     }
 
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
+
+                    if !entered && !debug_interrupted {
+                        break Err(RunVmError::CancelledBeforeEntry);
+                    }
+
                     break Err(RunVmError::ExecutionCancelledByHost);
                 }
                 Ok(VmExit::Unknown(reason)) => {
@@ -806,9 +817,8 @@ impl HyperlightVm {
 
         match result {
             Ok(_) => Ok(()),
-            Err(RunVmError::ExecutionCancelledByHost) => {
-                // no need to crashdump this
-                Err(RunVmError::ExecutionCancelledByHost)
+            Err(e @ (RunVmError::CancelledBeforeEntry | RunVmError::ExecutionCancelledByHost)) => {
+                Err(e)
             }
             Err(e) => {
                 #[cfg(crashdump)]

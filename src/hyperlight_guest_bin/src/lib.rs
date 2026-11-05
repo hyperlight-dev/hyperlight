@@ -333,7 +333,8 @@ pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) 
         hyperlight_guest_tracing::flush();
     }
 
-    hyperlight_guest::transport::complete_initialization();
+    hyperlight_guest::transport::complete_initialization()
+        .expect("failed to complete initialization");
 
     dispatch_function as *const () as usize as u64
 }

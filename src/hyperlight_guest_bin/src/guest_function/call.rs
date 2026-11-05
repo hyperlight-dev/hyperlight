@@ -86,15 +86,22 @@ pub(crate) fn internal_dispatch_function() {
         tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
     });
 
-    let DispatchAction::Call(cid, call) = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
+    let dispatch = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
         .expect("H2G dispatch deserialization failed");
 
-    // Reseed the libc PRNG if requested by the host.
     #[cfg(feature = "libc")]
     crate::refresh_libc_rng();
 
-    let result = call_guest_function(call).map_err(|err| GuestError::new(err.kind, err.message));
-    let result = FunctionCallResult::new(result);
+    let response = match dispatch {
+        DispatchAction::Call(cid, fc) => {
+            let res = call_guest_function(fc).map_err(|err| GuestError::new(err.kind, err.message));
+            Some((cid, FunctionCallResult::new(res)))
+        }
+        DispatchAction::Progress => None,
+    };
+
+    // A returned stream's first window can share the response's halt.
+    hyperlight_guest::task::run_ready();
 
     // All this tracing logic shall be done right before the call to `hlt` which is done after this
     // function returns
@@ -115,8 +122,14 @@ pub(crate) fn internal_dispatch_function() {
         hyperlight_guest_tracing::flush();
     }
 
-    transport::with_ctx(|ctx| {
-        ctx.send_h2g_result(cid, result)
-            .expect("Failed to send function call result");
-    });
+    match response {
+        Some((cid, result)) => transport::with_ctx(|ctx| {
+            ctx.send_h2g_result(cid, result)
+                .expect("Failed to send function call result");
+        }),
+        None => transport::with_ctx(|ctx| {
+            ctx.finish_progress_turn()
+                .expect("Failed to finish the progress turn");
+        }),
+    }
 }

@@ -3,20 +3,21 @@
 
 //! Serde/postcard encoding of function calls and results.
 //!
-//! Control data is one postcard value. The message header records its length.
-//! Byte values travel as external values and the control data carries only
-//! their length.
+//! Control data is one postcard call or result. The message header records its
+//! length. Byte values travel as external values, and control data carries their
+//! length. A stream reader carries its stream ID and consumed position.
 
 use alloc::vec::Vec;
 
 use anyhow::{Result, anyhow, bail};
 use postcard::ser_flavors::Size;
-use serde::ser::SerializeSeq;
+use serde::ser::{Error as _, SerializeSeq};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::codec::ExternalValueSource;
 use super::function_types::{ParameterValue, ReturnType, ReturnValue, decode_parameter_value};
 use super::util::byte_chunks_len;
+use crate::stream::{MAX_TRANSFERS, Mux, ProtocolError, Transfer};
 
 /// One control value. Variant order is the wire tag.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -31,12 +32,18 @@ pub(super) enum WireValue<'a> {
     Bool(bool),
     Void,
     ExternalBytes { length: u64, chunked: bool },
+    StreamReader(Transfer),
 }
 
 impl<'a> WireValue<'a> {
+    /// Encode `value` with the next prepared transfer for a reader.
+    ///
     /// Byte lengths must have been checked by the caller.
-    pub(super) fn from_parameter(value: &'a ParameterValue) -> Self {
-        match value {
+    pub(super) fn from_parameter(
+        value: &'a ParameterValue,
+        xfers: &mut impl Iterator<Item = Transfer>,
+    ) -> Result<Self> {
+        Ok(match value {
             ParameterValue::Int(v) => Self::Int(*v),
             ParameterValue::UInt(v) => Self::UInt(*v),
             ParameterValue::Long(v) => Self::Long(*v),
@@ -53,12 +60,17 @@ impl<'a> WireValue<'a> {
                 length: byte_chunks_len(v) as u64,
                 chunked: true,
             },
-        }
+            ParameterValue::StreamReader(_) => {
+                Self::StreamReader(xfers.next().ok_or_else(|| anyhow!("Missing transfer"))?)
+            }
+        })
     }
 
+    /// Encode `value` with its prepared transfer when it is a reader.
+    ///
     /// Byte lengths must have been checked by the caller.
-    pub(super) fn from_return(value: &'a ReturnValue) -> Self {
-        match value {
+    pub(super) fn from_return(value: &'a ReturnValue, xfer: Option<Transfer>) -> Result<Self> {
+        Ok(match value {
             ReturnValue::Int(v) => Self::Int(*v),
             ReturnValue::UInt(v) => Self::UInt(*v),
             ReturnValue::Long(v) => Self::Long(*v),
@@ -76,19 +88,29 @@ impl<'a> WireValue<'a> {
                 length: byte_chunks_len(v) as u64,
                 chunked: true,
             },
-        }
+            ReturnValue::StreamReader(_) => {
+                Self::StreamReader(xfer.ok_or_else(|| anyhow!("Missing transfer"))?)
+            }
+        })
     }
 }
 
 /// Serializes parameters as a sequence without collecting them first.
-pub(super) struct ParamsOut<'a>(pub(super) &'a [ParameterValue]);
+pub(super) struct ParamsOut<'a> {
+    pub(super) values: &'a [ParameterValue],
+    pub(super) xfers: &'a [Transfer],
+}
 
 impl Serialize for ParamsOut<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for value in self.0 {
-            seq.serialize_element(&WireValue::from_parameter(value))?;
+        let mut seq = serializer.serialize_seq(Some(self.values.len()))?;
+        let mut xfers = self.xfers.iter().copied();
+
+        for val in self.values {
+            let val = WireValue::from_parameter(val, &mut xfers).map_err(S::Error::custom)?;
+            seq.serialize_element(&val)?;
         }
+
         seq.end()
     }
 }
@@ -104,23 +126,38 @@ pub(super) struct CallHead<'a> {
 
 /// Decode a call and convert each parameter as it is read.
 ///
-/// External byte values are taken from `externals` in parameter order.
+/// External byte values are taken from `externals` in parameter order. Readers receive their
+/// transfers through `streams` in parameter order. A message moves at most [`MAX_TRANSFERS`]
+/// readers, so the reader past it fails before its transfer is received.
 pub(super) fn decode_call<'a, S>(
     value: &'a [u8],
     externals: &mut S,
+    streams: &mut Mux,
 ) -> Result<(CallHead<'a>, Vec<ParameterValue>)>
 where
     S: ExternalValueSource + ?Sized,
 {
     let mut deserializer = postcard::Deserializer::from_bytes(value);
     let head = CallHead::deserialize(&mut deserializer)?;
+    head.return_type.check_supported()?;
     let count = usize::deserialize(&mut deserializer)?;
 
     // Each value takes at least one byte.
     let mut params = Vec::with_capacity(count.min(value.len()));
+    let mut reader_cnt = 0;
+
     for _ in 0..count {
         let value = WireValue::deserialize(&mut deserializer)?;
-        params.push(decode_parameter_value(value, externals)?);
+
+        if matches!(value, WireValue::StreamReader(_)) {
+            if reader_cnt == MAX_TRANSFERS {
+                return Err(ProtocolError::Transfer.into());
+            }
+
+            reader_cnt += 1;
+        }
+
+        params.push(decode_parameter_value(value, externals, streams)?);
     }
 
     let rest = deserializer.finalize()?;
@@ -130,6 +167,7 @@ where
     Ok((head, params))
 }
 
+/// A function call result.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(super) enum WireResult<'a> {
     #[serde(borrow)]
@@ -141,19 +179,35 @@ pub(super) enum WireResult<'a> {
 }
 
 /// Write `value` as control data into `buffer`.
-///
-/// Measures the encoded size first so `buffer` grows at most once.
 pub(super) fn encode_value<'b, T: Serialize>(
     value: &T,
     buffer: &'b mut Vec<u8>,
 ) -> Result<&'b [u8]> {
+    encode_capped(value, buffer, usize::MAX)?;
+    Ok(buffer.as_slice())
+}
+
+/// Write `value` as control data of at most `cap` bytes into `buffer`.
+///
+/// Measures the encoded size first so `buffer` grows at most once. A reused buffer keeps its
+/// capacity, so it stops allocating once it fits its messages.
+pub(super) fn encode_capped<T: Serialize>(
+    value: &T,
+    buffer: &mut Vec<u8>,
+    cap: usize,
+) -> Result<()> {
     let size = postcard::serialize_with_flavor::<T, Size, usize>(value, Size::default())
         .map_err(|e| anyhow!("Encode failed: {e}"))?;
+
+    if size > cap {
+        bail!("Encode failed: {size} bytes exceed the {cap} byte limit");
+    }
+
     let mut out = core::mem::take(buffer);
     out.clear();
     out.try_reserve_exact(size)?;
     *buffer = postcard::to_extend(value, out).map_err(|e| anyhow!("Encode failed: {e}"))?;
-    Ok(buffer.as_slice())
+    Ok(())
 }
 
 /// Read one postcard value and reject trailing bytes.
@@ -167,6 +221,8 @@ pub(super) fn decode_value<'a, T: Deserialize<'a>>(value: &'a [u8]) -> Result<T>
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]
@@ -185,5 +241,15 @@ mod tests {
         let mut trailing = encoded.clone();
         trailing.push(0);
         assert!(decode_value::<WireValue>(&trailing).is_err());
+    }
+
+    #[test]
+    fn encoding_stops_at_the_cap() {
+        let mut buffer = vec![0xff; 8];
+        let value = WireValue::String("text");
+
+        encode_capped(&value, &mut buffer, 6).unwrap();
+        assert_eq!(buffer, [6, 4, b't', b'e', b'x', b't']);
+        assert!(encode_capped(&value, &mut buffer, 5).is_err());
     }
 }

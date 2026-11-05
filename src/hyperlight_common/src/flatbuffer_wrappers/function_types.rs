@@ -10,51 +10,46 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
-use super::codec::{ExternalValueSink, ExternalValueSource};
+use super::codec::{ExternalValueSink, ExternalValueSource, control_cap};
 use super::guest_error::GuestError;
 #[cfg(feature = "fuzzing")]
 use super::util::arbitrary_byte_chunks;
 use super::util::try_byte_chunks_len;
-use super::wire::{WireResult, WireValue, decode_value, encode_value};
+use super::wire::{WireResult, WireValue, decode_value, encode_capped};
+use crate::stream::{Mux, StreamReader, Transfer};
 
 pub struct FunctionCallResult(core::result::Result<ReturnValue, GuestError>);
 
 impl FunctionCallResult {
-    /// Encode control data and collect a byte return as an external value.
-    pub fn encode<'a, 'b, S>(
+    /// Encode control data and supply a borrowed byte value to `external_values`.
+    ///
+    /// `transfer` describes the result's reader, when present.
+    pub(crate) fn encode<'a, 'b, S>(
         &'a self,
         buffer: &'b mut Vec<u8>,
         external_values: &mut S,
+        transfer: Option<Transfer>,
     ) -> Result<&'b [u8]>
     where
         S: ExternalValueSink<'a> + ?Sized,
     {
-        let result = match &self.0 {
-            Ok(value) => {
-                match value {
-                    ReturnValue::VecBytes(v) => {
-                        u64::try_from(v.len())
-                            .map_err(|_| anyhow!("External VecBytes length does not fit in u64"))?;
-                        external_values.push_bytes(v)?;
-                    }
-                    ReturnValue::ByteChunks(v) => {
-                        let length = try_byte_chunks_len(v)
-                            .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?;
-                        u64::try_from(length).map_err(|_| {
-                            anyhow!("External ByteChunks length does not fit in u64")
-                        })?;
-                        external_values.push_chunks(v)?;
-                    }
-                    _ => {}
-                }
-                WireResult::Ok(WireValue::from_return(value))
-            }
-            Err(error) => WireResult::Err {
-                code: error.code.into(),
-                message: &error.message,
-            },
+        let external_len = match &self.0 {
+            Ok(ReturnValue::VecBytes(v)) => v.len(),
+            Ok(ReturnValue::ByteChunks(v)) => try_byte_chunks_len(v)
+                .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?,
+            _ => 0,
         };
-        encode_value(&result, buffer)
+
+        let cap = control_cap(external_len)?;
+        encode_capped(&self.wire(transfer)?, buffer, cap)?;
+
+        match &self.0 {
+            Ok(ReturnValue::VecBytes(value)) => external_values.push_bytes(value)?,
+            Ok(ReturnValue::ByteChunks(value)) => external_values.push_chunks(value)?,
+            _ => {}
+        }
+
+        Ok(buffer.as_slice())
     }
 
     pub fn new(value: core::result::Result<ReturnValue, GuestError>) -> Self {
@@ -65,13 +60,16 @@ impl FunctionCallResult {
         self.0
     }
 
-    /// Decode control data and consume an external byte return.
-    pub fn decode<S>(value: &[u8], external_values: &mut S) -> Result<Self>
+    /// Decode control data, receiving a reader or taking a byte value from `external_values`.
+    ///
+    /// A failure closes the received reader. A result moves at most one reader, so `streams`
+    /// stays usable.
+    pub fn decode<S>(control: &[u8], external_values: &mut S, streams: &mut Mux) -> Result<Self>
     where
         S: ExternalValueSource + ?Sized,
     {
-        let result = match decode_value(value)? {
-            WireResult::Ok(value) => Ok(decode_return_value(value, external_values)?),
+        let result = match decode_value(control)? {
+            WireResult::Ok(value) => Ok(decode_return_value(value, external_values, streams)?),
             WireResult::Err { code, message } => {
                 Err(GuestError::new(code.into(), message.to_string()))
             }
@@ -80,11 +78,38 @@ impl FunctionCallResult {
         external_values.finish()?;
         Ok(FunctionCallResult(result))
     }
+
+    /// Borrow the returned reader.
+    pub fn reader(&self) -> Option<&StreamReader<u8>> {
+        match &self.0 {
+            Ok(ReturnValue::StreamReader(reader)) => Some(reader),
+            _ => None,
+        }
+    }
+
+    /// Take the returned reader to commit its transfer.
+    pub(crate) fn into_reader(self) -> Option<StreamReader<u8>> {
+        match self.0 {
+            Ok(ReturnValue::StreamReader(reader)) => Some(reader),
+            _ => None,
+        }
+    }
+
+    /// The result's control data with its prepared reader transfer.
+    fn wire(&self, transfer: Option<Transfer>) -> Result<WireResult<'_>> {
+        Ok(match &self.0 {
+            Ok(value) => WireResult::Ok(WireValue::from_return(value, transfer)?),
+            Err(error) => WireResult::Err {
+                code: error.code.into(),
+                message: &error.message,
+            },
+        })
+    }
 }
 
 /// Supported parameter types with values for function calling.
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ParameterValue {
     /// i32
     Int(i32),
@@ -111,6 +136,9 @@ pub enum ParameterValue {
     ByteChunks(
         #[cfg_attr(feature = "fuzzing", arbitrary(with = arbitrary_byte_chunks))] Vec<Bytes>,
     ),
+    /// A stream reader, which moves to the callee.
+    #[cfg_attr(feature = "fuzzing", arbitrary(skip))]
+    StreamReader(StreamReader<u8>),
 }
 
 /// Supported parameter types for function calling.
@@ -137,10 +165,12 @@ pub enum ParameterType {
     VecBytes,
     /// One logical byte sequence represented as chunks.
     ByteChunks,
+    /// A stream reader.
+    StreamReader,
 }
 
 /// Supported return types with values from function calling.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ReturnValue {
     /// i32
     Int(i32),
@@ -167,6 +197,8 @@ pub enum ReturnValue {
     /// Chunk boundaries are a storage detail and may change during transport.
     /// They do not delimit messages or values.
     ByteChunks(Vec<Bytes>),
+    /// A stream reader, which moves to the caller.
+    StreamReader(StreamReader<u8>),
 }
 
 /// Supported return types from function calling. Variant order is the wire tag.
@@ -197,49 +229,63 @@ pub enum ReturnType {
     VecBytes,
     /// One logical byte sequence represented as chunks.
     ByteChunks,
+    /// A stream reader.
+    StreamReader,
 }
 
-enum DecodedExternalBytes {
-    VecBytes(Vec<u8>),
-    ByteChunks(Vec<Bytes>),
+impl ReturnType {
+    /// A reader result requires stream support even when the call takes no readers.
+    pub(crate) fn check_supported(self) -> Result<()> {
+        if !cfg!(feature = "streams") && self == Self::StreamReader {
+            return Err(crate::stream::ProtocolError::Disabled.into());
+        }
+
+        Ok(())
+    }
 }
 
-fn decode_external_bytes<S>(
-    length: u64,
-    chunked: bool,
-    externals: &mut S,
-) -> Result<DecodedExternalBytes>
+/// Convert a declared external byte length, which delimits the value in the ordered external
+/// values.
+fn external_length(length: u64) -> Result<usize> {
+    usize::try_from(length)
+        .map_err(|_| anyhow!("External byte length {length} does not fit in usize"))
+}
+
+/// Take a `VecBytes` value of the declared `length`.
+fn decode_vec_bytes<S>(length: u64, externals: &mut S) -> Result<Vec<u8>>
 where
     S: ExternalValueSource + ?Sized,
 {
-    // The length delimits this value in the ordered external payload stream.
-    let length = usize::try_from(length)
-        .map_err(|_| anyhow!("External byte length {length} does not fit in usize"))?;
+    let length = external_length(length)?;
+    let value = externals.take_bytes(length)?;
+    let value_len = value.len();
 
-    // `chunked` selects the logical API type. Sources define chunk boundaries.
-    if chunked {
-        let value = externals.take_chunks(length)?;
-        let actual = try_byte_chunks_len(&value)
-            .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?;
-
-        if actual != length {
-            bail!("External ByteChunks length mismatch: declared {length}, received {actual}",);
-        }
-        Ok(DecodedExternalBytes::ByteChunks(value))
-    } else {
-        let value = externals.take_bytes(length)?;
-        let value_len = value.len();
-
-        if value_len != length {
-            bail!("External VecBytes length mismatch: declared {length}, received {value_len}",);
-        }
-        Ok(DecodedExternalBytes::VecBytes(value))
+    if value_len != length {
+        bail!("External VecBytes length mismatch: declared {length}, received {value_len}",);
     }
+    Ok(value)
+}
+
+/// Take a `ByteChunks` value of the declared `length`. Sources define chunk boundaries.
+fn decode_byte_chunks<S>(length: u64, externals: &mut S) -> Result<Vec<Bytes>>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    let length = external_length(length)?;
+    let value = externals.take_chunks(length)?;
+    let actual = try_byte_chunks_len(&value)
+        .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?;
+
+    if actual != length {
+        bail!("External ByteChunks length mismatch: declared {length}, received {actual}",);
+    }
+    Ok(value)
 }
 
 pub(super) fn decode_parameter_value<S>(
     value: WireValue<'_>,
     externals: &mut S,
+    streams: &mut Mux,
 ) -> Result<ParameterValue>
 where
     S: ExternalValueSource + ?Sized,
@@ -254,16 +300,23 @@ where
         WireValue::String(v) => ParameterValue::String(v.to_string()),
         WireValue::Bool(v) => ParameterValue::Bool(v),
         WireValue::Void => bail!("Void is not a valid parameter value"),
-        WireValue::ExternalBytes { length, chunked } => {
-            match decode_external_bytes(length, chunked, externals)? {
-                DecodedExternalBytes::VecBytes(v) => ParameterValue::VecBytes(v),
-                DecodedExternalBytes::ByteChunks(v) => ParameterValue::ByteChunks(v),
-            }
-        }
+        WireValue::ExternalBytes {
+            length,
+            chunked: false,
+        } => ParameterValue::VecBytes(decode_vec_bytes(length, externals)?),
+        WireValue::ExternalBytes {
+            length,
+            chunked: true,
+        } => ParameterValue::ByteChunks(decode_byte_chunks(length, externals)?),
+        WireValue::StreamReader(xfer) => ParameterValue::StreamReader(streams.recv_transfer(xfer)?),
     })
 }
 
-fn decode_return_value<S>(value: WireValue<'_>, externals: &mut S) -> Result<ReturnValue>
+fn decode_return_value<S>(
+    value: WireValue<'_>,
+    externals: &mut S,
+    streams: &mut Mux,
+) -> Result<ReturnValue>
 where
     S: ExternalValueSource + ?Sized,
 {
@@ -277,12 +330,15 @@ where
         WireValue::String(v) => ReturnValue::String(v.to_string()),
         WireValue::Bool(v) => ReturnValue::Bool(v),
         WireValue::Void => ReturnValue::Void(()),
-        WireValue::ExternalBytes { length, chunked } => {
-            match decode_external_bytes(length, chunked, externals)? {
-                DecodedExternalBytes::VecBytes(v) => ReturnValue::VecBytes(v),
-                DecodedExternalBytes::ByteChunks(v) => ReturnValue::ByteChunks(v),
-            }
-        }
+        WireValue::ExternalBytes {
+            length,
+            chunked: false,
+        } => ReturnValue::VecBytes(decode_vec_bytes(length, externals)?),
+        WireValue::ExternalBytes {
+            length,
+            chunked: true,
+        } => ReturnValue::ByteChunks(decode_byte_chunks(length, externals)?),
+        WireValue::StreamReader(xfer) => ReturnValue::StreamReader(streams.recv_transfer(xfer)?),
     })
 }
 
@@ -300,6 +356,7 @@ impl From<&ParameterValue> for ParameterType {
             ParameterValue::Bool(_) => ParameterType::Bool,
             ParameterValue::VecBytes(_) => ParameterType::VecBytes,
             ParameterValue::ByteChunks(_) => ParameterType::ByteChunks,
+            ParameterValue::StreamReader(_) => ParameterType::StreamReader,
         }
     }
 }
@@ -427,6 +484,17 @@ impl TryFrom<ParameterValue> for Vec<Bytes> {
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::ByteChunks(v) => Ok(v),
+            _ => bail!("Unexpected parameter value type: {:?}", value),
+        }
+    }
+}
+
+impl TryFrom<ParameterValue> for StreamReader<u8> {
+    type Error = Error;
+
+    fn try_from(value: ParameterValue) -> Result<Self> {
+        match value {
+            ParameterValue::StreamReader(v) => Ok(v),
             _ => bail!("Unexpected parameter value type: {:?}", value),
         }
     }
@@ -560,6 +628,17 @@ impl TryFrom<ReturnValue> for Vec<Bytes> {
     }
 }
 
+impl TryFrom<ReturnValue> for StreamReader<u8> {
+    type Error = Error;
+
+    fn try_from(value: ReturnValue) -> Result<Self> {
+        match value {
+            ReturnValue::StreamReader(v) => Ok(v),
+            _ => bail!("Unexpected return value type: {:?}", value),
+        }
+    }
+}
+
 impl TryFrom<ReturnValue> for () {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
@@ -573,13 +652,16 @@ impl TryFrom<ReturnValue> for () {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use alloc::collections::VecDeque;
     use alloc::vec;
 
     use super::super::guest_error::ErrorCode;
     use super::*;
+    use crate::stream::{DEFAULT_WINDOW, Side};
+    use crate::transport::PendingMessage;
+    use crate::virtq::Segments;
 
     #[derive(Debug, Clone, PartialEq)]
     enum TestExternalValue {
@@ -597,20 +679,6 @@ mod tests {
             Self {
                 values: values.into_iter().collect(),
             }
-        }
-    }
-
-    impl<'a> ExternalValueSink<'a> for TestExternalValues {
-        fn push_bytes(&mut self, value: &'a [u8]) -> Result<()> {
-            self.values
-                .push_back(TestExternalValue::VecBytes(value.to_vec()));
-            Ok(())
-        }
-
-        fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()> {
-            self.values
-                .push_back(TestExternalValue::ByteChunks(value.to_vec()));
-            Ok(())
         }
     }
 
@@ -644,17 +712,34 @@ mod tests {
         }
     }
 
+    /// Encode `result` and return its control data and external values.
+    fn encode(result: FunctionCallResult) -> Result<(Vec<u8>, Segments)> {
+        let mut mux = Mux::new(Side::Guest, DEFAULT_WINDOW);
+        let mut buffer = Vec::new();
+        let pending = PendingMessage::new_result(result, 1, &mut mux)?;
+        let message = pending.encode(&mut buffer)?;
+
+        Ok((
+            message.control().to_vec(),
+            Segments::new(message.external_chunks().map(Bytes::copy_from_slice)),
+        ))
+    }
+
+    /// Decode a result from `control` and `external_values`.
+    fn decode(
+        control: &[u8],
+        external_values: &mut impl ExternalValueSource,
+    ) -> Result<FunctionCallResult> {
+        let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+        FunctionCallResult::decode(control, external_values, &mut mux)
+    }
+
     #[test]
     fn encode_success_result() {
-        let mut buffer = Vec::new();
-        let mut external_values = TestExternalValues::default();
+        let (control, mut external_values) =
+            encode(FunctionCallResult::new(Ok(ReturnValue::Int(42)))).unwrap();
 
-        let test_data = FunctionCallResult::new(Ok(ReturnValue::Int(42)))
-            .encode(&mut buffer, &mut external_values)
-            .unwrap();
-
-        let function_call_result =
-            FunctionCallResult::decode(test_data, &mut external_values).unwrap();
+        let function_call_result = decode(&control, &mut external_values).unwrap();
 
         let result = function_call_result.into_inner().unwrap();
         assert_eq!(result, ReturnValue::Int(42));
@@ -662,19 +747,15 @@ mod tests {
 
     #[test]
     fn encode_error_result() {
-        let mut buffer = Vec::new();
         let test_error = GuestError::new(
             ErrorCode::GuestFunctionNotFound,
             "Function not found".to_string(),
         );
 
-        let mut external_values = TestExternalValues::default();
-        let test_data = FunctionCallResult::new(Err(test_error.clone()))
-            .encode(&mut buffer, &mut external_values)
-            .unwrap();
+        let (control, mut external_values) =
+            encode(FunctionCallResult::new(Err(test_error.clone()))).unwrap();
 
-        let function_call_result =
-            FunctionCallResult::decode(test_data, &mut external_values).unwrap();
+        let function_call_result = decode(&control, &mut external_values).unwrap();
 
         let error = function_call_result.into_inner().unwrap_err();
         assert_eq!(error.code, test_error.code);
@@ -683,84 +764,78 @@ mod tests {
 
     #[test]
     fn byte_returns_round_trip_as_external_values() {
-        for expected in [
-            ReturnValue::VecBytes(vec![0xa5; 4096]),
-            ReturnValue::ByteChunks(vec![
-                Bytes::from_static(b"chunk one"),
-                Bytes::from_static(b" and two"),
-            ]),
-            ReturnValue::VecBytes(Vec::new()),
-            ReturnValue::ByteChunks(Vec::new()),
-        ] {
-            let mut buffer = Vec::new();
-            let mut external_values = TestExternalValues::default();
+        let values: [fn() -> ReturnValue; 4] = [
+            || ReturnValue::VecBytes(vec![0xa5; 4096]),
+            || {
+                ReturnValue::ByteChunks(vec![
+                    Bytes::from_static(b"chunk one"),
+                    Bytes::from_static(b" and two"),
+                ])
+            },
+            || ReturnValue::VecBytes(Vec::new()),
+            || ReturnValue::ByteChunks(Vec::new()),
+        ];
 
-            let encoded = FunctionCallResult::new(Ok(expected.clone()))
-                .encode(&mut buffer, &mut external_values)
-                .unwrap();
+        for value in values {
+            let expected = value();
+            let (encoded, mut external_values) =
+                encode(FunctionCallResult::new(Ok(value()))).unwrap();
 
             assert!(encoded.len() < 4096);
-            let (length, chunked) = match &expected {
-                ReturnValue::VecBytes(value) => (value.len(), false),
-                ReturnValue::ByteChunks(value) => (try_byte_chunks_len(value).unwrap(), true),
+            let wire = match &expected {
+                ReturnValue::VecBytes(value) => WireValue::ExternalBytes {
+                    length: value.len() as u64,
+                    chunked: false,
+                },
+                ReturnValue::ByteChunks(value) => WireValue::ExternalBytes {
+                    length: try_byte_chunks_len(value).unwrap() as u64,
+                    chunked: true,
+                },
                 _ => unreachable!(),
             };
-            assert_eq!(
-                decode_value::<WireResult>(encoded).unwrap(),
-                WireResult::Ok(WireValue::ExternalBytes {
-                    length: length as u64,
-                    chunked,
-                })
-            );
+            let result: WireResult<'_> = decode_value(&encoded).unwrap();
+            assert_eq!(result, WireResult::Ok(wire));
 
-            let decoded = FunctionCallResult::decode(encoded, &mut external_values)
+            let decoded = decode(&encoded, &mut external_values)
                 .unwrap()
                 .into_inner()
                 .unwrap();
 
             assert_eq!(decoded, expected);
-            assert!(external_values.values.is_empty());
+            assert!(external_values.is_empty());
         }
     }
 
     #[test]
     fn external_return_decoder_rejects_invalid_values() {
-        let mut buffer = Vec::new();
-        let mut encoded_values = TestExternalValues::default();
-        let encoded =
-            FunctionCallResult::new(Ok(ReturnValue::ByteChunks(vec![Bytes::from_static(
-                b"123",
-            )])))
-            .encode(&mut buffer, &mut encoded_values)
-            .unwrap();
+        let (encoded, _) = encode(FunctionCallResult::new(Ok(ReturnValue::ByteChunks(vec![
+            Bytes::from_static(b"123"),
+        ]))))
+        .unwrap();
 
         let mut missing = TestExternalValues::default();
-        assert!(FunctionCallResult::decode(encoded, &mut missing).is_err());
+        assert!(decode(&encoded, &mut missing).is_err());
 
         let mut wrong_type =
             TestExternalValues::from_values([TestExternalValue::VecBytes(vec![1, 2, 3])]);
 
-        assert!(FunctionCallResult::decode(encoded, &mut wrong_type).is_err());
+        assert!(decode(&encoded, &mut wrong_type).is_err());
 
         let mut wrong_length =
             TestExternalValues::from_values([TestExternalValue::ByteChunks(vec![
                 Bytes::from_static(b"12"),
             ])]);
 
-        assert!(FunctionCallResult::decode(encoded, &mut wrong_length).is_err());
+        assert!(decode(&encoded, &mut wrong_length).is_err());
     }
 
     #[test]
     fn external_result_decoder_rejects_unused_values() {
-        let result = FunctionCallResult::new(Ok(ReturnValue::Int(42)));
-        let mut buffer = Vec::new();
-        let mut external_values = TestExternalValues::default();
-        let encoded = result.encode(&mut buffer, &mut external_values).unwrap();
-        assert!(external_values.values.is_empty());
+        let (encoded, mut external_values) =
+            encode(FunctionCallResult::new(Ok(ReturnValue::Int(42)))).unwrap();
+        assert!(external_values.is_empty());
 
-        external_values
-            .values
-            .push_back(TestExternalValue::VecBytes(Vec::new()));
-        assert!(FunctionCallResult::decode(encoded, &mut external_values).is_err());
+        external_values.append(Segments::single(Bytes::from_static(b"x")));
+        assert!(decode(&encoded, &mut external_values).is_err());
     }
 }

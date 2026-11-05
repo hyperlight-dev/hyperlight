@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 hyperlight-testing = { workspace = true }
 hyperlight-host = { workspace = true, default-features = true, features = ["fuzzing"]}
-hyperlight-common = { workspace = true, features = ["fuzzing"] }
+hyperlight-common = { workspace = true, features = ["fuzzing", "streams"] }
 
 [[bin]]
 name = "fuzz_guest_trace_decode"

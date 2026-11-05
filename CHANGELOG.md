@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 * ARM64 guests support CPUs without LSE atomics when built with `-C target-feature=-lse`.
+* Cross-boundary byte streams require the `streams` Cargo feature on `hyperlight-host` and `hyperlight-guest-bin`. It is off by default. Poisoning the sandbox wakes stream waiters, closes host writes, and aborts unfinished reads after their buffered bytes.
 * Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
+* Add `hyperlight_guest::stream::produce`, which returns a stream reader and fills the stream in a guest task. The task lends the writer to an async closure. `Ok` closes the stream, `Err` aborts it, and closing the reader drops the closure's future. A guest function call polls ready tasks after the function returns. `hyperlight_guest::stream` re-exports the stream endpoints.
+* Add `Sandbox::block_on`, which runs a future on the calling thread and drives stream traffic and ready guest tasks until it completes. The future returns `Result<T, E>`, and sandbox failures convert into `E`. `InterruptHandle::kill()` ends the drive, and poisons the sandbox only when it interrupts the guest. `hyperlight_host::stream` re-exports the stream endpoints.
+* Add virtqueue `ChainBuilder::keep_free(n)`. `build` leaves `n` ring descriptors and pool slots free for later single-slot chains, or reports `Backpressure`.
+* Add virtqueue `SlotPool::max_free_slot_size()`, the size of the largest free slot.
 
 ### Changed
 * `hyperlight-host` requires Rust 1.95.
@@ -32,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   page size, and log level.
 * **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
 * Stop resetting guest FPU state between guest calls to improve performance.
+* **Breaking:** Function calls, results and their values are not `Clone`, since a value can hold a stream reader. `SupportedParameterType`, `SupportedReturnType` and `ParameterTuple` do not require `Clone`. `ParameterType`, `ParameterValue`, `ReturnType` and `ReturnValue` have `StreamReader` variants.
+* **Breaking:** Encode function calls and results through `transport::PendingMessage`, which owns their values until publication settles. `FunctionCall::decode` and `FunctionCallResult::decode` take `streams: &mut Mux` as their last argument.
+* `Sandbox::snapshot` and `snapshot_with_options` fail with `HyperlightError::StreamsActive` while cross-boundary streams or guest tasks are live, and leave the sandbox unchanged. Guest initialization that leaves either live fails sandbox creation.
+* A guest function call fails with `HyperlightError::GuestError` and leaves the sandbox usable when its result exceeds the G2H virtqueue capacity, or when its returned stream reader cannot move to the host.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.

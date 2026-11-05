@@ -3,29 +3,44 @@
 
 //! Guest-side virtqueue message decoding.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
+use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
+use hyperlight_common::stream::Mux;
 use hyperlight_common::transport::{MsgHeader, MsgKind};
 use hyperlight_common::virtq::Segments;
 
 use crate::bail;
 use crate::error::{GuestErrorContext, Result};
 
-/// Decode one H2G guest-function request payload.
+/// Decode one H2G guest-function request payload, accepting its readers
+/// through `mux`.
 ///
 /// Chunked external values retain their H2G slot owners until their final
 /// [`Bytes`] clone drops.
-pub(super) fn decode_request(control_len: u32, segments: Segments) -> Result<FunctionCall> {
+pub(super) fn decode_request(
+    control_len: u32,
+    segments: Segments,
+    mux: &mut Mux,
+) -> Result<FunctionCall> {
     let (control, mut external_values) = decode_payload(control_len, segments)?;
-    FunctionCall::decode(&control, &mut external_values)
+    FunctionCall::decode(&control, &mut external_values, mux)
         .with_context(|| "failed to decode guest function request")
 }
 
-/// Decode one G2H host-function response.
+/// Decode one G2H host-function response, accepting a returned reader
+/// through `mux`.
 ///
 /// Contiguous byte values are flattened into `Vec<u8>`. Chunked values retain
 /// their transport-backed [`Bytes`] owners.
-pub(super) fn decode_response(segments: Segments, cid: u32) -> Result<FunctionCallResult> {
+pub(super) fn decode_response(
+    segments: Segments,
+    cid: u32,
+    mux: &mut Mux,
+) -> Result<FunctionCallResult> {
     let (header, payload) = split_header(segments)?;
     if header.kind != MsgKind::Response {
         bail!("Host function response has an invalid message kind");
@@ -36,8 +51,41 @@ pub(super) fn decode_response(segments: Segments, cid: u32) -> Result<FunctionCa
     }
 
     let (control, mut external_values) = decode_payload(header.control_len, payload)?;
-    FunctionCallResult::decode(&control, &mut external_values)
+    FunctionCallResult::decode(&control, &mut external_values, mux)
         .with_context(|| "failed to decode host function response")
+}
+
+/// Apply one H2G `Stream` message payload to `mux`.
+///
+/// DATA is copied to the heap, so its H2G slots can be reposted while readers hold the bytes.
+pub(super) fn recv_stream(control_len: u32, segments: Segments, mux: &mut Mux) -> Result<()> {
+    let (control, payloads) = decode_payload(control_len, segments)?;
+
+    mux.recv_records(&control, &mut CopyingSource(payloads))
+        .with_context(|| "invalid H2G stream message")
+}
+
+/// Supplies external values as heap copies of transport-backed segments.
+///
+/// TODO: Remove this once the transport can support external values without copying.
+struct CopyingSource(Segments);
+
+impl ExternalValueSource for CopyingSource {
+    fn take_bytes(&mut self, length: usize) -> anyhow::Result<Vec<u8>> {
+        self.0.take_bytes(length)
+    }
+
+    fn take_chunks(&mut self, length: usize) -> anyhow::Result<Vec<Bytes>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![Bytes::from(self.0.take_bytes(length)?)])
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        self.0.finish()
+    }
 }
 
 fn split_header(mut segments: Segments) -> Result<(MsgHeader, Segments)> {
@@ -74,9 +122,14 @@ mod tests {
 
     use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
     use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
-    use hyperlight_common::transport::ExternalValues;
+    use hyperlight_common::stream::{DEFAULT_WINDOW, Side};
+    use hyperlight_common::transport::PendingMessage;
 
     use super::*;
+
+    fn mux(side: Side) -> Mux {
+        Mux::new(side, DEFAULT_WINDOW)
+    }
 
     #[test]
     fn payload_contiguous_control_reuses_storage() {
@@ -133,22 +186,21 @@ mod tests {
         let external_ptr = external.as_ptr();
 
         let result = FunctionCallResult::new(Ok(ReturnValue::ByteChunks(vec![external.clone()])));
+        let mut host = mux(Side::Host);
         let mut buffer = Vec::new();
-        let mut external_values = ExternalValues::new();
-
-        let control = result.encode(&mut buffer, &mut external_values).unwrap();
-
-        let control_len = u32::try_from(control.len()).unwrap();
-        let payload_len = u32::try_from(control.len() + external_values.total_len()).unwrap();
-        let header = MsgHeader::new(MsgKind::Response, 7, payload_len, control_len);
+        let pending = PendingMessage::new_result(result, 7, &mut host).unwrap();
+        let msg = pending.encode(&mut buffer).unwrap();
 
         let segments = Segments::new([
-            Bytes::copy_from_slice(header.as_bytes()),
-            Bytes::copy_from_slice(control),
+            Bytes::copy_from_slice(msg.header().as_bytes()),
+            Bytes::copy_from_slice(msg.control()),
             external,
         ]);
 
-        let decoded = decode_response(segments, 7).unwrap().into_inner().unwrap();
+        let decoded = decode_response(segments, 7, &mut mux(Side::Guest))
+            .unwrap()
+            .into_inner()
+            .unwrap();
         let ReturnValue::ByteChunks(chunks) = decoded else {
             panic!("expected ByteChunks response");
         };
@@ -161,10 +213,11 @@ mod tests {
     #[test]
     fn response_rejects_payload_length_mismatch() {
         let result = FunctionCallResult::new(Ok(ReturnValue::UInt(17)));
+        let mut host = mux(Side::Host);
         let mut buffer = Vec::new();
-        let mut external_values = ExternalValues::new();
-
-        let control = result.encode(&mut buffer, &mut external_values).unwrap();
+        let pending = PendingMessage::new_result(result, 7, &mut host).unwrap();
+        let message = pending.encode(&mut buffer).unwrap();
+        let control = message.control();
 
         let len = u32::try_from(control.len()).unwrap();
 
@@ -175,14 +228,17 @@ mod tests {
                 Bytes::copy_from_slice(control),
             ])
         };
-        let error =
-            |payload_len, control_len| match decode_response(segments(payload_len, control_len), 7)
-            {
-                Ok(_) => panic!("expected a decode error"),
-                Err(error) => error.message,
-            };
 
-        assert!(decode_response(segments(len, len), 7).is_ok());
+        let decode = |payload_len, control_len| {
+            decode_response(segments(payload_len, control_len), 7, &mut mux(Side::Guest))
+        };
+
+        let error = |payload_len, control_len| match decode(payload_len, control_len) {
+            Ok(_) => panic!("expected a decode error"),
+            Err(error) => error.message,
+        };
+
+        assert!(decode(len, len).is_ok());
         for payload_len in [len - 1, len + 1] {
             assert_eq!(
                 error(payload_len, len - 1),
@@ -208,13 +264,14 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::ByteChunks,
         );
+        let mut host = mux(Side::Host);
         let mut buffer = Vec::new();
-        let mut external_values = ExternalValues::new();
-        let control = call.encode(&mut buffer, &mut external_values).unwrap();
-        let control_len = u32::try_from(control.len()).unwrap();
-        let segments = Segments::new([Bytes::copy_from_slice(control), external]);
+        let pending = PendingMessage::new_call(call, 1, &mut host).unwrap();
+        let msg = pending.encode(&mut buffer).unwrap();
+        let control_len = msg.header().control_len;
+        let segments = Segments::new([Bytes::copy_from_slice(msg.control()), external]);
 
-        let decoded = decode_request(control_len, segments).unwrap();
+        let decoded = decode_request(control_len, segments, &mut mux(Side::Guest)).unwrap();
         assert_eq!(decoded.function_name, "echo");
         let ParameterValue::ByteChunks(chunks) =
             decoded.parameters.unwrap().into_iter().next().unwrap()
@@ -225,5 +282,60 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].as_ptr(), external_ptr);
         assert_eq!(chunks[0].as_ref(), &[1, 2, 3, 4]);
+    }
+
+    #[cfg(feature = "streams")]
+    #[test]
+    fn stream_data_is_copied_out_of_transport_storage() {
+        use core::pin::pin;
+        use core::task::{Context, Poll, Waker};
+
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
+        use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+        use hyperlight_common::stream;
+
+        let mut host = mux(Side::Host);
+        let mut guest = mux(Side::Guest);
+        let mut buffer = Vec::new();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        let (reader, mut writer) = stream::new::<u8>();
+        let written = pin!(writer.write(b"data")).poll(&mut cx);
+        assert!(matches!(written, Poll::Ready(Ok(4))));
+
+        let call = FunctionCall::new(
+            "read".into(),
+            Some(vec![ParameterValue::StreamReader(reader)]),
+            FunctionCallType::Guest,
+            ReturnType::Void,
+        );
+
+        let pending = PendingMessage::new_call(call, 1, &mut host).unwrap();
+        let msg = pending.encode(&mut buffer).unwrap();
+        let segments = Segments::single(Bytes::copy_from_slice(msg.control()));
+        let call = decode_request(msg.header().control_len, segments, &mut guest).unwrap();
+
+        drop(msg);
+        pending.settle(Ok(())).unwrap();
+
+        let Some(ParameterValue::StreamReader(mut reader)) = call.parameters.unwrap().pop() else {
+            panic!("expected a reader parameter");
+        };
+
+        let pending = PendingMessage::next_stream(&mut host, 4096).unwrap();
+        let msg = pending.encode(&mut buffer).unwrap();
+        let external: Vec<u8> = msg.external_chunks().flatten().copied().collect();
+        let external = Bytes::from(external);
+        let external_ptr = external.as_ptr();
+        let segments = Segments::new([Bytes::copy_from_slice(msg.control()), external]);
+
+        recv_stream(msg.header().control_len, segments, &mut guest).unwrap();
+
+        let Poll::Ready(Ok(Some(chunk))) = pin!(reader.read_chunk()).poll(&mut cx) else {
+            panic!("expected a DATA chunk");
+        };
+
+        assert_eq!(chunk.as_ref(), b"data");
+        assert_ne!(chunk.as_ptr(), external_ptr);
     }
 }

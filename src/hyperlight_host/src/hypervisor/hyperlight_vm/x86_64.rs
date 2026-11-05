@@ -280,15 +280,10 @@ impl HyperlightVm {
             .set_regs(&regs)
             .map_err(DispatchGuestCallError::SetupRegs)?;
 
-        let result = self
-            .run(mem_mgr, host_funcs)
-            .map_err(DispatchGuestCallError::Run);
-
-        // Clear the TLB flush flag only after run() returns. The guest
-        // may have been cancelled before it executed the flush.
+        self.run(mem_mgr, host_funcs)?;
         self.pending_tlb_flush = false;
 
-        result
+        Ok(())
     }
 
     /// Resets the following vCPU state:

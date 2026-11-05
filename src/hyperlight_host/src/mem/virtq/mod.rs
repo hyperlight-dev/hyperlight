@@ -7,7 +7,7 @@
 //! within mapped scratch. Consumers validate descriptors when they are used.
 //!
 //! H2G requests are written into guest-prefilled chains. G2H codec helpers copy
-//! untrusted guest requests and results into host-owned values before use.
+//! untrusted guest messages into host-owned values before use.
 //! Shared wire framing lives in `hyperlight_common::transport`.
 //!
 //! Snapshots contain deterministic bootstrap images with empty G2H and full
@@ -18,7 +18,7 @@ mod mem;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use codec::{RecvMessage, try_write_response};
+pub(crate) use codec::{RecvMessage, recv_one_way, try_write_response};
 use hyperlight_common::transport::MailboxValue;
 use hyperlight_common::virtq::{
     BootstrapInfo, Layout as VirtqLayout, Notifier, QueueStats, VirtqConsumer, h2g_pool_layout,

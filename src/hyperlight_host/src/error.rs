@@ -222,6 +222,10 @@ pub enum HyperlightError {
         signature_mismatches: Vec<String>,
     },
 
+    /// Snapshot capture found live streams or guest tasks, including pending reader closes.
+    #[error("Streams or guest tasks are active")]
+    StreamsActive,
+
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
     SystemTimeError(#[from] SystemTimeError),
@@ -357,6 +361,7 @@ impl HyperlightError {
             | HyperlightError::RefCellMutBorrowFailed(_)
             | HyperlightError::ReturnValueConversionFailure(_, _)
             | HyperlightError::SnapshotHostFunctionMismatch { .. }
+            | HyperlightError::StreamsActive
             | HyperlightError::SystemTimeError(_)
             | HyperlightError::TryFromSliceError(_)
             | HyperlightError::UnexpectedNoOfArguments(_, _)

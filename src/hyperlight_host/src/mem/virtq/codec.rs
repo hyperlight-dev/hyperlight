@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Host RPC encoding and decoding over virtqueue chains.
+//! Host message encoding and decoding over virtqueue chains.
 
 use anyhow::{Context, bail};
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
-use hyperlight_common::transport::{EncodedMessage, ExternalValues, MsgHeader, MsgKind};
-use hyperlight_common::virtq::{RecvChain, WritableChain};
+use hyperlight_common::stream::Mux;
+use hyperlight_common::transport::{EncodedMessage, MsgHeader, MsgKind};
+use hyperlight_common::virtq::{RecvChain, ReplyChain, WritableChain};
 
+use super::G2hConsumer;
 use super::mem::HostMemOps;
 
 /// One received G2H message with a validated header.
@@ -48,14 +50,16 @@ impl RecvMessage {
         self.header.cid
     }
 
-    pub(crate) fn decode_call(&mut self) -> anyhow::Result<FunctionCall> {
+    /// Decode a host function call, accepting the readers it moves through `mux`.
+    pub(crate) fn decode_call(&mut self, mux: &mut Mux) -> anyhow::Result<FunctionCall> {
         let control = self.read_control()?;
-        FunctionCall::decode(&control, &mut self.chain)
+        FunctionCall::decode(&control, &mut self.chain, mux)
     }
 
-    pub(crate) fn decode_result(&mut self) -> anyhow::Result<FunctionCallResult> {
+    /// Decode a guest function result, accepting the reader it moves through `mux`.
+    pub(crate) fn decode_result(&mut self, mux: &mut Mux) -> anyhow::Result<FunctionCallResult> {
         let control = self.read_control()?;
-        FunctionCallResult::decode(&control, &mut self.chain)
+        FunctionCallResult::decode(&control, &mut self.chain, mux)
     }
 
     /// Logs carry no external values.
@@ -63,6 +67,13 @@ impl RecvMessage {
         let control = self.read_control()?;
         self.chain.finish()?;
         GuestLogData::try_from(control.as_slice())
+    }
+
+    /// Apply a Stream message's records and DATA to `mux`.
+    pub(crate) fn recv_records(&mut self, mux: &mut Mux) -> anyhow::Result<()> {
+        let control = self.read_control()?;
+        mux.recv_records(&control, &mut self.chain)?;
+        Ok(())
     }
 
     /// Return the chain for completion.
@@ -78,26 +89,59 @@ impl RecvMessage {
     }
 }
 
+/// Process one G2H `Log` or `Stream` message and complete its chain.
+pub(crate) fn recv_one_way(
+    consumer: &mut G2hConsumer,
+    mux: &mut Mux,
+    mut message: RecvMessage,
+    reply: ReplyChain<HostMemOps>,
+) -> anyhow::Result<()> {
+    let kind = message.kind();
+
+    if !matches!(kind, MsgKind::Log | MsgKind::Stream) {
+        bail!("Unexpected G2H {kind:?} message");
+    }
+
+    if message.cid() != 0 {
+        bail!("G2H {kind:?} message has a correlation ID");
+    }
+
+    if !matches!(reply, ReplyChain::Ack(_)) {
+        bail!("G2H {kind:?} message has writable buffers");
+    }
+
+    let log = if kind == MsgKind::Log {
+        Some(message.decode_log().context("Invalid G2H log")?)
+    } else {
+        message
+            .recv_records(mux)
+            .context("Invalid G2H stream message")?;
+        None
+    };
+
+    consumer
+        .complete(message.into_chain(), reply)
+        .context("Failed to complete G2H message")?;
+
+    if let Some(log) = log {
+        crate::sandbox::outb::emit_guest_log(&log);
+    }
+
+    Ok(())
+}
+
 /// Append a complete response when it fits the remaining writable space.
 ///
-/// `false` leaves the writable chain unchanged.
+/// `false` leaves the chain unchanged. The caller settles the message after completing the chain.
 pub(crate) fn try_write_response(
     reply: &mut WritableChain<HostMemOps>,
-    cid: u32,
-    result: &FunctionCallResult,
+    message: &EncodedMessage<'_>,
 ) -> anyhow::Result<bool> {
-    let mut buffer = Vec::new();
-    let mut externals = ExternalValues::new();
-
-    let control = result.encode(&mut buffer, &mut externals)?;
-    let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
-        .context("Host function response length overflow")?;
-
-    if msg.total_len() > reply.remaining() {
+    if message.total_len() > reply.remaining() {
         return Ok(false);
     }
 
-    for chunk in msg.chunks() {
+    for chunk in message.chunks() {
         reply.write_all(chunk)?;
     }
 
@@ -118,6 +162,8 @@ fn zeroed_vec(length: usize, what: &str) -> anyhow::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
+    use hyperlight_common::stream::{DEFAULT_WINDOW, Side};
+    use hyperlight_common::transport::PendingMessage;
     use hyperlight_common::virtq::{BufferChainBuilder, MemOps, RingProducer};
 
     use super::*;
@@ -183,6 +229,43 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_one_way_messages() {
+        let cases = [
+            (MsgKind::Request, 0, false, "Unexpected"),
+            (MsgKind::Stream, 1, false, "correlation ID"),
+            (MsgKind::Log, 0, true, "writable buffers"),
+        ];
+
+        for (kind, cid, writable, expected) in cases {
+            let case = TestCase::new();
+            let addr = case.g2h_pool_base;
+            let len = MsgHeader::SIZE as u32;
+
+            case.mem
+                .write(addr, MsgHeader::new(kind, cid, 0, 0).as_bytes())
+                .unwrap();
+
+            let readable = BufferChainBuilder::new().readable(addr, len);
+            let chain = if writable {
+                readable.writable(addr + u64::from(len), len).build()
+            } else {
+                readable.build()
+            };
+
+            let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
+            producer.submit_available(&chain.unwrap()).unwrap();
+
+            let mut consumer = case.g2h_consumer();
+            let (request, reply) = consumer.poll(MsgHeader::SIZE).unwrap().unwrap();
+            let message = RecvMessage::new(request).unwrap();
+            let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+
+            let error = recv_one_way(&mut consumer, &mut mux, message, reply).unwrap_err();
+            assert!(error.to_string().contains(expected), "{kind:?}: {error:#}");
+        }
+    }
+
+    #[test]
     fn read_control_leaves_external_bytes_unread() {
         let message = message(7, 4, b"ctrlext");
         // Control and external bytes both cross descriptor boundaries.
@@ -200,6 +283,19 @@ mod tests {
         });
     }
 
+    /// The message `try_write_response` writes for call 7 returning 17.
+    fn response(mux: &mut Mux) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        let pending = PendingMessage::new_result(result(), 7, mux).unwrap();
+        let message = pending.encode(&mut buffer).unwrap();
+
+        message.chunks().flatten().copied().collect()
+    }
+
+    fn result() -> FunctionCallResult {
+        FunctionCallResult::new(Ok(ReturnValue::UInt(17)))
+    }
+
     #[test]
     fn response_preflight_leaves_short_reply_unchanged() {
         let queue = TestCase::new();
@@ -210,19 +306,17 @@ mod tests {
             panic!("expected writable reply");
         };
 
-        let result = FunctionCallResult::new(Ok(ReturnValue::UInt(17)));
+        let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+        let message = response(&mut mux);
         let mut buffer = Vec::new();
-        let mut externals = ExternalValues::new();
+        let pending = PendingMessage::new_result(result(), 7, &mut mux).unwrap();
 
-        let control = result.encode(&mut buffer, &mut externals).unwrap();
-        let message = EncodedMessage::new(MsgKind::Response, 7, control, externals).unwrap();
-
-        let prefix = vec![0xa5; reply.capacity() - message.total_len() + 1];
+        let prefix = vec![0xa5; reply.capacity() - message.len() + 1];
         reply.write_all(&prefix).unwrap();
         let addr = queue.h2g_desc(0).addr;
         let before = queue.h2g_buffer(0, addr);
 
-        assert!(!try_write_response(&mut reply, 7, &result).unwrap());
+        assert!(!try_write_response(&mut reply, &pending.encode(&mut buffer).unwrap()).unwrap());
         assert_eq!(reply.written(), prefix.len());
         assert_eq!(queue.h2g_buffer(0, addr), before);
 
@@ -238,25 +332,53 @@ mod tests {
             panic!("expected writable reply");
         };
 
-        let result = FunctionCallResult::new(Ok(ReturnValue::UInt(17)));
+        let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+        let expected = response(&mut mux);
         let mut buffer = Vec::new();
-        let mut externals = ExternalValues::new();
-
-        let control = result.encode(&mut buffer, &mut externals).unwrap();
-        let message = EncodedMessage::new(MsgKind::Response, 7, control, externals).unwrap();
-
-        let expected: Vec<_> = message.chunks().flatten().copied().collect();
+        let pending = PendingMessage::new_result(result(), 7, &mut mux).unwrap();
 
         let prefix = vec![0xa5; reply.capacity() - expected.len()];
         reply.write_all(&prefix).unwrap();
 
-        assert!(try_write_response(&mut reply, 7, &result).unwrap());
+        assert!(try_write_response(&mut reply, &pending.encode(&mut buffer).unwrap()).unwrap());
         assert_eq!(reply.remaining(), 0);
 
         let actual = queue.h2g_buffer(0, queue.h2g_desc(0).addr);
         assert_eq!(&actual[..prefix.len()], prefix);
         assert_eq!(&actual[prefix.len()..], expected);
 
-        consumer.complete(request, reply).unwrap();
+        pending.settle(consumer.complete(request, reply)).unwrap();
+    }
+
+    #[cfg(feature = "streams")]
+    #[test]
+    fn unpublished_response_closes_returned_reader() {
+        use std::assert_matches;
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
+        use hyperlight_common::stream::{self, StreamError};
+
+        let queue = TestCase::new();
+        let mut consumer = queue.h2g_consumer();
+        let (_request, reply) = consumer.poll(0).unwrap().unwrap();
+        let Ok(mut reply) = reply.into_writable() else {
+            panic!("expected writable reply");
+        };
+
+        let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+        let mut buffer = Vec::new();
+        let (reader, mut writer) = stream::new();
+        let result = FunctionCallResult::new(Ok(ReturnValue::StreamReader(reader)));
+        let pending = PendingMessage::new_result(result, 7, &mut mux).unwrap();
+
+        assert!(try_write_response(&mut reply, &pending.encode(&mut buffer).unwrap()).unwrap());
+        drop(pending);
+
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_matches!(
+            pin!(writer.write(b"x")).poll(&mut cx),
+            Poll::Ready(Err(StreamError::ReaderClosed))
+        );
     }
 }

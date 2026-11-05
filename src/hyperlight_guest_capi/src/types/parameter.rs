@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
-use hyperlight_guest::error::Result;
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_guest::error::{HyperlightGuestError, Result};
 
 use crate::types::{FfiByteChunks, FfiByteChunksOwner, FfiVec};
 
@@ -115,6 +116,12 @@ impl OwnedFfiParameter {
                     FfiParameterOwner::ByteChunks { _value: owner },
                 )
             }
+            ParameterValue::StreamReader(_) => {
+                return Err(HyperlightGuestError::new(
+                    ErrorCode::UnsupportedParameterType,
+                    "C guest functions cannot receive stream readers".into(),
+                ));
+            }
         };
         Ok(Self {
             ffi: FfiParameter { tag, value: union },
@@ -153,6 +160,7 @@ impl FfiParameter {
                 // SAFETY: required by the caller.
                 ParameterValue::ByteChunks(unsafe { self.value.ByteChunks.copy_to_bytes() })
             }
+            ParameterType::StreamReader => panic!("C guests cannot send stream readers"),
         }
     }
 }

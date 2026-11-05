@@ -8,13 +8,14 @@ use alloc::vec::Vec;
 use super::error::Error;
 use super::utils::for_each_tuple;
 use crate::flatbuffer_wrappers::function_types::{Bytes, ParameterType, ParameterValue};
+use crate::stream::StreamReader;
 
 /// This is a marker trait that is used to indicate that a type is a
 /// valid Hyperlight parameter type.
 ///
 /// For each parameter type Hyperlight supports in host functions, we
 /// provide an implementation for `SupportedParameterType`
-pub trait SupportedParameterType: Sized + Clone + Send + Sync + 'static {
+pub trait SupportedParameterType: Sized + Send + Sync + 'static {
     /// The underlying Hyperlight parameter type representing this `SupportedParameterType`
     const TYPE: ParameterType;
 
@@ -38,6 +39,7 @@ macro_rules! for_each_param_type {
         $macro!(bool, Bool);
         $macro!(Vec<u8>, VecBytes);
         $macro!(Vec<Bytes>, ByteChunks);
+        $macro!(StreamReader<u8>, StreamReader);
     };
 }
 
@@ -54,7 +56,7 @@ macro_rules! impl_supported_param_type {
                 match value {
                     ParameterValue::$enum(i) => Ok(i),
                     other => Err(Error::ParameterValueConversionFailure(
-                        other.clone(),
+                        other,
                         stringify!($type),
                     )),
                 }
@@ -89,7 +91,7 @@ for_each_param_type!(impl_supported_param_type);
 ///     i32,
 /// )>();
 /// ```
-pub trait ParameterTuple: Sized + Clone + Send + Sync + 'static {
+pub trait ParameterTuple: Sized + Send + Sync + 'static {
     /// The number of parameters in the tuple
     const SIZE: usize;
 

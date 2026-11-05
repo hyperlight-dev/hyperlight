@@ -8,14 +8,18 @@
 
 use alloc::vec::Vec;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 pub use bytes::Buf;
 use bytes::Bytes;
+use smallvec::{SmallVec, smallvec};
 
+use crate::flatbuffer_wrappers::function_call::FunctionCall;
+use crate::flatbuffer_wrappers::function_types::FunctionCallResult;
 use crate::flatbuffer_wrappers::{ExternalValueSink, ExternalValueSource};
+use crate::stream::{BatchEncoder, Mux, Record, StatusFlags, Transfer};
 use crate::virtq::{MemOps, RecvChain, Segments, VirtqError, zeroed_vec};
 
-/// Message types for the virtqueue wire protocol.
+/// Message types for the virtqueue wire protocol. Codes 0x04 and 0x05 are reserved.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
 pub enum MsgKind {
@@ -23,12 +27,8 @@ pub enum MsgKind {
     Request = 0x01,
     /// A function call response (FunctionCallResult payload follows).
     Response = 0x02,
-    /// A stream data chunk.
-    StreamChunk = 0x03,
-    /// End-of-stream marker.
-    StreamEnd = 0x04,
-    /// Cancel a pending request.
-    Cancel = 0x05,
+    /// A batch of stream records.
+    Stream = 0x03,
     /// A guest log message (GuestLogData payload follows).
     Log = 0x06,
 }
@@ -40,9 +40,7 @@ impl TryFrom<u8> for MsgKind {
         match value {
             0x01 => Ok(Self::Request),
             0x02 => Ok(Self::Response),
-            0x03 => Ok(Self::StreamChunk),
-            0x04 => Ok(Self::StreamEnd),
-            0x05 => Ok(Self::Cancel),
+            0x03 => Ok(Self::Stream),
             0x06 => Ok(Self::Log),
             other => Err(other),
         }
@@ -349,6 +347,168 @@ impl<'a> ExternalValueSink<'a> for ExternalValues<'a> {
     }
 }
 
+/// Owned values and prepared stream changes held until publication settles.
+///
+/// Publish [`Self::encode`], retrying on backpressure, then pass the publication result to
+/// [`Self::settle`]. Dropping an unpublished message closes transferred readers and leaves stream
+/// records pending. The Mux stays exclusively borrowed until settlement.
+#[must_use = "settle it with the publication result"]
+pub struct PendingMessage<'a> {
+    body: PendingBody,
+    streams: &'a mut Mux,
+}
+
+/// Message contents and the stream changes their publication commits.
+enum PendingBody {
+    Call {
+        cid: u32,
+        call: FunctionCall,
+        xfers: SmallVec<[Transfer; 4]>,
+    },
+    Result {
+        cid: u32,
+        result: FunctionCallResult,
+        xfers: SmallVec<[Transfer; 4]>,
+    },
+    Stream {
+        records: SmallVec<[Record; 8]>,
+        payloads: SmallVec<[Bytes; 4]>,
+    },
+}
+
+impl<'a> PendingMessage<'a> {
+    /// Own `call` and prepare its reader transfers for publication as `cid`.
+    pub fn new_call(call: FunctionCall, cid: u32, streams: &'a mut Mux) -> Result<Self> {
+        call.expected_return_type.check_supported()?;
+        let xfers = streams.prepare_transfers(call.readers())?;
+
+        let body = PendingBody::Call { call, cid, xfers };
+        Ok(Self { streams, body })
+    }
+
+    /// Own `result` and prepare its reader transfer for publication as `cid`.
+    pub fn new_result(result: FunctionCallResult, cid: u32, streams: &'a mut Mux) -> Result<Self> {
+        let xfers = streams.prepare_transfers(result.reader())?;
+
+        let body = PendingBody::Result { result, cid, xfers };
+        Ok(Self { streams, body })
+    }
+
+    /// Prepare the next `Stream` message, at most `max_len` bytes with its header.
+    ///
+    /// Control records go first, then DATA and END round robin across send streams. Preparing
+    /// leaves the Mux unchanged. A successful [`Self::settle`] commits the records, so the next
+    /// call returns the records after them. Transports call it until it returns `None` or
+    /// publication reports backpressure.
+    ///
+    /// Returns `None` when no record is pending, the first record does not fit, or the Mux
+    /// failed.
+    pub fn next_stream(mux: &'a mut Mux, max_len: usize) -> Option<Self> {
+        let avail = max_len.checked_sub(MsgHeader::SIZE)?.min(u32::MAX as usize);
+        let mut records = SmallVec::new();
+        let mut payloads = SmallVec::new();
+
+        mux.prepare_records(avail, &mut records, &mut payloads);
+        Self::from_records(mux, records, payloads)
+    }
+
+    /// Prepare a STATUS message when the guest's activity flags changed.
+    ///
+    /// `status` has the task flags, and the Mux adds READY for pending records and ACTIVE for live
+    /// streams. Returns `None` when STATUS is unchanged, on the host, or after the Mux failed.
+    pub fn new_status(mux: &'a mut Mux, status: StatusFlags) -> Option<Self> {
+        let record = mux.pending_status(status)?;
+        Self::from_records(mux, smallvec![record], SmallVec::new())
+    }
+
+    /// Wrap records that [`Self::next_stream`] or [`Self::new_status`] picked, or return `None`
+    /// for an empty batch.
+    fn from_records(
+        streams: &'a mut Mux,
+        records: SmallVec<[Record; 8]>,
+        payloads: SmallVec<[Bytes; 4]>,
+    ) -> Option<Self> {
+        if records.is_empty() {
+            return None;
+        }
+
+        let body = PendingBody::Stream { records, payloads };
+        Some(Self { streams, body })
+    }
+
+    /// Encode a complete wire view, borrowing external bytes from this owner.
+    ///
+    /// Reuse the view for retries. Drop it before settling the publication.
+    pub fn encode<'m>(&'m self, buffer: &'m mut Vec<u8>) -> Result<EncodedMessage<'m>> {
+        let mut externals = ExternalValues::new();
+
+        let (kind, cid, control) = match &self.body {
+            PendingBody::Call { call, cid, xfers } => {
+                let control = call.encode(buffer, &mut externals, xfers)?;
+                (MsgKind::Request, *cid, control)
+            }
+            PendingBody::Result { result, cid, xfers } => {
+                let control = result.encode(buffer, &mut externals, xfers.first().copied())?;
+                (MsgKind::Response, *cid, control)
+            }
+            PendingBody::Stream { records, payloads } => {
+                let mut batch = BatchEncoder::new(buffer);
+
+                for &rec in records {
+                    batch.push(rec);
+                }
+
+                externals.push_chunks(payloads)?;
+                let control = batch.finish().context("Empty stream message")?;
+
+                // Stream messages do not carry a correlation ID.
+                (MsgKind::Stream, 0, control)
+            }
+        };
+
+        EncodedMessage::new(kind, cid, control, externals)
+            .context("Message exceeds the wire payload limit")
+    }
+
+    /// Commit outgoing stream changes after publication, or fail the session on uncertainty.
+    ///
+    /// A transient error guarantees nothing was published. Dropping this message then closes
+    /// transferred readers or leaves stream records pending.
+    pub fn settle<T>(self, res: Result<T, VirtqError>) -> Result<T, VirtqError> {
+        match res {
+            Ok(value) => {
+                match self.body {
+                    PendingBody::Call { call, xfers, .. } => {
+                        let readers = call.into_readers();
+                        self.streams.commit_transfers(readers.zip(xfers));
+                    }
+                    PendingBody::Result { result, xfers, .. } => {
+                        let readers = result.into_reader().into_iter();
+                        self.streams.commit_transfers(readers.zip(xfers));
+                    }
+                    PendingBody::Stream { records, .. } => {
+                        self.streams.commit_records(records);
+                    }
+                }
+
+                Ok(value)
+            }
+            Err(error) => {
+                if !error.is_transient() {
+                    self.fail();
+                }
+
+                Err(error)
+            }
+        }
+    }
+
+    /// Fail the session when a transport cannot determine whether publication succeeded.
+    pub fn fail(self) {
+        self.streams.fail();
+    }
+}
+
 /// Copies values so later shared-memory writes cannot change decoded arguments.
 impl<M: MemOps> ExternalValueSource for RecvChain<M> {
     fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
@@ -438,7 +598,6 @@ mod tests {
     use bytemuck::checked::try_pod_read_unaligned;
 
     use super::*;
-    use crate::flatbuffer_wrappers::ExternalValueSink;
 
     /// Mailbox words have fixed encodings and reject undefined values.
     #[test]
@@ -502,8 +661,11 @@ mod tests {
             bytes[index] = 0;
         }
 
-        bytes[0] = u8::MAX;
-        assert_eq!(MsgHeader::from_bytes(&bytes), None);
+        for kind in [0, 0x04, 0x05, u8::MAX] {
+            bytes[0] = kind;
+            assert_eq!(MsgHeader::from_bytes(&bytes), None);
+            assert_eq!(MsgKind::try_from(kind), Err(kind));
+        }
 
         bytes[0] = MsgKind::Request as u8;
         for len in 0..MsgHeader::SIZE {
