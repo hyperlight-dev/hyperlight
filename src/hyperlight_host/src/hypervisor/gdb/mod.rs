@@ -3,7 +3,7 @@
 
 pub(crate) mod arch;
 mod event_loop;
-mod x86_64_target;
+mod target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
@@ -15,8 +15,8 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
+use target::HyperlightSandboxTarget;
 use thiserror::Error;
-use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
 use super::regs::CommonRegisters;
@@ -79,6 +79,9 @@ pub enum DebugMemoryAccessError {
     TranslateGuestAddress(u64),
     #[error("Failed to write to read-only region")]
     WriteToReadOnly,
+    #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+    #[error("Failed to flush the host instruction cache: {0}")]
+    FlushInstructionCache(String),
 }
 
 impl<'a> DebugMemoryView<'a> {
@@ -153,16 +156,49 @@ impl<'a> DebugMemoryView<'a> {
             BackingSource::Dynamic(_) => Err(DebugMemoryAccessError::WriteToReadOnly),
         }
     }
+
+    pub(crate) fn flush_host_instruction_cache(
+        &self,
+        gpa: u64,
+        len: usize,
+    ) -> std::result::Result<(), DebugMemoryAccessError> {
+        #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+        {
+            use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+            use windows::Win32::System::Threading::GetCurrentProcess;
+
+            let range = self
+                .mem_mgr
+                .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                    memory.host_range(gpa, len)
+                })
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
+
+            // SAFETY: The current process handle is valid and the range belongs to a live sandbox mapping.
+            unsafe {
+                FlushInstructionCache(GetCurrentProcess(), Some(range.start as *const _), len)
+                    .map_err(|e| DebugMemoryAccessError::FlushInstructionCache(e.to_string()))?;
+            }
+        }
+
+        #[cfg(not(all(target_arch = "aarch64", target_os = "windows")))]
+        let _ = (gpa, len);
+
+        Ok(())
+    }
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum VcpuStopReason {
     Crash,
     DoneStep,
     HwBp,
+    #[cfg(target_arch = "aarch64")]
+    Initial,
     SwBp,
     Interrupt,
+    #[cfg(target_arch = "x86_64")]
     Unknown,
 }
 
@@ -218,6 +254,10 @@ pub enum DebugError {
     Register(#[from] RegisterError),
     #[error("Maximum hardware breakpoints ({0}) exceeded")]
     TooManyHwBreakpoints(usize),
+    #[error("Debug capability is not supported: {0}")]
+    Unsupported(&'static str),
+    #[error("Instruction cache synchronization failed: {0}")]
+    InstructionCacheSync(String),
     #[error("Translation of guest virtual address failed: {0}")]
     TranslateGva(u64),
 }
@@ -232,14 +272,28 @@ pub(crate) trait DebuggableVm: VirtualMachine {
     fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Enable/disable single stepping
-    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        if enable {
+            Err(DebugError::Unsupported("single-step"))
+        } else {
+            Ok(())
+        }
+    }
 
     /// Add a hardware breakpoint at the given address.
     /// Must be idempotent.
-    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
+    fn add_hw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
+        Err(DebugError::Unsupported("hardware breakpoints"))
+    }
 
     /// Remove a hardware breakpoint at the given address
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
+    fn remove_hw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
+        Err(DebugError::Unsupported("hardware breakpoints"))
+    }
+
+    fn sync_instruction_cache(&mut self) -> std::result::Result<(), DebugError> {
+        Ok(())
+    }
 }
 
 /// Debug communication channel that is used for sending a request type and
@@ -307,7 +361,7 @@ pub(crate) fn create_gdb_thread(
 
             let mut target = HyperlightSandboxTarget::new(hyp_conn);
 
-            // Waits for vCPU to stop at entrypoint breakpoint
+            // Wait for the vCPU interrupt handle.
             let msg = target.recv()?;
             if let DebugResponse::InterruptHandle(handle) = msg {
                 tracing::info!("Received interrupt handle: {:?}", handle);
@@ -316,7 +370,7 @@ pub(crate) fn create_gdb_thread(
                 return Err(GdbTargetError::UnexpectedMessage);
             }
 
-            // Waits for vCPU to stop at entrypoint breakpoint
+            // Wait for the architecture-specific initial stop.
             let msg = target.recv()?;
             if let DebugResponse::VcpuStopped(_) = msg {
                 event_loop_thread(debugger, &mut target);

@@ -48,6 +48,8 @@ impl<A> framehop::ModuleSectionInfo<A> for &DummyUnwindInfo {
 
 #[derive(Clone)]
 pub(crate) struct LoadInfo {
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    pub(crate) debug_vectors: Option<u64>,
     #[cfg(feature = "mem_profile")]
     pub(crate) info: Arc<dyn UnwindInfo>,
 }
@@ -55,6 +57,8 @@ pub(crate) struct LoadInfo {
 impl LoadInfo {
     pub(crate) fn dummy() -> Self {
         LoadInfo {
+            #[cfg(all(gdb, target_arch = "aarch64"))]
+            debug_vectors: None,
             #[cfg(feature = "mem_profile")]
             info: Arc::new(DummyUnwindInfo {}),
         }
