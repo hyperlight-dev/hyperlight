@@ -29,6 +29,51 @@ fn create_c_test_sandbox() -> Sandbox {
     SandboxBuilder::from_file(path).build().unwrap()
 }
 
+/// Startup replies survive release in the source guest, restore, and OCI loading.
+#[test]
+fn retained_initial_data_survives_snapshots() {
+    use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
+
+    let path = simple_guest_as_pathbuf().with_file_name("simpleguest-initial-data");
+    let expected: Vec<u8> = (0..6 * 1024).map(|i| (i % 251) as u8).collect();
+    let data = expected.clone();
+    let mut sandbox = SandboxBuilder::from_file(path)
+        .host_function("InitialData", move || vec![Bytes::copy_from_slice(&data)])
+        .build()
+        .unwrap();
+    let actual: Vec<Bytes> = sandbox.call("ReadInitialData", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.call::<()>("ClearInitialData", ()).unwrap();
+    let actual: Vec<Bytes> = sandbox.call("ReadInitialData", ()).unwrap();
+    assert!(actual.is_empty());
+
+    sandbox.restore(snapshot.clone()).unwrap();
+    let actual: Vec<Bytes> = sandbox.call("ReadInitialData", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    drop(sandbox);
+    drop(snapshot);
+
+    let loaded = Arc::new(Snapshot::checked_load(dir.path(), tag).unwrap());
+    let mut restored = SandboxBuilder::from_snapshot(loaded.clone())
+        .host_function("InitialData", Vec::<Bytes>::new)
+        .build()
+        .unwrap();
+    let mut fork = SandboxBuilder::from_snapshot(loaded)
+        .host_function("InitialData", Vec::<Bytes>::new)
+        .build()
+        .unwrap();
+
+    restored.call::<()>("ClearInitialData", ()).unwrap();
+    let actual: Vec<Bytes> = fork.call("ReadInitialData", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+}
+
 fn random_sequence(sandbox: &mut Sandbox) -> [i32; 4] {
     std::array::from_fn(|_| sandbox.call("NextRandom", ()).unwrap())
 }
@@ -139,7 +184,7 @@ fn from_snapshot_already_initialized_in_memory() {
 
 #[test]
 fn from_snapshot_in_memory_pre_init() {
-    let snap = Snapshot::from_env(
+    let snap = Snapshot::from_binary(
         GuestBinary::FilePath(simple_guest_as_pathbuf()),
         crate::sandbox::SandboxConfiguration::default(),
     )
@@ -282,16 +327,16 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(
         manifest["config"]["mediaType"],
-        "application/vnd.hyperlight.snapshot.config.v5+json"
+        "application/vnd.hyperlight.snapshot.config.v6+json"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"],
-        "application/vnd.hyperlight.snapshot.config.v5+json"
+        "application/vnd.hyperlight.snapshot.config.v6+json"
     );
-    assert_eq!(config["abi_version"], 9);
+    assert_eq!(config["abi_version"], 10);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {
@@ -657,7 +702,7 @@ fn disk_snapshot_non_superset_guest_msrs_rejected() {
 
 #[test]
 fn pre_init_snapshot_cannot_be_persisted() {
-    let snap = Snapshot::from_env(
+    let snap = Snapshot::from_binary(
         GuestBinary::FilePath(simple_guest_as_pathbuf()),
         crate::sandbox::SandboxConfiguration::default(),
     )
@@ -2389,6 +2434,7 @@ fn legacy_config_versions_rejected() {
         "application/vnd.hyperlight.snapshot.config.v2+json",
         "application/vnd.hyperlight.snapshot.config.v3+json",
         "application/vnd.hyperlight.snapshot.config.v4+json",
+        "application/vnd.hyperlight.snapshot.config.v5+json",
     ] {
         let (_dir, path) = save_for_mutation();
         rewrite_manifest(&path, |m| {
@@ -2398,7 +2444,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 9");
+        assert_err_contains(err, "incompatible with snapshot ABI 10");
     }
 }
 
@@ -2557,17 +2603,16 @@ fn malformed_config_json_rejected() {
 }
 
 #[test]
-fn bad_init_data_permissions_rejected() {
+fn legacy_init_data_fields_rejected() {
     let (_dir, path) = save_for_mutation();
     rewrite_config(&path, |cfg| {
-        // 1u32 << 31 is well outside the defined READ|WRITE|EXECUTE bits.
-        cfg["layout"]["init_data_permissions"] = Value::from(0x8000_0000u32);
+        cfg["layout"]["init_data_size"] = Value::from(4096);
     });
     let err = unwrap_err_snapshot(Snapshot::checked_load(
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "init_data_permissions");
+    assert_err_contains(err, "unknown field `init_data_size`");
 }
 
 #[test]
@@ -3999,35 +4044,4 @@ fn from_snapshot_honors_guest_core_dump_disabled() {
         "expected no core dump file when guest_core_dump=false, found {:?}",
         entries.iter().map(|e| e.path()).collect::<Vec<_>>()
     );
-}
-
-/// Non-default `init_data_permissions` survive an OCI round-trip
-/// byte-for-byte. The default code path uses `READ`, so this pins
-/// `READ | WRITE` instead. A regression in the permission
-/// serialisation would silently downgrade or upgrade access to the
-/// init_data region.
-#[test]
-fn round_trip_preserves_non_default_init_data_permissions() {
-    use crate::mem::memory_region::MemoryRegionFlags;
-
-    let path = simple_guest_as_pathbuf();
-    let data: &[u8] = b"perm-pinned-init-data";
-    let mut sbox = SandboxBuilder::from_file(path)
-        .init_data(data, MemoryRegionFlags::READ | MemoryRegionFlags::WRITE)
-        .build()
-        .unwrap();
-    let snap = sbox.snapshot().unwrap();
-    let expected = snap.layout().init_data_permissions();
-    assert_eq!(
-        expected,
-        Some(MemoryRegionFlags::READ | MemoryRegionFlags::WRITE),
-        "fixture must produce non-default init_data_permissions",
-    );
-
-    let dir = tempfile::tempdir().unwrap();
-    let oci_dir = dir.path().join("layout");
-    snap.save(&oci_dir, &OciTag::new("latest").unwrap())
-        .unwrap();
-    let loaded = Snapshot::checked_load(&oci_dir, OciTag::new("latest").unwrap()).unwrap();
-    assert_eq!(loaded.layout().init_data_permissions(), expected);
 }

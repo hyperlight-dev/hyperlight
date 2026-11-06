@@ -1931,8 +1931,6 @@ fn memory_region_types_are_publicly_accessible() {
 
     // MemoryRegionType enum and all its variants are pub
     let _rt = MemoryRegionType::Code;
-    let _rt = MemoryRegionType::InitData;
-    let _rt = MemoryRegionType::Peb;
     let _rt = MemoryRegionType::Heap;
     let _rt = MemoryRegionType::Scratch;
     let _rt = MemoryRegionType::Snapshot;

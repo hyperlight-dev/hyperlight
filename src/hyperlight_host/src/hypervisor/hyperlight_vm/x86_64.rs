@@ -37,7 +37,6 @@ use crate::hypervisor::virtual_machine::{
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -165,13 +164,10 @@ impl HyperlightVm {
         Ok(ret)
     }
 
-    /// Initialise the internally stored vCPU with the given PEB address and
-    /// random number seed, then run it until a HLT instruction.
+    /// Initialise the vCPU with a random seed and run it until a HLT instruction.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
-        peb_addr: RawPtr,
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
@@ -192,10 +188,9 @@ impl HyperlightVm {
             rsp: self.rsp_gva - 8,
 
             // function args
-            rdi: peb_addr.into(),
-            rsi: seed,
-            rdx: self.page_size as u64,
-            rcx: get_guest_log_filter(guest_max_log_level),
+            rdi: seed,
+            rsi: self.page_size as u64,
+            rdx: get_guest_log_filter(guest_max_log_level),
             rflags: 1 << 1,
 
             ..Default::default()
@@ -866,7 +861,6 @@ mod tests {
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::MemoryRegionFlags;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
-    use crate::mem::ptr::RawPtr;
     use crate::mem::shared_mem::ExclusiveSharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::host_funcs::FunctionRegistry;
@@ -1414,7 +1408,7 @@ mod tests {
 
     fn create_test_layout(code_size: usize) -> (SandboxMemoryLayout, Box<[u8]>) {
         let config = SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(config, code_size, 4096, None).unwrap();
+        let layout = SandboxMemoryLayout::new(config, code_size).unwrap();
 
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
@@ -1467,7 +1461,6 @@ mod tests {
         let mut snapshot_contents = vec![0u8; mem_size];
         snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
-        layout.write_peb(&mut snapshot_contents).unwrap();
         let snapshot_memory = crate::sandbox::snapshot::memory::tests::flat_memory(
             &snapshot_contents,
             &pt_bytes,
@@ -1485,7 +1478,6 @@ mod tests {
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
-        let peb_address = gshm.layout.peb_address();
         let stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
@@ -1499,12 +1491,10 @@ mod tests {
         .unwrap();
 
         let seed = rand::rng().random::<u64>();
-        let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
-        vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, None)
-            .unwrap();
+        vm.initialise(seed, &mut hshm, &host_funcs, None).unwrap();
 
         TestVmContext {
             vm,
