@@ -15,6 +15,8 @@ pub struct GuestMemoryRegion {
 #[repr(C)]
 pub struct HyperlightPEB {
     pub init_data: GuestMemoryRegion,
+    /// Nonzero if guest heap pages are mapped executable.
+    pub heap_executable: u64,
 }
 
 #[cfg(test)]
@@ -28,6 +30,7 @@ mod tests {
                 size: 0x1111,
                 ptr: 0x2222,
             },
+            heap_executable: 1,
         };
         let bytes = bytemuck::bytes_of(&peb);
         let peb2 = *bytemuck::from_bytes::<HyperlightPEB>(bytes);

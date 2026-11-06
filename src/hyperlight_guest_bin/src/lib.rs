@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 
 use arch::dispatch::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
@@ -115,6 +116,9 @@ pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
+
+/// Whether heap pages are mapped executable on first touch.
+pub(crate) static HEAP_EXECUTABLE: AtomicBool = AtomicBool::new(false);
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
@@ -264,6 +268,11 @@ pub(crate) extern "C" fn generic_init(
         GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
         #[allow(static_mut_refs)]
         let peb_ptr = GUEST_HANDLE.peb().unwrap();
+
+        // SAFETY: the host writes the PEB at `peb_address` before entry.
+        HEAP_EXECUTABLE.store((*peb_ptr).heap_executable != 0, Ordering::Relaxed);
+        // The heap accesses below fault into the handler that reads this flag.
+        compiler_fence(Ordering::SeqCst);
 
         #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
