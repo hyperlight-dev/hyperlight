@@ -104,10 +104,24 @@ context_restore:\n
     q_off = const offset_of!(ExceptionContext, q),
 );
 
+// Only synchronous exceptions have a syndrome for debug forwarding.
+// The host resumes debug events at ERET and other synchronous exceptions at the prologue.
 macro_rules! vbar_entry {
     ($et:literal, $ef:literal) => {
         concat!(
             "
+            .if {ExceptionType_",
+            $et,
+            "} == {ExceptionType_Synchronous}\n
+            stp x0, x1, [sp, #-16]!\n
+            mrs x0, mdscr_el1\n
+            tbz x0, #13, 1f\n
+            ldp x0, x1, [sp], #16\n
+            hvc #{debug_hvc}\n
+            eret\n
+        1:\n
+            ldp x0, x1, [sp], #16\n
+            .endif\n
             sub sp, sp, #{ctx_size}\n
             str x30, [sp, #{x30_off}]\n
             bl context_save\n
@@ -129,6 +143,8 @@ macro_rules! vbar_entry {
 global_asm!("
 .balign 0x800\n
 .global vbar\n
+.global hyperlight_debug_vectors\n
+hyperlight_debug_vectors:\n
 vbar:\n",
     vbar_entry!("Synchronous", "CurrentSP0"),
     vbar_entry!("IRQ", "CurrentSP0"),
@@ -148,6 +164,7 @@ vbar:\n",
     vbar_entry!("SError", "LowerAArch32"),
     ctx_size = const size_of::<ExceptionContext>(),
     x30_off = const offset_of!(ExceptionContext, x) + 15 * 0x010,
+    debug_hvc = const hyperlight_common::arch::exn::DEBUG_EXCEPTION_HVC,
     handler = sym super::handle::handle_exception,
     ExceptionType_Synchronous = const ExceptionType::Synchronous as u64,
     ExceptionType_IRQ = const ExceptionType::Irq as u64,

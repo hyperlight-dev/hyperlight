@@ -7,14 +7,26 @@ to start listening for a gdb connection.
 ## Supported features
 
 The Hyperlight `gdb` feature enables guest debugging to:
-   - stop at an entry point breakpoint which is automatically set by Hyperlight
-   - add and remove HW breakpoints (maximum 4 set breakpoints at a time)
+   - stop before the first vCPU run
    - add and remove SW breakpoints
    - read and write registers
    - read and write addresses
-   - step/continue
+   - continue
+   - single-step
    - get code offset from target
    - stop when a crash occurs and only allow read access to the guest memory and registers
+
+On x86_64, gdb can also add up to four hardware breakpoints.
+ARM64 on Windows/WHP and Linux/KVM supports two hardware breakpoints,
+four-byte `BRK` software breakpoints, and hardware single-step. KVM reports
+debug exceptions through `KVM_EXIT_DEBUG`. Guest exception vectors forward debug
+exceptions to WHP through HVC. Windows ARM64 guest binaries must retain the
+`hyperlight_debug_vectors` symbol so the host can install the vectors before
+the initial debug stop. Watchpoints are not advertised.
+
+ARM64 snapshots reject installed software breakpoints, including those added
+during checkpointing. Restoring a poisoned sandbox discards its software
+breakpoint state and restores clean snapshot memory.
 
 ## Expected behavior
 
@@ -170,7 +182,7 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
       |                        │          |               create_gdb_thread           |                                 |      │
       |                        │          |◄─────────────────────────────────────────┌─┐         vcpu stopped          ┌─┐     │
       |    attach              │         ┌─┐                                         │ │◄──────────────────────────────┴─┘     │
-     ┌─┐───────────────────────┼────────►│ │                                         │ │     entrypoint breakpoint      |      │
+     ┌─┐───────────────────────┼────────►│ │                                         │ │       initial debug stop       |      │
      │ │   attach response     │         │ │                                         │ │                                |      │
      │ │◄──────────────────────┼─────────│ │                                         │ │                                |      │
      │ │                       │         │ │                                         │ │                                |      │

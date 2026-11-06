@@ -3,7 +3,7 @@
 
 pub(crate) mod arch;
 mod event_loop;
-mod x86_64_target;
+mod target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
@@ -15,8 +15,8 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
+use target::HyperlightSandboxTarget;
 use thiserror::Error;
-use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
 use super::regs::CommonRegisters;
@@ -79,6 +79,9 @@ pub enum DebugMemoryAccessError {
     TranslateGuestAddress(u64),
     #[error("Failed to write to read-only region")]
     WriteToReadOnly,
+    #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+    #[error("Failed to flush the host instruction cache: {0}")]
+    FlushInstructionCache(String),
 }
 
 impl<'a> DebugMemoryView<'a> {
@@ -94,6 +97,36 @@ impl<'a> DebugMemoryView<'a> {
 
     pub(crate) fn code_section_offset(&self) -> u64 {
         self.mem_mgr.layout.get_guest_code_gva() as u64
+    }
+
+    #[cfg(all(kvm, target_arch = "aarch64"))]
+    pub(crate) fn translate_gva(&self, gva: u64, root_pt: u64) -> Result<u64, DebugError> {
+        use crate::sandbox::snapshot::PageTableReader;
+
+        self.mem_mgr
+            .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                let reader = PageTableReader::new(memory, root_pt);
+                // SAFETY: Debug requests run with the vCPU stopped. The reader bounds-checks table accesses.
+                let mapping =
+                    unsafe { hyperlight_common::vmem::virt_to_phys(&reader, gva, 1) }.next();
+                reader.finish()?;
+                let gpa = mapping
+                    .filter(|mapping| {
+                        matches!(
+                            mapping.kind,
+                            hyperlight_common::vmem::MappingKind::Basic(_)
+                                | hyperlight_common::vmem::MappingKind::Cow(_)
+                        )
+                    })
+                    .and_then(|mapping| {
+                        let offset = gva.checked_sub(mapping.virt_base)?;
+                        (offset < mapping.len)
+                            .then(|| mapping.phys_base.checked_add(offset))
+                            .flatten()
+                    });
+                gpa.ok_or_else(|| crate::new_error!("GVA is not mapped: {gva:#x}"))
+            })
+            .map_err(|_| DebugError::TranslateGva(gva))
     }
 
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
@@ -153,16 +186,61 @@ impl<'a> DebugMemoryView<'a> {
             BackingSource::Dynamic(_) => Err(DebugMemoryAccessError::WriteToReadOnly),
         }
     }
+
+    pub(crate) fn flush_host_instruction_cache(
+        &self,
+        gpa: u64,
+        len: usize,
+    ) -> std::result::Result<(), DebugMemoryAccessError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            #[cfg(target_os = "windows")]
+            use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+            #[cfg(target_os = "windows")]
+            use windows::Win32::System::Threading::GetCurrentProcess;
+
+            let range = self
+                .mem_mgr
+                .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                    memory.host_range(gpa, len)
+                })
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
+
+            #[cfg(target_os = "windows")]
+            // SAFETY: The current process handle is valid and the range belongs to a live sandbox mapping.
+            unsafe {
+                FlushInstructionCache(GetCurrentProcess(), Some(range.start as *const _), len)
+                    .map_err(|e| DebugMemoryAccessError::FlushInstructionCache(e.to_string()))?;
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                unsafe extern "C" {
+                    fn __clear_cache(begin: *mut u8, end: *mut u8);
+                }
+                // SAFETY: The range is checked against the live sandbox backing. The vCPU is stopped.
+                unsafe { __clear_cache(range.start as *mut u8, range.end as *mut u8) };
+            }
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = (gpa, len);
+
+        Ok(())
+    }
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum VcpuStopReason {
     Crash,
     DoneStep,
     HwBp,
+    #[cfg(target_arch = "aarch64")]
+    Initial,
     SwBp,
     Interrupt,
+    #[cfg(target_arch = "x86_64")]
     Unknown,
 }
 
@@ -218,6 +296,10 @@ pub enum DebugError {
     Register(#[from] RegisterError),
     #[error("Maximum hardware breakpoints ({0}) exceeded")]
     TooManyHwBreakpoints(usize),
+    #[error("Debug capability is not supported: {0}")]
+    Unsupported(&'static str),
+    #[error("Instruction cache synchronization failed: {0}")]
+    InstructionCacheSync(String),
     #[error("Translation of guest virtual address failed: {0}")]
     TranslateGva(u64),
 }
@@ -226,20 +308,38 @@ pub enum DebugError {
 /// This extends the base VirtualMachine trait with GDB-specific functionality.
 pub(crate) trait DebuggableVm: VirtualMachine {
     /// Translates a guest virtual address to a guest physical address
-    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError>;
+    fn translate_gva(
+        &self,
+        gva: u64,
+        memory: &DebugMemoryView<'_>,
+    ) -> std::result::Result<u64, DebugError>;
 
     /// Enable/disable debugging
     fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Enable/disable single stepping
-    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
+        if enable {
+            Err(DebugError::Unsupported("single-step"))
+        } else {
+            Ok(())
+        }
+    }
 
     /// Add a hardware breakpoint at the given address.
     /// Must be idempotent.
-    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
+    fn add_hw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
+        Err(DebugError::Unsupported("hardware breakpoints"))
+    }
 
     /// Remove a hardware breakpoint at the given address
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
+    fn remove_hw_breakpoint(&mut self, _addr: u64) -> std::result::Result<(), DebugError> {
+        Err(DebugError::Unsupported("hardware breakpoints"))
+    }
+
+    fn sync_instruction_cache(&mut self) -> std::result::Result<(), DebugError> {
+        Ok(())
+    }
 }
 
 /// Debug communication channel that is used for sending a request type and
@@ -307,7 +407,7 @@ pub(crate) fn create_gdb_thread(
 
             let mut target = HyperlightSandboxTarget::new(hyp_conn);
 
-            // Waits for vCPU to stop at entrypoint breakpoint
+            // Wait for the vCPU interrupt handle.
             let msg = target.recv()?;
             if let DebugResponse::InterruptHandle(handle) = msg {
                 tracing::info!("Received interrupt handle: {:?}", handle);
@@ -316,7 +416,7 @@ pub(crate) fn create_gdb_thread(
                 return Err(GdbTargetError::UnexpectedMessage);
             }
 
-            // Waits for vCPU to stop at entrypoint breakpoint
+            // Wait for the architecture-specific initial stop.
             let msg = target.recv()?;
             if let DebugResponse::VcpuStopped(_) = msg {
                 event_loop_thread(debugger, &mut target);
@@ -448,6 +548,53 @@ mod tests {
                     );
                 }
             }
+        }
+
+        #[test]
+        #[cfg(all(kvm, target_arch = "aarch64"))]
+        fn translate_gva_resolves_page_offsets_and_rejects_missing_tables() -> crate::Result<()> {
+            use hyperlight_common::vmem::PAGE_SIZE;
+
+            let memory = TestMemory::new()?;
+            let access = memory.access();
+            let root = hyperlight_common::layout::scratch_base_gpa(
+                memory.mem_mgr.layout.get_scratch_size(),
+            );
+            let mut tables = [0u8; 4 * PAGE_SIZE];
+            for level in 0..3 {
+                let entry = (root + (level as u64 + 1) * PAGE_SIZE as u64) | 3;
+                tables[level * PAGE_SIZE..level * PAGE_SIZE + 8]
+                    .copy_from_slice(&entry.to_le_bytes());
+            }
+            tables[3 * PAGE_SIZE + 8..3 * PAGE_SIZE + 16]
+                .copy_from_slice(&(SandboxMemoryLayout::BASE_ADDRESS as u64 | 3).to_le_bytes());
+            tables[3 * PAGE_SIZE + 16..3 * PAGE_SIZE + 24]
+                .copy_from_slice(&((1u64 << 2) | (1 << 8)).to_le_bytes());
+            access.write(&tables, root).unwrap();
+            let code = PAGE_SIZE as u64;
+            for offset in [0, 1, PAGE_SIZE as u64 - 1] {
+                assert_eq!(
+                    access.translate_gva(code + offset, root).unwrap(),
+                    SandboxMemoryLayout::BASE_ADDRESS as u64 + offset
+                );
+            }
+            assert!(matches!(
+                access.translate_gva(0, root),
+                Err(DebugError::TranslateGva(0))
+            ));
+            assert!(matches!(
+                access.translate_gva(code * 2, root),
+                Err(DebugError::TranslateGva(_))
+            ));
+            assert!(matches!(
+                access.translate_gva(code | (1 << 48), root),
+                Err(DebugError::TranslateGva(_))
+            ));
+            assert!(matches!(
+                access.translate_gva(code, !0xfff),
+                Err(DebugError::TranslateGva(_))
+            ));
+            Ok(())
         }
 
         #[test]
