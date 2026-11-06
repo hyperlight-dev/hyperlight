@@ -286,6 +286,8 @@ impl WhpVm {
             )
             .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
 
+            Self::disable_tsc_adjust(p)?;
+
             #[cfg(feature = "hw-interrupts")]
             Self::enable_lapic_emulation(p)?;
 
@@ -318,6 +320,39 @@ impl WhpVm {
             #[cfg(feature = "hw-interrupts")]
             timer: None,
         })
+    }
+
+    /// `TscAdjustSupport` makes a write to `TSC` or `TSC_ADJUST` move the other
+    /// by the same amount, so restoring both would undo the TSC rewind.
+    fn disable_tsc_adjust(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
+        // Bit 18 of `WHV_PROCESSOR_FEATURES1`, the second bank.
+        const TSC_ADJUST_SUPPORT: u64 = 1 << 18;
+
+        let mut banks = WHV_PROCESSOR_FEATURES_BANKS {
+            BanksCount: 2,
+            ..Default::default()
+        };
+        let size = std::mem::size_of_val(&banks) as u32;
+        // SAFETY: `banks` is a buffer of `size` bytes, and every view of its
+        // union is plain `u64` data.
+        unsafe {
+            WHvGetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeProcessorFeaturesBanks,
+                &mut banks as *mut _ as *mut c_void,
+                size,
+                None,
+            )
+            .map_err(|e| CreateVmError::GetPartitionProperty(e.into()))?;
+            banks.Anonymous.AsUINT64[1] &= !TSC_ADJUST_SUPPORT;
+            WHvSetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeProcessorFeaturesBanks,
+                &banks as *const _ as *const c_void,
+                size,
+            )
+            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))
+        }
     }
 
     fn get_registers(
