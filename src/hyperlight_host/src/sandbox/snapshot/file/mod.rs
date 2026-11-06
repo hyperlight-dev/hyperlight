@@ -30,14 +30,13 @@ use self::media_types::{
 };
 pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
-    MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
+    MT_CONFIG_V6, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
     SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
 use super::{NextAction, Snapshot, SnapshotBlob, SnapshotMemory};
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
@@ -645,8 +644,6 @@ impl Snapshot {
             layout: MemoryLayout {
                 code_size: l.code_size(),
                 code_virt_base: l.get_guest_code_gva() as u64,
-                init_data_size: l.init_data_size(),
-                init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
                 scratch_size: l.get_scratch_size(),
                 g2h_queue_size: l.get_g2h_queue_size(),
                 h2g_queue_size: l.get_h2g_queue_size(),
@@ -789,8 +786,8 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V5 => {}
-            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 => {
+            MT_CONFIG_V6 => {}
+            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 | MT_CONFIG_V5 => {
                 return Err(crate::new_error!(
                     "snapshot config media type {:?} is incompatible with snapshot ABI {}",
                     cfg_media,
@@ -801,7 +798,7 @@ impl Snapshot {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V5
+                    MT_CONFIG_V6
                 ));
             }
         }
@@ -952,21 +949,7 @@ impl Snapshot {
         sbox_cfg.set_h2g_buffer_size(cfg.layout.h2g_buffer_size);
         sbox_cfg.set_g2h_pool_pages(cfg.layout.g2h_pool_pages);
         sbox_cfg.set_h2g_pool_pages(cfg.layout.h2g_pool_pages);
-        let init_data_perms = match cfg.layout.init_data_permissions {
-            None => None,
-            Some(bits) => Some(MemoryRegionFlags::from_bits(bits).ok_or_else(|| {
-                crate::new_error!(
-                    "snapshot init_data_permissions {:#x} contains unknown flag bits",
-                    bits
-                )
-            })?),
-        };
-        let mut layout = SandboxMemoryLayout::new(
-            sbox_cfg,
-            cfg.layout.code_size,
-            cfg.layout.init_data_size,
-            init_data_perms,
-        )?;
+        let mut layout = SandboxMemoryLayout::new(sbox_cfg, cfg.layout.code_size)?;
         let code_gva = if cfg.layout.code_virt_base == 0 {
             layout.get_guest_code_gpa() as u64
         } else {
@@ -1016,9 +999,7 @@ impl Snapshot {
             }
         }
 
-        // The snapshot GPA span must cover at least the regions the
-        // layout fields describe (code, PEB, init data),
-        // otherwise the guest mapping is too short to back them.
+        // The snapshot GPA span must cover the guest code region.
         let required_memory_size = layout.get_memory_size()?;
         if memory.gpa_span_len() < required_memory_size {
             return Err(crate::new_error!(

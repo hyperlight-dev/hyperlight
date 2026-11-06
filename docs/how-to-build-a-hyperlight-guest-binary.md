@@ -119,6 +119,20 @@ If you mix the manual form with `#[guest_function]`, registrations from the
 macro still happen automatically. Your `hyperlight_main` only needs to do
 whatever extra setup the macros do not cover.
 
+### Startup data
+
+Register a host function before `SandboxBuilder::build` or
+`UninitializedSandbox::evolve`. Call it from `hyperlight_main` and keep its
+`Vec<Bytes>` reply in guest state. Transport is ready before `hyperlight_main`.
+The reply's `ByteChunks` buffers remain valid across calls, snapshots,
+restores, and forks.
+
+For data needed after startup, pass `Vec<Bytes>` to a guest function and retain
+it there. A `Vec<u8>` parameter or return value copies into guest-owned memory.
+Retained buffers occupy transport pool slots. Size the pools for retained data
+plus later calls, or copy large inputs into guest memory as you fetch chunks.
+Retained buffers do not provide custom page permissions.
+
 ### Troubleshooting
 
 #### "duplicate lang item `panic_impl`" error

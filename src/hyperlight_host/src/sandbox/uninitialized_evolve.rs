@@ -8,7 +8,6 @@ use super::snapshot::NextAction;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -24,7 +23,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
 
     // Get the host page size. Narrowed to u32 because the guest ABI
-    // passes it via a 32-bit register (rdx), but widened back to usize
+    // stores it as u32, but widened back to usize
     // for host-side alignment calculations in set_up_hypervisor_partition.
     let page_size = u32::try_from(page_size::get())?;
 
@@ -39,10 +38,6 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     let seed = {
         let mut rng = rand::rng();
         rng.random::<u64>()
-    };
-    let peb_addr = {
-        let peb_u64 = u64::try_from(hshm.layout.peb_address())?;
-        RawPtr::from(peb_u64)
     };
 
     #[cfg(target_os = "linux")]
@@ -75,14 +70,8 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     }
 
     let initialise_guest = matches!(vm.get_next_action(), NextAction::Initialise(_));
-    vm.initialise(
-        peb_addr,
-        seed,
-        &mut hshm,
-        &u_sbox.host_funcs,
-        max_guest_log_level,
-    )
-    .map_err(HyperlightVmError::Initialize)?;
+    vm.initialise(seed, &mut hshm, &u_sbox.host_funcs, max_guest_log_level)
+        .map_err(HyperlightVmError::Initialize)?;
 
     if initialise_guest {
         hshm.finish_snapshot_checkpoint()?;

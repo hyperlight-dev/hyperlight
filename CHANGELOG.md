@@ -4,6 +4,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Changed
+* **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
+  and existing snapshots regenerated. Guest entry takes the random seed, host
+  page size, and log level.
+
+### Removed
+* **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
+  `GuestHandle`, `HyperlightPEB`, and `read_n_bytes_from_user_memory`.
+  Pass startup data through a host function and retain its `ByteChunks` reply.
+  `UninitializedSandbox::new` takes a `GuestBinary`.
+
 ## [v0.19.0] - 2026-11-04
 
 ### Added

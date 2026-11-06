@@ -94,7 +94,7 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
 /// Machine-specific initialisation; calls [`crate::generic_init`]
 /// once stack, CoW, etc have been set up.
 #[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+pub extern "C" fn entrypoint(seed: u64, ops: u64, max_log_level: u64) {
     unsafe {
         // Allocate a VA for processor control structures which must
         // survive snapshotting at the same VA.
@@ -108,18 +108,12 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
         // Architecture early init is complete! We pivot now to
         // executing on the main stack, and jump into generic
         // initialisation code in lib.rs
-        pivot_stack(peb_address, seed, ops, max_log_level, stack_top);
+        pivot_stack(seed, ops, max_log_level, stack_top);
     }
 }
 
 unsafe extern "C" {
-    unsafe fn pivot_stack(
-        peb_address: u64,
-        seed: u64,
-        ops: u64,
-        max_log_level: u64,
-        stack_top: u64,
-    ) -> !;
+    unsafe fn pivot_stack(seed: u64, ops: u64, max_log_level: u64, stack_top: u64) -> !;
 }
 
 // Mark this as the bottom-most frame for debuggers:
@@ -135,7 +129,7 @@ core::arch::global_asm!("
     pivot_stack:\n
     .cfi_startproc\n
     .cfi_undefined rip\n
-    mov rsp, r8\n
+    mov rsp, rcx\n
     xor ebp, ebp\n
     call {generic_init}\n
     mov dx, {halt_port}\n
