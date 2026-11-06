@@ -1330,6 +1330,19 @@ fn read_tsc() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
+/// Returns EAX, EBX, ECX and EDX as little-endian bytes.
+#[guest_function("Cpuid")]
+#[cfg(target_arch = "x86_64")]
+#[allow(unused_unsafe)]
+fn cpuid(leaf: u32, subleaf: u32) -> Vec<u8> {
+    // SAFETY: CPUID has no memory effects. Unsupported leaves return defined values.
+    let r = unsafe { core::arch::x86_64::__cpuid_count(leaf, subleaf) };
+    [r.eax, r.ebx, r.ecx, r.edx]
+        .iter()
+        .flat_map(|reg| reg.to_le_bytes())
+        .collect()
+}
+
 #[guest_function("ReadMSR")]
 #[cfg(target_arch = "x86_64")]
 fn read_msr(msr: u32) -> u64 {
