@@ -5,9 +5,8 @@
 //!
 //! Each assertion pins one piece of the contract that snapshots
 //! depend on: the manifest media types, the OCI Image Layout version,
-//! the `HyperlightPEB` size, the `OutBAction` and `VmAction`
-//! port numbers, and `BASE_ADDRESS`. A change to any of these breaks
-//! loading of older snapshots.
+//! the `OutBAction` and `VmAction` port numbers, and `BASE_ADDRESS`.
+//! A change to any of these breaks loading of older snapshots.
 //!
 //! When an assertion fires, see `docs/snapshot-versioning.md`.
 
@@ -16,8 +15,8 @@ use super::file::{
     SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 9;
-const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v5+json";
+const EXPECTED_ABI_VERSION: u32 = 10;
+const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v6+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v2";
 const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";
 const EXPECTED_OCI_LAYOUT_VERSION: &str = "1.0.0";
@@ -41,18 +40,6 @@ const _: () = {
     abi_assert!(str_eq(MT_SNAPSHOT_CURRENT, EXPECTED_MT_SNAPSHOT));
     abi_assert!(str_eq(MT_TRANSPORT_CURRENT, EXPECTED_MT_TRANSPORT));
     abi_assert!(str_eq(OCI_LAYOUT_VERSION, EXPECTED_OCI_LAYOUT_VERSION));
-};
-
-const _: () = {
-    use hyperlight_common::mem::HyperlightPEB;
-    use hyperlight_common::vmem::PAGE_SIZE;
-    // The loading host derives `init_data_offset`, and every
-    // offset after it, from the PEB's page-rounded size. Existing
-    // snapshots place the PEB in a single page, so the only thing that
-    // must hold is that the PEB keeps fitting in one page. Field layout
-    // is not pinned: only the captured guest reads the fields, and it
-    // travels inside the snapshot, so it stays self-consistent.
-    abi_assert!(std::mem::size_of::<HyperlightPEB>() <= PAGE_SIZE);
 };
 
 const _: () = {

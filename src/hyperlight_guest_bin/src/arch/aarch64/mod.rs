@@ -56,22 +56,16 @@ unsafe fn init_vbar() {
 /// Machine-specific initialisation; calls [`crate::generic_init`]
 /// once VBAR and the main stack have been set up
 #[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) -> ! {
+pub extern "C" fn entrypoint(seed: u64, ops: u64, max_log_level: u64) -> ! {
     unsafe {
         init_vbar();
         let stack_top = crate::init::init_stack();
-        pivot_stack(peb_address, seed, ops, max_log_level, stack_top);
+        pivot_stack(seed, ops, max_log_level, stack_top);
     }
 }
 
 unsafe extern "C" {
-    unsafe fn pivot_stack(
-        peb_address: u64,
-        seed: u64,
-        ops: u64,
-        max_log_level: u64,
-        stack_top: u64,
-    ) -> !;
+    unsafe fn pivot_stack(seed: u64, ops: u64, max_log_level: u64, stack_top: u64) -> !;
 }
 
 core::arch::global_asm!("
@@ -83,7 +77,7 @@ core::arch::global_asm!("
     msr SPSel, #1\n
     mov sp, x5\n
     msr SPSel, #0\n
-    mov sp, x4\n
+    mov sp, x3\n
     bl {generic_init}\n
     ldr x1, ={hlt_addr}\n
     str x0, [x1]\n

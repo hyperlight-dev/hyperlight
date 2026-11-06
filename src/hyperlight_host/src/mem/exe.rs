@@ -177,10 +177,10 @@ mod tests {
     /// A guest not built with hyperlight-guest-bin has no version note and
     /// should be accepted (no version check is performed).
     #[test]
-    fn from_env_accepts_guest_without_version_note() {
+    fn from_binary_accepts_guest_without_version_note() {
         let path = dummy_guest_as_pathbuf();
 
-        let result = crate::sandbox::snapshot::Snapshot::from_env(
+        let result = crate::sandbox::snapshot::Snapshot::from_binary(
             crate::GuestBinary::FilePath(path),
             crate::sandbox::SandboxConfiguration::default(),
         );
@@ -202,13 +202,13 @@ mod tests {
         );
     }
 
-    /// Load an unpatched simpleguest through `Snapshot::from_env` and verify
+    /// Load an unpatched simpleguest through `Snapshot::from_binary` and verify
     /// that it succeeds when the embedded version matches the host version.
     #[test]
-    fn from_env_accepts_matching_version() {
+    fn from_binary_accepts_matching_version() {
         let path = simple_guest_as_pathbuf();
 
-        let result = crate::sandbox::snapshot::Snapshot::from_env(
+        let result = crate::sandbox::snapshot::Snapshot::from_binary(
             crate::GuestBinary::FilePath(path),
             crate::sandbox::SandboxConfiguration::default(),
         );
@@ -216,13 +216,13 @@ mod tests {
         assert!(result.is_ok(), "should accept matching version");
     }
 
-    /// Load a patched guest binary through `Snapshot::from_env` and verify
+    /// Load a patched guest binary through `Snapshot::from_binary` and verify
     /// that a version mismatch produces `GuestBinVersionMismatch`.
     #[test]
-    fn from_env_rejects_version_mismatch() {
+    fn from_binary_rejects_version_mismatch() {
         let bytes = simpleguest_with_patched_version();
 
-        let result = crate::sandbox::snapshot::Snapshot::from_env(
+        let result = crate::sandbox::snapshot::Snapshot::from_binary(
             crate::GuestBinary::Buffer(bytes),
             crate::sandbox::SandboxConfiguration::default(),
         );

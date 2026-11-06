@@ -13,8 +13,6 @@ use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::{bail, transport};
 
-use crate::GUEST_HANDLE;
-
 /// Call a host function and convert its response outside the transport borrow.
 pub fn call_host_function<T>(
     function_name: &str,
@@ -39,11 +37,6 @@ where
     T: SupportedReturnType + TryFrom<ReturnValue>,
 {
     call_host_function::<T>(function_name.as_ref(), Some(args.into_value()), T::TYPE)
-}
-
-pub fn read_n_bytes_from_user_memory(num: u64) -> Result<Vec<u8>> {
-    let handle = unsafe { GUEST_HANDLE };
-    handle.read_n_bytes_from_user_memory(num)
 }
 
 /// Print a message using the host's print function.

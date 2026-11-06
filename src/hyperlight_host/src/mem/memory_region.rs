@@ -21,8 +21,6 @@ use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 
-pub(crate) const DEFAULT_GUEST_BLOB_MEM_FLAGS: MemoryRegionFlags = MemoryRegionFlags::READ;
-
 bitflags! {
     /// flags representing memory permission for a memory region
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -117,10 +115,6 @@ impl TryFrom<hv_arm64_memory_intercept_message> for MemoryRegionFlags {
 pub enum MemoryRegionType {
     /// The region contains the guest's code
     Code,
-    /// The region contains the guest's init data
-    InitData,
-    /// The region contains the PEB
-    Peb,
     /// The region contains the Heap
     Heap,
     /// The region contains the Guard Page
