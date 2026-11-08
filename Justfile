@@ -772,7 +772,7 @@ snapshot-goldens-regenerate target=default-target:
     mkdir -p target/snapshot-goldens
     cp -r "${layout}" "${dest}"
 
-# Validate the regen-goldens label against the goldens state.
+# Validate the S-needs-goldens label against the goldens state.
 # has_label is true when a PR carries the label. The label is set
 # when the current GOLDENS_VERSION was bumped and is not published.
 # base_ref is the git ref to diff the version against.
@@ -788,17 +788,17 @@ snapshot-goldens-check-label has_label base_ref image=default-snapshot-goldens-i
         base_version=""
         git cat-file -e "{{ base_ref }}:${version_file}" 2>/dev/null && base_version=$(git show "{{ base_ref }}:${version_file}" | parse_version)
         if [[ "${version}" == "${base_version}" ]]; then
-            echo "::error::regen-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
+            echo "::error::S-needs-goldens (or regen-goldens) is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
             exit 1
         fi
         if published "${version}"; then
-            echo "::error::regen-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
+            echo "::error::S-needs-goldens (or regen-goldens) is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
             exit 1
         fi
         echo "snapshot-goldens-check-label: OK. ${version} bumped from ${base_version} and not yet published."
     else
         if ! published "${version}"; then
-            echo "::error::goldens for ${version} are not published. Add the regen-goldens label, or run RegenSnapshotGoldens first." >&2
+            echo "::error::goldens for ${version} are not published. Add S-needs-goldens, or run RegenSnapshotGoldens first." >&2
             exit 1
         fi
         echo "snapshot-goldens-check-label: OK. ${version} is published."

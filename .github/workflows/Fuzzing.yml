@@ -44,6 +44,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Fuzzing Failure
-        run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --labels="A-fuzzing,A-testing,S-needs-triage,P-release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,7 +4,12 @@ This document details the process of releasing a new version of Hyperlight to [c
 
 ## Resolve any release blockers
 
-Before starting the release process, check for open issues labeled `release-blocker` in the [issue tracker](https://github.com/hyperlight-dev/hyperlight/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-blocker). All such issues must be resolved (closed) before proceeding — the ["Create a Release"](https://github.com/hyperlight-dev/hyperlight/actions/workflows/CreateRelease.yml) workflow runs a [release blocker check](https://github.com/hyperlight-dev/hyperlight/actions/workflows/ReleaseBlockerCheck.yml) as its first step, and all subsequent jobs depend on it, so the publish will fail if any `release-blocker` issues remain open.
+Before releasing, resolve all open issues labeled `P-release-blocker` or its
+rollout alias `release-blocker`. The [issue tracker](https://github.com/hyperlight-dev/hyperlight/issues?q=is%3Aissue+is%3Aopen+label%3AP-release-blocker%2Crelease-blocker)
+search includes both names. The ["Create a Release"](https://github.com/hyperlight-dev/hyperlight/actions/workflows/CreateRelease.yml)
+workflow runs a [release blocker check](https://github.com/hyperlight-dev/hyperlight/actions/workflows/ReleaseBlockerCheck.yml)
+first. It blocks release-branch publishes if either label appears on an open
+issue. Releases from other branches skip this check.
 
 ## Update Cargo.toml Versions
 
@@ -77,4 +82,3 @@ When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/
 5. Cherry-pick the commits from `main` that you want to include in the patch (and resolve any conflicts). You must include the commit that updated the `CHANGELOG.md` and the commit that updated the `Cargo.toml` versions.
 6. Create a tag for the patch release, e.g. `v0.4.1`, similar to the steps above. Push the tag. A job will start to try to make a new release branch for you, but it will fail because the `release/v0.4.1` branch already exists. This is expected, so don't worry about it.
 7. Follow the steps above to create a new GitHub release, but this time select the `release/v0.4.1` branch in the "Use workflow from" dropdown. This will create a new GitHub release for you, and publish the updated packages to crates.io.
-

@@ -94,6 +94,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Coverage Failure
-        run: ./dev/notify-ci-failure.sh --title="Weekly Coverage Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review"
+        run: ./dev/notify-ci-failure.sh --title="Weekly Coverage Failure - ${{ github.run_number }}" --labels="A-ci-periodics,A-testing,S-needs-triage"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

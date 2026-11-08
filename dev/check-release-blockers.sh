@@ -5,7 +5,7 @@ set -o pipefail
 
 ## DESCRIPTION:
 ##
-## This script checks for open issues with the 'release-blocker' label
+## This script checks for open issues with P-release-blocker or release-blocker
 ## in a given GitHub repository. It exits with code 1 if any blocking
 ## issues are found, or 0 if none are found.
 ##
@@ -28,17 +28,24 @@ if [ -z "${1:-}" ]; then
 fi
 
 REPO="$1"
-echo "Checking for open issues with 'release-blocker' label in $REPO..."
+echo "Checking for open issues with P-release-blocker or release-blocker in $REPO..."
 
 # Extract owner and repo name from the argument
 OWNER=$(echo "$REPO" | cut -d'/' -f1)
 REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
-# Get all open issues with release-blocker label
 BLOCKING_ISSUES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!) {
     repository(owner: $owner, name: $repo) {
-      issues(first: 100, states: OPEN, labels: ["release-blocker"]) {
+      legacy: issues(first: 100, states: OPEN, labels: ["release-blocker"]) {
+        totalCount
+        nodes {
+          number
+          title
+          url
+        }
+      }
+      structured: issues(first: 100, states: OPEN, labels: ["P-release-blocker"]) {
         totalCount
         nodes {
           number
@@ -47,15 +54,15 @@ BLOCKING_ISSUES=$(gh api graphql -f query='
         }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO_NAME" --jq '.data.repository.issues')
+  }' -f owner="$OWNER" -f repo="$REPO_NAME" --jq '.data.repository')
 
-BLOCKER_COUNT=$(echo "$BLOCKING_ISSUES" | jq '.totalCount')
+BLOCKER_COUNT=$(echo "$BLOCKING_ISSUES" | jq -e '.legacy.totalCount + .structured.totalCount')
 
 if [ "$BLOCKER_COUNT" -gt 0 ]; then
-    echo "❌ Found $BLOCKER_COUNT open release-blocking issue(s):"
-    echo "$BLOCKING_ISSUES" | jq -r '.nodes[] | "  - #\(.number): \(.title) (\(.url))"'
+    echo "❌ Found open release-blocking issues ($BLOCKER_COUNT label matches):"
+    echo "$BLOCKING_ISSUES" | jq -r '[.legacy.nodes[], .structured.nodes[]] | unique_by(.number)[] | "  - #\(.number): \(.title) (\(.url))"'
     echo ""
-    echo "Release blocked by open issue(s) with 'release-blocker' label"
+    echo "Release blocked by P-release-blocker or release-blocker issues"
     exit 1
 else
     echo "✅ No open release blocking issues found"

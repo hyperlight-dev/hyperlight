@@ -19,17 +19,18 @@ set -o pipefail
 ## or that the user is logged into the gh cli with an account with those permissions
 ## 
 ## Usage examples:
-##   ./dev/notify-fuzzing-failure.sh
-##   ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="area/testing,kind/bug"
-##   ./dev/notify-fuzzing-failure.sh --test
+##   ./dev/notify-ci-failure.sh
+##   ./dev/notify-ci-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
+##   ./dev/notify-ci-failure.sh --test
 ## Run this script locally like:
-##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="area/testing,kind/bug"
+##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-ci-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
 
 REPO="${GITHUB_REPOSITORY:-hyperlight-dev/hyperlight}"
 WORKFLOW_RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
 TEST_MODE=false
 ISSUE_TITLE=""
-LABELS="area/testing,kind/bug,area/fuzzing,lifecycle/needs-review"
+LABELS="A-testing,C-bug,A-fuzzing,S-needs-triage"
+source "$(dirname "$0")/label-utils.sh"
 
 for arg in "$@"; do
     case $arg in
@@ -51,9 +52,13 @@ done
 
 # Normalize labels into an array
 IFS=',' read -r -a LABEL_ARRAY <<< "$LABELS"
+if [ "${#LABEL_ARRAY[@]}" -eq 0 ]; then
+    echo "At least one CI failure label is required" >&2
+    exit 1
+fi
 
 # Choose a label to search existing issues for; prefer the first label if present
-SEARCH_LABEL="${LABEL_ARRAY[0]:-area/fuzzing}"
+SEARCH_LABEL="${LABEL_ARRAY[0]:-A-fuzzing}"
 
 # Build issue title if not provided
 if [ -z "$ISSUE_TITLE" ]; then
@@ -75,8 +80,19 @@ fi
 OWNER=$(echo "$REPO" | cut -d'/' -f1)
 REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
-echo "Checking for existing issues in $REPO with label '$SEARCH_LABEL'..."
-EXISTING_ISSUES=$(gh api graphql -f query='
+load_available_labels
+LABEL_ARGS=()
+for lbl in "${LABEL_ARRAY[@]}"; do
+    RESOLVED_LABEL="$(resolve_label "$lbl")"
+    LABEL_ARGS+=("--label" "$RESOLVED_LABEL")
+done
+
+# Search aliases independently. A multi-label GraphQL filter requires all labels.
+SEARCH_LABELS="$(jq -r --arg label "$SEARCH_LABEL" '[$label] + (.[$label] // []) | .[]' "$LABEL_ALIASES")"
+EXISTING_ISSUES='[]'
+while IFS= read -r label; do
+    echo "Checking for existing issues in $REPO with label '$label'..."
+    MATCHES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!, $label: String!) {
     repository(owner: $owner, name: $repo) {
       issues(first: 10, states: OPEN, labels: [$label]) {
@@ -93,23 +109,33 @@ EXISTING_ISSUES=$(gh api graphql -f query='
         }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$SEARCH_LABEL" --jq '.data.repository.issues') || EXISTING_ISSUES=""
+  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$label" --jq '.data.repository.issues.nodes')
+    EXISTING_ISSUES="$(jq -en --argjson existing "$EXISTING_ISSUES" --argjson matches "$MATCHES" '
+        if ($matches | type) != "array" then error("Invalid issue search response")
+        else $existing + $matches | unique_by(.number) end')"
+done <<<"$SEARCH_LABELS"
 
-FUZZING_ISSUES=$(echo "$EXISTING_ISSUES" | jq '.nodes[]' 2>/dev/null || echo "")
-FUZZING_ISSUE_COUNT=0
-if [ -n "$FUZZING_ISSUES" ]; then
-    FUZZING_ISSUE_COUNT=$(echo "$FUZZING_ISSUES" | jq -s 'length' 2>/dev/null || echo "0")
-fi
+FUZZING_ISSUE_COUNT=$(echo "$EXISTING_ISSUES" | jq 'length')
 
 echo "Found $FUZZING_ISSUE_COUNT existing issue(s) matching label '$SEARCH_LABEL'"
 
 if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
-    ISSUE_NUMBER=$(echo "$FUZZING_ISSUES" | jq -r '.number' | head -1)
-    ISSUE_URL=$(echo "$FUZZING_ISSUES" | jq -r '.url' | head -1)
-    if [ "$ISSUE_NUMBER" = "null" ] || [ -z "$ISSUE_NUMBER" ]; then
-        echo "⚠️  Could not parse issue number from search results; will create a new issue"
-        FUZZING_ISSUE_COUNT=0
+    ISSUE_NUMBER=$(echo "$EXISTING_ISSUES" | jq -r '.[0].number')
+    ISSUE_URL=$(echo "$EXISTING_ISSUES" | jq -r '.[0].url')
+    if [[ ! "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
+        echo "Could not parse issue number from search results" >&2
+        exit 1
     else
+        EDIT_LABEL_ARGS=()
+        for lbl in "${LABEL_ARRAY[@]}"; do
+            if [ "$lbl" = "P-release-blocker" ]; then
+                RESOLVED_LABEL="$(resolve_label "$lbl")"
+                EDIT_LABEL_ARGS+=("--add-label" "$RESOLVED_LABEL")
+            fi
+        done
+        if [ "${#EDIT_LABEL_ARGS[@]}" -gt 0 ]; then
+            gh issue edit "$ISSUE_NUMBER" --repo "$REPO" "${EDIT_LABEL_ARGS[@]}"
+        fi
         echo "Adding comment to existing issue #$ISSUE_NUMBER"
         COMMENT_BODY="## Job Failed Again
 
@@ -118,13 +144,9 @@ if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
 
 The scheduled job has failed again. Please check the workflow logs and artifacts for details."
 
-        if gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"; then
-            echo "✅ Added comment to existing issue #$ISSUE_NUMBER: $ISSUE_URL"
-            exit 0
-        else
-            echo "❌ Failed to add comment to existing issue. Will attempt to create a new issue instead."
-            FUZZING_ISSUE_COUNT=0
-        fi
+        gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"
+        echo "✅ Added comment to existing issue #$ISSUE_NUMBER: $ISSUE_URL"
+        exit 0
     fi
 fi
 
@@ -147,12 +169,6 @@ The scheduled job failed during execution. This issue was automatically created 
 
 ---
 *This issue was automatically created by the CI failure notification system.*"
-
-    # Build label args for gh issue create
-    LABEL_ARGS=()
-    for lbl in "${LABEL_ARRAY[@]}"; do
-        LABEL_ARGS+=("--label" "$lbl")
-    done
 
     if ISSUE_URL=$(gh issue create \
         --title "$ISSUE_TITLE" \

@@ -102,11 +102,9 @@ jobs:
       timeout_minutes: 35 # 5 minutes fuzzing plus setup and build on slower arm64 runners
 
   # File (or update) a release-blocking GitHub issue if any job fails. The first
-  # label (area/ci-periodics-aarch64) is the de-duplication key used by
-  # notify-ci-failure.sh, so this workflow maintains its own issue lineage and is
-  # guaranteed to carry release-blocker, instead of commenting on another periodic
-  # job's issue. NOTE: that label must exist in the repo (Issues -> Labels) or the
-  # `gh issue create` call will fail.
+  # label (A-ci-periodics-aarch64) keeps these failures on a dedicated issue.
+  # The notifier accepts an existing rollout alias and ensures the issue
+  # carries the release blocker label.
   notify-failure:
     runs-on: ubuntu-latest
     needs: [build-guests, miri, build-test, run-examples, fuzzing]
@@ -121,6 +119,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Daily aarch64 Failure
-        run: ./dev/notify-ci-failure.sh --title="Daily aarch64 Failure - ${{ github.run_number }}" --labels="area/ci-periodics-aarch64,area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --title="Daily aarch64 Failure - ${{ github.run_number }}" --labels="A-ci-periodics-aarch64,A-ci-periodics,A-testing,S-needs-triage,P-release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

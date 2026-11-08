@@ -9,6 +9,7 @@ updates:
       time: "03:00"
     labels:
       - "kind/dependencies"
+      - "C-deps"
   - package-ecosystem: "cargo"
     directory: "/"
     cooldown:
@@ -18,6 +19,7 @@ updates:
       time: "03:00"
     labels:
       - "kind/dependencies"
+      - "C-deps"
     open-pull-requests-limit: 20
     groups:
       windows:
@@ -41,7 +43,7 @@ updates:
       time: "03:00"
     labels:
       - "kind/dependencies"
-      - "area/guest"
+      - "C-deps"
     open-pull-requests-limit: 5
     groups:
       windows:

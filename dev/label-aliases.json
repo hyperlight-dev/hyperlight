@@ -1,0 +1,15 @@
+{
+  "A-ci-periodics": ["area/ci-periodics"],
+  "A-ci-periodics-aarch64": ["area/ci-periodics-aarch64"],
+  "A-ci-periodics-mshv-6.18": ["area/ci-periodics-mshv-6.18"],
+  "A-ci-periodics-nightly": ["area/ci-periodics-nightly"],
+  "A-fuzzing": ["area/fuzzing"],
+  "A-perf": ["area/performance", "area/benchmarks"],
+  "A-testing": ["area/testing"],
+  "C-bug": ["kind/bugfix", "kind/bug", "bug"],
+  "C-deps": ["kind/dependencies"],
+  "C-enhancement": ["kind/enhancement"],
+  "C-refactor": ["kind/refactor"],
+  "P-release-blocker": ["release-blocker"],
+  "S-needs-triage": ["lifecycle/needs-review"]
+}

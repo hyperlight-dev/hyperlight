@@ -12,18 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Ensure exactly one "kind/*" label is applied
+      - name: Test label migration offline
+        run: python3 dev/test-label-migration.py
+      - name: Ensure exactly one category is applied
         run: |
-          # Count the number of "kind/*" labels directly from the PR labels
+          set -euo pipefail
           PR_NUMBER=${{ github.event.pull_request.number }}
-          KIND_LABEL_COUNT=$(gh pr view "$PR_NUMBER" --json labels -q '.labels.[].name' | grep -c '^kind/')
-
-          if [[ "$KIND_LABEL_COUNT" -eq 1 ]]; then
-            echo "✅ Exactly one 'kind/*' label is applied."
-            exit 0
-          else
-            echo "❌ PR must have exactly one 'kind/*' label, but found $KIND_LABEL_COUNT."
-            exit 1
-          fi
+          gh pr view "$PR_NUMBER" --json labels |
+            jq -e --slurpfile aliases dev/label-aliases.json -f dev/check-pr-labels.jq
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
