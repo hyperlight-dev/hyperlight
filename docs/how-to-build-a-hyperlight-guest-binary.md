@@ -121,17 +121,33 @@ whatever extra setup the macros do not cover.
 
 ### Startup data
 
-Register a host function before `SandboxBuilder::build` or
-`UninitializedSandbox::evolve`. Call it from `hyperlight_main` and keep its
-`Vec<Bytes>` reply in guest state. Transport is ready before `hyperlight_main`.
-The reply's `ByteChunks` buffers remain valid across calls, snapshots,
-restores, and forks.
+A guest keeps host data by storing a `Vec<Bytes>`
+(`hyperlight_common::func::Bytes`) in its state. The data reaches the guest by
+one of two routes:
 
-For data needed after startup, pass `Vec<Bytes>` to a guest function and retain
-it there. A `Vec<u8>` parameter or return value copies into guest-owned memory.
-Retained buffers occupy transport pool slots. Size the pools for retained data
-plus later calls, or copy large inputs into guest memory as you fetch chunks.
-Retained buffers do not provide custom page permissions.
+| | Host function reply | Guest function argument |
+|---|---|---|
+| Started by | The guest, in `hyperlight_main` | The host, in a guest call |
+| Host code | Register the function before `SandboxBuilder::build` or `UninitializedSandbox::evolve` | Call the guest function with a `Vec<Bytes>` argument |
+| Available | Before the first guest call | After the call that sends it |
+| Pool size | `SandboxBuilder::g2h_pool_pages` | `SandboxBuilder::h2g_pool_pages` |
+
+Use a host function reply for data the guest needs at startup. Use a guest
+function argument for data the host supplies or replaces later.
+
+Either route can retain or copy the data. The Rust type of the host function's
+return value or the guest function's parameter decides:
+
+* `Vec<Bytes>` retains the transport buffers without copying. The buffers stay
+  valid across calls, snapshots, restores, and forks until the last clone
+  drops.
+* `Vec<u8>` copies the data into guest memory and releases the transport
+  buffers at once.
+
+Retained buffers keep their pool slots, which reduces the capacity left for
+later calls. Size the pool listed above for the retained data plus normal
+traffic. See
+[Capacity and latency](./virtio-host-guest-communication.md#capacity-and-latency).
 
 ### Troubleshooting
 
