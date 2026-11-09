@@ -48,9 +48,10 @@ fn main() -> Result<()> {
 
         // Note: When we build hyperlight_surrogate.exe CARGO_TARGET_DIR cannot
         // be the same as the CARGO_TARGET_DIR for the hyperlight-host otherwise
-        // the build script will hang. Using a sub directory works tho!
+        // the build script will hang. Keep the separate target directory inside
+        // OUT_DIR so dependency caches preserve it with the build-script output.
         // xref - https://github.com/rust-lang/cargo/issues/6412
-        let target_dir = out_path.join("../../hls");
+        let target_dir = out_path.join("hls");
 
         let profile = std::env::var("PROFILE")?;
         let build_profile = if profile.to_lowercase() == "debug" {
