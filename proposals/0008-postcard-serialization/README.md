@@ -63,7 +63,18 @@ postcard fits this use:
 
 * Faster encoding and decoding of control data.
 * Less code: no generated code, conversions or size estimator.
-* Equal or stronger validation of untrusted guest data.
+* Equal or stronger validation of untrusted guest data:
+  * The host still copies control data before parsing it. `control_len`
+    replaces the FlatBuffers size prefix, which the guest also writes today.
+  * Decoding rejects trailing bytes. The FlatBuffers verifier accepts bytes
+    that no offset references.
+  * Every field must be present. FlatBuffers reads a missing field as its
+    default, such as an empty string.
+  * Hyperlight's decode path has no unsafe code. The generated FlatBuffers
+    accessors use unsafe reads that rely on the verifier.
+  * Less code to get wrong. Serde derives replace about 6,400 lines of
+    generated code and schemas, and about 1,300 lines of handwritten
+    conversion code.
 
 ### Non-Goals
 
