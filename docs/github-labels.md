@@ -11,15 +11,15 @@ Until then, use the names required by the current workflows.
 Each prefix answers a different question. Combine labels to describe an issue
 or PR. Area labels vary by project. Most other labels are shared across the org.
 
-| Prefix | Meaning | Describes |
-| ------ | ------- | --------- |
-| `A-` | Area | The part of the project affected |
-| `C-` | Category | The type of issue or change |
-| `E-` | Participation | A good first issue or a request for help |
-| `F-` | Feature | A feature or initiative being tracked |
-| `O-` | Platform | CPU architecture, operating system, or hypervisor |
-| `P-` | Priority | Urgency or release importance |
-| `S-` | Status | Workflow state or outstanding action |
+| Prefix | Meaning       | Describes                                         |
+| ------ | ------------- | ------------------------------------------------- |
+| `A-`   | Area          | The part of the project affected                  |
+| `C-`   | Category      | The type of issue or change                       |
+| `E-`   | Participation | A good first issue or a request for help          |
+| `F-`   | Feature       | A feature or initiative being tracked             |
+| `O-`   | Platform      | CPU architecture, operating system, or hypervisor |
+| `P-`   | Priority      | Urgency or release importance                     |
+| `S-`   | Status        | Workflow state or outstanding action              |
 
 For example:
 
@@ -31,13 +31,13 @@ For example:
 
 ## Categories
 
-| Label | Use for |
-| ----- | ------- |
-| `C-bug` | Bug reports and fixes |
-| `C-deps` | PRs that update dependencies or related components |
-| `C-enhancement` | New features or backward-compatible improvements, including documentation and tests |
-| `C-refactor` | Restructuring or removing code without adding functionality, including changes to user-facing APIs |
-| `C-question` | Questions or requests for information |
+| Label           | Use for                                                                                            |
+| --------------- | -------------------------------------------------------------------------------------------------- |
+| `C-bug`         | Bug reports and fixes                                                                              |
+| `C-deps`        | PRs that update dependencies or related components                                                 |
+| `C-enhancement` | New features or backward-compatible improvements, including documentation and tests                |
+| `C-refactor`    | Restructuring or removing code without adding functionality, including changes to user-facing APIs |
+| `C-question`    | Questions or requests for information                                                              |
 
 Before merging a PR, assign one change category: `C-bug`, `C-deps`,
 `C-enhancement`, or `C-refactor`. During migration, the
@@ -49,21 +49,21 @@ Before merging a PR, assign one change category: `C-bug`, `C-deps`,
 Area labels are optional. Add those that help identify the affected parts of
 the project.
 
-| Label | Use for |
-| ----- | ------- |
-| `A-api` | APIs and public interfaces |
-| `A-ci` | CI workflows and GitHub Actions |
-| `A-ci-periodics` | Failures from scheduled CI jobs |
-| `A-ci-periodics-aarch64` | Daily aarch64 CI failures |
-| `A-ci-periodics-mshv-6.18` | Weekly MSHV 6.18 CI failures |
-| `A-ci-periodics-nightly` | Nightly Rust CI failures |
-| `A-deps` | Dependencies or related components as the affected area |
-| `A-docs` | Documentation |
-| `A-fuzzing` | Fuzzing |
-| `A-infra` | Infrastructure |
-| `A-perf` | Performance |
-| `A-security` | Security |
-| `A-testing` | Tests and testing infrastructure |
+| Label                      | Use for                                                 |
+| -------------------------- | ------------------------------------------------------- |
+| `A-api`                    | APIs and public interfaces                              |
+| `A-ci`                     | CI workflows and GitHub Actions                         |
+| `A-ci-periodics`           | Failures from scheduled CI jobs                         |
+| `A-ci-periodics-aarch64`   | Daily aarch64 CI failures                               |
+| `A-ci-periodics-mshv-6.18` | Weekly MSHV 6.18 CI failures                            |
+| `A-ci-periodics-nightly`   | Nightly Rust CI failures                                |
+| `A-deps`                   | Dependencies or related components as the affected area |
+| `A-docs`                   | Documentation                                           |
+| `A-fuzzing`                | Fuzzing                                                 |
+| `A-infra`                  | Infrastructure                                          |
+| `A-perf`                   | Performance                                             |
+| `A-security`               | Security                                                |
+| `A-testing`                | Tests and testing infrastructure                        |
 
 `A-deps` identifies an area. `C-deps` identifies a dependency update. A dependency
 update needs `C-deps`, with an area label only when it helps describe the change.
@@ -79,11 +79,11 @@ they also carry the general periodic-CI label. These workflows still use
 
 ## Participation and features
 
-| Label | Use for |
-| ----- | ------- |
-| `E-easy` | Good first issues suitable for new contributors |
-| `E-help-wanted` | Requests for help |
-| `F-guest-cow` | Work on guest copy-on-write support |
+| Label           | Use for                                         |
+| --------------- | ----------------------------------------------- |
+| `E-easy`        | Good first issues suitable for new contributors |
+| `E-help-wanted` | Requests for help                               |
+| `F-guest-cow`   | Work on guest copy-on-write support             |
 
 `E-easy` is the only difficulty label in this scheme. There are no size labels.
 
@@ -92,34 +92,34 @@ they also carry the general periodic-CI label. These workflows still use
 Use platform labels when an item is specific to an architecture, host OS, or
 hypervisor. Combine them where relevant.
 
-| Label | Use for |
-| ----- | ------- |
-| `O-x86_64` | x86-64 processors |
-| `O-aarch64` | 64-bit Arm processors |
-| `O-kvm` | Linux KVM backend |
-| `O-mshv` | Linux MSHV backend for Microsoft Hyper-V |
-| `O-whp` | Windows Hypervisor Platform backend |
-| `O-hvf` | macOS Hypervisor Framework backend |
-| `O-linux` | Linux host support |
-| `O-windows` | Windows host support |
-| `O-macos` | macOS host support |
+| Label       | Use for                                  |
+| ----------- | ---------------------------------------- |
+| `O-x86_64`  | x86-64 processors                        |
+| `O-aarch64` | 64-bit Arm processors                    |
+| `O-kvm`     | Linux KVM backend                        |
+| `O-mshv`    | Linux MSHV backend for Microsoft Hyper-V |
+| `O-whp`     | Windows Hypervisor Platform backend      |
+| `O-hvf`     | macOS Hypervisor Framework backend       |
+| `O-linux`   | Linux host support                       |
+| `O-windows` | Windows host support                     |
+| `O-macos`   | macOS host support                       |
 
 ## Status
 
 Status labels are composable. For example, a PR can need review and be nominated
 for discussion at the next meeting.
 
-| Label | Use when |
-| ----- | -------- |
-| `S-needs-triage` | An item needs initial assessment |
-| `S-needs-review` | A PR is ready for review or re-review |
-| `S-waiting-on-author` | The author needs to provide information or make changes |
-| `S-needs-repro` | A reproduction is needed to confirm a bug |
-| `S-confirmed` | A bug is verified or an enhancement is considered reasonable |
-| `S-blocked` | Another issue or external factor blocks progress |
-| `S-nominated` | An item is nominated for discussion at the next meeting |
-| `S-needs-announcement` | An item should be announced in the next release |
-| `S-needs-goldens` | A PR needs snapshot golden regeneration |
+| Label                  | Use when                                                     |
+| ---------------------- | ------------------------------------------------------------ |
+| `S-needs-triage`       | An item needs initial assessment                             |
+| `S-needs-review`       | A PR is ready for review or re-review                        |
+| `S-waiting-on-author`  | The author needs to provide information or make changes      |
+| `S-needs-repro`        | A reproduction is needed to confirm a bug                    |
+| `S-confirmed`          | A bug is verified or an enhancement is considered reasonable |
+| `S-blocked`            | Another issue or external factor blocks progress             |
+| `S-nominated`          | An item is nominated for discussion at the next meeting      |
+| `S-needs-announcement` | An item should be announced in the next release              |
+| `S-needs-goldens`      | A PR needs snapshot golden regeneration                      |
 
 `S-confirmed` does not promise implementation or a timeline.
 `S-needs-repro` describes what is missing. Add `S-waiting-on-author` when the
