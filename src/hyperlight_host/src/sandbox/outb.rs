@@ -255,7 +255,7 @@ fn outb_virtq_call(
                     ));
                 }
 
-                let log = virtq::read_guest_log_data(&mut request)
+                let log = virtq::read_guest_log_data(&mut request, &header)
                     .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
                 emit_guest_log(&log);
@@ -286,7 +286,7 @@ fn outb_virtq_call(
         )
     })?;
 
-    let call = virtq::get_host_function_call(&mut request)
+    let call = virtq::get_host_function_call(&mut request, &header)
         .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
     if call.function_call_type() != FunctionCallType::Host {

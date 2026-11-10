@@ -1157,12 +1157,12 @@ impl SharedMemory for GuestSharedMemory {
 /// racing loads in LLVM return `undef`, as discussed above, we would
 /// ideally `llvm.freeze` the result of any load out of the sandbox.
 ///
-/// It would furthermore be ideal if we could run the flatbuffers
-/// parsing code directly on the guest memory, in order to avoid
+/// It would furthermore be ideal if we could run the message
+/// decoder directly on the guest memory, in order to avoid
 /// unnecessary copies.  That is unfortunately probably not viable at
-/// the present time: because the generated flatbuffers parsing code
-/// doesn't use atomic or volatile accesses, it is likely to introduce
-/// double-read vulnerabilities.
+/// the present time: because the decoder doesn't use atomic or
+/// volatile accesses, it is likely to introduce double-read
+/// vulnerabilities.
 ///
 /// In short, none of the Rust-level operations available to us do the
 /// right thing, at the Rust spec level or the LLVM spec level. Our

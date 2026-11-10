@@ -15,9 +15,6 @@ use bytes::Bytes;
 use crate::flatbuffer_wrappers::{ExternalValueSink, ExternalValueSource};
 use crate::virtq::{MemOps, RecvChain, Segments, VirtqError, zeroed_vec};
 
-/// Length of a FlatBuffer size prefix.
-pub const SIZE_PREFIX_LEN: usize = core::mem::size_of::<u32>();
-
 /// Message types for the virtqueue wire protocol.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
@@ -101,18 +98,22 @@ pub struct MsgHeader {
     pub cid: u32,
     /// Total number of payload bytes in this logical message.
     pub payload_len: u32,
+    /// Number of payload bytes holding control data. External byte values
+    /// follow it. The host copies exactly this many bytes before decoding.
+    pub control_len: u32,
 }
 
 impl MsgHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
     /// Create a message header.
-    pub const fn new(kind: MsgKind, cid: u32, payload_len: u32) -> Self {
+    pub const fn new(kind: MsgKind, cid: u32, payload_len: u32, control_len: u32) -> Self {
         Self {
             kind,
             reserved: [0; 3],
             cid,
             payload_len,
+            control_len,
         }
     }
 
@@ -124,7 +125,7 @@ impl MsgHeader {
     /// Parse and validate a wire header.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         let header: Self = bytemuck::checked::try_pod_read_unaligned(bytes).ok()?;
-        (header.reserved == [0; 3]).then_some(header)
+        (header.reserved == [0; 3] && header.control_len <= header.payload_len).then_some(header)
     }
 }
 
@@ -147,10 +148,11 @@ impl<'a> EncodedMessage<'a> {
     ) -> Option<Self> {
         let payload_len = control.len().checked_add(externals.total_len())?;
         let payload_len = u32::try_from(payload_len).ok()?;
+        let control_len = u32::try_from(control.len()).ok()?;
         let total_len = MsgHeader::SIZE.checked_add(payload_len as usize)?;
 
         Some(Self {
-            header: MsgHeader::new(kind, cid, payload_len),
+            header: MsgHeader::new(kind, cid, payload_len, control_len),
             control,
             externals,
             total_len,
@@ -163,7 +165,7 @@ impl<'a> EncodedMessage<'a> {
         let externals = ExternalValues::new();
 
         Self {
-            header: MsgHeader::new(MsgKind::SnapshotCheckpoint, 0, 0),
+            header: MsgHeader::new(MsgKind::SnapshotCheckpoint, 0, 0, 0),
             control: &[],
             externals,
             total_len,
@@ -197,7 +199,7 @@ impl<'a> EncodedMessage<'a> {
         &self.header
     }
 
-    /// Size-prefixed FlatBuffer control data.
+    /// Control data.
     pub const fn control(&self) -> &[u8] {
         self.control
     }
@@ -307,7 +309,7 @@ impl Buf for EncodedMessageBuf<'_> {
     }
 }
 
-/// Borrowed external values collected while encoding a FlatBuffer.
+/// Borrowed external values collected while encoding control data.
 #[derive(Debug, Default)]
 pub struct ExternalValues<'a> {
     chunks: Vec<&'a [u8]>,
@@ -447,19 +449,6 @@ fn finish_external_values(remaining: usize) -> Result<()> {
     Ok(())
 }
 
-/// Decode a FlatBuffer size prefix.
-pub fn size_prefix_payload_len(prefix: &[u8]) -> Option<usize> {
-    // TODO: this is flatbuffer-specific and should be moved probably somewhere else.
-    let prefix = <[u8; SIZE_PREFIX_LEN]>::try_from(prefix).ok()?;
-    usize::try_from(u32::from_le_bytes(prefix)).ok()
-}
-
-/// Add the FlatBuffer size prefix to a payload length.
-pub const fn size_prefixed_len(payload_len: usize) -> Option<usize> {
-    // TODO: this is flatbuffer-specific and should be moved probably somewhere else.
-    SIZE_PREFIX_LEN.checked_add(payload_len)
-}
-
 #[cfg(test)]
 mod tests {
     use bytemuck::checked::try_pod_read_unaligned;
@@ -490,24 +479,21 @@ mod tests {
 
     #[test]
     fn header_contains_framing_fields() {
-        let header = MsgHeader::new(MsgKind::Response, 0x1234_5678, 4096);
+        let header = MsgHeader::new(MsgKind::Response, 0x1234_5678, 4096, 16);
 
-        assert_eq!(MsgHeader::SIZE, 12);
+        assert_eq!(MsgHeader::SIZE, 16);
         assert_eq!(header.kind, MsgKind::Response);
         assert_eq!(header.cid, 0x1234_5678);
         assert_eq!(header.payload_len, 4096);
+        assert_eq!(header.control_len, 16);
         assert_eq!(header.reserved, [0; 3]);
-        assert_eq!(
-            header.as_bytes(),
-            &[0x02, 0, 0, 0, 0x78, 0x56, 0x34, 0x12, 0, 0x10, 0, 0]
-        );
         assert_eq!(MsgHeader::from_bytes(header.as_bytes()), Some(header));
     }
 
     #[test]
     fn header_decodes_unaligned_bytes() {
-        let header = MsgHeader::new(MsgKind::Response, 7, 4096);
-        let mut storage = [0u32; 4];
+        let header = MsgHeader::new(MsgKind::Response, 7, 4096, 16);
+        let mut storage = [0u32; 5];
         let bytes = &mut bytemuck::cast_slice_mut(&mut storage)[1..1 + MsgHeader::SIZE];
         bytes.copy_from_slice(header.as_bytes());
 
@@ -516,9 +502,15 @@ mod tests {
 
     #[test]
     fn rejects_invalid_wire_headers() {
-        let header = MsgHeader::new(MsgKind::Request, 1, 4);
+        let header = MsgHeader::new(MsgKind::Request, 1, 4, 4);
         let mut bytes = [0; MsgHeader::SIZE];
         bytes.copy_from_slice(header.as_bytes());
+
+        assert_eq!(
+            MsgHeader::from_bytes(MsgHeader::new(MsgKind::Request, 1, 4, 5).as_bytes()),
+            None,
+            "control data longer than the payload"
+        );
 
         for index in 1..4 {
             bytes[index] = 1;
@@ -641,13 +633,5 @@ mod tests {
         }
 
         source.finish().unwrap();
-    }
-
-    #[test]
-    fn size_prefix_helpers_validate_length() {
-        assert_eq!(size_prefix_payload_len(&4u32.to_le_bytes()), Some(4));
-        assert_eq!(size_prefix_payload_len(&[0; 3]), None);
-        assert_eq!(size_prefixed_len(4), Some(SIZE_PREFIX_LEN + 4));
-        assert_eq!(size_prefixed_len(usize::MAX), None);
     }
 }

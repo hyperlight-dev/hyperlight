@@ -38,7 +38,6 @@ This project is composed internally of several components, depicted in the below
 * [Virtqueue host and guest communication](./virtio-host-guest-communication.md)
 * [Component wire format](./component-wire-format.md)
 * [How to debug a Hyperlight guest](./how-to-debug-a-hyperlight-guest.md)
-* [How to use Flatbuffers in Hyperlight](./how-to-use-flatbuffers.md)
 * [How to make a Hyperlight release](./how-to-make-releases.md)
 * [Getting Hyperlight Metrics, Logs, and Traces](./hyperlight-metrics-logs-and-traces.md)
 * [Benchmarking Hyperlight](./benchmarking-hyperlight.md)

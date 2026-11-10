@@ -1,9 +1,0 @@
-include "host_function_definition.fbs";
-
-namespace Hyperlight.Generated;
-
-table HostFunctionDetails {
-    functions:[HostFunctionDefinition];
-}
-
-root_type HostFunctionDetails;

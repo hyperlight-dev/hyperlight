@@ -4,21 +4,14 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use anyhow::{Result, bail};
-use flatbuffers::{FlatBufferBuilder, WIPOffset, size_prefixed_root};
+use anyhow::Result;
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::codec::{ExternalValueSink, ExternalValueSource};
 use super::function_types::{ParameterValue, ReturnType, decode_parameter_value};
 use super::util::try_byte_chunks_len;
-use crate::flatbuffers::hyperlight::generated::{
-    FunctionCall as FbFunctionCall, FunctionCallArgs as FbFunctionCallArgs,
-    FunctionCallType as FbFunctionCallType, Parameter, ParameterArgs,
-    ParameterValue as FbParameterValue, hlbool, hlboolArgs, hldouble, hldoubleArgs,
-    hlexternalbytes, hlexternalbytesArgs, hlfloat, hlfloatArgs, hlint, hlintArgs, hllong,
-    hllongArgs, hlstring, hlstringArgs, hluint, hluintArgs, hlulong, hlulongArgs,
-};
+use super::wire::{ParamsIn, ParamsOut, WireCall, decode_value, encode_value};
 
 /// The type of function call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,179 +58,41 @@ impl FunctionCall {
     /// Encode control data and collect byte parameters as external values.
     pub fn encode<'a, 'b, S>(
         &'a self,
-        builder: &'b mut FlatBufferBuilder,
+        buffer: &'b mut Vec<u8>,
         external_values: &mut S,
     ) -> Result<&'b [u8]>
     where
         S: ExternalValueSink<'a> + ?Sized,
     {
-        let function_name = builder.create_string(&self.function_name);
-
-        let function_call_type = match self.function_call_type {
-            FunctionCallType::Guest => FbFunctionCallType::guest,
-            FunctionCallType::Host => FbFunctionCallType::host,
-        };
-
-        let expected_return_type = self.expected_return_type.into();
-
-        let parameters = match &self.parameters {
-            Some(parameters) if !parameters.is_empty() => {
-                let parameter_offsets: Vec<WIPOffset<Parameter>> = parameters
-                    .iter()
-                    .map(|parameter| -> Result<WIPOffset<Parameter>> {
-                        let parameter = match parameter {
-                            ParameterValue::Int(value) => {
-                                let value = hlint::create(builder, &hlintArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlint,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::UInt(value) => {
-                                let value = hluint::create(builder, &hluintArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hluint,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::Long(value) => {
-                                let value = hllong::create(builder, &hllongArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hllong,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::ULong(value) => {
-                                let value =
-                                    hlulong::create(builder, &hlulongArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlulong,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::Float(value) => {
-                                let value =
-                                    hlfloat::create(builder, &hlfloatArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlfloat,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::Double(value) => {
-                                let value =
-                                    hldouble::create(builder, &hldoubleArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hldouble,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::Bool(value) => {
-                                let value = hlbool::create(builder, &hlboolArgs { value: *value });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlbool,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::String(value) => {
-                                let value = builder.create_string(value.as_str());
-                                let value =
-                                    hlstring::create(builder, &hlstringArgs { value: Some(value) });
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlstring,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::VecBytes(value) => {
-                                let length = u64::try_from(value.len()).map_err(|_| {
-                                    anyhow::anyhow!(
-                                        "External VecBytes parameter length does not fit in u64"
-                                    )
-                                })?;
-                                external_values.push_bytes(value)?;
-                                let value = hlexternalbytes::create(
-                                    builder,
-                                    &hlexternalbytesArgs {
-                                        length,
-                                        chunked: false,
-                                    },
-                                );
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlexternalbytes,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                            ParameterValue::ByteChunks(value) => {
-                                let length = try_byte_chunks_len(value).ok_or_else(|| {
-                                    anyhow::anyhow!("External ByteChunks parameter length overflow")
-                                })?;
-                                let length = u64::try_from(length).map_err(|_| {
-                                    anyhow::anyhow!(
-                                        "External ByteChunks parameter length does not fit in u64"
-                                    )
-                                })?;
-                                external_values.push_chunks(value)?;
-                                let value = hlexternalbytes::create(
-                                    builder,
-                                    &hlexternalbytesArgs {
-                                        length,
-                                        chunked: true,
-                                    },
-                                );
-                                Parameter::create(
-                                    builder,
-                                    &ParameterArgs {
-                                        value_type: FbParameterValue::hlexternalbytes,
-                                        value: Some(value.as_union_value()),
-                                    },
-                                )
-                            }
-                        };
-                        Ok(parameter)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Some(builder.create_vector(&parameter_offsets))
+        let parameters = self.parameters.as_deref().unwrap_or_default();
+        for parameter in parameters {
+            match parameter {
+                ParameterValue::VecBytes(value) => {
+                    u64::try_from(value.len()).map_err(|_| {
+                        anyhow::anyhow!("External VecBytes parameter length does not fit in u64")
+                    })?;
+                    external_values.push_bytes(value)?;
+                }
+                ParameterValue::ByteChunks(value) => {
+                    let length = try_byte_chunks_len(value).ok_or_else(|| {
+                        anyhow::anyhow!("External ByteChunks parameter length overflow")
+                    })?;
+                    u64::try_from(length).map_err(|_| {
+                        anyhow::anyhow!("External ByteChunks parameter length does not fit in u64")
+                    })?;
+                    external_values.push_chunks(value)?;
+                }
+                _ => {}
             }
-            _ => None,
-        };
+        }
 
-        let function_call = FbFunctionCall::create(
-            builder,
-            &FbFunctionCallArgs {
-                function_name: Some(function_name),
-                parameters,
-                function_call_type,
-                expected_return_type,
-            },
-        );
-        builder.finish_size_prefixed(function_call, None);
-        Ok(builder.finished_data())
+        let call = WireCall {
+            name: &self.function_name,
+            host: self.function_call_type == FunctionCallType::Host,
+            return_type: self.expected_return_type,
+            params: ParamsOut(parameters),
+        };
+        encode_value(&call, buffer)
     }
 
     /// Decode control data and consume external byte parameters.
@@ -245,34 +100,31 @@ impl FunctionCall {
     where
         S: ExternalValueSource + ?Sized,
     {
-        let function_call_fb = size_prefixed_root::<FbFunctionCall>(value)
-            .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-        let function_name = function_call_fb.function_name();
-        let function_call_type = match function_call_fb.function_call_type() {
-            FbFunctionCallType::guest => FunctionCallType::Guest,
-            FbFunctionCallType::host => FunctionCallType::Host,
-            other => {
-                bail!("Invalid function call type: {:?}", other);
-            }
+        let call: WireCall<'_, ParamsIn<'_>> = decode_value(value)?;
+        let function_call_type = if call.host {
+            FunctionCallType::Host
+        } else {
+            FunctionCallType::Guest
         };
-        let expected_return_type = function_call_fb.expected_return_type().try_into()?;
 
-        let parameters = function_call_fb
-            .parameters()
-            .map(|parameters| {
-                parameters
-                    .iter()
-                    .map(|parameter| decode_parameter_value(parameter, external_values))
-                    .collect::<Result<Vec<ParameterValue>>>()
-            })
-            .transpose()?;
+        let parameters = if call.params.0.is_empty() {
+            None
+        } else {
+            Some(
+                call.params
+                    .0
+                    .into_iter()
+                    .map(|value| decode_parameter_value(value, external_values))
+                    .collect::<Result<Vec<ParameterValue>>>()?,
+            )
+        };
 
         external_values.finish()?;
         Ok(Self {
-            function_name: function_name.to_string(),
+            function_name: call.name.to_string(),
             parameters,
             function_call_type,
-            expected_return_type,
+            expected_return_type: call.return_type,
         })
     }
 }
@@ -284,6 +136,7 @@ mod tests {
 
     use super::*;
     use crate::flatbuffer_wrappers::function_types::{Bytes, ReturnType};
+    use crate::flatbuffer_wrappers::wire::WireValue;
 
     #[derive(Debug, Clone, PartialEq)]
     enum TestExternalValue {
@@ -349,8 +202,8 @@ mod tests {
     }
 
     #[test]
-    fn read_from_flatbuffer() -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
+    fn twelve_parameters_round_trip() -> Result<()> {
+        let mut buffer = Vec::new();
         let mut external_values = TestExternalValues::default();
         let test_data = FunctionCall::new(
             "PrintTwelveArgs".to_string(),
@@ -371,7 +224,7 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::Int,
         )
-        .encode(&mut builder, &mut external_values)?;
+        .encode(&mut buffer, &mut external_values)?;
 
         let function_call = FunctionCall::decode(test_data, &mut external_values)?;
         assert_eq!(function_call.function_name, "PrintTwelveArgs");
@@ -400,7 +253,7 @@ mod tests {
 
     #[test]
     fn byte_parameters_round_trip_in_external_value_order() {
-        let mut builder = FlatBufferBuilder::new();
+        let mut buffer = Vec::new();
         let expected_parameters = vec![
             ParameterValue::Int(7),
             ParameterValue::UInt(8),
@@ -425,7 +278,7 @@ mod tests {
             ReturnType::ByteChunks,
         );
         let mut external_values = TestExternalValues::default();
-        let encoded = call.encode(&mut builder, &mut external_values).unwrap();
+        let encoded = call.encode(&mut buffer, &mut external_values).unwrap();
 
         assert!(encoded.len() < 4096);
         assert_eq!(
@@ -441,19 +294,17 @@ mod tests {
             ])
         );
 
-        let encoded_call = size_prefixed_root::<FbFunctionCall>(encoded).unwrap();
-        let encoded_parameters = encoded_call.parameters().unwrap();
+        let encoded_call: WireCall<'_, ParamsIn<'_>> = decode_value(encoded).unwrap();
         for (index, length, chunked) in [
             (7, 4096, false),
             (9, 17, true),
             (10, 0, false),
             (11, 0, true),
         ] {
-            let parameter = encoded_parameters.get(index);
-            assert_eq!(parameter.value_type(), FbParameterValue::hlexternalbytes);
-            let metadata = parameter.value_as_hlexternalbytes().unwrap();
-            assert_eq!(metadata.length(), length);
-            assert_eq!(metadata.chunked(), chunked);
+            assert_eq!(
+                encoded_call.params.0[index],
+                WireValue::ExternalBytes { length, chunked }
+            );
         }
 
         let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();
@@ -475,9 +326,9 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::Bool,
         );
-        let mut builder = FlatBufferBuilder::new();
+        let mut buffer = Vec::new();
         let mut external_values = TestExternalValues::default();
-        let encoded = call.encode(&mut builder, &mut external_values).unwrap();
+        let encoded = call.encode(&mut buffer, &mut external_values).unwrap();
 
         assert!(external_values.values.is_empty());
         let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();
@@ -486,7 +337,7 @@ mod tests {
 
     #[test]
     fn external_parameter_decoder_rejects_invalid_value_sequences() {
-        let mut builder = FlatBufferBuilder::new();
+        let mut buffer = Vec::new();
         let call = FunctionCall::new(
             "external_bytes".to_string(),
             Some(vec![ParameterValue::VecBytes(vec![1, 2, 3])]),
@@ -494,7 +345,7 @@ mod tests {
             ReturnType::Void,
         );
         let mut encoded_values = TestExternalValues::default();
-        let encoded = call.encode(&mut builder, &mut encoded_values).unwrap();
+        let encoded = call.encode(&mut buffer, &mut encoded_values).unwrap();
 
         let mut missing = TestExternalValues::default();
         assert!(FunctionCall::decode(encoded, &mut missing).is_err());

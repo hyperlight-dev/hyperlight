@@ -235,10 +235,11 @@ like-ci config=default-target hypervisor="kvm":
     just fuzz-like-ci fuzz_host_print {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_call {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_host_call {{config}} {{hypervisor}}
-    just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_trace_decode {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_malformed {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_roundtrip {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_control_decode {{config}} {{hypervisor}}
 
     @# spelling
     typos
@@ -665,21 +666,6 @@ coverage-ci hypervisor="kvm": (coverage-run hypervisor)
     cargo +{{nightly-toolchain}} llvm-cov report --html --output-dir target/coverage/html
     cargo +{{nightly-toolchain}} llvm-cov report --lcov --output-path target/coverage/lcov.info
     cargo +{{nightly-toolchain}} llvm-cov report | tee target/coverage/summary.txt
-
-###################
-### FLATBUFFERS ###
-###################
-
-gen-all-fbs-rust-code:
-    flatc --rust --rust-module-root-file --gen-all -o ./src/hyperlight_common/src/flatbuffers/ ./src/schema/all.fbs
-    just fmt-apply
-
-install-vcpkg:
-    cd .. && git clone https://github.com/Microsoft/vcpkg.git || cd -
-    cd ../vcpkg && ./bootstrap-vcpkg{{ bin-suffix }} && ./vcpkg integrate install || cd -
-
-install-flatbuffers-with-vcpkg: install-vcpkg
-    cd ../vcpkg && ./vcpkg install flatbuffers || cd -
 
 ###################################
 ### SNAPSHOT GOLDEN HELPERS     ###

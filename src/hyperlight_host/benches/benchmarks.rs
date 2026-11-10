@@ -7,11 +7,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, ParameterValue, ReturnType};
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::transport::ExternalValues;
 use hyperlight_common::vmem::PAGE_SIZE;
 use hyperlight_host::func::Registerable;
@@ -613,24 +611,20 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
     for (name, function_call) in [("vec_bytes", &vec_call), ("byte_chunks", &chunk_call)] {
         group.bench_function(BenchmarkId::new("encode_control", name), |b| {
             b.iter(|| {
-                let estimated_capacity = estimate_flatbuffer_capacity(
-                    &function_call.function_name,
-                    function_call.parameters.as_deref().unwrap_or_default(),
-                );
-                let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+                let mut buffer = Vec::new();
                 let mut exts = ExternalValues::new();
 
-                let control = function_call.encode(&mut builder, &mut exts).unwrap();
+                let control = function_call.encode(&mut buffer, &mut exts).unwrap();
                 std::hint::black_box((control, exts.total_len()));
             });
         });
     }
 
-    let mut builder = FlatBufferBuilder::new();
+    let mut buffer = Vec::new();
     let mut external_values = ExternalValues::new();
 
     let vec_control = vec_call
-        .encode(&mut builder, &mut external_values)
+        .encode(&mut buffer, &mut external_values)
         .unwrap()
         .to_vec();
 
@@ -642,11 +636,11 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
         });
     });
 
-    let mut builder = FlatBufferBuilder::new();
+    let mut buffer = Vec::new();
     let mut external_values = ExternalValues::new();
 
     let chunk_control = chunk_call
-        .encode(&mut builder, &mut external_values)
+        .encode(&mut buffer, &mut external_values)
         .unwrap()
         .to_vec();
 

@@ -98,11 +98,9 @@ fn float_roundtrip() {
         for f in doubles.iter() {
             let res: f64 = sandbox.call("EchoDouble", *f).unwrap();
 
-            // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
-            // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
-            // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
-            assert!(
-                (res.is_nan() && f.is_nan()) || res == *f,
+            assert_eq!(
+                res.to_bits(),
+                f.to_bits(),
                 "Expected {:?} but got {:?}",
                 f,
                 res
@@ -111,11 +109,9 @@ fn float_roundtrip() {
         for f in floats.iter() {
             let res: f32 = sandbox.call("EchoFloat", *f).unwrap();
 
-            // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
-            // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
-            // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
-            assert!(
-                (res.is_nan() && f.is_nan()) || res == *f,
+            assert_eq!(
+                res.to_bits(),
+                f.to_bits(),
                 "Expected {:?} but got {:?}",
                 f,
                 res
