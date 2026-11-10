@@ -1,6 +1,6 @@
 # GitHub labels
 
-This guide describes the proposed scheme in
+This guide describes the labeling scheme defined in
 [HIP 0005](../proposals/0005-structured-labels/README.md).
 The HIP covers rationale and migration. Existing automation still uses legacy
 names. Label renames and automation updates need a coordinated rollout.
