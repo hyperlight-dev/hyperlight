@@ -39,10 +39,13 @@ For example:
 | `C-refactor`    | Restructuring or removing code without adding functionality, including changes to user-facing APIs |
 | `C-question`    | Questions or requests for information                                                              |
 
-Before merging a PR, assign one change category: `C-bug`, `C-deps`,
-`C-enhancement`, or `C-refactor`. During migration, the
-[PR label check](../.github/workflows/PRLabelChecker.yml) requires exactly one
-`kind/*` label.
+Until migration, the [PR label check](../.github/workflows/PRLabelChecker.yml)
+requires exactly one current category: `kind/bugfix`, `kind/dependencies`,
+`kind/documentation`, `kind/enhancement`, or `kind/refactor`.
+After migration, assign one change category before merging: `C-bug`, `C-deps`,
+`C-enhancement`, or `C-refactor`. See the HIP's
+[label conversion table](../proposals/0005-structured-labels/README.md#label-conversion)
+for the mapping.
 
 ## Areas
 
@@ -106,8 +109,8 @@ hypervisor. Combine them where relevant.
 
 ## Status
 
-Status labels are composable. For example, a PR can need review and be nominated
-for discussion at the next meeting.
+After migration, status labels are composable. For example, a PR can need review
+and be nominated for discussion at the next meeting.
 
 | Label                  | Use when                                                     |
 | ---------------------- | ------------------------------------------------------------ |
@@ -122,14 +125,23 @@ for discussion at the next meeting.
 | `S-needs-goldens`      | A PR needs snapshot golden regeneration                      |
 
 `S-confirmed` does not promise implementation or a timeline.
-`S-needs-repro` describes what is missing. Add `S-waiting-on-author` when the
-author needs to supply it. Requests for author information documented under
-`lifecycle/needs-info` use `S-waiting-on-author`.
+`S-needs-repro` describes what is missing. After migration, add
+`S-waiting-on-author` when the author needs to supply it.
+
+Until migration, use `lifecycle/needs-review` for initial assessment,
+`lifecycle/confirmed` for confirmed issues, `lifecycle/blocked-on-author` for
+author input, and `lifecycle/blocked` for external blockers.
+The [issue labeler](../.github/workflows/IssueLabelChecker.yml) assigns
+`lifecycle/needs-review` when a new issue lacks exactly one lifecycle label.
+Remove it after assessment. After migration, remove `S-needs-triage` at the
+same point. Requests for author information documented under
+`lifecycle/needs-info` also map to `S-waiting-on-author`.
 
 ### Review readiness
 
-Add `S-needs-review` when opening a review-ready PR, or after addressing requested
-changes and re-requesting review.
+Until migration, `ready-for-review` signals that a PR is awaiting review.
+Add it when opening a review-ready PR, or after addressing requested changes and
+re-requesting review. After migration, use `S-needs-review` for this purpose.
 
 The existing [`collect`](../.github/workflows/ready-for-review-label.yml) and
 [`manage`](../.github/workflows/ready-for-review-manage.yml) workflows remove
@@ -142,8 +154,7 @@ The existing [`collect`](../.github/workflows/ready-for-review-label.yml) and
 
 Only reviews of the current head commit count toward these thresholds.
 Authors add the label. Automation handles removal. The rollout must preserve
-these rules for `S-needs-review`. Until the workflows are migrated, add
-`ready-for-review` to use this automation.
+these rules for `S-needs-review`.
 
 ### Snapshot goldens
 
