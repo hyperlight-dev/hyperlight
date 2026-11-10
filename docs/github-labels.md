@@ -174,6 +174,6 @@ Issues also use GitHub issue types. These are separate from labels:
 Use GitHub's closure reasons to record resolution:
 
 * Close resolved issues as **completed**.
-* Link duplicates to the original issue and close them as **not planned**.
+* Close duplicate issues as **duplicate**, linking to the original issue.
 * Explain findings that are not bugs and close them as **not planned**.
 * Explain decisions not to pursue an issue and close it as **not planned**.
