@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Ensure exactly one "C-*" label is applied
+      - name: Ensure exactly one "C-*" (Category) label is applied
         run: |
           # Count the number of "C-*" labels directly from the PR labels
           PR_NUMBER=${{ github.event.pull_request.number }}
