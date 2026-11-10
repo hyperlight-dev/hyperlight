@@ -98,7 +98,7 @@ jobs:
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
 
-  # S-needs-goldens selects regenerate mode.
+  # Pick the goldens mode. The `S-needs-goldens` label means regenerate. No label means pull.
   # Also validate the label against the goldens state so a stale or missing label fails fast.
   check-golden-label:
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 name: Ready-for-review (manage)
 
-# Stage 2 of the S-needs-review label pipeline. It is triggered
+# Stage 2 of the two-stage "S-needs-review" label pipeline. It is triggered
 # when "Ready-for-review (collect)" completes and runs in the context of the
 # base repository's default branch, so it receives a read-write GITHUB_TOKEN
 # even when the originating event came from a fork. This is what lets us remove

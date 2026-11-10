@@ -1,6 +1,6 @@
 name: Ready-for-review (collect)
 
-# Stage 1 of a two-stage pipeline that removes S-needs-review from
+# Stage 1 of a two-stage pipeline that removes the "S-needs-review" label from
 # a pull request once it is no longer awaiting review.
 #
 # Pull-request and review events originating from FORKED repositories only ever
