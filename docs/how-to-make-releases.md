@@ -77,3 +77,4 @@ When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/
 5. Cherry-pick the commits from `main` that you want to include in the patch (and resolve any conflicts). You must include the commit that updated the `CHANGELOG.md` and the commit that updated the `Cargo.toml` versions.
 6. Create a tag for the patch release, e.g. `v0.4.1`, similar to the steps above. Push the tag. A job will start to try to make a new release branch for you, but it will fail because the `release/v0.4.1` branch already exists. This is expected, so don't worry about it.
 7. Follow the steps above to create a new GitHub release, but this time select the `release/v0.4.1` branch in the "Use workflow from" dropdown. This will create a new GitHub release for you, and publish the updated packages to crates.io.
+
