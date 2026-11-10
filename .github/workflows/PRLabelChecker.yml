@@ -12,13 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Ensure exactly one category is applied
+      - name: Ensure exactly one "C-*" label is applied
         run: |
-          set -euo pipefail
+          # Count the number of "C-*" labels directly from the PR labels
           PR_NUMBER=${{ github.event.pull_request.number }}
-          gh pr view "$PR_NUMBER" --json labels | jq -e '
-            [.labels[].name | select(startswith("C-"))] |
-            if length == 1 then true
-            else error("PR must have exactly one category label") end'
+          KIND_LABEL_COUNT=$(gh pr view "$PR_NUMBER" --json labels -q '.labels.[].name' | grep -c '^C-')
+
+          if [[ "$KIND_LABEL_COUNT" -eq 1 ]]; then
+            echo "✅ Exactly one 'C-*' label is applied."
+            exit 0
+          else
+            echo "❌ PR must have exactly one 'C-*' label, but found $KIND_LABEL_COUNT."
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

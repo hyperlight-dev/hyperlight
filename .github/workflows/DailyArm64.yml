@@ -102,7 +102,11 @@ jobs:
       timeout_minutes: 35 # 5 minutes fuzzing plus setup and build on slower arm64 runners
 
   # File (or update) a release-blocking GitHub issue if any job fails. The first
-  # label (A-ci-periodics-aarch64) keeps these failures on a dedicated issue.
+  # label (A-ci-periodics-aarch64) is the de-duplication key used by
+  # notify-ci-failure.sh, so this workflow maintains its own issue lineage and is
+  # guaranteed to carry P-release-blocker, instead of commenting on another periodic
+  # job's issue. NOTE: that label must exist in the repo (Issues -> Labels) or the
+  # `gh issue create` call will fail.
   notify-failure:
     runs-on: ubuntu-latest
     needs: [build-guests, miri, build-test, run-examples, fuzzing]
