@@ -69,6 +69,7 @@ jobs:
     # Shared workflow in the org-wide `.github` repository, pinned to a commit SHA.
     uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@e5e471d927d3a72676ab48433da8a99d15a32ad7
     with:
+      # TODO: Remove this override once the shared workflow defaults to S-needs-review.
       label: S-needs-review
       # fromJSON turns the validated digit-string into a numeric input.
       pr-number: ${{ fromJSON(needs.read-pr.outputs.pr_number) }}
