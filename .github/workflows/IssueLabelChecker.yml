@@ -14,6 +14,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
     - name: Check and Add label
       run: |
+        # Preserve existing statuses and add S-needs-triage only when none is present.
         set -euo pipefail
         HAS_STATUS="$(gh issue view ${{ github.event.issue.number }} --json labels \
           -q 'any(.labels[].name; startswith("S-"))')"
