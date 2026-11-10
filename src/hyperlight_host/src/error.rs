@@ -12,7 +12,6 @@ use std::time::SystemTimeError;
 
 #[cfg(target_os = "windows")]
 use crossbeam_channel::{RecvError, SendError};
-use flatbuffers::InvalidFlatbuffer;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::virtq::VirtqError;
@@ -64,10 +63,6 @@ pub enum HyperlightError {
     /// Guest execution was cancelled by the host
     #[error("Execution was cancelled by the host.")]
     ExecutionCanceledByHost(),
-
-    /// Accessing the value of a flatbuffer parameter failed
-    #[error("Failed to get a value from flat buffer parameter")]
-    FailedToGetValueFromParameter(),
 
     ///Field Name not found in decoded GuestLogData
     #[error("Field Name {0} not found in decoded GuestLogData")]
@@ -126,10 +121,6 @@ pub enum HyperlightError {
     /// Failed to convert to Integer
     #[error("Failed To Convert Size to usize")]
     IntConversionFailure(#[from] TryFromIntError),
-
-    /// The flatbuffer is invalid
-    #[error("The flatbuffer is invalid")]
-    InvalidFlatBuffer(#[from] InvalidFlatbuffer),
 
     /// Conversion of str to Json failed
     #[error("Conversion of str data to json failed")]
@@ -255,12 +246,6 @@ pub enum HyperlightError {
     #[error("String Conversion of UTF8 data to str failed")]
     UTF8StringConversionFailure(#[from] FromUtf8Error),
 
-    /// The capacity of the vector is incorrect
-    #[error(
-        "The capacity of the vector is incorrect. Capacity: {0}, Length: {1}, FlatBuffer Size: {2}"
-    )]
-    VectorCapacityIncorrect(usize, usize, i32),
-
     /// vmm sys Error Occurred
     #[error("vmm sys Error {0:?}")]
     #[cfg(target_os = "linux")]
@@ -345,7 +330,6 @@ impl HyperlightError {
             | HyperlightError::CheckedAddOverflow(_, _)
             | HyperlightError::CStringConversionError(_)
             | HyperlightError::Error(_)
-            | HyperlightError::FailedToGetValueFromParameter()
             | HyperlightError::FieldIsMissingInGuestLogData(_)
             | HyperlightError::GuestBinVersionMismatch { .. }
             | HyperlightError::GuestError(_, _)
@@ -359,7 +343,6 @@ impl HyperlightError {
             | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
-            | HyperlightError::InvalidFlatBuffer(_)
             | HyperlightError::JsonConversionFailure(_)
             | HyperlightError::LockAttemptFailed(_)
             | HyperlightError::MemoryRequestTooBig(_, _)
@@ -381,7 +364,6 @@ impl HyperlightError {
             | HyperlightError::UnexpectedReturnValueType(_, _)
             | HyperlightError::UnrecoverableSandbox
             | HyperlightError::UTF8StringConversionFailure(_)
-            | HyperlightError::VectorCapacityIncorrect(_, _, _)
             | HyperlightError::SharedMemory(_) => false,
 
             #[cfg(target_os = "windows")]

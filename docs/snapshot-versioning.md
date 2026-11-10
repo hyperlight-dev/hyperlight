@@ -56,6 +56,9 @@ be regenerated.
 ABI 10 contains no PEB or init-data region. Guest entry takes the random seed,
 host page size, and log level. Earlier snapshots must be regenerated.
 
+ABI 11 encodes control data with postcard and carries its length in a 16-byte
+message header. Earlier snapshots must be regenerated.
+
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
 
@@ -78,7 +81,7 @@ them.
 
 ## Enforcement
 
-The format is large and easy to change by accident. Two mechanisms
+The format is large and easy to change by accident. Three mechanisms
 catch a change to it so reviewers do not have to spot every break by
 eye, and so a developer who breaks the format unintentionally finds
 out at build time rather than in production.
@@ -90,6 +93,12 @@ hold a copy of every value that defines the format:
 OCI layout version, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.
+
+Wire format tests in
+[src/hyperlight_common/src/flatbuffer_wrappers/abi_tests.rs](../src/hyperlight_common/src/flatbuffer_wrappers/abi_tests.rs)
+pin the encoded bytes of every host-guest message: the message header,
+function calls and results, guest logs and trace events. Snapshots
+contain guest code built against these encodings.
 
 The snapshot golden verify test
 (`cargo test -p hyperlight-host --test snapshot_goldens`) loads

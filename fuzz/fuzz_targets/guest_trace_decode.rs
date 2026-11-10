@@ -3,11 +3,11 @@
 #![no_main]
 
 #[cfg(not(feature = "trace"))]
-compile_error!("feature `trace` must be enabled to fuzz guest trace event estimation");
+compile_error!("feature `trace` must be enabled to fuzz guest trace decoding");
 
 use hyperlight_common::flatbuffer_wrappers::guest_trace_data::{
     EventKeyValue, EventsBatchDecoder, EventsBatchEncoder, EventsDecoder, EventsEncoder,
-    GuestEvent, estimate_event,
+    GuestEvent, MAX_TRACE_DATA_SIZE,
 };
 use libfuzzer_sys::arbitrary::{Arbitrary, Result as FuzzResult, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -15,18 +15,14 @@ use libfuzzer_sys::fuzz_target;
 const MAX_STRING_LEN: usize = 1 << 10; // 1024 bytes
 const MAX_FIELDS: usize = 32;
 
-/// Wrapper around GuestEvent to implement Arbitrary
+/// An event to round trip and raw bytes to decode as a batch.
 #[derive(Debug)]
-struct EventInput(GuestEvent);
-
-impl EventInput {
-    /// Consumes the wrapper and returns the inner GuestEvent
-    fn into_inner(self) -> GuestEvent {
-        self.0
-    }
+struct Input<'a> {
+    event: GuestEvent,
+    raw: &'a [u8],
 }
 
-impl<'a> Arbitrary<'a> for EventInput {
+impl<'a> Arbitrary<'a> for Input<'a> {
     fn arbitrary(u: &mut Unstructured<'a>) -> FuzzResult<Self> {
         // Choose a variant of GuestEvent to generate
         let discriminator = u.arbitrary::<u8>()? % 5;
@@ -60,7 +56,10 @@ impl<'a> Arbitrary<'a> for EventInput {
             },
         };
 
-        Ok(EventInput(event))
+        Ok(Input {
+            event,
+            raw: u.arbitrary()?,
+        })
     }
 }
 
@@ -99,59 +98,14 @@ fn arbitrary_fields(u: &mut Unstructured<'_>) -> FuzzResult<Vec<EventKeyValue>> 
     Ok(fields)
 }
 
-/// Encodes a GuestEvent into a byte vector
-fn encode(event: &GuestEvent) -> Vec<u8> {
-    // Use the estimate plus some slack to avoid reallocation during encoding
-    let mut encoder = EventsBatchEncoder::new(estimate_event(event).saturating_add(256), |_| {});
-    encoder.encode(event);
-    encoder.finish().to_vec()
-}
+fuzz_target!(|input: Input<'_>| {
+    // Arbitrary batches must decode or fail without panicking.
+    let _ = EventsBatchDecoder.decode(input.raw);
 
-/// Decodes a byte slice into a GuestEvent
-fn decode(data: &[u8]) -> Option<GuestEvent> {
-    let decoder = EventsBatchDecoder {};
-    let mut events = decoder.decode(data).ok()?;
-
-    if events.len() == 1 {
-        events.pop()
-    } else {
-        None
-    }
-}
-
-/// Asserts that the estimated size is within acceptable bounds of the actual size
-/// Allows for a 10% slack or minimum of 128 bytes
-fn assert_estimate_bounds(actual: usize, estimate: usize) {
-    assert!(
-        estimate >= actual,
-        "estimate {} smaller than actual {}",
-        estimate,
-        actual,
-    );
-
-    let slack = (actual / 10).max(128);
-    let upper_bound = actual + slack;
-    assert!(
-        estimate <= upper_bound,
-        "estimate {} larger than allowable upper bound {} (actual {})",
-        estimate,
-        upper_bound,
-        actual,
-    );
-}
-
-fuzz_target!(|input: EventInput| {
-    let event = input.into_inner();
-
-    // Get the size estimate
-    let estimate = estimate_event(&event);
-    // Encode the event
-    let encoded_data = encode(&event);
-    // Assert that the estimate is within bounds
-    assert_estimate_bounds(encoded_data.len(), estimate);
-
-    // Decode the event back
-    let decoded = decode(&encoded_data).expect("decoding failed");
-    // Assert that the decoded event matches the original
-    assert_eq!(event, decoded);
+    let mut encoder = EventsBatchEncoder::new(MAX_TRACE_DATA_SIZE, |_| {});
+    encoder.encode(&input.event);
+    let decoded = EventsBatchDecoder
+        .decode(encoder.finish())
+        .expect("decoding failed");
+    assert_eq!(decoded, [input.event]);
 });

@@ -296,7 +296,6 @@
             zlib
             cargo-hyperlight
             typos
-            flatbuffers
             cargo-fuzz
           ] ++ (if system == "x86_64-linux" || system == "aarch64-linux"
                 then [ valgrind ]

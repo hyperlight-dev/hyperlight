@@ -6,12 +6,10 @@
 use alloc::vec::Vec;
 use core::result;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::layout::scratch_transport_end_gva;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::transport::{
@@ -173,10 +171,6 @@ impl GuestContext {
         parameters: Option<Vec<ParameterValue>>,
         return_type: ReturnType,
     ) -> Result<ReturnValue> {
-        // Encode control data separately from borrowed external byte values.
-        let params = parameters.as_deref().unwrap_or_default();
-        let estimated_capacity = estimate_flatbuffer_capacity(function_name, params);
-
         let fc = FunctionCall::new(
             function_name.into(),
             parameters,
@@ -184,11 +178,12 @@ impl GuestContext {
             return_type,
         );
 
-        let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+        let mut buffer = Vec::new();
         let mut externals = ExternalValues::new();
 
+        // Encode control data separately from borrowed external byte values.
         let control = fc
-            .encode(&mut builder, &mut externals)
+            .encode(&mut buffer, &mut externals)
             .with_context(|| "failed to encode host function call")?;
 
         // Frame the request and include external values in its total length.
@@ -310,7 +305,7 @@ impl GuestContext {
             payload.append(segments);
         }
 
-        let call = codec::decode_request(payload)?;
+        let call = codec::decode_request(&header, payload)?;
         Ok(DispatchAction::Call(header.cid, call))
     }
 
@@ -321,11 +316,11 @@ impl GuestContext {
             .with_context(|| "G2H response reclaim failed")?;
 
         {
-            let mut builder = FlatBufferBuilder::new();
+            let mut buffer = Vec::new();
             let mut externals = ExternalValues::new();
 
             let control = result
-                .encode(&mut builder, &mut externals)
+                .encode(&mut buffer, &mut externals)
                 .with_context(|| "failed to encode guest function result")?;
 
             let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)

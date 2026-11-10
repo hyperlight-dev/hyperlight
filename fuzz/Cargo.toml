@@ -14,8 +14,8 @@ hyperlight-host = { workspace = true, default-features = true, features = ["fuzz
 hyperlight-common = {workspace = true}
 
 [[bin]]
-name = "fuzz_guest_estimate_trace_event"
-path = "fuzz_targets/guest_estimate_trace_event.rs"
+name = "fuzz_guest_trace_decode"
+path = "fuzz_targets/guest_trace_decode.rs"
 test = false
 doc = false
 bench = false
@@ -58,6 +58,13 @@ bench = false
 [[bin]]
 name = "fuzz_virtq_roundtrip"
 path = "fuzz_targets/virtq_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_control_decode"
+path = "fuzz_targets/control_decode.rs"
 test = false
 doc = false
 bench = false
