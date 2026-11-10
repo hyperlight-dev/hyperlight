@@ -2,9 +2,7 @@
 
 This guide describes the labeling scheme defined in
 [HIP 0005](../proposals/0005-structured-labels/README.md).
-The HIP covers rationale and migration. Existing automation still uses legacy
-names. Label renames and automation updates need a coordinated rollout.
-Until then, use the names required by the current workflows.
+The HIP covers rationale and migration.
 
 ## Choosing labels
 
@@ -39,11 +37,9 @@ For example:
 | `C-refactor`    | Restructuring or removing code without adding functionality, including changes to user-facing APIs |
 | `C-question`    | Questions or requests for information                                                              |
 
-Until migration, the [PR label check](../.github/workflows/PRLabelChecker.yml)
-requires exactly one current category: `kind/bugfix`, `kind/dependencies`,
-`kind/documentation`, `kind/enhancement`, or `kind/refactor`.
-After migration, assign one change category before merging: `C-bug`, `C-deps`,
-`C-enhancement`, or `C-refactor`. See the HIP's
+The [PR label check](../.github/workflows/PRLabelChecker.yml) requires exactly one
+change category before merging: `C-bug`, `C-deps`, `C-enhancement`, or
+`C-refactor`. See the HIP's
 [label conversion table](../proposals/0005-structured-labels/README.md#label-conversion)
 for the mapping.
 
@@ -77,8 +73,7 @@ issue using the first supplied label as its grouping key. The
 [weekly MSHV 6.18](../.github/workflows/WeeklyMshv618.yml), and
 [nightly Rust](../.github/workflows/RustNightly.yml) workflows each use a dedicated
 key. This keeps their failures on separate release-blocking issues, even when
-they also carry the general periodic-CI label. These workflows still use
-`area/ci-periodics*` names.
+they also carry the general periodic-CI label.
 
 ## Participation and features
 
@@ -109,7 +104,7 @@ hypervisor. Combine them where relevant.
 
 ## Status
 
-After migration, status labels are composable. For example, a PR can need review
+Status labels are composable. For example, a PR can need review
 and be nominated for discussion at the next meeting.
 
 | Label                  | Use when                                                     |
@@ -125,27 +120,22 @@ and be nominated for discussion at the next meeting.
 | `S-needs-goldens`      | A PR needs snapshot golden regeneration                      |
 
 `S-confirmed` does not promise implementation or a timeline.
-`S-needs-repro` describes what is missing. After migration, add
+`S-needs-repro` describes what is missing. Add
 `S-waiting-on-author` when the author needs to supply it.
 
-Until migration, use `lifecycle/needs-review` for initial assessment,
-`lifecycle/confirmed` for confirmed issues, `lifecycle/blocked-on-author` for
-author input, and `lifecycle/blocked` for external blockers.
-The [issue labeler](../.github/workflows/IssueLabelChecker.yml) assigns
-`lifecycle/needs-review` when a new issue lacks exactly one lifecycle label.
-Remove it after assessment. After migration, remove `S-needs-triage` at the
-same point. Requests for author information documented under
-`lifecycle/needs-info` also map to `S-waiting-on-author`.
+The [issue labeler](../.github/workflows/IssueLabelChecker.yml) preserves all
+`S-` statuses. It adds `S-needs-triage` only when no status is present.
+Remove that label after assessment.
 
 ### Review readiness
 
-Until migration, `ready-for-review` signals that a PR is awaiting review.
+`S-needs-review` signals that a PR is awaiting review.
 Add it when opening a review-ready PR, or after addressing requested changes and
-re-requesting review. After migration, use `S-needs-review` for this purpose.
+re-requesting review.
 
 The existing [`collect`](../.github/workflows/ready-for-review-label.yml) and
 [`manage`](../.github/workflows/ready-for-review-manage.yml) workflows remove
-`ready-for-review` automatically when any of these conditions apply:
+`S-needs-review` automatically when any of these conditions apply:
 
 * The PR is closed or merged.
 * The PR is converted to a draft.
@@ -153,8 +143,7 @@ The existing [`collect`](../.github/workflows/ready-for-review-label.yml) and
 * The PR has two or more change requests.
 
 Only reviews of the current head commit count toward these thresholds.
-Authors add the label. Automation handles removal. The rollout must preserve
-these rules for `S-needs-review`.
+Authors add the label. Automation handles removal.
 
 ### Snapshot goldens
 
@@ -163,16 +152,16 @@ snapshot format and bumps `GOLDENS_VERSION`. The verify job generates goldens
 from the branch and checks them with the branch loader. This allows verification
 before the new golden set is published.
 
-The [PR workflow](../.github/workflows/ValidatePullRequest.yml) still checks
-`regen-goldens` to select this mode. See
+The [PR workflow](../.github/workflows/ValidatePullRequest.yml) checks
+`S-needs-goldens` to select this mode. See
 [snapshot versioning](snapshot-versioning.md) for the golden update process.
 
 ## Release priority
 
 `P-release-blocker` marks issues that must be resolved before the next release.
 Any open issue with the release-blocking label prevents release creation.
-The [release check](../dev/check-release-blockers.sh) still queries
-`release-blocker` until migration.
+The [release check](../dev/check-release-blockers.sh) queries
+`P-release-blocker`.
 
 ## Issue types and closure
 
