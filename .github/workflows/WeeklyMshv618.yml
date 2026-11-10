@@ -64,7 +64,6 @@ jobs:
       config: ${{ matrix.config }}
 
   # The first label keeps these failures on a dedicated release-blocking issue.
-  # The notifier accepts an existing rollout alias.
   notify-failure:
     runs-on: ubuntu-latest
     needs: [build-guests, build-test, run-examples]

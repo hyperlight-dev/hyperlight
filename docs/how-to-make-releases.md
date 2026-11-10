@@ -4,11 +4,11 @@ This document details the process of releasing a new version of Hyperlight to [c
 
 ## Resolve any release blockers
 
-Before releasing, resolve all open issues labeled `P-release-blocker` or its
-rollout alias `release-blocker`. The [issue tracker](https://github.com/hyperlight-dev/hyperlight/issues?q=is%3Aissue+is%3Aopen+label%3AP-release-blocker%2Crelease-blocker)
-search includes both names. The ["Create a Release"](https://github.com/hyperlight-dev/hyperlight/actions/workflows/CreateRelease.yml)
+Before releasing, resolve all open issues labeled `P-release-blocker` in the
+[issue tracker](https://github.com/hyperlight-dev/hyperlight/issues?q=is%3Aissue+is%3Aopen+label%3AP-release-blocker).
+The ["Create a Release"](https://github.com/hyperlight-dev/hyperlight/actions/workflows/CreateRelease.yml)
 workflow runs a [release blocker check](https://github.com/hyperlight-dev/hyperlight/actions/workflows/ReleaseBlockerCheck.yml)
-first. It blocks release-branch publishes if either label appears on an open
+first. It blocks release-branch publishes if this label appears on an open
 issue. Releases from other branches skip this check.
 
 ## Update Cargo.toml Versions

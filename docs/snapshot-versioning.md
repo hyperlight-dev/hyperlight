@@ -255,8 +255,6 @@ GHCR does not carry yet, so the default pull-and-verify path has nothing
 to load. The `S-needs-goldens` label switches the verify job into
 regenerate mode for that pull request.
 
-CI also accepts `regen-goldens` during the label rename.
-
 * **Without the label**, the job pulls the published tag set for the
   current `GOLDENS_VERSION` and verifies it against the branch. Missing
   tags fail the job. This is what turns an accidental format break into

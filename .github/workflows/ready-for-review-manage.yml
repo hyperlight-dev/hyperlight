@@ -1,6 +1,6 @@
 name: Ready-for-review (manage)
 
-# Stage 2 of the S-needs-review label pipeline, including its rollout alias. It is triggered
+# Stage 2 of the S-needs-review label pipeline. It is triggered
 # when "Ready-for-review (collect)" completes and runs in the context of the
 # base repository's default branch, so it receives a read-write GITHUB_TOKEN
 # even when the originating event came from a fork. This is what lets us remove
@@ -13,7 +13,7 @@ name: Ready-for-review (manage)
 #   * strictly validate the pull-request number (digits only) before use.
 # The downstream reusable workflow only ever *removes* the label, and only when
 # the PR genuinely meets a removal condition, so the worst a spoofed-but-valid
-# number could achieve is removing manually re-addable review labels from a PR
+# number could achieve is removing a single, manually re-addable label from a PR
 # that already qualified for removal.
 on:
   workflow_run:
@@ -66,12 +66,9 @@ jobs:
 
   manage-label:
     needs: read-pr
-    strategy:
-      matrix:
-        label: [S-needs-review, ready-for-review]
     # Shared workflow in the org-wide `.github` repository, pinned to a commit SHA.
     uses: hyperlight-dev/.github/.github/workflows/manage-ready-for-review.yml@e5e471d927d3a72676ab48433da8a99d15a32ad7
     with:
-      label: ${{ matrix.label }}
+      label: S-needs-review
       # fromJSON turns the validated digit-string into a numeric input.
       pr-number: ${{ fromJSON(needs.read-pr.outputs.pr_number) }}

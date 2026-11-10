@@ -75,25 +75,6 @@ fi
 OWNER=$(echo "$REPO" | cut -d'/' -f1)
 REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
-# Resolve names before and after the in-place label rename.
-AVAILABLE_LABELS="$(gh api "repos/$REPO/labels" --paginate --slurp | jq -e '[.[][] | .name]')"
-for i in "${!LABEL_ARRAY[@]}"; do
-    label="${LABEL_ARRAY[$i]}"
-    case "$label" in
-        A-perf) legacy="area/performance" ;;
-        A-*) legacy="area/${label#A-}" ;;
-        C-bug) legacy="kind/bugfix" ;;
-        S-needs-triage) legacy="lifecycle/needs-review" ;;
-        P-release-blocker) legacy="release-blocker" ;;
-        *) legacy="$label" ;;
-    esac
-    LABEL_ARRAY[$i]="$(jq -er --arg label "$label" --arg legacy "$legacy" '
-        if index($label) then $label
-        elif index($legacy) then $legacy
-        else error("Missing label: " + $label) end' <<<"$AVAILABLE_LABELS")"
-done
-SEARCH_LABEL="${LABEL_ARRAY[0]}"
-
 echo "Checking for existing issues in $REPO with label '$SEARCH_LABEL'..."
 EXISTING_ISSUES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!, $label: String!) {

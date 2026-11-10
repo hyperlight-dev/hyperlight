@@ -16,15 +16,9 @@ jobs:
       run: |
         set -euo pipefail
         HAS_STATUS="$(gh issue view ${{ github.event.issue.number }} --json labels \
-          -q 'any(.labels[].name; startswith("S-") or startswith("lifecycle/"))')"
+          -q 'any(.labels[].name; startswith("S-"))')"
         if [[ "$HAS_STATUS" == "false" ]]; then
-          LABELS="$(gh label list --limit 1000 --json name)"
-          STATUS="$(jq -er '
-            [.[].name] |
-            if index("S-needs-triage") then "S-needs-triage"
-            elif index("lifecycle/needs-review") then "lifecycle/needs-review"
-            else error("Missing triage label") end' <<<"$LABELS")"
-          gh issue edit ${{ github.event.issue.number }} --add-label "$STATUS"
+          gh issue edit ${{ github.event.issue.number }} --add-label S-needs-triage
         fi
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

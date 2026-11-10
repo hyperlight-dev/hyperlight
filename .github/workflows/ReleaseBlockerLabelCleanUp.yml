@@ -14,16 +14,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Remove release blocker labels from closed issue
+      - name: Remove P-release-blocker label from closed issue
         run: |
           set -euo pipefail
           ISSUE_NUMBER=${{ github.event.issue.number }}
           LABELS="$(gh issue view "$ISSUE_NUMBER" --json labels)"
           LABEL_NAMES="$(jq -e '[.labels[].name]' <<<"$LABELS")"
-          for label in P-release-blocker release-blocker; do
-            if jq -e --arg label "$label" 'index($label) != null' <<<"$LABEL_NAMES" >/dev/null; then
-              gh issue edit "$ISSUE_NUMBER" --remove-label "$label"
-            fi
-          done
+          if jq -e 'index("P-release-blocker") != null' <<<"$LABEL_NAMES" >/dev/null; then
+            gh issue edit "$ISSUE_NUMBER" --remove-label P-release-blocker
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

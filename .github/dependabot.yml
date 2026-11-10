@@ -8,7 +8,6 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
       - "C-deps"
   - package-ecosystem: "cargo"
     directory: "/"
@@ -18,7 +17,6 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
       - "C-deps"
     open-pull-requests-limit: 20
     groups:
@@ -42,7 +40,6 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
       - "C-deps"
     open-pull-requests-limit: 5
     groups:

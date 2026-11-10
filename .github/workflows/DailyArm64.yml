@@ -103,7 +103,6 @@ jobs:
 
   # File (or update) a release-blocking GitHub issue if any job fails. The first
   # label (A-ci-periodics-aarch64) keeps these failures on a dedicated issue.
-  # The notifier accepts the existing name during the label rename.
   notify-failure:
     runs-on: ubuntu-latest
     needs: [build-guests, miri, build-test, run-examples, fuzzing]

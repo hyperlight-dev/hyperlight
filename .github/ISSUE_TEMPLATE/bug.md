@@ -2,7 +2,7 @@
 name: Bug Report
 about: Report a bug in Hyperlight
 title: ''
-labels: 'C-bug, kind/bugfix'
+labels: C-bug
 assignees: ''
 ---
 

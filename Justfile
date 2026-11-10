@@ -788,11 +788,11 @@ snapshot-goldens-check-label has_label base_ref image=default-snapshot-goldens-i
         base_version=""
         git cat-file -e "{{ base_ref }}:${version_file}" 2>/dev/null && base_version=$(git show "{{ base_ref }}:${version_file}" | parse_version)
         if [[ "${version}" == "${base_version}" ]]; then
-            echo "::error::S-needs-goldens (or regen-goldens) is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
+            echo "::error::S-needs-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
             exit 1
         fi
         if published "${version}"; then
-            echo "::error::S-needs-goldens (or regen-goldens) is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
+            echo "::error::S-needs-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
             exit 1
         fi
         echo "snapshot-goldens-check-label: OK. ${version} bumped from ${base_version} and not yet published."

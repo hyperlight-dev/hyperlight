@@ -16,9 +16,8 @@ jobs:
         run: |
           set -euo pipefail
           PR_NUMBER=${{ github.event.pull_request.number }}
-          # Accept legacy categories until the labels are renamed.
           gh pr view "$PR_NUMBER" --json labels | jq -e '
-            [.labels[].name | select(startswith("C-") or startswith("kind/"))] |
+            [.labels[].name | select(startswith("C-"))] |
             if length == 1 then true
             else error("PR must have exactly one category label") end'
         env:
