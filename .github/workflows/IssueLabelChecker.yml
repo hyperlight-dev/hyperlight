@@ -14,7 +14,17 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
     - name: Check and Add label
       run: |
-        bash dev/ensure-issue-status.sh "${{ github.event.issue.number }}"
+        set -euo pipefail
+        HAS_STATUS="$(gh issue view ${{ github.event.issue.number }} --json labels \
+          -q 'any(.labels[].name; startswith("S-") or startswith("lifecycle/"))')"
+        if [[ "$HAS_STATUS" == "false" ]]; then
+          LABELS="$(gh label list --limit 1000 --json name)"
+          STATUS="$(jq -er '
+            [.[].name] |
+            if index("S-needs-triage") then "S-needs-triage"
+            elif index("lifecycle/needs-review") then "lifecycle/needs-review"
+            else error("Missing triage label") end' <<<"$LABELS")"
+          gh issue edit ${{ github.event.issue.number }} --add-label "$STATUS"
+        fi
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPOSITORY: ${{ github.repository }}

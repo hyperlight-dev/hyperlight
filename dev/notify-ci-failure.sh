@@ -30,7 +30,6 @@ WORKFLOW_RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/
 TEST_MODE=false
 ISSUE_TITLE=""
 LABELS="A-testing,C-bug,A-fuzzing,S-needs-triage"
-source "$(dirname "$0")/label-utils.sh"
 
 for arg in "$@"; do
     case $arg in
@@ -52,10 +51,6 @@ done
 
 # Normalize labels into an array
 IFS=',' read -r -a LABEL_ARRAY <<< "$LABELS"
-if [ "${#LABEL_ARRAY[@]}" -eq 0 ]; then
-    echo "At least one CI failure label is required" >&2
-    exit 1
-fi
 
 # Choose a label to search existing issues for; prefer the first label if present
 SEARCH_LABEL="${LABEL_ARRAY[0]:-A-fuzzing}"
@@ -80,19 +75,27 @@ fi
 OWNER=$(echo "$REPO" | cut -d'/' -f1)
 REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
-load_available_labels
-LABEL_ARGS=()
-for lbl in "${LABEL_ARRAY[@]}"; do
-    RESOLVED_LABEL="$(resolve_label "$lbl")"
-    LABEL_ARGS+=("--label" "$RESOLVED_LABEL")
+# Resolve names before and after the in-place label rename.
+AVAILABLE_LABELS="$(gh api "repos/$REPO/labels" --paginate --slurp | jq -e '[.[][] | .name]')"
+for i in "${!LABEL_ARRAY[@]}"; do
+    label="${LABEL_ARRAY[$i]}"
+    case "$label" in
+        A-perf) legacy="area/performance" ;;
+        A-*) legacy="area/${label#A-}" ;;
+        C-bug) legacy="kind/bugfix" ;;
+        S-needs-triage) legacy="lifecycle/needs-review" ;;
+        P-release-blocker) legacy="release-blocker" ;;
+        *) legacy="$label" ;;
+    esac
+    LABEL_ARRAY[$i]="$(jq -er --arg label "$label" --arg legacy "$legacy" '
+        if index($label) then $label
+        elif index($legacy) then $legacy
+        else error("Missing label: " + $label) end' <<<"$AVAILABLE_LABELS")"
 done
+SEARCH_LABEL="${LABEL_ARRAY[0]}"
 
-# Search aliases independently. A multi-label GraphQL filter requires all labels.
-SEARCH_LABELS="$(jq -r --arg label "$SEARCH_LABEL" '[$label] + (.[$label] // []) | .[]' "$LABEL_ALIASES")"
-EXISTING_ISSUES='[]'
-while IFS= read -r label; do
-    echo "Checking for existing issues in $REPO with label '$label'..."
-    MATCHES=$(gh api graphql -f query='
+echo "Checking for existing issues in $REPO with label '$SEARCH_LABEL'..."
+EXISTING_ISSUES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!, $label: String!) {
     repository(owner: $owner, name: $repo) {
       issues(first: 10, states: OPEN, labels: [$label]) {
@@ -109,33 +112,19 @@ while IFS= read -r label; do
         }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$label" --jq '.data.repository.issues.nodes')
-    EXISTING_ISSUES="$(jq -en --argjson existing "$EXISTING_ISSUES" --argjson matches "$MATCHES" '
-        if ($matches | type) != "array" then error("Invalid issue search response")
-        else $existing + $matches | unique_by(.number) end')"
-done <<<"$SEARCH_LABELS"
+  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$SEARCH_LABEL" --jq '.data.repository.issues')
 
-FUZZING_ISSUE_COUNT=$(echo "$EXISTING_ISSUES" | jq 'length')
+FUZZING_ISSUE_COUNT=$(echo "$EXISTING_ISSUES" | jq -er '.totalCount')
 
 echo "Found $FUZZING_ISSUE_COUNT existing issue(s) matching label '$SEARCH_LABEL'"
 
 if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
-    ISSUE_NUMBER=$(echo "$EXISTING_ISSUES" | jq -r '.[0].number')
-    ISSUE_URL=$(echo "$EXISTING_ISSUES" | jq -r '.[0].url')
+    ISSUE_NUMBER=$(echo "$EXISTING_ISSUES" | jq -r '.nodes[0].number')
+    ISSUE_URL=$(echo "$EXISTING_ISSUES" | jq -r '.nodes[0].url')
     if [[ ! "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
         echo "Could not parse issue number from search results" >&2
         exit 1
     else
-        EDIT_LABEL_ARGS=()
-        for lbl in "${LABEL_ARRAY[@]}"; do
-            if [ "$lbl" = "P-release-blocker" ]; then
-                RESOLVED_LABEL="$(resolve_label "$lbl")"
-                EDIT_LABEL_ARGS+=("--add-label" "$RESOLVED_LABEL")
-            fi
-        done
-        if [ "${#EDIT_LABEL_ARGS[@]}" -gt 0 ]; then
-            gh issue edit "$ISSUE_NUMBER" --repo "$REPO" "${EDIT_LABEL_ARGS[@]}"
-        fi
         echo "Adding comment to existing issue #$ISSUE_NUMBER"
         COMMENT_BODY="## Job Failed Again
 
@@ -169,6 +158,11 @@ The scheduled job failed during execution. This issue was automatically created 
 
 ---
 *This issue was automatically created by the CI failure notification system.*"
+
+    LABEL_ARGS=()
+    for lbl in "${LABEL_ARRAY[@]}"; do
+        LABEL_ARGS+=("--label" "$lbl")
+    done
 
     if ISSUE_URL=$(gh issue create \
         --title "$ISSUE_TITLE" \

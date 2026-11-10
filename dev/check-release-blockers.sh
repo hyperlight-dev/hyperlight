@@ -59,8 +59,8 @@ BLOCKING_ISSUES=$(gh api graphql -f query='
 BLOCKER_COUNT=$(echo "$BLOCKING_ISSUES" | jq -e '.legacy.totalCount + .structured.totalCount')
 
 if [ "$BLOCKER_COUNT" -gt 0 ]; then
-    echo "❌ Found open release-blocking issues ($BLOCKER_COUNT label matches):"
-    echo "$BLOCKING_ISSUES" | jq -r '[.legacy.nodes[], .structured.nodes[]] | unique_by(.number)[] | "  - #\(.number): \(.title) (\(.url))"'
+    echo "❌ Found $BLOCKER_COUNT open release-blocking issue(s):"
+    echo "$BLOCKING_ISSUES" | jq -r '.legacy.nodes[], .structured.nodes[] | "  - #\(.number): \(.title) (\(.url))"'
     echo ""
     echo "Release blocked by P-release-blocker or release-blocker issues"
     exit 1

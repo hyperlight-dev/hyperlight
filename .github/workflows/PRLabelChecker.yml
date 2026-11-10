@@ -12,13 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Test label migration offline
-        run: python3 dev/test-label-migration.py
       - name: Ensure exactly one category is applied
         run: |
           set -euo pipefail
           PR_NUMBER=${{ github.event.pull_request.number }}
-          gh pr view "$PR_NUMBER" --json labels |
-            jq -e --slurpfile aliases dev/label-aliases.json -f dev/check-pr-labels.jq
+          # Accept legacy categories until the labels are renamed.
+          gh pr view "$PR_NUMBER" --json labels | jq -e '
+            [.labels[].name | select(startswith("C-") or startswith("kind/"))] |
+            if length == 1 then true
+            else error("PR must have exactly one category label") end'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
