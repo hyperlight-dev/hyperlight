@@ -19,11 +19,11 @@ set -o pipefail
 ## or that the user is logged into the gh cli with an account with those permissions
 ## 
 ## Usage examples:
-##   ./dev/notify-ci-failure.sh
-##   ./dev/notify-ci-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
-##   ./dev/notify-ci-failure.sh --test
+##   ./dev/notify-fuzzing-failure.sh
+##   ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
+##   ./dev/notify-fuzzing-failure.sh --test
 ## Run this script locally like:
-##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-ci-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
+##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
 
 REPO="${GITHUB_REPOSITORY:-hyperlight-dev/hyperlight}"
 WORKFLOW_RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
@@ -93,18 +93,22 @@ EXISTING_ISSUES=$(gh api graphql -f query='
         }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$SEARCH_LABEL" --jq '.data.repository.issues')
+  }' -f owner="$OWNER" -f repo="$REPO_NAME" -f label="$SEARCH_LABEL" --jq '.data.repository.issues') || EXISTING_ISSUES=""
 
-FUZZING_ISSUE_COUNT=$(echo "$EXISTING_ISSUES" | jq -er '.totalCount')
+FUZZING_ISSUES=$(echo "$EXISTING_ISSUES" | jq '.nodes[]' 2>/dev/null || echo "")
+FUZZING_ISSUE_COUNT=0
+if [ -n "$FUZZING_ISSUES" ]; then
+    FUZZING_ISSUE_COUNT=$(echo "$FUZZING_ISSUES" | jq -s 'length' 2>/dev/null || echo "0")
+fi
 
 echo "Found $FUZZING_ISSUE_COUNT existing issue(s) matching label '$SEARCH_LABEL'"
 
 if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
-    ISSUE_NUMBER=$(echo "$EXISTING_ISSUES" | jq -r '.nodes[0].number')
-    ISSUE_URL=$(echo "$EXISTING_ISSUES" | jq -r '.nodes[0].url')
-    if [[ ! "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
-        echo "Could not parse issue number from search results" >&2
-        exit 1
+    ISSUE_NUMBER=$(echo "$FUZZING_ISSUES" | jq -r '.number' | head -1)
+    ISSUE_URL=$(echo "$FUZZING_ISSUES" | jq -r '.url' | head -1)
+    if [ "$ISSUE_NUMBER" = "null" ] || [ -z "$ISSUE_NUMBER" ]; then
+        echo "⚠️  Could not parse issue number from search results; will create a new issue"
+        FUZZING_ISSUE_COUNT=0
     else
         echo "Adding comment to existing issue #$ISSUE_NUMBER"
         COMMENT_BODY="## Job Failed Again
@@ -114,9 +118,13 @@ if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
 
 The scheduled job has failed again. Please check the workflow logs and artifacts for details."
 
-        gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"
-        echo "✅ Added comment to existing issue #$ISSUE_NUMBER: $ISSUE_URL"
-        exit 0
+        if gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"; then
+            echo "✅ Added comment to existing issue #$ISSUE_NUMBER: $ISSUE_URL"
+            exit 0
+        else
+            echo "❌ Failed to add comment to existing issue. Will attempt to create a new issue instead."
+            FUZZING_ISSUE_COUNT=0
+        fi
     fi
 fi
 
@@ -140,6 +148,7 @@ The scheduled job failed during execution. This issue was automatically created 
 ---
 *This issue was automatically created by the CI failure notification system.*"
 
+    # Build label args for gh issue create
     LABEL_ARGS=()
     for lbl in "${LABEL_ARRAY[@]}"; do
         LABEL_ARGS+=("--label" "$lbl")
