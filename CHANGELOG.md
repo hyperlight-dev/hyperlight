@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Fixed
+* Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
+
 ## [v0.19.0] - 2026-11-04
 
 ### Added
