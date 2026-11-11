@@ -451,7 +451,7 @@ impl SandboxMemoryLayout {
     /// Note: `mem` may have been modified, even if `Err` was returned
     /// from this function.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_peb(&self, mem: &mut [u8]) -> Result<()> {
+    pub(crate) fn write_peb(&self, mem: &mut [u8], heap_executable: bool) -> Result<()> {
         use hyperlight_common::mem::GuestMemoryRegion;
 
         let guest_base = Self::BASE_ADDRESS as u64;
@@ -461,6 +461,7 @@ impl SandboxMemoryLayout {
                 size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
                 ptr: guest_base + self.init_data_offset() as u64,
             },
+            heap_executable: heap_executable as u64,
         };
 
         let offset = self.peb_offset();

@@ -1467,7 +1467,9 @@ mod tests {
         let mut snapshot_contents = vec![0u8; mem_size];
         snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
-        layout.write_peb(&mut snapshot_contents).unwrap();
+        layout
+            .write_peb(&mut snapshot_contents, config.get_executable_heap())
+            .unwrap();
         let snapshot_memory = crate::sandbox::snapshot::memory::tests::flat_memory(
             &snapshot_contents,
             &pt_bytes,

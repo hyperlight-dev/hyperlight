@@ -633,27 +633,44 @@ fn guard_page_check_2() {
 
 #[test]
 fn execute_on_heap() {
-    with_rust_sandbox(|mut sbox1| {
-        let result = sbox1.call::<String>("ExecuteOnHeap", ());
-
-        #[cfg(feature = "executable_heap")]
-        assert_eq!(
-            result.unwrap(),
-            "Executed on heap successfully",
-            "should execute successfully"
+    for executable in [true, false] {
+        with_rust_sandbox_from(
+            |builder| builder.executable_heap(executable),
+            |mut sbox| {
+                let result = sbox.call::<String>("ExecuteOnHeap", ());
+                if executable {
+                    assert_eq!(result.unwrap(), "Executed on heap successfully");
+                } else {
+                    let err = result.unwrap_err().to_string();
+                    assert!(
+                        err.contains(
+                            #[cfg(target_arch = "x86_64")]
+                            "PageFault",
+                            #[cfg(target_arch = "aarch64")]
+                            "Exception Syndrome: 0x86",
+                        ),
+                        "should get page fault: {err}"
+                    );
+                }
+            },
         );
+    }
+}
 
-        #[cfg(not(feature = "executable_heap"))]
-        assert!(
-            result.unwrap_err().to_string().contains(
-                #[cfg(target_arch = "x86_64")]
-                "PageFault",
-                #[cfg(target_arch = "aarch64")]
-                "Exception Syndrome: 0x86",
-            ),
-            "should get page fault"
-        );
-    });
+#[test]
+fn snapshot_keeps_executable_heap_setting() {
+    let mut sbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        .executable_heap(true)
+        .build()
+        .unwrap();
+    let snapshot = sbox.snapshot().unwrap();
+
+    let mut restored = SandboxBuilder::from_snapshot(snapshot)
+        .executable_heap(false)
+        .build()
+        .unwrap();
+    let result: String = restored.call("ExecuteOnHeap", ()).unwrap();
+    assert_eq!(result, "Executed on heap successfully");
 }
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow

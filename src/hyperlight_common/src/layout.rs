@@ -25,8 +25,8 @@ pub const SCRATCH_TOP_RESERVED_PAGES: usize = 12;
 // down from the top of scratch memory.
 #[repr(C)]
 struct ScratchTopMetadata {
-    /// Nonzero if guest heap pages are mapped executable.
-    heap_executable: u64,
+    /// Padding that keeps the exception stack 16-byte aligned.
+    _alignment_padding: [u8; 8],
     /// Host-published capacity of each H2G buffer.
     h2g_buffer_size: u64,
     /// Number of pages reserved for the H2G pool.
@@ -85,8 +85,6 @@ pub const SCRATCH_TOP_LIBC_RNG_SEED_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, libc_rng_seed));
 pub const SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, guest_log_level));
-pub const SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET: u64 =
-    scratch_top_offset(offset_of!(ScratchTopMetadata, heap_executable));
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = size_of::<ScratchTopMetadata>() as u64;
 
 const _: () = {
@@ -107,7 +105,6 @@ const _: () = {
     assert!(SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET == 0x58);
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x60);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x68);
-    assert!(SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET == 0x70);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
 
     assert!(VIRTQ_BUFFER_GVA_START < VIRTQ_BUFFER_GVA_END);
