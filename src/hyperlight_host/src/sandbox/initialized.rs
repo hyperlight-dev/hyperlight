@@ -5961,14 +5961,23 @@ mod tests {
                 "KVM guest CPUID exposes CET shadow stacks"
             );
 
-            // With CET hidden the host cannot read or write IA32_S_CET, so
-            // allowing it is rejected at VM creation.
-            let err = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            // Some KVM hosts allow zero-valued CET MSRs without exposing CET to the guest.
+            let declared = SandboxBuilder::from_file(simple_guest_as_pathbuf())
                 .guest_msrs(&[MSR_S_CET])
                 .unwrap()
-                .build()
-                .expect_err("allowing IA32_S_CET must be rejected when CET is hidden");
-            assert_msr_not_declarable(&err, MSR_S_CET);
+                .build();
+            match declared {
+                Ok(mut sbox) => {
+                    const CET_SHSTK_EN: u64 = 1;
+                    let result = sbox.call::<()>("WriteMSR", (MSR_S_CET, CET_SHSTK_EN));
+                    assert!(
+                        matches!(result, Err(HyperlightError::GuestAborted(_, _))),
+                        "expected a guest abort when enabling CET shadow stacks: {result:?}"
+                    );
+                    assert!(sbox.status().is_poisoned());
+                }
+                Err(err) => assert_msr_not_declarable(&err, MSR_S_CET),
+            }
         }
     }
 
