@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
+* GDB memory reads and writes translate each guest page on hosts with larger pages.
+* ARM64 GDB snapshot recovery handles cancellation and crash detach. Snapshot checkpointing rejects software breakpoints before replacing memory.
 
 ## [v0.19.0] - 2026-11-04
 

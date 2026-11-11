@@ -192,7 +192,7 @@ impl SnapshotMemoryBacking<HostSharedMemory> {
         self.memory.page_table_bytes()
     }
 
-    #[cfg(crashdump)]
+    #[cfg(any(crashdump, all(gdb, target_arch = "aarch64")))]
     pub(crate) fn host_range(&self, layer_index: usize) -> Result<(usize, usize)> {
         #[cfg(not(unshared_snapshot_mem))]
         let backing = self
