@@ -158,6 +158,17 @@ jobs:
       - name: Build
         run: just build ${{ inputs.config }}
 
+      - name: Run ARM64 KVM Gdb tests
+        if: inputs.arch == 'arm64' && inputs.hypervisor == 'kvm' && inputs.config == 'debug'
+        env:
+          RUST_LOG: debug
+        run: |
+          if ! command -v gdb > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gdb
+          fi
+          just test-rust-gdb-debugging debug
+
       - name: Run Rust tests
         run: |
           # with default features
