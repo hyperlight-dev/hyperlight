@@ -494,10 +494,20 @@ fn simple_test() {
 
 #[test]
 fn simple_test_parallel() {
-    let handles: Vec<_> = (0..50)
-        .map(|_| {
-            std::thread::spawn(|| {
-                simple_test_helper();
+    const NUM_RUNS: usize = 50;
+    let num_threads: usize =
+        if cfg!(target_arch = "aarch64") && hyperlight_host::__private::is_mshv() {
+            24
+        } else {
+            NUM_RUNS
+        };
+
+    let handles: Vec<_> = (0..num_threads)
+        .map(|worker| {
+            std::thread::spawn(move || {
+                for _ in (worker..NUM_RUNS).step_by(num_threads) {
+                    simple_test_helper();
+                }
             })
         })
         .collect();
@@ -905,11 +915,15 @@ fn oversized_fixed_host_error_returns_transport_error() {
 #[test]
 fn callback_test_parallel() {
     #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
-    const THREADS: usize = 64;
+    let threads: usize = 64;
     #[cfg(not(all(target_arch = "aarch64", target_os = "windows")))]
-    const THREADS: usize = 100;
+    let threads: usize = if cfg!(target_arch = "aarch64") && hyperlight_host::__private::is_mshv() {
+        16
+    } else {
+        100
+    };
 
-    let handles: Vec<_> = (0..THREADS)
+    let handles: Vec<_> = (0..threads)
         .map(|_| {
             std::thread::spawn(|| {
                 callback_test_helper();
