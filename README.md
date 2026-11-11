@@ -84,7 +84,7 @@ Or skip setup entirely with a codespace:
 | x86-64       | [KVM]      | ✅ Yes          | ✅ Yes          | ✅ Yes           |
 | x86-64       | [MSHV]     | ✅ Yes          | ✅ Yes          | ✅ Yes           |
 | AArch64      | [KVM]      | ✅ Yes          | ❌ No           | ❌ No            |
-| AArch64      | [MSHV]     | ❌ No           | ❌ No           | ❌ No            |
+| AArch64      | [MSHV]     | ✅ Yes          | ❌ No           | ❌ No            |
 
 ### Windows
 
