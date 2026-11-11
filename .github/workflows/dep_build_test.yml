@@ -229,6 +229,16 @@ jobs:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
 
+      - name: Run ARM64 MSHV Gdb tests
+        if: inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3' && inputs.config == 'debug'
+        env:
+          RUST_LOG: debug
+        run: |
+          if ! command -v gdb > /dev/null 2>&1; then
+            sudo tdnf install -y gdb
+          fi
+          just test-rust-gdb-debugging debug mshv3
+
       - name: Run Rust Crashdump tests
         if: inputs.arch == 'X64'
         env:

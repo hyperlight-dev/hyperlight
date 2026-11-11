@@ -104,6 +104,21 @@ pub(crate) fn set_up_hypervisor_partition(
     page_size: usize,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
+    #[cfg(all(gdb, target_arch = "aarch64", kvm))]
+    if config.get_guest_debug_info().is_some()
+        && matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+        )
+    {
+        return Err(HyperlightVmError::Create(
+            crate::hypervisor::virtual_machine::VmError::Debug(
+                crate::hypervisor::gdb::DebugError::Unsupported("ARM64 KVM debugging"),
+            )
+            .into(),
+        )
+        .into());
+    }
     #[cfg(all(gdb, target_arch = "aarch64"))]
     if config.get_guest_debug_info().is_some()
         && matches!(mgr.next_action, NextAction::Initialise(_))

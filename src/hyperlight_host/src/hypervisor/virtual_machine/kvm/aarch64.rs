@@ -12,6 +12,8 @@ use kvm_bindings::{
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(gdb)]
+use crate::hypervisor::gdb::{DebugError, DebugMemoryView, DebuggableVm};
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError,
@@ -20,6 +22,21 @@ use crate::hypervisor::virtual_machine::{
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
     LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+#[cfg(gdb)]
+impl DebuggableVm for KvmVm {
+    fn translate_gva(&self, _gva: u64, _memory: &DebugMemoryView<'_>) -> Result<u64, DebugError> {
+        Err(DebugError::Unsupported("ARM64 KVM debugging"))
+    }
+
+    fn set_debug(&mut self, enable: bool) -> Result<(), DebugError> {
+        if enable {
+            Err(DebugError::Unsupported("ARM64 KVM debugging"))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// Return `true` if the KVM API is available
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
