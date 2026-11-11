@@ -15,6 +15,24 @@ fn generate_str(wit: &str) -> Result<String, Error> {
     generate(WitSource::Inline(wit.to_string()), None, "Test")
 }
 
+fn generate_value_type(ty: &str) -> Result<String, Error> {
+    // Component text lets invalid types reach the generator's checks.
+    generate_str(&format!(
+        r#"(component
+            (type (component
+                (type $world (component
+                    (type $t {ty})
+                    (export "t" (type (eq $t)))
+                    (type $f (func (param "x" $t)))
+                    (export "f" (func (type $f)))
+                ))
+                (export "w" (component (type $world)))
+            ))
+            (export "w" (type 0))
+        )"#
+    ))
+}
+
 /// String literals in `tokens` that can be wire names.
 fn string_literals(tokens: TokenStream, out: &mut BTreeSet<String>) {
     for token in tokens {
@@ -173,29 +191,20 @@ fn rejects_invalid_namespace() {
 #[test]
 fn rejects_more_than_32_flags() {
     let names = (0..33)
-        .map(|i| format!("g{i}"))
+        .map(|i| format!("\"g{i}\""))
         .collect::<Vec<_>>()
-        .join(", ");
-    let wit = format!(
-        "package a:b; interface i {{ flags big {{ {names} }} f: func(x: big); }} world w {{ export i; }}"
-    );
-    let error = generate_str(&wit).unwrap_err().to_string();
+        .join(" ");
+    let error = generate_value_type(&format!("(flags {names})"))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("more than 32"), "{error}");
 }
 
 #[test]
 fn rejects_empty_types() {
-    for (decl, ty) in [
-        ("", "tuple<>"),
-        ("", "list<u8, 0>"),
-        ("record e {}", "e"),
-        ("flags e {}", "e"),
-    ] {
-        let wit = format!(
-            "package a:b; interface i {{ {decl} f: func(x: {ty}); }} world w {{ export i; }}"
-        );
-        let error = generate_str(&wit).unwrap_err().to_string();
-        assert!(error.contains("must not be empty"), "{wit}: {error}");
+    for ty in ["(tuple)", "(list u8 0)", "(record)", "(flags)"] {
+        let error = generate_value_type(ty).unwrap_err().to_string();
+        assert!(error.contains("must not be empty"), "{ty}: {error}");
     }
 }
 
