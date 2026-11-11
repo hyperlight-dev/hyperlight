@@ -28,6 +28,8 @@ use mshv_bindings::{
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(gdb)]
+use crate::hypervisor::gdb::{DebugError, DebugMemoryView, DebuggableVm};
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
@@ -39,6 +41,21 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
     LazyLock::new(|| Mshv::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+#[cfg(gdb)]
+impl DebuggableVm for MshvVm {
+    fn translate_gva(&self, _gva: u64, _memory: &DebugMemoryView<'_>) -> Result<u64, DebugError> {
+        Err(DebugError::Unsupported("ARM64 MSHV debugging"))
+    }
+
+    fn set_debug(&mut self, enable: bool) -> Result<(), DebugError> {
+        if enable {
+            Err(DebugError::Unsupported("ARM64 MSHV debugging"))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 fn mmio_write_info(syndrome: u64) -> Option<(u32, usize)> {
     const ISV: u64 = 1 << 24;
@@ -491,6 +508,25 @@ impl VirtualMachine for MshvVm {
 #[cfg(test)]
 mod tests {
     use super::{CommonFpu, CommonRegisters, MshvVm, VirtualMachine, mmio_write_info};
+
+    #[cfg(gdb)]
+    #[test]
+    fn non_debug_vm_rejects_debugging() {
+        use super::{DebugError, DebuggableVm};
+
+        if !crate::__private::is_mshv() {
+            return;
+        }
+        let mut vm = MshvVm::new().unwrap();
+        vm.set_debug(false).unwrap();
+        assert!(matches!(
+            vm.set_debug(true),
+            Err(DebugError::Unsupported(_))
+        ));
+        let expected = vm.regs().unwrap();
+        vm.set_regs(&expected).unwrap();
+        assert_eq!(vm.regs().unwrap(), expected);
+    }
 
     #[test]
     fn general_registers_round_trip() {
