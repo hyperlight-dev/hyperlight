@@ -492,6 +492,23 @@ impl HyperlightVm {
             }
         }
 
+        // Check against the hidden debug cache-sync page
+        #[cfg(all(gdb, target_arch = "aarch64", target_os = "windows"))]
+        {
+            use crate::hypervisor::virtual_machine::whp::DEBUG_CACHE_SYNC_GPA;
+
+            let reserved_start = DEBUG_CACHE_SYNC_GPA as usize;
+            let reserved_end = reserved_start + self.page_size;
+            if new_start < reserved_end && new_end > reserved_start {
+                return Err(MapRegionError::Overlapping {
+                    new_start,
+                    new_end,
+                    existing_start: reserved_start,
+                    existing_end: reserved_end,
+                });
+            }
+        }
+
         // Try to reuse a freed slot first, otherwise use next_slot
         let slot = self.allocate_slot();
 
