@@ -20,7 +20,7 @@ fn encode_wit_fixture_to_wasm(path: &Path) -> PathBuf {
     let (package, _) = resolve
         .push_path(path)
         .expect("WIT fixture should parse successfully");
-    let wasm = wit_component::encode(&resolve, package).expect("WIT fixture should encode");
+    let wasm = wit_component::encode(&resolve, package, false).expect("WIT fixture should encode");
     let wasm_path = std::env::temp_dir().join(format!(
         "hyperlight-component-util-{}-{}-wit-fixture.wasm",
         std::process::id(),
