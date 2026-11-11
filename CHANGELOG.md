@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
+* Windows ARM64 WHP guest debugging supports software and hardware breakpoints, register and memory access, and hardware single-step.
 
 ### Changed
 * Sandboxes configured for debugging cannot create snapshots on x86_64 or ARM64, including after debugger detach.
@@ -43,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Fix C# component bindings keeping an entry for every resource handle passed to or from the guest.
 * GDB memory reads and writes translate each guest page on hosts with larger pages.
 * GDB snapshot recovery handles cancellation and crash detach. Restore rejects installed software breakpoints in ready sandboxes on x86_64 and ARM64.
+* WHP ARM64 cache synchronization code is read-only to guests.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
