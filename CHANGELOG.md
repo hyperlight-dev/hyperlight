@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
+### Removed
+* Remove Git details from build logs. These were not shipped on crates.io.
+* Remove the `print_debug` feature and `hyperlight_host::debug!`. Use `tracing::debug!` instead.
+
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 
@@ -56,7 +60,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** `SandboxConfiguration::set_heap_size`,
   `SandboxConfiguration::DEFAULT_HEAP_SIZE`, `SandboxBuilder::heap_size`, and
   `SandboxBuilder::get_heap_size`.
-* **Breaking:** The `print_debug` cargo feature and the exported `hyperlight_host::debug!` macro. Use `tracing::debug!` with a subscriber.
 
 ### Fixed
 
