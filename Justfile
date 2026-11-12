@@ -247,7 +247,7 @@ like-ci config=default-target hypervisor="kvm":
     just check-license-headers
 
 # runs all tests
-test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration target features) (test-doc target features) (test-tools target)
+test target=default-target features="" runner="test": (test-unit target features runner) (test-isolated target features) (test-integration target features runner) (test-doc target features) (test-tools target)
 
 # Cargo launches test binaries through the runner in this variable, for example
 # CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER.
@@ -269,8 +269,8 @@ test-tools target=default-target:
     {{ cargo-cmd }} test -p hyperlight-ci --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
 # runs unit tests
-test-unit target=default-target features="":
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
+test-unit target=default-target features="" runner="test":
+    {{ cargo-cmd }} {{ runner }} {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} {{ if runner == "test" { "--profile=" } else { "--cargo-profile=" } }}{{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
 # runs loom concurrency tests
 test-loom:
@@ -296,7 +296,7 @@ test-isolated target=default-target features="" :
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
 
 # runs integration tests
-test-integration target=default-target features="":
+test-integration target=default-target features="" runner="test":
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
@@ -308,7 +308,7 @@ test-integration target=default-target features="":
     @# the glob but no-ops without a mode token, so it needs no golden
     @# cache here. It verifies in its own step (see the snapshot-goldens
     @# recipes).
-    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
+    {{ cargo-cmd }} {{ runner }} -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} {{ if runner == "test" { "--profile=" } else { "--cargo-profile=" } }}{{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
@@ -335,7 +335,7 @@ test-no-surrogate target=default-target:
 # runs tests that exercise gdb debugging
 test-rust-gdb-debugging target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
-    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- hypervisor::gdb::
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- hypervisor::gdb:: hypervisor::hyperlight_vm::debug::tests:: gdb_recovery_tests:: hypervisor::virtual_machine::mshv::aarch64::
 
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":

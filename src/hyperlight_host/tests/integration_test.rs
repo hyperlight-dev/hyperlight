@@ -1064,8 +1064,9 @@ fn interrupt_random_kill_stress_test() {
     use hyperlight_host::sandbox::snapshot::Snapshot;
     use tracing::{error, trace};
 
+    // MSHV restore holds both old and replacement partitions under a 64-partition host limit.
     #[cfg(target_arch = "aarch64")]
-    const POOL_SIZE: usize = 64;
+    const POOL_SIZE: usize = if cfg!(mshv3) { 16 } else { 64 };
     #[cfg(not(target_arch = "aarch64"))]
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
@@ -1515,7 +1516,12 @@ fn interrupt_infinite_loop_stress_test() {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    const NUM_THREADS: usize = 50;
+    // MSHV restore needs a second partition per worker. WHP resets in place.
+    const NUM_THREADS: usize = if cfg!(all(target_arch = "aarch64", mshv3)) {
+        16
+    } else {
+        50
+    };
     const ITERATIONS_PER_THREAD: usize = 500;
 
     let mut handles = vec![];
@@ -1600,10 +1606,9 @@ fn interrupt_infinite_moving_loop_stress_test() {
     use std::sync::Arc;
     use std::thread;
 
-    // ARM64 WHP partitions include GICv3 state, limiting practical partition
-    // concurrency. Each thread creates two partitions.
+    // Each worker holds two partitions. Keep headroom under MSHV's 64-partition host limit.
     #[cfg(target_arch = "aarch64")]
-    const NUM_THREADS: usize = 32;
+    const NUM_THREADS: usize = if cfg!(mshv3) { 8 } else { 32 };
     #[cfg(not(target_arch = "aarch64"))]
     const NUM_THREADS: usize = 200;
 

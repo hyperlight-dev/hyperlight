@@ -787,8 +787,11 @@ mod tests {
             "unrecognized x86_64 CPU vendor: {v:?}"
         );
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-        // MIDR_EL1 implementer byte for Apple silicon.
-        assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
+        // MIDR_EL1 implementer bytes for Arm and Apple silicon.
+        assert!(
+            matches!(v, "0x41" | "0x61"),
+            "unexpected aarch64 CPU implementer: {v:?}"
+        );
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         assert_eq!(v, "0x61", "unexpected aarch64 CPU implementer");
         #[cfg(all(target_arch = "aarch64", target_os = "windows"))]

@@ -193,6 +193,14 @@ jobs:
           cpu_vendor: arm
           arch: arm64
           config: release
+        - hypervisor: mshv3
+          cpu_vendor: arm
+          arch: arm64
+          config: debug
+        - hypervisor: mshv3
+          cpu_vendor: arm
+          arch: arm64
+          config: release
     uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
     with:

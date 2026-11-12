@@ -7,14 +7,25 @@ to start listening for a gdb connection.
 ## Supported features
 
 The Hyperlight `gdb` feature enables guest debugging to:
-   - stop at an entry point breakpoint which is automatically set by Hyperlight
-   - add and remove HW breakpoints (maximum 4 set breakpoints at a time)
+   - stop at the entry point
    - add and remove SW breakpoints
    - read and write registers
    - read and write addresses
-   - step/continue
+   - continue
+   - single-step
    - get code offset from target
    - stop when a crash occurs and only allow read access to the guest memory and registers
+
+On x86_64, gdb supports up to four hardware breakpoints.
+ARM64 Linux/MSHV supports two hardware breakpoints, four-byte `BRK` software
+breakpoints, and hardware single-step. Guest exception vectors forward debug
+exceptions through HVC. Guest binaries must retain the
+`hyperlight_debug_vectors` symbol so the host can install these vectors before
+the initial debug stop. Watchpoints are not advertised.
+
+ARM64 snapshots reject installed software breakpoints, including those added
+during checkpointing. Restoring a poisoned sandbox discards its software
+breakpoint state and restores clean snapshot memory.
 
 ## Expected behavior
 

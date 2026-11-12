@@ -104,6 +104,45 @@ pub(crate) fn set_up_hypervisor_partition(
     page_size: usize,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
+    #[cfg(all(gdb, target_arch = "aarch64", kvm))]
+    if config.get_guest_debug_info().is_some()
+        && matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+        )
+    {
+        return Err(HyperlightVmError::Create(
+            crate::hypervisor::virtual_machine::VmError::Debug(
+                crate::hypervisor::gdb::DebugError::Unsupported("ARM64 KVM debugging"),
+            )
+            .into(),
+        )
+        .into());
+    }
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    if config.get_guest_debug_info().is_some()
+        && matches!(mgr.next_action, NextAction::Initialise(_))
+        && _load_info.debug_vectors.is_none()
+    {
+        #[cfg(kvm)]
+        let needs_vectors = !matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+        );
+        #[cfg(not(kvm))]
+        let needs_vectors = true;
+        if needs_vectors {
+            return Err(HyperlightVmError::Create(
+                crate::hypervisor::virtual_machine::VmError::Debug(
+                    crate::hypervisor::gdb::DebugError::Unsupported(
+                        "guest binary lacks ARM64 debug vectors",
+                    ),
+                )
+                .into(),
+            )
+            .into());
+        }
+    }
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
     let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {
@@ -128,7 +167,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
-    Ok(HyperlightVm::new(
+    let vm = HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
         mgr.layout.get_pt_base_gpa(),
@@ -141,7 +180,15 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(feature = "mem_profile")]
         trace_info,
     )
-    .map_err(HyperlightVmError::Create)?)
+    .map_err(HyperlightVmError::Create)?;
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    let vm = {
+        let mut vm = vm;
+        vm.initialize_debug_vectors(_load_info.debug_vectors)
+            .map_err(HyperlightVmError::Create)?;
+        vm
+    };
+    Ok(vm)
 }
 
 #[cfg(test)]
@@ -160,5 +207,32 @@ mod tests {
                 UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path), None).unwrap();
             initialize_sandbox(u_sbox).unwrap();
         }
+    }
+
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    #[test]
+    fn missing_debug_vectors_does_not_reserve_the_debug_port() {
+        #[cfg(kvm)]
+        if matches!(
+            crate::hypervisor::virtual_machine::get_available_hypervisor(),
+            Some(crate::hypervisor::virtual_machine::HypervisorType::Kvm)
+        ) {
+            return;
+        }
+        let listener = std::net::TcpListener::bind("localhost:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let mut config = crate::sandbox::SandboxConfiguration::default();
+        config.set_guest_debug_info(crate::sandbox::config::DebugInfo {
+            port: address.port(),
+        });
+        let mut guest = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_pathbuf()),
+            Some(config),
+        )
+        .unwrap();
+        guest.load_info.debug_vectors = None;
+        assert!(initialize_sandbox(guest).is_err());
+        std::net::TcpListener::bind(address).expect("failed setup retained the GDB listener");
     }
 }
