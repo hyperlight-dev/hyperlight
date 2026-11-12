@@ -31,6 +31,11 @@ pub enum HyperlightError {
     #[error("Anyhow Error was returned: {0}")]
     AnyhowError(#[from] anyhow::Error),
 
+    /// Incomplete process cleanup retains its owner until this error is dropped.
+    #[cfg(feature = "process-isolation")]
+    #[error(transparent)]
+    ProcessCleanup(#[from] Box<crate::process::ProcessCleanupError>),
+
     /// Checked Add Overflow
     #[error("Couldn't add offset to base address. Offset: {0}, Base Address: {1}")]
     CheckedAddOverflow(u64, u64),
@@ -317,6 +322,8 @@ impl HyperlightError {
         // wildcard _ or matches! not used here purposefully to ensure that new error variants
         // are explicitly considered for poisoning behavior.
         match self {
+            #[cfg(feature = "process-isolation")]
+            HyperlightError::ProcessCleanup(_) => true,
             // These errors poison the sandbox because they can leave it in an inconsistent state due
             // to the guest not running to completion.
             HyperlightError::GuestAborted(_, _)

@@ -280,6 +280,8 @@ pub enum CrashDumpError {
 /// Errors that can occur during HyperlightVm creation
 #[derive(Debug, thiserror::Error)]
 pub enum CreateHyperlightVmError {
+    #[error("VM authority error: {0}")]
+    Authority(String),
     #[cfg(gdb)]
     #[error("Failed to add hardware breakpoint: {0}")]
     AddHwBreakpoint(DebugError),

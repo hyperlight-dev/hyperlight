@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-mod file;
+pub(crate) mod file;
 mod file_tests;
 pub(crate) mod memory;
 mod tripwires;
@@ -35,6 +35,8 @@ use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::mgr::{BackingSource, GuestBacking, GuestPageTableBuffer, GuestPhysicalMemoryView};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::mem::virtq::VirtqSnapshot;
+#[cfg(feature = "process-isolation")]
+use crate::process::program::ProcessTopologyDefinition;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
@@ -104,6 +106,8 @@ pub struct Snapshot {
     state: Arc<SnapshotState>,
     // Stable key order keeps config bytes deterministic.
     metadata: BTreeMap<String, serde_json::Value>,
+    #[cfg(feature = "process-isolation")]
+    process_topology: Option<ProcessTopologyDefinition>,
 }
 
 /// Immutable sandbox state held by a snapshot.
@@ -564,6 +568,59 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
 }
 
 impl Snapshot {
+    /// Attaches immutable process definitions without accessing a program store.
+    #[cfg(feature = "process-isolation")]
+    pub fn with_process_topology(mut self, topology: ProcessTopologyDefinition) -> Result<Self> {
+        self.set_process_topology(topology)?;
+        Ok(self)
+    }
+
+    #[cfg(feature = "process-isolation")]
+    pub(crate) fn bind_process_topology(
+        &self,
+        topology: ProcessTopologyDefinition,
+    ) -> Result<Self> {
+        Self {
+            state: self.state.clone(),
+            metadata: self.metadata.clone(),
+            process_topology: None,
+        }
+        .with_process_topology(topology)
+    }
+
+    #[cfg(feature = "process-isolation")]
+    pub(crate) fn set_process_topology(
+        &mut self,
+        topology: ProcessTopologyDefinition,
+    ) -> Result<()> {
+        topology.validate_host_functions(&self.state.host_functions)?;
+        self.process_topology = Some(topology);
+        Ok(())
+    }
+
+    /// Definitions retained from capture or disk. They contain no native state.
+    #[cfg(feature = "process-isolation")]
+    pub fn process_topology(&self) -> Option<&ProcessTopologyDefinition> {
+        self.process_topology.as_ref()
+    }
+
+    /// Requires the same owners, programs, profiles and contracts before rebinding.
+    #[cfg(feature = "process-isolation")]
+    pub fn validate_process_topology(
+        &self,
+        actual: Option<&ProcessTopologyDefinition>,
+    ) -> Result<()> {
+        if self.process_topology.as_ref() != actual {
+            return Err(crate::new_error!(
+                "Snapshot process topology does not match registration"
+            ));
+        }
+        if let Some(actual) = actual {
+            actual.validate_host_functions(&self.state.host_functions)?;
+        }
+        Ok(())
+    }
+
     /// Create a new snapshot from the guest binary identified by `env`. With the configuration
     /// specified in `cfg`.
     pub(crate) fn from_env<'b>(
@@ -705,6 +762,8 @@ impl Snapshot {
                 virtq: None,
             }),
             metadata: BTreeMap::new(),
+            #[cfg(feature = "process-isolation")]
+            process_topology: None,
         })
     }
 
@@ -1011,6 +1070,8 @@ impl Snapshot {
                 virtq,
             }),
             metadata: BTreeMap::new(),
+            #[cfg(feature = "process-isolation")]
+            process_topology: None,
         })
     }
 
@@ -1098,6 +1159,8 @@ impl Snapshot {
         Ok(Arc::new(Self {
             state: Arc::clone(&self.state),
             metadata: metadata_by_namespace,
+            #[cfg(feature = "process-isolation")]
+            process_topology: self.process_topology.clone(),
         }))
     }
 

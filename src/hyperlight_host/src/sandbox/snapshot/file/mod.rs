@@ -4,9 +4,9 @@
 //! OCI Image Layout serde for [`Snapshot`]. See
 //! `docs/snapshot-oci-format.md` for the on-disk format.
 
-mod config;
-mod digest;
-mod fsutil;
+pub(crate) mod config;
+pub(crate) mod digest;
+pub(crate) mod fsutil;
 mod media_types;
 pub(crate) mod reference;
 mod transport;
@@ -30,7 +30,7 @@ use self::media_types::{
 };
 pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
-    MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
+    MT_CONFIG_V6, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
     SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
@@ -39,6 +39,8 @@ use super::{NextAction, Snapshot, SnapshotBlob, SnapshotMemory};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+#[cfg(feature = "process-isolation")]
+use crate::process::program::ProcessTopologyDefinition;
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
@@ -305,6 +307,47 @@ fn blob_descriptor(media_type: &str, digest: &Digest256, size: usize) -> crate::
 }
 
 impl Snapshot {
+    /// Exports guest memory and every referenced native program into one OCI layout.
+    ///
+    /// Programs must already be packaged in `source`. All manifest, config and
+    /// executable blobs are verified while copying. Shared blobs are deduplicated.
+    /// [`Snapshot::save`] writes only immutable references and needs no program store.
+    #[cfg(feature = "process-isolation")]
+    pub fn save_with_programs(
+        &self,
+        path: impl AsRef<Path>,
+        tag: &OciTag,
+        source: &crate::process::program::LocalProgramStore,
+    ) -> crate::Result<OciDigest> {
+        self.build_config()?;
+        if let Some(topology) = &self.process_topology {
+            topology.validate_host_functions(&self.state.host_functions)?;
+            let destination = crate::process::program::LocalProgramStore::new(path.as_ref());
+            source.export(&topology.programs(), &destination)?;
+        }
+        self.save(path, tag)
+    }
+
+    /// Exports guest memory and provider-owned native programs into one OCI layout.
+    ///
+    /// The provider supplies immutable program content. Host launch authority is
+    /// neither exported nor restored from this layout.
+    #[cfg(feature = "process-isolation")]
+    pub fn save_with_process_provider(
+        &self,
+        path: impl AsRef<Path>,
+        tag: &OciTag,
+        provider: &crate::process::MeshProcessProvider,
+    ) -> crate::Result<OciDigest> {
+        self.build_config()?;
+        if let Some(topology) = &self.process_topology {
+            topology.validate_host_functions(&self.state.host_functions)?;
+            let destination = crate::process::program::LocalProgramStore::new(path.as_ref());
+            provider.export_programs(topology, &destination)?;
+        }
+        self.save(path, tag)
+    }
+
     /// Save this snapshot into an OCI Image Layout directory on disk.
     /// The saved snapshot can be loaded later with
     /// [`Snapshot::load`].
@@ -546,6 +589,8 @@ impl Snapshot {
             transport_bytes.len(),
         )?);
 
+        let config_media = MT_CONFIG_CURRENT;
+
         // Config blob.
         let cfg_digest = Digest256::from_bytes(cfg_bytes);
         put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
@@ -559,7 +604,7 @@ impl Snapshot {
         let manifest = ImageManifestBuilder::default()
             .schema_version(SCHEMA_VERSION)
             .media_type(MediaType::ImageManifest)
-            .artifact_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
+            .artifact_type(MediaType::Other(config_media.to_string()))
             .config(config_descriptor)
             .layers(descriptors)
             .build()
@@ -670,6 +715,15 @@ impl Snapshot {
             host_functions,
             snapshot_generation: self.state.snapshot_generation,
             metadata: self.metadata.clone(),
+            #[cfg(feature = "process-isolation")]
+            process_topology: self
+                .process_topology
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| {
+                    crate::new_error!("failed to encode snapshot process topology: {}", error)
+                })?,
         })
     }
 
@@ -789,7 +843,7 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V5 => {}
+            MT_CONFIG_V5 | MT_CONFIG_V6 => {}
             MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 => {
                 return Err(crate::new_error!(
                     "snapshot config media type {:?} is incompatible with snapshot ABI {}",
@@ -801,7 +855,7 @@ impl Snapshot {
                 return Err(crate::new_error!(
                     "unexpected config media type {:?} (supported: {:?})",
                     other,
-                    MT_CONFIG_V5
+                    MT_CONFIG_V6
                 ));
             }
         }
@@ -1033,6 +1087,15 @@ impl Snapshot {
 
         // 9. Reconstitute host_functions metadata.
         let snapshot_generation = cfg.snapshot_generation;
+        #[cfg(feature = "process-isolation")]
+        let process_topology: Option<ProcessTopologyDefinition> = cfg
+            .process_topology
+            .as_ref()
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| {
+                crate::new_error!("failed to decode snapshot process topology: {}", error)
+            })?;
         let host_funcs_vec: Vec<
             hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition,
         > = cfg.host_functions.into_iter().map(Into::into).collect();
@@ -1045,6 +1108,10 @@ impl Snapshot {
                 host_functions: Some(host_funcs_vec),
             }
         };
+        #[cfg(feature = "process-isolation")]
+        if let Some(topology) = &process_topology {
+            topology.validate_host_functions(&host_functions)?;
+        }
 
         Ok(Snapshot {
             state: std::sync::Arc::new(super::SnapshotState {
@@ -1062,6 +1129,8 @@ impl Snapshot {
                 virtq: Some(virtq),
             }),
             metadata: cfg.metadata,
+            #[cfg(feature = "process-isolation")]
+            process_topology,
         })
     }
 }

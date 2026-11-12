@@ -4,6 +4,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Added
+* Optional `process-isolation` support for dedicated VM hosts, host-function workers, typed resources, restart policy, and snapshot topology reconstruction.
+* `ProcessProfile::unrestricted` runs native process roles as the caller without process restrictions, including on macOS.
+
+### Changed
+* Snapshot config schema v6 persists native process topology.
+
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 

@@ -282,14 +282,14 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(
         manifest["config"]["mediaType"],
-        "application/vnd.hyperlight.snapshot.config.v5+json"
+        "application/vnd.hyperlight.snapshot.config.v6+json"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"],
-        "application/vnd.hyperlight.snapshot.config.v5+json"
+        "application/vnd.hyperlight.snapshot.config.v6+json"
     );
     assert_eq!(config["abi_version"], 9);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();

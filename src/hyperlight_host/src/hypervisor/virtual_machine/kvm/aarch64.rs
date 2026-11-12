@@ -48,6 +48,27 @@ impl KvmVm {
     }
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         let hv = KVM.as_ref().map_err(|e| e.clone())?;
+        Self::new_with_kvm(hv)
+    }
+
+    #[cfg(feature = "process-isolation")]
+    /// Creates a KVM VM from an owned KVM device descriptor.
+    ///
+    /// # Safety
+    ///
+    /// The descriptor must have passed Hyperlight's KVM API and capability
+    /// validation.
+    pub(crate) unsafe fn new_with_fd(
+        fd: std::os::fd::OwnedFd,
+    ) -> std::result::Result<Self, CreateVmError> {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        // SAFETY: the caller guarantees KVM identity and ownership is transferred.
+        let hv = unsafe { Kvm::from_raw_fd(fd.into_raw_fd()) };
+        Self::new_with_kvm(&hv)
+    }
+
+    fn new_with_kvm(hv: &Kvm) -> std::result::Result<Self, CreateVmError> {
         let vm_fd = hv
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;

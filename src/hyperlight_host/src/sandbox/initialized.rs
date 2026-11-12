@@ -96,11 +96,12 @@ pub struct Sandbox {
     pt_root_finder: Option<PtRootFinder>,
     /// Runtime guest log-level override reapplied after snapshot restores.
     max_guest_log_level: Option<LevelFilter>,
+    #[cfg(feature = "process-isolation")]
+    process_runtime: Option<Arc<crate::process::ProcessRuntime>>,
 }
 
-/// Deprecated name for [`Sandbox`].
-#[deprecated(since = "0.18.0", note = "use Sandbox")]
-pub type MultiUseSandbox = Sandbox;
+#[cfg(feature = "process-isolation")]
+pub(crate) type LocalSandbox = Sandbox;
 
 /// Read-only access to live snapshot memory by guest physical address.
 pub struct SnapshotMemoryReader<'a> {
@@ -135,6 +136,14 @@ fn normalize_page_table_roots(roots: Vec<u64>, active_root: u64) -> Vec<u64> {
 }
 
 impl Sandbox {
+    #[cfg(all(test, feature = "process-isolation", target_os = "windows"))]
+    pub(crate) fn terminate_worker_for_test(&self, index: usize) -> Result<()> {
+        self.process_runtime
+            .as_ref()
+            .ok_or_else(|| crate::new_error!("Sandbox has no process runtime"))?
+            .terminate_worker_for_test(index)
+    }
+
     fn check_ready(&self) -> Result<()> {
         match self.status {
             SandboxStatus::Ready => Ok(()),
@@ -159,11 +168,17 @@ impl Sandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
-    ) -> Sandbox {
+    ) -> Result<Sandbox> {
         // Initialization can log or call the host before the first guest call.
         let transport_dirty = matches!(mgr.next_action, super::snapshot::NextAction::Initialise(_));
+        #[cfg(feature = "process-isolation")]
+        let process_runtime = host_funcs
+            .try_lock()
+            .map_err(|error| crate::new_error!("Error locking host_funcs: {error}"))?
+            .process_runtime
+            .clone();
 
-        Self {
+        Ok(Self {
             status: SandboxStatus::Ready,
             host_funcs,
             mem_mgr: mgr,
@@ -172,7 +187,9 @@ impl Sandbox {
             transport_dirty,
             pt_root_finder: None,
             max_guest_log_level: None,
-        }
+            #[cfg(feature = "process-isolation")]
+            process_runtime,
+        })
     }
 
     /// Sets the maximum log level used by future guest calls.
@@ -270,6 +287,9 @@ impl Sandbox {
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
 
+        #[cfg(feature = "process-isolation")]
+        snapshot.validate_process_topology(host_funcs.inner().process_topology.as_deref())?;
+
         // Validate that the provided host functions are a superset of
         // those required by the snapshot.
         snapshot.validate_host_functions(host_funcs.inner())?;
@@ -366,7 +386,7 @@ impl Sandbox {
             hshm.restore_virtq(virtq)?;
         }
 
-        let mut sbox = Sandbox::from_uninit(host_funcs, hshm, vm);
+        let mut sbox = Sandbox::from_uninit(host_funcs, hshm, vm)?;
 
         if let Some(log_level) = max_guest_log_level {
             sbox.log_level(log_level)?;
@@ -522,10 +542,13 @@ impl Sandbox {
             .get_msr_reset_state()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         let next_action = self.vm.get_next_action();
-        let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
+        let host_funcs = self.host_funcs.try_lock().map_err(|e| {
             crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
-        })?)
-            .into();
+        })?;
+        let host_functions = (&*host_funcs).into();
+        #[cfg(feature = "process-isolation")]
+        let process_topology = host_funcs.process_topology.as_deref().cloned();
+        drop(host_funcs);
 
         let memory_snapshot = self.mem_mgr.snapshot(
             mapped_regions_vec,
@@ -538,6 +561,12 @@ impl Sandbox {
             host_functions,
             scratch_size,
         )?;
+        #[cfg(feature = "process-isolation")]
+        let mut memory_snapshot = memory_snapshot;
+        #[cfg(feature = "process-isolation")]
+        if let Some(topology) = process_topology {
+            memory_snapshot.set_process_topology(topology)?;
+        }
         let snapshot = Arc::new(memory_snapshot);
 
         if let Err(error) = self.remove_dynamic_mappings() {
@@ -703,8 +732,16 @@ impl Sandbox {
     /// # }
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-    pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
+    pub fn restore(&mut self, mut snapshot: Arc<Snapshot>) -> Result<()> {
         if self.status.is_unrecoverable() {
+            return Err(HyperlightError::UnrecoverableSandbox);
+        }
+        #[cfg(feature = "process-isolation")]
+        if self
+            .process_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_poisoned())
+        {
             return Err(HyperlightError::UnrecoverableSandbox);
         }
 
@@ -736,6 +773,14 @@ impl Sandbox {
                 .host_funcs
                 .try_lock()
                 .map_err(|e| crate::new_error!("Error locking host_funcs: {}", e))?;
+            #[cfg(feature = "process-isolation")]
+            if snapshot.process_topology().is_none() {
+                if let Some(topology) = host_funcs.process_topology.as_deref() {
+                    snapshot = Arc::new(snapshot.bind_process_topology(topology.clone())?);
+                }
+            } else {
+                snapshot.validate_process_topology(host_funcs.process_topology.as_deref())?;
+            }
             snapshot.validate_host_functions(&host_funcs)?;
         }
 
@@ -1069,7 +1114,7 @@ impl Sandbox {
         })
     }
 
-    fn call_guest_function_by_name_no_reset(
+    pub(crate) fn call_guest_function_by_name_no_reset(
         &mut self,
         function_name: &str,
         return_type: ReturnType,
@@ -1379,6 +1424,347 @@ fn warn_on_layout_override(
                 supplied,
                 snap
             );
+        }
+    }
+}
+
+#[cfg(not(feature = "process-isolation"))]
+pub use Sandbox as MultiUseSandbox;
+#[cfg(feature = "process-isolation")]
+pub use placement::MultiUseSandbox;
+
+#[cfg(feature = "process-isolation")]
+mod placement {
+    use super::*;
+    use crate::process::SandboxProcess;
+
+    /// A sandbox whose VM is local or owned by a dedicated process.
+    pub struct MultiUseSandbox {
+        placement: Placement,
+    }
+
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "local placement avoids an additional allocation"
+    )]
+    enum Placement {
+        Local(LocalSandbox),
+        Process(Box<SandboxProcess>),
+    }
+
+    impl MultiUseSandbox {
+        #[cfg(all(test, target_os = "windows"))]
+        pub(crate) fn terminate_worker_for_test(&self, index: usize) -> Result<()> {
+            match &self.placement {
+                Placement::Local(local) => local.terminate_worker_for_test(index),
+                Placement::Process(process) => process.terminate_worker_for_test(index),
+            }
+        }
+
+        pub(crate) fn from_uninit(
+            host_funcs: Arc<Mutex<FunctionRegistry>>,
+            mgr: SandboxMemoryManager<HostSharedMemory>,
+            vm: HyperlightVm,
+        ) -> Result<Self> {
+            Ok(Self {
+                placement: Placement::Local(LocalSandbox::from_uninit(host_funcs, mgr, vm)?),
+            })
+        }
+
+        pub(crate) fn from_process(process: SandboxProcess) -> Self {
+            Self {
+                placement: Placement::Process(Box::new(process)),
+            }
+        }
+
+        pub(crate) fn local_mut(&mut self) -> Result<&mut LocalSandbox> {
+            match &mut self.placement {
+                Placement::Local(local) => Ok(local),
+                Placement::Process(_) => Err(crate::new_error!(
+                    "Caller-local closures cannot be installed in a sandbox process"
+                )),
+            }
+        }
+
+        pub(crate) fn into_local(self) -> Result<LocalSandbox> {
+            match self.placement {
+                Placement::Local(local) => Ok(local),
+                Placement::Process(_) => Err(crate::new_error!("Expected an executable-local VM")),
+            }
+        }
+
+        /// Reconstructs a caller-local sandbox from an in-memory snapshot.
+        pub fn from_snapshot(
+            snapshot: Arc<Snapshot>,
+            host_funcs: crate::HostFunctions,
+            config: Option<crate::sandbox::SandboxConfiguration>,
+        ) -> Result<Self> {
+            if snapshot
+                .process_topology()
+                .is_some_and(|topology| topology.sandbox().is_some())
+            {
+                return Err(crate::new_error!(
+                    "A dedicated sandbox snapshot must be reconstructed through SandboxBuilder"
+                ));
+            }
+            Ok(Self {
+                placement: Placement::Local(LocalSandbox::from_snapshot(
+                    snapshot, host_funcs, config,
+                )?),
+            })
+        }
+
+        /// Updates guest log filtering.
+        pub fn log_level(&mut self, level: LevelFilter) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => local.log_level(level),
+                Placement::Process(process) => process.log_level(level),
+            }
+        }
+
+        /// Installs the page-table root finder for caller-local execution.
+        pub fn set_pt_root_finder(&mut self, finder: PtRootFinder) {
+            match &mut self.placement {
+                Placement::Local(local) => local.set_pt_root_finder(finder),
+                Placement::Process(_) => {
+                    panic!("Page-table callbacks must be installed in the sandbox executable")
+                }
+            }
+        }
+
+        /// Captures the current sandbox state.
+        pub fn snapshot(&mut self) -> Result<Arc<Snapshot>> {
+            match &mut self.placement {
+                Placement::Local(local) => local.snapshot(),
+                Placement::Process(process) => process.snapshot(),
+            }
+        }
+
+        /// Captures the current sandbox state with explicit options.
+        pub fn snapshot_with_options(
+            &mut self,
+            options: &SnapshotOptions,
+        ) -> Result<Arc<Snapshot>> {
+            match &mut self.placement {
+                Placement::Local(local) => local.snapshot_with_options(options),
+                Placement::Process(_) if options.scratch_size.is_some() => Err(crate::new_error!(
+                    "Snapshot options are unavailable in a sandbox process"
+                )),
+                Placement::Process(process) => process.snapshot(),
+            }
+        }
+
+        /// Restores a compatible snapshot.
+        pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => local.restore(snapshot),
+                Placement::Process(process) => process.restore(snapshot),
+            }
+        }
+
+        /// Returns effective native process placement reports.
+        pub fn process_reports(&self) -> Vec<crate::process::ProcessReport> {
+            match &self.placement {
+                Placement::Local(local) => local
+                    .process_runtime
+                    .as_ref()
+                    .map_or_else(Vec::new, |runtime| runtime.reports()),
+                Placement::Process(process) => process.process_reports(),
+            }
+        }
+
+        /// Stops native process placement owned by this sandbox.
+        pub fn shutdown(&mut self) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => {
+                    if let Some(runtime) = &local.process_runtime {
+                        runtime.stop()?;
+                    }
+                }
+                Placement::Process(process) => process.cleanup()?,
+            }
+            Ok(())
+        }
+
+        /// Calls one guest function.
+        pub fn call<Output: SupportedReturnType>(
+            &mut self,
+            name: &str,
+            args: impl ParameterTuple,
+        ) -> Result<Output> {
+            match &mut self.placement {
+                Placement::Local(local) => local.call(name, args),
+                Placement::Process(process) => {
+                    Output::from_value(process.call(name, Output::TYPE, args.into_value())?)
+                        .map_err(Into::into)
+                }
+            }
+        }
+
+        #[doc(hidden)]
+        #[deprecated(since = "0.8.0", note = "Use call and snapshot/restore.")]
+        #[allow(deprecated)]
+        pub fn call_guest_function_by_name<Output: SupportedReturnType>(
+            &mut self,
+            name: &str,
+            args: impl ParameterTuple,
+        ) -> Result<Output> {
+            match &mut self.placement {
+                Placement::Local(local) => local.call_guest_function_by_name(name, args),
+                Placement::Process(process) => {
+                    let snapshot = process.snapshot()?;
+                    let result =
+                        Output::from_value(process.call(name, Output::TYPE, args.into_value())?)
+                            .map_err(Into::into);
+                    process.restore(snapshot)?;
+                    result
+                }
+            }
+        }
+
+        /// Maps a caller-owned memory region into a local sandbox.
+        ///
+        /// # Safety
+        ///
+        /// The mapped memory must remain valid and retain its address and size
+        /// until the sandbox is dropped.
+        pub unsafe fn map_region(&mut self, region: &MemoryRegion) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => {
+                    // SAFETY: the caller provides the same lifetime contract.
+                    unsafe { local.map_region(region) }
+                }
+                Placement::Process(_) => Err(crate::new_error!(
+                    "Caller-address memory mappings are unavailable in a sandbox process"
+                )),
+            }
+        }
+
+        /// Maps a file copy-on-write into a local sandbox.
+        pub fn map_file_cow(&mut self, path: &Path, base: u64) -> Result<u64> {
+            match &mut self.placement {
+                Placement::Local(local) => local.map_file_cow(path, base),
+                Placement::Process(_) => Err(crate::new_error!(
+                    "Late file mappings require executable-local sandbox configuration"
+                )),
+            }
+        }
+
+        #[cfg(feature = "fuzzing")]
+        /// Calls one guest function using runtime parameter and return types.
+        pub fn call_type_erased_guest_function_by_name(
+            &mut self,
+            name: &str,
+            output: ReturnType,
+            args: Vec<ParameterValue>,
+        ) -> Result<ReturnValue> {
+            match &mut self.placement {
+                Placement::Local(local) => {
+                    local.call_type_erased_guest_function_by_name(name, output, args)
+                }
+                Placement::Process(process) => process.call(name, output, args),
+            }
+        }
+
+        /// Returns a thread-safe guest interrupt handle.
+        pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+            match &self.placement {
+                Placement::Local(local) => local.interrupt_handle(),
+                Placement::Process(process) => process.interrupt_handle(),
+            }
+        }
+
+        #[cfg(crashdump)]
+        /// Writes a crash dump using the sandbox's configured destination.
+        pub fn generate_crashdump(&mut self) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => local.generate_crashdump(),
+                Placement::Process(process) => process.generate_crashdump(),
+            }
+        }
+
+        #[cfg(crashdump)]
+        /// Writes a caller-local sandbox crash dump to `dir`.
+        pub fn generate_crashdump_to_dir(&mut self, dir: impl Into<PathBuf>) -> Result<()> {
+            match &mut self.placement {
+                Placement::Local(local) => local.generate_crashdump_to_dir(dir),
+                Placement::Process(_) => Err(crate::new_error!(
+                    "A caller-local crashdump directory is unavailable in a sandbox process"
+                )),
+            }
+        }
+
+        #[deprecated(since = "0.17.0", note = "use status().is_poisoned()")]
+        #[allow(deprecated)]
+        /// Returns whether the sandbox is unrecoverable.
+        pub fn poisoned(&self) -> bool {
+            match &self.placement {
+                Placement::Local(local) => local.poisoned(),
+                Placement::Process(_) => self.status().is_poisoned(),
+            }
+        }
+
+        /// Returns the current sandbox status.
+        pub fn status(&self) -> SandboxStatus {
+            match &self.placement {
+                Placement::Local(local) => {
+                    if local
+                        .process_runtime
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.is_poisoned())
+                    {
+                        SandboxStatus::Unrecoverable
+                    } else {
+                        local.status()
+                    }
+                }
+                Placement::Process(process) => process.status(),
+            }
+        }
+
+        /// Returns the guest-reported scratch allocation.
+        pub fn scratch_allocated_bytes(&self) -> Result<u64> {
+            match &self.placement {
+                Placement::Local(local) => local.scratch_allocated_bytes(),
+                Placement::Process(_) => Err(crate::new_error!(
+                    "Scratch allocation reporting is unavailable in a sandbox process"
+                )),
+            }
+        }
+    }
+
+    impl Callable for MultiUseSandbox {
+        fn call<Output: SupportedReturnType>(
+            &mut self,
+            name: &str,
+            args: impl ParameterTuple,
+        ) -> Result<Output> {
+            self.call(name, args)
+        }
+    }
+
+    impl std::fmt::Debug for MultiUseSandbox {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.debug_struct("MultiUseSandbox").finish()
+        }
+    }
+
+    #[cfg(test)]
+    impl std::ops::Deref for MultiUseSandbox {
+        type Target = LocalSandbox;
+
+        fn deref(&self) -> &Self::Target {
+            match &self.placement {
+                Placement::Local(local) => local,
+                Placement::Process(_) => panic!("test expected a local sandbox"),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    impl std::ops::DerefMut for MultiUseSandbox {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.local_mut().expect("test expected a local sandbox")
         }
     }
 }

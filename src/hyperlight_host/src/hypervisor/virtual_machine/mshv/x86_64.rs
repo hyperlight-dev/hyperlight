@@ -170,7 +170,27 @@ impl MshvVm {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
+        Self::new_with_mshv(mshv)
+    }
 
+    #[cfg(feature = "process-isolation")]
+    /// Creates an MSHV VM from an owned MSHV device descriptor.
+    ///
+    /// # Safety
+    ///
+    /// The descriptor must have passed Hyperlight's MSHV host-property
+    /// validation.
+    pub(crate) unsafe fn new_with_fd(
+        fd: std::os::fd::OwnedFd,
+    ) -> std::result::Result<Self, CreateVmError> {
+        use std::os::fd::IntoRawFd;
+
+        // SAFETY: the caller guarantees MSHV identity and ownership is transferred.
+        let mshv = unsafe { Mshv::new_with_fd_number(fd.into_raw_fd()) };
+        Self::new_with_mshv(&mshv)
+    }
+
+    fn new_with_mshv(mshv: &Mshv) -> std::result::Result<Self, CreateVmError> {
         #[allow(unused_mut)]
         let mut pr: mshv_create_partition_v2 = Default::default();
         // The default has no partition flags. Hardware interrupts add only the

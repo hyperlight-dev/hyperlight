@@ -12,7 +12,7 @@ use super::digest::{Digest256, verify_blob_file};
 /// contents or the full new contents, never a partial write. A
 /// failure before commit leaves `target` untouched and removes the
 /// staging file.
-pub(super) fn replace_file_atomic(target: &Path, bytes: &[u8]) -> crate::Result<()> {
+pub(crate) fn replace_file_atomic(target: &Path, bytes: &[u8]) -> crate::Result<()> {
     let parent = target.parent().ok_or_else(|| {
         crate::new_error!("atomic write: target {:?} has no parent directory", target)
     })?;
@@ -48,7 +48,7 @@ pub(super) fn put_blob(blobs_dir: &Path, digest: &Digest256, bytes: &[u8]) -> cr
 /// Intended for the large snapshot blob, where the cost of one full
 /// re-hash of the existing file is far less than the cost of an
 /// unconditional rewrite.
-pub(super) fn put_blob_if_absent(
+pub(crate) fn put_blob_if_absent(
     blobs_dir: &Path,
     digest: &Digest256,
     bytes: &[u8],
@@ -72,8 +72,8 @@ pub(super) fn put_blob_if_absent(
 /// directory, so refuse it before opening. A missing path passes
 /// this check so the caller's open reports the absence with one
 /// consistent error.
-#[cfg(not(unix))]
-pub(super) fn reject_symlink(path: &Path) -> crate::Result<()> {
+#[cfg(any(not(unix), feature = "process-isolation"))]
+pub(crate) fn reject_symlink(path: &Path) -> crate::Result<()> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -132,7 +132,7 @@ pub(super) fn open_no_follow(path: &Path) -> crate::Result<std::fs::File> {
 /// The cap is enforced on the actual byte stream via [`Read::take`], so files
 /// whose `metadata().len()` is misleading cannot exceed the limit. Symbolic
 /// links are rejected.
-pub(super) fn read_bounded(path: &Path, max_size: u64) -> crate::Result<Vec<u8>> {
+pub(crate) fn read_bounded(path: &Path, max_size: u64) -> crate::Result<Vec<u8>> {
     let f = open_no_follow(path)?;
     let hint = f.metadata().map(|m| m.len().min(max_size)).unwrap_or(0);
     let mut buf = Vec::with_capacity(hint as usize);

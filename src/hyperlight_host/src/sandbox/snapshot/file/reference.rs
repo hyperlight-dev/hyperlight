@@ -109,7 +109,7 @@ impl OciDigest {
 
     /// Wrap a validated `oci-spec` digest. The caller guarantees it
     /// uses the sha256 algorithm.
-    pub(super) fn from_oci_spec_digest(digest: &OciSpecDigest) -> Self {
+    pub(crate) fn from_oci_spec_digest(digest: &OciSpecDigest) -> Self {
         Self(digest.to_string())
     }
 }

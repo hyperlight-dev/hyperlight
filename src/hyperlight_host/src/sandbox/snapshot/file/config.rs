@@ -62,6 +62,14 @@ pub(super) enum Hypervisor {
 
 impl Hypervisor {
     pub(super) fn current() -> Option<Self> {
+        #[cfg(feature = "process-isolation")]
+        if let Some(backend) = crate::process::current_vm_backend() {
+            return Some(match backend {
+                crate::process::VmBackend::Kvm => Self::Kvm,
+                crate::process::VmBackend::Mshv => Self::Mshv,
+                crate::process::VmBackend::Whp => Self::Whp,
+            });
+        }
         #[allow(unused_imports)]
         use crate::hypervisor::virtual_machine::HypervisorType;
         use crate::hypervisor::virtual_machine::get_available_hypervisor;
@@ -163,7 +171,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v5+json`.
+/// `application/vnd.hyperlight.snapshot.config.v6+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -216,6 +224,9 @@ pub(super) struct OciSnapshotConfig {
     /// Application-owned metadata keyed by namespace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) metadata: BTreeMap<String, serde_json::Value>,
+    #[cfg(feature = "process-isolation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) process_topology: Option<serde_json::Value>,
 }
 
 /// Sizes and permissions of the regions inside the snapshot blob,
@@ -276,9 +287,9 @@ pub(super) struct HostFunction {
 /// Kept local so we don't have to plumb serde through `hyperlight_common`.
 /// The `match`es below are exhaustive: any new variant upstream forces
 /// an explicit decision here.
-#[derive(Serialize, Deserialize, Copy, Clone)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ParameterTypeRepr {
+pub(crate) enum ParameterTypeRepr {
     Int,
     UInt,
     Long,
@@ -293,9 +304,9 @@ enum ParameterTypeRepr {
 
 /// JSON-friendly mirror of
 /// [`hyperlight_common::flatbuffer_wrappers::function_types::ReturnType`].
-#[derive(Serialize, Deserialize, Copy, Clone)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ReturnTypeRepr {
+pub(crate) enum ReturnTypeRepr {
     Int,
     UInt,
     Long,
@@ -839,6 +850,8 @@ mod tests {
             host_functions: Vec::new(),
             snapshot_generation: 0,
             metadata: BTreeMap::new(),
+            #[cfg(feature = "process-isolation")]
+            process_topology: None,
         }
     }
 
@@ -1202,6 +1215,72 @@ mod schema_pin {
     #[test]
     fn call_round_trip() {
         assert_round_trip(PINNED_CALL);
+    }
+
+    #[cfg(feature = "process-isolation")]
+    #[test]
+    fn process_config_v2_pins_nested_schema() {
+        use crate::process::program::ProcessTopologyDefinition;
+
+        const PINNED_TOPOLOGY: &str = r#"{
+          "schema_version": 1,
+          "sandbox": {
+            "name": "sandbox",
+            "program": {
+              "mediaType": "application/vnd.oci.image.manifest.v1+json",
+              "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "size": 123
+            },
+            "profile": [
+              {"control": {"memory_limit": 268435456}, "required": true},
+              {"control": "deny_network", "required": false},
+              {"control": "deny_child_processes", "required": true}
+            ],
+            "functions": [],
+            "windows_sandbox_host_policy": "trusted"
+          },
+          "workers": [{
+            "name": "functions",
+            "program": {
+              "mediaType": "application/vnd.oci.image.manifest.v1+json",
+              "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "size": 456
+            },
+            "profile": [
+              {"control": {"memory_limit": 67108864}, "required": true},
+              {"control": {"cpu_budget": {
+                "quota": {"secs": 0, "nanos": 50000000},
+                "period": {"secs": 0, "nanos": 100000000}
+              }}, "required": true},
+              {"control": "deny_network", "required": true},
+              {"control": "deny_child_processes", "required": true}
+            ],
+            "functions": [
+              {"name": "HostAdd", "parameters": ["int", "int"], "output": "int",
+               "idempotency": "idempotent"},
+              {"name": "Notify", "parameters": ["vec_bytes", "bool"], "output": "void",
+               "idempotency": "non_idempotent"},
+              {"name": "Unclassified", "parameters": ["byte_chunks"], "output": "vec_bytes",
+               "idempotency": "unspecified"}
+            ],
+            "windows_sandbox_host_policy": "app_container"
+          }]
+        }"#;
+        // PINNED_CALL supplies the complete x86-64 or aarch64 config shape.
+        let mut expected: serde_json::Value = serde_json::from_str(PINNED_CALL).unwrap();
+        expected["abi_version"] = 3.into();
+        expected["process_topology"] = serde_json::from_str(PINNED_TOPOLOGY).unwrap();
+        let mut config: OciSnapshotConfig = serde_json::from_value(expected.clone()).unwrap();
+        let topology: ProcessTopologyDefinition =
+            serde_json::from_value(config.process_topology.take().unwrap()).unwrap();
+        topology.validate().unwrap();
+        config.abi_version = SNAPSHOT_ABI_VERSION;
+        config.process_topology = Some(serde_json::to_value(topology).unwrap());
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            expected,
+            "Process config schema changed. Follow docs/snapshot-versioning.md."
+        );
     }
 
     #[test]

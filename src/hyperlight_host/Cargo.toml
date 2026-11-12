@@ -21,9 +21,15 @@ bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-
 workspace = true
 
 [dependencies]
+mesh = { git = "https://github.com/simongdavies/openvmm.git", rev = "f7e2c8eb63bd0bb0a40e915e9c92978db8faa881", optional = true }
+mesh_process = { git = "https://github.com/simongdavies/openvmm.git", rev = "f7e2c8eb63bd0bb0a40e915e9c92978db8faa881", optional = true }
+pal = { git = "https://github.com/simongdavies/openvmm.git", rev = "f7e2c8eb63bd0bb0a40e915e9c92978db8faa881", optional = true }
+futures-lite = { version = "2.6.1", default-features = false, features = ["std"], optional = true }
+futures = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
+bytes = { version = "1", optional = true }
 gdbstub = { version = "0.7.10", optional = true }
 gdbstub_arch = { version = "0.3.3", optional = true }
-goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
+goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "pe32", "pe64", "endian_fd"] }
 rand = { version = "0.10" }
 cfg-if = { version = "1.0.4" }
 libc = { version = "0.2.186" }
@@ -128,6 +134,15 @@ cc = "1.2"
 
 [features]
 default = ["kvm", "mshv3", "hvf", "build-metadata"]
+process-isolation = [
+    "dep:mesh", "dep:mesh_process", "dep:pal", "dep:futures", "dep:futures-lite", "dep:bytes",
+    "windows-sys/Win32_Foundation", "windows-sys/Win32_Security",
+    "windows-sys/Win32_Security_Authorization", "windows-sys/Win32_Security_Isolation",
+    "windows-sys/Win32_Storage_FileSystem", "windows-sys/Win32_System_Threading",
+    "windows-sys/Win32_System_JobObjects", "windows-sys/Win32_System_Memory",
+    "windows-sys/Win32_System_Com", "windows-sys/Win32_System_Registry",
+    "windows-sys/Win32_UI_Shell",
+]
 function_call_metrics = []
 executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
@@ -148,6 +163,60 @@ build-metadata = ["dep:built"]
 [[bench]]
 name = "benchmarks"
 harness = false
+
+[[example]]
+name = "process_worker"
+path = "tests/fixtures/process_worker.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "process_child_policy"
+path = "tests/fixtures/process_child_policy.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "sandbox_worker"
+path = "tests/fixtures/sandbox_worker.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "process_placement"
+path = "tests/fixtures/process_placement.rs"
+required-features = ["process-isolation"]
+test = true
+
+[[example]]
+name = "process_file_resource"
+path = "tests/fixtures/process_file_resource.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "process_vm_authority"
+path = "tests/fixtures/process_vm_authority.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "nested_sandbox"
+path = "tests/fixtures/nested_sandbox.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "isolation_bench"
+path = "tests/fixtures/isolation_bench.rs"
+
+[[example]]
+name = "isolation_local_consumer"
+path = "tests/fixtures/isolation_local_consumer.rs"
+
+[[example]]
+name = "isolation_bench_worker"
+path = "tests/fixtures/isolation_bench_worker.rs"
+required-features = ["process-isolation"]
+
+[[example]]
+name = "isolation_bench_sandbox"
+path = "tests/fixtures/isolation_bench_sandbox.rs"
+required-features = ["process-isolation"]
 
 [[test]]
 name = "snapshot_goldens"

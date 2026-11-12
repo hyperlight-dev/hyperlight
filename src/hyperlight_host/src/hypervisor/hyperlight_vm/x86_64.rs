@@ -50,6 +50,26 @@ type BoxedVm = Box<dyn DebuggableVm>;
 #[cfg(not(gdb))]
 type BoxedVm = Box<dyn VirtualMachine>;
 
+fn create_default_vm(
+    #[cfg_attr(not(kvm), allow(unused_variables))] config: &SandboxConfiguration,
+) -> std::result::Result<BoxedVm, CreateHyperlightVmError> {
+    Ok(match get_available_hypervisor() {
+        #[cfg(kvm)]
+        Some(HypervisorType::Kvm) => {
+            let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
+            kvm_vm
+                .configure_msr_access(config.get_guest_msrs())
+                .map_err(VmError::CreateVm)?;
+            Box::new(kvm_vm)
+        }
+        #[cfg(mshv3)]
+        Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
+        #[cfg(target_os = "windows")]
+        Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
+        None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+    })
+}
+
 impl HyperlightVm {
     /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -65,21 +85,47 @@ impl HyperlightVm {
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        let mut vm: BoxedVm = match get_available_hypervisor() {
-            #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => {
-                let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
-                kvm_vm
-                    .configure_msr_access(config.get_guest_msrs())
-                    .map_err(VmError::CreateVm)?;
-                Box::new(kvm_vm)
-            }
-            #[cfg(mshv3)]
-            Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
-            #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
-            None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+        #[cfg(feature = "process-isolation")]
+        let authority = crate::process::take_installed_for_vm()
+            .map_err(|error| CreateHyperlightVmError::Authority(error.to_string()))?;
+        #[cfg(feature = "process-isolation")]
+        let mut vm: BoxedVm = match authority {
+            Some(authority) => match (authority.backend, authority.payload) {
+                #[cfg(kvm)]
+                (
+                    crate::process::VmBackend::Kvm,
+                    crate::process::NativeResourcePayload::Descriptor(fd),
+                ) => {
+                    // SAFETY: VM-authority validation checked this descriptor.
+                    let kvm_vm = unsafe { KvmVm::new_with_fd(fd) }.map_err(VmError::CreateVm)?;
+                    kvm_vm
+                        .configure_msr_access(config.get_guest_msrs())
+                        .map_err(VmError::CreateVm)?;
+                    Box::new(kvm_vm)
+                }
+                #[cfg(mshv3)]
+                (
+                    crate::process::VmBackend::Mshv,
+                    crate::process::NativeResourcePayload::Descriptor(fd),
+                ) => {
+                    // SAFETY: VM-authority validation checked this descriptor.
+                    Box::new(unsafe { MshvVm::new_with_fd(fd) }.map_err(VmError::CreateVm)?)
+                }
+                #[cfg(target_os = "windows")]
+                (
+                    crate::process::VmBackend::Whp,
+                    crate::process::NativeResourcePayload::AuthorizationMarker,
+                ) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
+                _ => {
+                    return Err(CreateHyperlightVmError::Authority(
+                        "Installed VM authority payload does not match its backend".to_owned(),
+                    ));
+                }
+            },
+            None => create_default_vm(config)?,
         };
+        #[cfg(not(feature = "process-isolation"))]
+        let mut vm: BoxedVm = create_default_vm(config)?;
 
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
             _root_pt_addr,

@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+#[cfg(feature = "process-isolation")]
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
+#[cfg(feature = "process-isolation")]
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterType, ParameterValue, ReturnType, ReturnValue,
@@ -20,6 +24,10 @@ use crate::func::host_functions::TypeErasedHostFunction;
 /// A Wrapper around details of functions exposed by the Host
 pub struct FunctionRegistry {
     functions_map: HashMap<String, FunctionEntry>,
+    #[cfg(feature = "process-isolation")]
+    pub(crate) process_topology: Option<Box<crate::process::program::ProcessTopologyDefinition>>,
+    #[cfg(feature = "process-isolation")]
+    pub(crate) process_runtime: Option<Arc<crate::process::ProcessRuntime>>,
 }
 
 /// A collection of host functions that can be supplied to a sandbox
@@ -117,11 +125,49 @@ impl From<&FunctionRegistry> for HostFunctionDetails {
 
 pub struct FunctionEntry {
     pub function: TypeErasedHostFunction,
+    #[cfg(not(feature = "process-isolation"))]
     pub parameter_types: &'static [ParameterType],
+    #[cfg(feature = "process-isolation")]
+    pub parameter_types: Cow<'static, [ParameterType]>,
     pub return_type: ReturnType,
 }
 
+impl FunctionEntry {
+    pub(crate) fn new(
+        function: TypeErasedHostFunction,
+        parameter_types: &'static [ParameterType],
+        return_type: ReturnType,
+    ) -> Self {
+        Self {
+            function,
+            parameter_types: parameter_types.into(),
+            return_type,
+        }
+    }
+
+    fn parameter_types(&self) -> &[ParameterType] {
+        &self.parameter_types
+    }
+}
+
 impl FunctionRegistry {
+    #[cfg(feature = "process-isolation")]
+    pub(crate) fn validate_local_registration(&self, name: &str) -> Result<()> {
+        if self.process_topology.as_ref().is_some_and(|topology| {
+            topology.workers().iter().any(|worker| {
+                worker
+                    .functions()
+                    .iter()
+                    .any(|function| function.name() == name)
+            })
+        }) {
+            return Err(crate::new_error!(
+                "Host function '{name}' already belongs to a process"
+            ));
+        }
+        Ok(())
+    }
+
     /// Register a host function with the sandbox.
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn register_host_function(&mut self, name: String, func: FunctionEntry) {
@@ -129,13 +175,10 @@ impl FunctionRegistry {
     }
 
     /// Return the registered signature for `name`.
-    pub(crate) fn function_signature(
-        &self,
-        name: &str,
-    ) -> Option<(&'static [ParameterType], ReturnType)> {
+    pub(crate) fn function_signature(&self, name: &str) -> Option<(&[ParameterType], ReturnType)> {
         self.functions_map
             .get(name)
-            .map(|entry| (entry.parameter_types, entry.return_type))
+            .map(|entry| (entry.parameter_types(), entry.return_type))
     }
 
     /// Create a `FunctionRegistry` pre-populated with the default
@@ -146,11 +189,11 @@ impl FunctionRegistry {
 
         let mut registry = Self::default();
         let hf: HostFunction<i32, (String,)> = default_writer_func.into();
-        let entry = FunctionEntry {
-            function: hf.into(),
-            parameter_types: <(String,)>::TYPE,
-            return_type: <i32 as SupportedReturnType>::TYPE,
-        };
+        let entry = FunctionEntry::new(
+            hf.into(),
+            <(String,)>::TYPE,
+            <i32 as SupportedReturnType>::TYPE,
+        );
         registry.register_host_function("HostPrint".to_string(), entry);
         registry
     }
@@ -175,7 +218,7 @@ impl FunctionRegistry {
     /// its parameter list doesn't match `args`, or there was another error
     /// getting, configuring or calling the function.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn call_host_function(
+    pub(crate) fn call_host_function(
         &self,
         name: &str,
         args: Vec<ParameterValue>,
@@ -216,5 +259,107 @@ fn default_writer_func(s: String) -> Result<i32> {
             stdout.reset()?;
             Ok(s.len() as i32)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+
+    use super::*;
+    use crate::func::{ParameterTuple, Registerable, SupportedReturnType};
+
+    #[test]
+    fn local_signature_borrows_static_tuple_types() {
+        let parameters = <(i32,)>::TYPE;
+        let function: crate::func::HostFunction<i32, (i32,)> = (|value: i32| value).into();
+        let entry = FunctionEntry::new(
+            function.into(),
+            parameters,
+            <i32 as SupportedReturnType>::TYPE,
+        );
+        assert!(std::ptr::eq(entry.parameter_types(), parameters));
+        #[cfg(feature = "process-isolation")]
+        assert!(matches!(
+            entry.parameter_types,
+            std::borrow::Cow::Borrowed(_)
+        ));
+        println!(
+            "FunctionEntry={} FunctionRegistry={} HostFunctions={} SandboxBuilder={} MultiUseSandbox={}",
+            std::mem::size_of::<FunctionEntry>(),
+            std::mem::size_of::<FunctionRegistry>(),
+            std::mem::size_of::<HostFunctions>(),
+            std::mem::size_of::<crate::SandboxBuilder>(),
+            std::mem::size_of::<crate::MultiUseSandbox>(),
+        );
+    }
+
+    #[test]
+    fn registration_replaces_local_implementation() {
+        let mut functions = HostFunctions::empty();
+        functions
+            .register_host_function("Add", |a: i32, b: i32| a + b)
+            .unwrap();
+        functions
+            .register_host_function("Add", |a: i32, b: i32| a + b + 1)
+            .unwrap();
+
+        let result = functions
+            .inner()
+            .call_host_function("Add", (10_i32, 32_i32).into_value())
+            .unwrap();
+
+        assert_eq!(
+            <i32 as SupportedReturnType>::from_value(result).unwrap(),
+            43
+        );
+        assert_eq!(functions.into_iter().count(), 1);
+    }
+
+    #[test]
+    fn registration_replaces_local_signature() {
+        let mut functions = HostFunctions::empty();
+        functions
+            .register_host_function("Value", |value: i32| value)
+            .unwrap();
+        functions
+            .register_host_function("Value", |value: String| value.len() as u64)
+            .unwrap();
+
+        assert_eq!(
+            functions.inner().function_signature("Value"),
+            Some((<(String,)>::TYPE, <u64 as SupportedReturnType>::TYPE)),
+        );
+        let details = HostFunctionDetails::from(functions.inner());
+        let entries = details.host_functions.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].function_name, "Value");
+        assert_eq!(
+            entries[0].parameter_types.as_deref(),
+            Some(<(String,)>::TYPE),
+        );
+        assert_eq!(entries[0].return_type, <u64 as SupportedReturnType>::TYPE);
+        let result = functions
+            .inner()
+            .call_host_function("Value", ("hello".to_owned(),).into_value())
+            .unwrap();
+        assert_eq!(<u64 as SupportedReturnType>::from_value(result).unwrap(), 5);
+    }
+
+    #[test]
+    fn default_host_print_can_be_replaced_locally() {
+        let mut functions = HostFunctions::default();
+        functions
+            .register_host_function("HostPrint", |_: String| 42_i32)
+            .unwrap();
+
+        assert_eq!(
+            functions
+                .inner_mut()
+                .host_print("handled by replacement".to_owned())
+                .unwrap(),
+            42,
+        );
+        assert_eq!(functions.into_iter().count(), 1);
     }
 }

@@ -58,6 +58,9 @@ pub mod hypervisor;
 pub mod mem;
 /// Metric definitions and helpers
 pub mod metrics;
+/// Process placement declarations.
+#[cfg(feature = "process-isolation")]
+pub mod process;
 /// The main sandbox implementations. Do not use this module directly in code
 /// outside this file. Types from this module needed for public consumption are
 /// re-exported below.

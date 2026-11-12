@@ -94,6 +94,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
+    msr_filter_supported: bool,
 
     /// EventFd registered via irqfd for GSI 0 (IRQ0). A timer thread
     /// writes to this to inject periodic timer interrupts.
@@ -170,7 +171,28 @@ impl KvmVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         let hv = KVM.as_ref().map_err(|e| e.clone())?;
+        Self::new_with_kvm(hv)
+    }
 
+    #[cfg(feature = "process-isolation")]
+    /// Creates a KVM VM from an owned KVM device descriptor.
+    ///
+    /// # Safety
+    ///
+    /// The descriptor must have passed Hyperlight's KVM API and capability
+    /// validation.
+    pub(crate) unsafe fn new_with_fd(
+        fd: std::os::fd::OwnedFd,
+    ) -> std::result::Result<Self, CreateVmError> {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        // SAFETY: the caller guarantees KVM identity and ownership is transferred.
+        let hv = unsafe { Kvm::from_raw_fd(fd.into_raw_fd()) };
+        Self::new_with_kvm(&hv)
+    }
+
+    fn new_with_kvm(hv: &Kvm) -> std::result::Result<Self, CreateVmError> {
+        let msr_filter_supported = hv.check_extension(Cap::X86MsrFilter);
         let vm_fd = hv
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
@@ -247,6 +269,7 @@ impl KvmVm {
         Ok(Self {
             vm_fd,
             vcpu_fd,
+            msr_filter_supported,
             #[cfg(feature = "hw-interrupts")]
             timer_irq_eventfd,
             #[cfg(feature = "hw-interrupts")]
@@ -361,8 +384,7 @@ impl KvmVm {
         &self,
         guest_msrs: &[u32],
     ) -> std::result::Result<(), CreateVmError> {
-        let hv = KVM.as_ref().map_err(|e| e.clone())?;
-        if !hv.check_extension(Cap::X86MsrFilter) {
+        if !self.msr_filter_supported {
             tracing::error!("KVM does not support KVM_CAP_X86_MSR_FILTER.");
             return Err(CreateVmError::MsrFilterNotSupported);
         }

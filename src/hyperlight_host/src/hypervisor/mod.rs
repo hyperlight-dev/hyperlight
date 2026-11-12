@@ -40,7 +40,7 @@ impl InterruptHandleStateMachine {
     #[cfg(gdb)]
     const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(AtomicU8::new(0))
     }
 

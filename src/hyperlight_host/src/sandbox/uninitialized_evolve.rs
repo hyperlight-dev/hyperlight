@@ -16,7 +16,7 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{Result, Sandbox, UninitializedSandbox};
+use crate::{MultiUseSandbox as Sandbox, Result, UninitializedSandbox};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
@@ -88,7 +88,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         hshm.finish_snapshot_checkpoint()?;
     }
 
-    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm)?;
 
     if let Some(log_level) = max_guest_log_level {
         sbox.log_level(log_level)?;

@@ -57,6 +57,43 @@ impl HyperlightVm {
         #[cfg(hvf)]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
             Arc::new(HvfInterruptHandle::new(config.get_interrupt_retry_delay()));
+        #[cfg(feature = "process-isolation")]
+        let authority = crate::process::take_installed_for_vm()
+            .map_err(|error| CreateHyperlightVmError::Authority(error.to_string()))?;
+        #[cfg(feature = "process-isolation")]
+        let mut vm: VmType = if let Some(authority) = authority {
+            match (authority.backend, authority.payload) {
+                #[cfg(kvm)]
+                (
+                    crate::process::VmBackend::Kvm,
+                    crate::process::NativeResourcePayload::Descriptor(fd),
+                ) => {
+                    // SAFETY: VM-authority validation checked this descriptor.
+                    Box::new(unsafe { KvmVm::new_with_fd(fd) }.map_err(VmError::CreateVm)?)
+                }
+                _ => {
+                    return Err(CreateHyperlightVmError::Authority(
+                        "Installed VM authority payload does not match this architecture"
+                            .to_owned(),
+                    ));
+                }
+            }
+        } else {
+            match get_available_hypervisor() {
+                #[cfg(kvm)]
+                Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+                #[cfg(mshv3)]
+                Some(HypervisorType::Mshv) => {
+                    return Err(CreateHyperlightVmError::NoHypervisorFound);
+                }
+                #[cfg(hvf)]
+                Some(HypervisorType::Hvf) => {
+                    Box::new(HvfVm::new(interrupt_handle.clone()).map_err(VmError::CreateVm)?)
+                }
+                None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            }
+        };
+        #[cfg(not(feature = "process-isolation"))]
         let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),

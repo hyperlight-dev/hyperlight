@@ -15,9 +15,10 @@ mod initialized;
 /// Deprecated path for the items in the `initialized` module.
 #[deprecated(since = "0.18.0", note = "use hyperlight_host::sandbox")]
 pub mod initialized_multi_use {
+    pub use super::Sandbox;
     #[allow(deprecated)]
     pub use super::initialized::MultiUseSandbox;
-    pub use super::initialized::{PtRootFinder, Sandbox, SandboxStatus};
+    pub use super::initialized::{PtRootFinder, SandboxStatus};
 }
 pub(crate) mod outb;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
@@ -41,11 +42,17 @@ pub(crate) mod trace;
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
+#[cfg(feature = "process-isolation")]
+pub(crate) use initialized::LocalSandbox;
 /// Re-export for the deprecated `MultiUseSandbox` name
 #[allow(deprecated)]
 pub use initialized::MultiUseSandbox;
 /// Re-export for the `Sandbox` type
-pub use initialized::{PtRootFinder, Sandbox, SandboxStatus, SnapshotMemoryReader};
+#[cfg(feature = "process-isolation")]
+pub use initialized::MultiUseSandbox as Sandbox;
+#[cfg(not(feature = "process-isolation"))]
+pub use initialized::Sandbox;
+pub use initialized::{PtRootFinder, SandboxStatus, SnapshotMemoryReader};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type

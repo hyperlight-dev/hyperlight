@@ -9,13 +9,13 @@ use sha2::{Digest as _, Sha256};
 /// A `sha256:<hex>` digest as recorded in OCI manifests. The bare hex
 /// (without prefix) is also the blob's filename inside `blobs/sha256/`.
 #[derive(Clone)]
-pub(super) struct Digest256 {
+pub(crate) struct Digest256 {
     /// Lowercase hex of the 32-byte sha256 output.
-    pub(super) hex: String,
+    pub(crate) hex: String,
 }
 
 impl Digest256 {
-    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
         let arr: [u8; 32] = Sha256::digest(bytes).into();
         Self::from_digest_array(arr)
     }
@@ -28,7 +28,7 @@ impl Digest256 {
 }
 
 /// Build an `oci_spec::image::Digest` from a [`Digest256`].
-pub(super) fn oci_digest(d: &Digest256) -> crate::Result<Digest> {
+pub(crate) fn oci_digest(d: &Digest256) -> crate::Result<Digest> {
     Digest::try_from(format!("sha256:{}", d.hex))
         .map_err(|e| crate::new_error!("failed to construct OCI digest: {}", e))
 }
@@ -45,7 +45,7 @@ pub(super) fn parse_oci_digest(digest: &Digest) -> crate::Result<String> {
 }
 
 /// Compute sha256 of `bytes` and verify it equals `expected_hex`.
-pub(super) fn verify_blob_bytes(
+pub(crate) fn verify_blob_bytes(
     label: &str,
     bytes: &[u8],
     expected_hex: &str,

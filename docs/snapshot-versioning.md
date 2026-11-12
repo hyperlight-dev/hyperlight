@@ -28,7 +28,7 @@ A snapshot carries four independently evolvable version markers:
   `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
   virtqueue state stored outside the memory layer.
 * **Config schema**, `MT_CONFIG_V5`
-  (`application/vnd.hyperlight.snapshot.config.v5+json`), aliased as
+  (`application/vnd.hyperlight.snapshot.config.v6+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
