@@ -481,6 +481,13 @@ impl Sandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot_with_options(&mut self, options: &SnapshotOptions) -> Result<Arc<Snapshot>> {
         self.check_ready()?;
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot snapshot an ARM64 sandbox while software breakpoints are installed"
+            ));
+        }
+
         // Unpacked in full so that a new option has to decide whether the
         // cached plain snapshot still answers it.
         let SnapshotOptions { scratch_size } = options;
@@ -504,6 +511,12 @@ impl Sandbox {
     fn capture_snapshot(&mut self, scratch_size: usize) -> Result<Arc<Snapshot>> {
         if self.transport_dirty {
             self.checkpoint_transport_for_snapshot()?;
+            #[cfg(all(gdb, target_arch = "aarch64"))]
+            if self.vm.has_sw_breakpoints() {
+                return Err(crate::new_error!(
+                    "Cannot snapshot an ARM64 sandbox while software breakpoints are installed"
+                ));
+            }
         }
 
         let mapped_regions_iter = self.vm.get_mapped_regions();
@@ -724,6 +737,13 @@ impl Sandbox {
             return Err(HyperlightError::UnrecoverableSandbox);
         }
 
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.status.is_ready() && self.vm.has_sw_breakpoints() {
+            return Err(crate::new_error!(
+                "Cannot restore an ARM64 sandbox while software breakpoints are installed"
+            ));
+        }
+
         // Currently, we do not try to optimise restore to the
         // most-current snapshot. This is because the most-current
         // snapshot, while it must have identical virtual memory
@@ -772,6 +792,10 @@ impl Sandbox {
         }
 
         // Errors below leave the sandbox poisoned unless base mapping updates make it unrecoverable.
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.status.is_poisoned() {
+            self.vm.discard_software_breakpoints();
+        }
         self.status = SandboxStatus::Poisoned;
         self.snapshot = None;
 
@@ -1496,6 +1520,230 @@ mod tests {
 
     fn scratch(scratch_size: usize) -> SnapshotOptions {
         SnapshotOptions::default().scratch_size(scratch_size)
+    }
+
+    #[cfg(all(gdb, target_arch = "aarch64"))]
+    mod gdb_recovery_tests {
+        use super::*;
+        use crate::hypervisor::gdb::{
+            DebugCommChannel, DebugMemoryView, DebugMsg, DebugResponse, VcpuStopReason,
+        };
+        use crate::hypervisor::hyperlight_vm::HyperlightVm;
+        use crate::mem::ptr::RawPtr;
+        use crate::sandbox::snapshot::NextAction;
+
+        fn sandbox_with_debugger() -> (Sandbox, DebugCommChannel<DebugMsg, DebugResponse>, u64) {
+            let guest =
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                    .unwrap();
+            let vectors = guest.load_info.debug_vectors;
+            let (mut host, memory) = guest.mgr.build().unwrap();
+            let (debugger, connection) = DebugCommChannel::unbounded();
+            debugger.send(DebugMsg::Continue).unwrap();
+            let mut vm = HyperlightVm::new(
+                memory.shared_mem,
+                memory.scratch_mem,
+                memory.layout.get_pt_base_gpa(),
+                memory.next_action,
+                guest.stack_top_gva,
+                page_size::get(),
+                &guest.config,
+                Some(connection),
+                #[cfg(feature = "mem_profile")]
+                crate::sandbox::trace::MemTraceInfo::new(guest.load_info.info).unwrap(),
+            )
+            .unwrap();
+            vm.initialize_debug_vectors(vectors).unwrap();
+            vm.initialise(
+                RawPtr::from(host.layout.peb_address() as u64),
+                0,
+                &mut host,
+                &guest.host_funcs,
+                None,
+            )
+            .unwrap();
+            host.finish_snapshot_checkpoint().unwrap();
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::InterruptHandle(_)
+            ));
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::VcpuStopped(VcpuStopReason::Initial)
+            ));
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::Continue
+            ));
+
+            let bytes = std::fs::read(simple_guest_as_pathbuf()).unwrap();
+            let elf = goblin::elf::Elf::parse(&bytes).unwrap();
+            let entry = elf
+                .syms
+                .iter()
+                .find(|symbol| elf.strtab.get_at(symbol.st_name) == Some("hyperlight_main"))
+                .unwrap()
+                .st_value
+                + host.layout.get_guest_code_gva() as u64;
+            (
+                Sandbox::from_uninit(guest.host_funcs, host, vm, guest.config),
+                debugger,
+                entry,
+            )
+        }
+
+        fn request(sandbox: &mut Sandbox, message: DebugMsg) -> DebugResponse {
+            let memory = DebugMemoryView::new(
+                &sandbox.mem_mgr,
+                sandbox.vm.get_mapped_regions().cloned().collect(),
+            );
+            sandbox.vm.process_dbg_request(message, &memory).unwrap()
+        }
+
+        #[cfg(all(target_os = "linux", any(kvm, mshv3)))]
+        #[test]
+        fn debugger_rejects_the_unbacked_io_page() {
+            let (mut sandbox, _debugger, _) = sandbox_with_debugger();
+            let address = hyperlight_common::layout::io_page().unwrap().1;
+            let memory = DebugMemoryView::new(&sandbox.mem_mgr, Vec::new());
+            let root = sandbox.vm.get_root_pt().unwrap();
+            assert!(matches!(
+                memory.translate_gva(address, root),
+                Err(crate::hypervisor::gdb::DebugError::TranslateGva(gva)) if gva == address
+            ));
+            sandbox.call::<()>("NoOp", ()).unwrap();
+        }
+
+        #[test]
+        fn snapshot_rejects_breakpoints_added_during_checkpoint_without_poisoning() {
+            let (mut sandbox, debugger, breakpoint) = sandbox_with_debugger();
+            let snapshot = sandbox.snapshot().unwrap();
+            sandbox.call::<()>("NoOp", ()).unwrap();
+            assert!(sandbox.transport_dirty);
+            let NextAction::Call(dispatch) = sandbox.vm.get_next_action() else {
+                panic!("guest dispatch is not initialized");
+            };
+            assert!(matches!(
+                request(&mut sandbox, DebugMsg::AddHwBreakpoint(dispatch)),
+                DebugResponse::AddHwBreakpoint(true)
+            ));
+            debugger
+                .send(DebugMsg::RemoveHwBreakpoint(dispatch))
+                .unwrap();
+            debugger
+                .send(DebugMsg::AddSwBreakpoint(breakpoint))
+                .unwrap();
+            debugger.send(DebugMsg::Continue).unwrap();
+
+            let result = sandbox.snapshot();
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::VcpuStopped(VcpuStopReason::HwBp)
+            ));
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::RemoveHwBreakpoint(true)
+            ));
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::AddSwBreakpoint(true)
+            ));
+            assert!(matches!(
+                debugger.try_recv().unwrap(),
+                DebugResponse::Continue
+            ));
+            let error = result
+                .err()
+                .expect("snapshot accepted a software breakpoint");
+            assert_eq!(sandbox.status(), SandboxStatus::Ready, "{error}");
+            assert!(matches!(
+                request(&mut sandbox, DebugMsg::RemoveSwBreakpoint(breakpoint)),
+                DebugResponse::RemoveSwBreakpoint(true)
+            ));
+            sandbox.restore(snapshot).unwrap();
+            sandbox.call::<()>("NoOp", ()).unwrap();
+        }
+
+        #[test]
+        fn cancelled_debug_session_can_restore_with_software_breakpoints() {
+            let (mut sandbox, _debugger, breakpoint) = sandbox_with_debugger();
+            let interrupt = sandbox.interrupt_handle();
+            sandbox
+                .register_host_function("HostNoOp", move || {
+                    interrupt.kill();
+                    Ok(())
+                })
+                .unwrap();
+            let snapshot = sandbox.snapshot().unwrap();
+            assert!(matches!(
+                request(&mut sandbox, DebugMsg::AddSwBreakpoint(breakpoint)),
+                DebugResponse::AddSwBreakpoint(true)
+            ));
+            assert!(sandbox.restore(snapshot.clone()).is_err());
+            assert_eq!(sandbox.status(), SandboxStatus::Ready);
+
+            let error = sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap_err();
+            assert!(matches!(error, HyperlightError::ExecutionCanceledByHost()));
+            assert_eq!(sandbox.status(), SandboxStatus::Poisoned);
+            sandbox.restore(snapshot).unwrap();
+            assert_eq!(sandbox.status(), SandboxStatus::Ready);
+            sandbox.call::<()>("NoOp", ()).unwrap();
+        }
+
+        #[test]
+        fn crash_detach_can_restore_after_breakpoint_mapping_is_lost() {
+            let (mut sandbox, debugger, _) = sandbox_with_debugger();
+            let snapshot = sandbox.snapshot().unwrap();
+            // The guard-page backing is outside the guest allocator.
+            let address = hyperlight_common::layout::scratch_transport_end_gpa();
+            sandbox
+                .call::<Vec<u8>>("ReadMappedBuffer", (address, 4u64, true))
+                .unwrap();
+            assert!(matches!(
+                request(&mut sandbox, DebugMsg::AddSwBreakpoint(address)),
+                DebugResponse::AddSwBreakpoint(true)
+            ));
+
+            let root = sandbox.vm.get_root_pt().unwrap();
+            let registers = sandbox.vm.get_snapshot_sregs().unwrap();
+            let memory = DebugMemoryView::new(&sandbox.mem_mgr, Vec::new());
+            let mut table = root;
+            for shift in [39, 30, 21, 12] {
+                let entry_address = table + ((address >> shift) & 0x1ff) * 8;
+                let mut bytes = [0; 8];
+                memory.read(&mut bytes, entry_address).unwrap();
+                let entry = u64::from_le_bytes(bytes);
+                assert_ne!(entry & 1, 0);
+                if shift == 12 || entry & 2 == 0 {
+                    memory.write(&[0; 8], entry_address).unwrap();
+                    break;
+                }
+                table = entry & 0x0000_ffff_ffff_f000;
+            }
+            sandbox.vm.apply_sregs(root, &registers).unwrap();
+            debugger.send(DebugMsg::DisableDebug).unwrap();
+
+            // The guest maps this address, but the hypervisor has no backing for it.
+            let error = sandbox
+                .call::<Vec<u8>>("ReadMappedBuffer", (0x1_0000_0000u64, 1u64, true))
+                .unwrap_err();
+            let stop = debugger.try_recv().unwrap_or_else(|receive_error| {
+                panic!("Missing crash stop: {receive_error:?}, guest error: {error:?}")
+            });
+            assert!(matches!(
+                stop,
+                DebugResponse::VcpuStopped(VcpuStopReason::Crash)
+            ));
+            let response = debugger.try_recv().unwrap();
+            assert!(
+                matches!(response, DebugResponse::DisableDebug),
+                "{response:?}"
+            );
+            assert_eq!(sandbox.status(), SandboxStatus::Poisoned, "{error:?}");
+            sandbox.restore(snapshot).unwrap();
+            assert_eq!(sandbox.status(), SandboxStatus::Ready);
+            sandbox.call::<()>("NoOp", ()).unwrap();
+        }
     }
 
     fn assert_virtq_attached(sbox: &Sandbox) {
@@ -4935,6 +5183,25 @@ mod tests {
         assert!(
             format!("{err:?}").contains("verlap"),
             "Expected overlap error for partial overlap, got: {err:?}"
+        );
+    }
+
+    #[cfg(all(gdb, target_arch = "aarch64", target_os = "windows"))]
+    #[test]
+    fn map_region_rejects_debug_cache_sync_page() {
+        use crate::hypervisor::virtual_machine::whp::DEBUG_CACHE_SYNC_GPA;
+
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+
+        let mem = allocate_guest_memory();
+        let region =
+            region_for_memory(&mem, DEBUG_CACHE_SYNC_GPA as usize, MemoryRegionFlags::READ);
+        let err = unsafe { sbox.map_region(&region) }.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Overlapping"),
+            "Expected Overlapping error, got: {err:?}"
         );
     }
 
