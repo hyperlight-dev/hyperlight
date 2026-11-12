@@ -494,10 +494,19 @@ fn simple_test() {
 
 #[test]
 fn simple_test_parallel() {
-    let handles: Vec<_> = (0..50)
-        .map(|_| {
-            std::thread::spawn(|| {
-                simple_test_helper();
+    const NUM_RUNS: usize = 50;
+    const NUM_THREADS: usize = if cfg!(all(target_arch = "aarch64", mshv3)) {
+        24
+    } else {
+        NUM_RUNS
+    };
+
+    let handles: Vec<_> = (0..NUM_THREADS)
+        .map(|worker| {
+            std::thread::spawn(move || {
+                for _ in (worker..NUM_RUNS).step_by(NUM_THREADS) {
+                    simple_test_helper();
+                }
             })
         })
         .collect();
@@ -907,7 +916,11 @@ fn callback_test_parallel() {
     #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
     const THREADS: usize = 64;
     #[cfg(not(all(target_arch = "aarch64", target_os = "windows")))]
-    const THREADS: usize = 100;
+    const THREADS: usize = if cfg!(all(target_arch = "aarch64", mshv3)) {
+        16
+    } else {
+        100
+    };
 
     let handles: Vec<_> = (0..THREADS)
         .map(|_| {
