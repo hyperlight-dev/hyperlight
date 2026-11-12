@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
+* ARM64 Linux/KVM guest debugging supports software and hardware breakpoints, register and memory access, and hardware single-step.
 
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
+* GDB memory reads and writes translate each guest page on hosts with larger pages.
+* ARM64 GDB snapshot recovery handles cancellation and crash detach. Snapshot checkpointing rejects software breakpoints before replacing memory.
 
 ## [v0.19.0] - 2026-11-04
 
