@@ -129,6 +129,10 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
     /// Mark the handle as dropped
     fn set_dropped(&self);
+
+    /// Points cancellation at a replacement partition.
+    #[cfg(target_os = "windows")]
+    fn set_partition(&self, partition: WHV_PARTITION_HANDLE);
 }
 
 pub(crate) trait InterruptHandleInternal {
@@ -334,6 +338,9 @@ trait SynchronousInterruptState: Debug + Send + Sync {
 
     #[cfg(hvf)]
     fn set_vcpu(&mut self, vcpu: Option<hv_vcpu_t>);
+
+    #[cfg(target_os = "windows")]
+    fn set_partition(&mut self, partition: WHV_PARTITION_HANDLE);
 }
 
 #[cfg(any(target_os = "windows", hvf))]
@@ -357,6 +364,17 @@ impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptH
             Ok(mut guard) => {
                 guard.0 = true;
             }
+            Err(e) => {
+                tracing::error!("Failed to acquire partition_state write lock: {}", e);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_partition(&self, partition: WHV_PARTITION_HANDLE) {
+        // The write lock waits for in-flight kills on the previous partition.
+        match self.dropped_state.write() {
+            Ok(mut guard) => guard.1.set_partition(partition),
             Err(e) => {
                 tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
@@ -424,6 +442,10 @@ impl SynchronousInterruptState for WHV_PARTITION_HANDLE {
     fn actually_cancel(&self) -> bool {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
         unsafe { WHvCancelRunVirtualProcessor(*self, 0, 0).is_ok() }
+    }
+
+    fn set_partition(&mut self, partition: WHV_PARTITION_HANDLE) {
+        *self = partition;
     }
 }
 

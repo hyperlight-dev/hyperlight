@@ -1233,4 +1233,8 @@ impl VirtualMachine for HvfVm {
         self.id.epoch += 1;
         Ok(())
     }
+
+    fn set_interrupt_handle(&mut self, handle: Arc<dyn InterruptHandleImpl>) {
+        self.interrupt_handle = handle;
+    }
 }
