@@ -347,7 +347,7 @@ impl TraceContext {
 
     pub(crate) fn setup_guest_trace(&mut self, ctx: Context) {
         if self.start_instant.is_none() {
-            crate::debug!("Guest Start Epoch set");
+            tracing::debug!("Guest Start Epoch set");
             self.start_wall = Some(SystemTime::now());
             self.start_tsc = Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
             self.start_instant = Some(std::time::Instant::now());

@@ -156,8 +156,6 @@ fn main() -> Result<()> {
         mshv3: { all(feature = "mshv3", target_os = "linux") },
         hvf: { all(feature = "hvf", target_os = "macos") },
         crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
-        // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
-        print_debug: { all(feature = "print_debug", debug_assertions) },
         // the gdb feature (only temporarily!) needs to use
         // writable/un-shared snapshot memories.
         unshared_snapshot_mem: { gdb },

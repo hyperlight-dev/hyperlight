@@ -136,17 +136,6 @@ macro_rules! log_then_return {
     };
 }
 
-/// Same as tracing::debug!, but will additionally print to stdout if the print_debug feature is enabled
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)+) =>
-    {
-        #[cfg(print_debug)]
-        println!($($arg)+);
-        tracing::debug!($($arg)+);
-    }
-}
-
 // LOG_ONCE is used to log information about the crate version once
 #[cfg(feature = "build-metadata")]
 static LOG_ONCE: Once = Once::new();
@@ -167,35 +156,6 @@ pub(crate) fn log_build_details() {
         match built_info::CI_PLATFORM.unwrap_or("") {
             "" => info!("Not built on  a CI platform"),
             other => info!("Built on : {}", other),
-        }
-        match built_info::GIT_COMMIT_HASH.unwrap_or("") {
-            "" => info!("No git commit hash found"),
-            other => info!("Git commit hash: {}", other),
-        }
-
-        let git = match built_info::GIT_HEAD_REF.unwrap_or("") {
-            "" => {
-                info!("No git head ref found");
-                false
-            }
-            other => {
-                info!("Git head ref: {}", other);
-                true
-            }
-        };
-        match built_info::GIT_VERSION.unwrap_or("") {
-            "" => info!("No git version found"),
-            other => info!("Git version: {}", other),
-        }
-        match built_info::GIT_DIRTY.unwrap_or(false) {
-            true => info!("Repo had uncommitted changes"),
-            false => {
-                if git {
-                    info!("Repo had no uncommitted changes")
-                } else {
-                    info!("No git repo found")
-                }
-            }
         }
     });
 }
