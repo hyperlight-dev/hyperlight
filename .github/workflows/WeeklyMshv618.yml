@@ -79,6 +79,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Weekly MSHV 6.18 Failure
-        run: ./dev/notify-ci-failure.sh --title="Weekly MSHV 6.18 Failure - ${{ github.run_number }}" --labels="area/ci-periodics-mshv-6.18,area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --title="Weekly MSHV 6.18 Failure - ${{ github.run_number }}" --labels="A-ci-periodics-mshv-6.18,A-ci-periodics,A-testing,S-needs-triage,P-release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

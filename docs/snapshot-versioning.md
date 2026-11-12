@@ -140,7 +140,7 @@ Steps:
    format, dispatching on `abi_version`.
 5. Update the tripwire assertions in `tripwires.rs` and any affected
    tests to match the new values.
-6. Bump `GOLDENS_VERSION` to the next major. Apply the `regen-goldens`
+6. Bump `GOLDENS_VERSION` to the next major. Apply the `S-needs-goldens`
    label to the pull request so the verify job regenerates against the
    branch. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)
@@ -168,7 +168,7 @@ Steps:
 3. Bump `SNAPSHOT_ABI_VERSION`.
 4. Update the tripwire assertions in `tripwires.rs` and any affected
    tests to match the new values.
-5. Bump `GOLDENS_VERSION` to the next major. Apply the `regen-goldens`
+5. Bump `GOLDENS_VERSION` to the next major. Apply the `S-needs-goldens`
    label to the pull request so the verify job regenerates against the
    branch. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)
@@ -187,7 +187,7 @@ loads the tag `{GOLDENS_VERSION}-{arch}-{hv}-{cpu}-{profile}` from a
 local directory that `just snapshot-goldens-pull` populates from GHCR. A
 freshly bumped `GOLDENS_VERSION` has no tags on GHCR until the bump
 merges to `main` and the publish workflow runs, so pull requests that
-bump the version verify through the `regen-goldens` label instead (see
+bump the version verify through the `S-needs-goldens` label instead (see
 [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)).
 
 A snapshot is bound to its CPU vendor. The loader rejects a snapshot
@@ -235,7 +235,7 @@ frozen from then on. The publish workflow only publishes a version
 whose completion marker is absent from GHCR, so a published baseline
 cannot be clobbered by a later run. While a developer iterates on a v1
 to v2 bump the new version is unpublished, so they verify locally with
-`just snapshot-goldens-generate` and the `regen-goldens` label rather
+`just snapshot-goldens-generate` and the `S-needs-goldens` label rather
 than pushing to GHCR.
 
 The freeze is enforced by the publish workflow's marker check, not by a
@@ -252,7 +252,7 @@ corrupted push.
 
 A pull request that bumps `GOLDENS_VERSION` introduces a tag set that
 GHCR does not carry yet, so the default pull-and-verify path has nothing
-to load. The `regen-goldens` label switches the verify job into
+to load. The `S-needs-goldens` label switches the verify job into
 regenerate mode for that pull request.
 
 * **Without the label**, the job pulls the published tag set for the
@@ -260,7 +260,7 @@ regenerate mode for that pull request.
   tags fail the job. This is what turns an accidental format break into
   a red build: the published bytes stop loading, and the author must
   either restructure the change or own the break with the label.
-* **With the `regen-goldens` label**, the job generates the current
+* **With the `S-needs-goldens` label**, the job generates the current
   golden from the branch source, pulls the `COMPAT_VERSIONS` goldens
   from the registry, and runs both through the branch loader. This
   proves the new format is internally loadable on each runner and that
@@ -306,7 +306,7 @@ with `force: true` republishes a version that already exists, reserved
 for recovering a corrupted or partial push.
 
 The push-triggered publish closes the window in which a pull request
-that bumped the version needs the `regen-goldens` label. Once `main`
+that bumped the version needs the `S-needs-goldens` label. Once `main`
 carries the bump and the publish lands, new pull requests pass on the
 default pull-and-verify path.
 
@@ -344,7 +344,7 @@ Steps:
 2. Bump `GOLDENS_VERSION` minor (e.g. `v1.2` to `v1.3`). The new prefix
    has no published tags, so the default verify path fails until they
    exist.
-3. Apply the `regen-goldens` label to the pull request. The verify job
+3. Apply the `S-needs-goldens` label to the pull request. The verify job
    regenerates the full check set against the branch and runs it back
    through the branch loader. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request).

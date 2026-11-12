@@ -98,7 +98,7 @@ jobs:
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
 
-  # Pick the goldens mode. The `regen-goldens` label means regenerate. No label means pull.
+  # Pick the goldens mode. The `S-needs-goldens` label means regenerate. No label means pull.
   # Also validate the label against the goldens state so a stale or missing label fails fast.
   check-golden-label:
     runs-on: ubuntu-latest
@@ -135,13 +135,13 @@ jobs:
         run: |
           labels="$(gh pr view ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} --json labels -q '.labels[].name')"
-          if grep -qx regen-goldens <<<"$labels"; then
+          if grep -qx S-needs-goldens <<<"$labels"; then
             echo "should_regen_goldens=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_regen_goldens=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Validate regen-goldens label
+      - name: Validate S-needs-goldens label
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}

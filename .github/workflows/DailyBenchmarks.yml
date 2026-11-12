@@ -66,6 +66,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Benchmark Failure
-        run: ./dev/notify-ci-failure.sh --title="Benchmark Failure - ${{ github.run_number }}" --labels="area/benchmarks,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --title="Benchmark Failure - ${{ github.run_number }}" --labels="A-perf,A-testing,S-needs-triage,P-release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
