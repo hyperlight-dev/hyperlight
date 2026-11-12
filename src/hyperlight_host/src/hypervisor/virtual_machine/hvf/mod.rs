@@ -764,6 +764,7 @@ struct TlbiRegion {
     insn_memory: ReadonlySharedMemory,
 }
 impl TlbiRegion {
+    /// Prepare the TLB-flush instructions for execution on any vCPU.
     fn new() -> Result<Self, SharedMemoryError> {
         let mut bytes = vec![0; page_size::get()];
         bytes[0..20].copy_from_slice(&[
@@ -771,7 +772,7 @@ impl TlbiRegion {
             0x1f, 0x87, 0x08, 0xd5, // tlbi vmalle1
             0x9f, 0x3b, 0x03, 0xd5, // dsb ish
             0xdf, 0x3f, 0x03, 0xd5, // isb sy
-            0x02, 0x00, 0x00, 0xd4, // hvc #0
+            0x82, 0x09, 0x09, 0xd4, // hvc #0x484c ('HL'), outside Apple's HVC #0 ABI
         ]);
         Ok(Self {
             insn_memory: ReadonlySharedMemory::from_bytes(&bytes, page_size::get())?,
@@ -922,7 +923,7 @@ impl LoadedMemorySpace {
                 use bindings::hv_exit_reason_t;
                 match exit.reason {
                     hv_exit_reason_t::HV_EXIT_REASON_EXCEPTION
-                        if exit.exception.syndrome.0 == 0x5a000000 => {} // hvc #0 is the success case
+                        if exit.exception.syndrome.0 == 0x5a00484c => {} // hvc #0x484c is the success case
                     hv_exit_reason_t::HV_EXIT_REASON_CANCELED => {
                         return Err(TimeoutableError::Timeout);
                     }
@@ -1236,5 +1237,59 @@ impl VirtualMachine for HvfVm {
 
     fn set_interrupt_handle(&mut self, handle: Arc<dyn InterruptHandleImpl>) {
         self.interrupt_handle = handle;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::hypervisor::HvfInterruptHandle;
+    use crate::sandbox::SandboxConfiguration;
+
+    #[test]
+    fn tlbi_does_not_invoke_apple_hypercalls() {
+        let config = SandboxConfiguration::default();
+        let interrupt_handle =
+            Arc::new(HvfInterruptHandle::new(config.get_interrupt_retry_delay()));
+        let _vm = HvfVm::new(interrupt_handle).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+
+        let mut cpu = loop {
+            match HvfCpu::new() {
+                Ok((cpu, _)) => break cpu,
+                Err(TimeoutableError::Timeout) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for an HVF vCPU"
+                    );
+                }
+                Err(TimeoutableError::Error(error)) => panic!("creating HVF vCPU: {error}"),
+            }
+        };
+
+        // Apple PAC_NOP and OEM UID hypercalls.
+        for x0 in [0xc100_00f0, 0x8300_ff01] {
+            cpu.hv_vcpu_set_reg(bindings::hv_reg_t::HV_REG_X0, x0)
+                .unwrap();
+            let space = MemorySpace::new();
+            let mut loaded = CURRENT_LOADED_MEMORY_SPACE.write();
+
+            loop {
+                match loaded.sync_space(&space, &mut cpu) {
+                    Ok(()) => break,
+                    Err(TimeoutableError::Timeout) => {
+                        assert!(Instant::now() < deadline, "timed out flushing the TLB");
+                    }
+                    Err(TimeoutableError::Error(error)) => panic!("flushing the TLB: {error}"),
+                }
+            }
+
+            assert_eq!(
+                cpu.hv_vcpu_get_reg(bindings::hv_reg_t::HV_REG_X0).unwrap(),
+                x0
+            );
+        }
     }
 }

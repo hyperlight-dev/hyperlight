@@ -604,6 +604,49 @@ pub trait SharedMemory {
     }
 }
 
+/// Prepare host-written code in a guest-visible prefix for execution.
+///
+/// - Linux x86-64 relies on hardware instruction/data-cache coherence for KVM and MSHV.
+/// - On ARM64, KVM cleans the data cache as needed when installing stage-2 mappings.
+///   It invalidates the instruction cache before installing an executable mapping or
+///   adding execute permission to an existing mapping.
+///
+/// See Linux:
+/// -[stage-2 page-table code](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/arch/arm64/kvm/hyp/pgtable.c)
+/// -[cache helpers](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/arch/arm64/include/asm/kvm_mmu.h).
+fn sync_instr_cache(memory: &impl SharedMemory, size: usize) -> Result<()> {
+    bounds_check!(0usize, size, memory.mem_size());
+
+    if size == 0 {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn sys_icache_invalidate(start: *mut c_void, len: usize);
+        }
+
+        // SAFETY: The checked range is within a live host mapping.
+        unsafe {
+            sys_icache_invalidate(memory.base_ptr().cast(), size);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+        use windows::Win32::System::Threading::GetCurrentProcess;
+
+        // SAFETY: The checked range belongs to the current process and its mapping is live.
+        unsafe {
+            FlushInstructionCache(GetCurrentProcess(), Some(memory.base_ptr().cast()), size)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn mapping_at(
     s: &impl SharedMemory,
     gpa: u64,
@@ -967,6 +1010,8 @@ impl ExclusiveSharedMemory {
         if Arc::get_mut(&mut self.region).is_none() {
             return Err(SharedMemoryError::SharedMemoryNotExclusive);
         }
+
+        sync_instr_cache(&self, guest_mapped_size)?;
 
         // This is the only Arc left. To make another one you have to clone this
         // one, and it lives in `self`, which this function owns.
@@ -1573,10 +1618,7 @@ impl ReadonlySharedMemory {
         let mut anon =
             ExclusiveSharedMemory::new(contents.len().next_multiple_of(page_size::get()))?;
         anon.copy_from_slice(contents, 0)?;
-        Ok(ReadonlySharedMemory {
-            region: anon.region,
-            guest_mapped_size,
-        })
+        anon.freeze(guest_mapped_size)
     }
 
     /// The number of bytes that should be mapped into guest PA space.
@@ -1616,10 +1658,13 @@ impl ReadonlySharedMemory {
         }
 
         let region = Self::map_file(file, len)?;
-        Ok(ReadonlySharedMemory {
+        let memory = Self {
             region,
             guest_mapped_size,
-        })
+        };
+        sync_instr_cache(&memory, guest_mapped_size)?;
+
+        Ok(memory)
     }
 
     /// Linux: reserve `[guard][blob][guard]` as one anonymous
@@ -1778,6 +1823,8 @@ impl ReadonlySharedMemory {
     pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
         let mut writable = ExclusiveSharedMemory::new(self.guest_mapped_size)?;
         writable.copy_from_slice(&self.as_slice()[..self.guest_mapped_size], 0)?;
+        sync_instr_cache(&writable, self.guest_mapped_size)?;
+
         Ok(writable)
     }
 

@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
+* HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
+* Host-written snapshot memory has instruction-cache coherence before guest execution.
 
 ## [v0.19.0] - 2026-11-04
 
