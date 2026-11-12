@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GuestHandle`, `HyperlightPEB`, and `read_n_bytes_from_user_memory`.
   Pass startup data through a host function and retain its `ByteChunks` reply.
   `UninitializedSandbox::new` takes a `GuestBinary`.
+* Remove Git details from build logs. These were not shipped on crates.io.
+* Remove the `print_debug` feature and `hyperlight_host::debug!`. Use `tracing::debug!` instead.
 
 ## [v0.19.0] - 2026-11-04
 
@@ -72,7 +74,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** `SandboxConfiguration::set_heap_size`,
   `SandboxConfiguration::DEFAULT_HEAP_SIZE`, `SandboxBuilder::heap_size`, and
   `SandboxBuilder::get_heap_size`.
-* **Breaking:** The `print_debug` cargo feature and the exported `hyperlight_host::debug!` macro. Use `tracing::debug!` with a subscriber.
 
 ### Fixed
 
