@@ -503,7 +503,6 @@ pub(crate) mod tests {
             return Ok(());
         }
 
-        use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
 
         let filename = dummy_guest_as_pathbuf();
@@ -525,20 +524,13 @@ pub(crate) mod tests {
 
         // Set up required parameters for initialise
         // The dummy guest halts only when it receives these values.
-        let peb_addr = RawPtr::from(0x230000u64);
         let seed = 1234567890u64;
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
         let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
         // Test the initialise method
-        vm.initialise(
-            peb_addr,
-            seed,
-            &mut mem_mgr,
-            &host_funcs,
-            guest_max_log_level,
-        )
-        .unwrap();
+        vm.initialise(seed, &mut mem_mgr, &host_funcs, guest_max_log_level)
+            .unwrap();
 
         Ok(())
     }
