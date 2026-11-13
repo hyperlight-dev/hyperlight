@@ -9,9 +9,9 @@ use anyhow::Result;
 use tracing::{Span, instrument};
 
 use super::codec::{ExternalValueSink, ExternalValueSource};
-use super::function_types::{ParameterValue, ReturnType, decode_parameter_value};
+use super::function_types::{ParameterValue, ReturnType};
 use super::util::try_byte_chunks_len;
-use super::wire::{ParamsIn, ParamsOut, WireCall, decode_value, encode_value};
+use super::wire::{CallHead, ParamsOut, decode_call, encode_value};
 
 /// The type of function call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,13 +86,12 @@ impl FunctionCall {
             }
         }
 
-        let call = WireCall {
+        let head = CallHead {
             name: &self.function_name,
             host: self.function_call_type == FunctionCallType::Host,
             return_type: self.expected_return_type,
-            params: ParamsOut(parameters),
         };
-        encode_value(&call, buffer)
+        encode_value(&(head, ParamsOut(parameters)), buffer)
     }
 
     /// Decode control data and consume external byte parameters.
@@ -100,31 +99,20 @@ impl FunctionCall {
     where
         S: ExternalValueSource + ?Sized,
     {
-        let call: WireCall<'_, ParamsIn<'_>> = decode_value(value)?;
-        let function_call_type = if call.host {
+        let (head, params) = decode_call(value, external_values)?;
+        let function_call_type = if head.host {
             FunctionCallType::Host
         } else {
             FunctionCallType::Guest
         };
-
-        let parameters = if call.params.0.is_empty() {
-            None
-        } else {
-            Some(
-                call.params
-                    .0
-                    .into_iter()
-                    .map(|value| decode_parameter_value(value, external_values))
-                    .collect::<Result<Vec<ParameterValue>>>()?,
-            )
-        };
+        let parameters = (!params.is_empty()).then_some(params);
 
         external_values.finish()?;
         Ok(Self {
-            function_name: call.name.to_string(),
+            function_name: head.name.to_string(),
             parameters,
             function_call_type,
-            expected_return_type: call.return_type,
+            expected_return_type: head.return_type,
         })
     }
 }
@@ -136,7 +124,7 @@ mod tests {
 
     use super::*;
     use crate::flatbuffer_wrappers::function_types::{Bytes, ReturnType};
-    use crate::flatbuffer_wrappers::wire::WireValue;
+    use crate::flatbuffer_wrappers::wire::{WireValue, decode_value};
 
     #[derive(Debug, Clone, PartialEq)]
     enum TestExternalValue {
@@ -294,17 +282,14 @@ mod tests {
             ])
         );
 
-        let encoded_call: WireCall<'_, ParamsIn<'_>> = decode_value(encoded).unwrap();
+        let (_, params): (CallHead, Vec<WireValue>) = decode_value(encoded).unwrap();
         for (index, length, chunked) in [
             (7, 4096, false),
             (9, 17, true),
             (10, 0, false),
             (11, 0, true),
         ] {
-            assert_eq!(
-                encoded_call.params.0[index],
-                WireValue::ExternalBytes { length, chunked }
-            );
+            assert_eq!(params[index], WireValue::ExternalBytes { length, chunked });
         }
 
         let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();

@@ -8,17 +8,14 @@
 //! their length.
 
 use alloc::vec::Vec;
-use core::fmt;
-use core::marker::PhantomData;
 
 use anyhow::{Result, anyhow, bail};
 use postcard::ser_flavors::Size;
-use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use smallvec::SmallVec;
+use serde::{Deserialize, Serialize, Serializer};
 
-use super::function_types::{ParameterValue, ReturnType, ReturnValue};
+use super::codec::ExternalValueSource;
+use super::function_types::{ParameterValue, ReturnType, ReturnValue, decode_parameter_value};
 use super::util::byte_chunks_len;
 
 /// One control value. Variant order is the wire tag.
@@ -96,45 +93,41 @@ impl Serialize for ParamsOut<'_> {
     }
 }
 
-/// Inline capacity covers the common parameter counts without heap use.
-pub(super) struct ParamsIn<'a>(pub(super) SmallVec<[WireValue<'a>; 8]>);
-
-impl<'de: 'a, 'a> Deserialize<'de> for ParamsIn<'a> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, D::Error> {
-        struct ParamsVisitor<'a>(PhantomData<&'a ()>);
-
-        impl<'de: 'a, 'a> Visitor<'de> for ParamsVisitor<'a> {
-            type Value = ParamsIn<'a>;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a parameter sequence")
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> core::result::Result<Self::Value, A::Error> {
-                // The length hint is untrusted, so growth follows decoded elements.
-                let mut values = SmallVec::new();
-                while let Some(value) = seq.next_element()? {
-                    values.push(value);
-                }
-                Ok(ParamsIn(values))
-            }
-        }
-
-        deserializer.deserialize_seq(ParamsVisitor(PhantomData))
-    }
-}
-
-/// One function call. Senders use [`ParamsOut`] and receivers use
-/// [`ParamsIn`].
+/// Function call fields before its parameters. Parameters follow as a
+/// sequence so decoding can convert each one as it is read.
 #[derive(Serialize, Deserialize)]
-pub(super) struct WireCall<'a, P> {
+pub(super) struct CallHead<'a> {
     pub(super) name: &'a str,
     pub(super) host: bool,
     pub(super) return_type: ReturnType,
-    pub(super) params: P,
+}
+
+/// Decode a call and convert each parameter as it is read.
+///
+/// External byte values are taken from `externals` in parameter order.
+pub(super) fn decode_call<'a, S>(
+    value: &'a [u8],
+    externals: &mut S,
+) -> Result<(CallHead<'a>, Vec<ParameterValue>)>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    let mut deserializer = postcard::Deserializer::from_bytes(value);
+    let head = CallHead::deserialize(&mut deserializer)?;
+    let count = usize::deserialize(&mut deserializer)?;
+
+    // Each value takes at least one byte.
+    let mut params = Vec::with_capacity(count.min(value.len()));
+    for _ in 0..count {
+        let value = WireValue::deserialize(&mut deserializer)?;
+        params.push(decode_parameter_value(value, externals)?);
+    }
+
+    let rest = deserializer.finalize()?;
+    if !rest.is_empty() {
+        bail!("Control data has {} trailing bytes", rest.len());
+    }
+    Ok((head, params))
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -165,8 +158,7 @@ pub(super) fn encode_value<'b, T: Serialize>(
 
 /// Read one postcard value and reject trailing bytes.
 pub(super) fn decode_value<'a, T: Deserialize<'a>>(value: &'a [u8]) -> Result<T> {
-    let (decoded, rest) =
-        postcard::take_from_bytes(value).map_err(|e| anyhow!("Decode failed: {e}"))?;
+    let (decoded, rest) = postcard::take_from_bytes(value)?;
     if !rest.is_empty() {
         bail!("Control data has {} trailing bytes", rest.len());
     }
