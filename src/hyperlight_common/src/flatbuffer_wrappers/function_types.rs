@@ -114,7 +114,7 @@ pub enum ParameterValue {
 }
 
 /// Supported parameter types for function calling.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(C)]
 pub enum ParameterType {
     /// i32

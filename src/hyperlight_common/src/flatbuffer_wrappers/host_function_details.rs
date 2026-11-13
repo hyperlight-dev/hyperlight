@@ -3,10 +3,12 @@
 
 use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
+
 use super::host_function_definition::HostFunctionDefinition;
 
 /// `HostFunctionDetails` represents the set of functions that the host exposes to the guest.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct HostFunctionDetails {
     /// The host functions.
     pub host_functions: Option<Vec<HostFunctionDefinition>>,
