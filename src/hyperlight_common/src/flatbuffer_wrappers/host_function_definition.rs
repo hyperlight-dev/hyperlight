@@ -5,13 +5,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::function_types::{ParameterType, ReturnType};
 
 /// The definition of a function exposed from the host to the guest
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostFunctionDefinition {
     /// The function name
     pub function_name: String,
