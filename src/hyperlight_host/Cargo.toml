@@ -2,7 +2,7 @@
 name = "hyperlight-host"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.95"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -75,7 +75,7 @@ windows = { version = "0.62", features = [
 windows-sys = { version = "0.61", features = ["Win32"] }
 windows-result = "0.4"
 rust-embed = { version = "8.11.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
-windows-version = "0.1"
+windows-version = "0.100"
 lazy_static = "1.4.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
