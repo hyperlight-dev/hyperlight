@@ -13,10 +13,7 @@ fn main() -> Result<()> {
     let out_path = std::path::PathBuf::from(&out_dir);
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
 
-    // Windows requires the hyperlight_surrogate.exe binary to be next to the executable running
-    // hyperlight. We are using rust-embed to include the binary in the hyperlight-host library
-    // and then extracting it at runtime when the surrogate process manager starts. We need to pass
-    // the location of the binary to the rust build.
+    // Embed hyperlight_surrogate.exe for extraction when the surrogate process manager starts.
     // This logic runs when targeting Windows, even if cross-compiling from Linux.
     if std::env::var("CARGO_CFG_TARGET_OS")? == "windows" {
         println!("cargo:rerun-if-changed=src/hyperlight_surrogate/src/main.rs");
