@@ -305,7 +305,7 @@ impl GuestContext {
             payload.append(segments);
         }
 
-        let call = codec::decode_request(&header, payload)?;
+        let call = codec::decode_request(header.control_len, payload)?;
         Ok(DispatchAction::Call(header.cid, call))
     }
 

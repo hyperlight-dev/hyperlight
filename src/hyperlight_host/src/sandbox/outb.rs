@@ -223,27 +223,27 @@ fn outb_virtq_call(
     };
 
     // Drain entries, processing logs, until we find one call.
-    let (mut request, reply, header) = loop {
+    let (mut message, reply) = loop {
         let maybe_next = consumer.poll(max_recv_len).map_err(|error| {
             HandleOutbError::ReadHostFunctionCall(format!("G2H poll failed: {error}"))
         })?;
 
-        let Some((mut request, reply)) = maybe_next else {
+        let Some((request, reply)) = maybe_next else {
             // No entry can be a backpressure or prefill notification.
             return Ok(());
         };
 
-        let header = virtq::read_message_header(&mut request)
+        let mut message = virtq::RecvMessage::new(request)
             .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
-        if mode == ExecutionMode::Restricted && header.kind == MsgKind::Request {
+        if mode == ExecutionMode::Restricted && message.kind() == MsgKind::Request {
             return Err(HandleOutbError::HostCallDuringCheckpoint);
         }
 
-        match header.kind {
-            MsgKind::Request => break (request, reply, header),
+        match message.kind() {
+            MsgKind::Request => break (message, reply),
             MsgKind::Log => {
-                if header.cid != 0 {
+                if message.cid() != 0 {
                     return Err(HandleOutbError::ReadHostFunctionCall(
                         "G2H log has a nonzero correlation ID".into(),
                     ));
@@ -255,16 +255,19 @@ fn outb_virtq_call(
                     ));
                 }
 
-                let log = virtq::read_guest_log_data(&mut request, &header)
+                let log = message
+                    .decode_log()
                     .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
                 emit_guest_log(&log);
 
-                consumer.complete(request, reply).map_err(|error| {
-                    HandleOutbError::ReadHostFunctionCall(format!(
-                        "G2H log completion failed: {error}"
-                    ))
-                })?;
+                consumer
+                    .complete(message.into_chain(), reply)
+                    .map_err(|error| {
+                        HandleOutbError::ReadHostFunctionCall(format!(
+                            "G2H log completion failed: {error}"
+                        ))
+                    })?;
             }
             kind => {
                 return Err(HandleOutbError::ReadHostFunctionCall(format!(
@@ -274,7 +277,8 @@ fn outb_virtq_call(
         }
     };
 
-    if header.cid == 0 {
+    let cid = message.cid();
+    if cid == 0 {
         return Err(HandleOutbError::ReadHostFunctionCall(
             "G2H request has correlation ID zero".into(),
         ));
@@ -286,7 +290,8 @@ fn outb_virtq_call(
         )
     })?;
 
-    let call = virtq::get_host_function_call(&mut request, &header)
+    let call = message
+        .decode_call()
         .map_err(|error| HandleOutbError::ReadHostFunctionCall(error.to_string()))?;
 
     if call.function_call_type() != FunctionCallType::Host {
@@ -309,7 +314,7 @@ fn outb_virtq_call(
 
     // Capacity is checked before writing, so an oversized result leaves the
     // chain untouched and can be replaced with a bounded transport error.
-    if !virtq::try_write_response(&mut resp, header.cid, &result)
+    if !virtq::try_write_response(&mut resp, cid, &result)
         .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?
     {
         let fallback = FunctionCallResult::new(Err(GuestError::new(
@@ -319,7 +324,7 @@ fn outb_virtq_call(
 
         // The guest must receive a response for this correlation id. Failure
         // to fit even this small error makes the transport unusable.
-        if !virtq::try_write_response(&mut resp, header.cid, &fallback)
+        if !virtq::try_write_response(&mut resp, cid, &fallback)
             .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?
         {
             return Err(HandleOutbError::WriteHostFunctionResponse(format!(
@@ -329,7 +334,7 @@ fn outb_virtq_call(
     }
 
     consumer
-        .complete(request, resp)
+        .complete(message.into_chain(), resp)
         .map_err(|err| HandleOutbError::WriteHostFunctionResponse(err.to_string()))?;
 
     Ok(())

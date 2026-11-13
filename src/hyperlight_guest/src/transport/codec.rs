@@ -15,8 +15,8 @@ use crate::error::{GuestErrorContext, Result};
 ///
 /// Chunked external values retain their H2G slot owners until their final
 /// [`Bytes`] clone drops.
-pub(super) fn decode_request(header: &MsgHeader, segments: Segments) -> Result<FunctionCall> {
-    let (control, mut external_values) = decode_payload(header, segments)?;
+pub(super) fn decode_request(control_len: u32, segments: Segments) -> Result<FunctionCall> {
+    let (control, mut external_values) = decode_payload(control_len, segments)?;
     FunctionCall::decode(&control, &mut external_values)
         .with_context(|| "failed to decode guest function request")
 }
@@ -35,7 +35,7 @@ pub(super) fn decode_response(segments: Segments, cid: u32) -> Result<FunctionCa
         bail!("Host function response correlation ID mismatch");
     }
 
-    let (control, mut external_values) = decode_payload(&header, payload)?;
+    let (control, mut external_values) = decode_payload(header.control_len, payload)?;
     FunctionCallResult::decode(&control, &mut external_values)
         .with_context(|| "failed to decode host function response")
 }
@@ -58,9 +58,9 @@ fn split_header(mut segments: Segments) -> Result<(MsgHeader, Segments)> {
 }
 
 /// Split control data into a contiguous view while retaining external owners.
-fn decode_payload(header: &MsgHeader, mut segments: Segments) -> Result<(Bytes, Segments)> {
+fn decode_payload(control_len: u32, mut segments: Segments) -> Result<(Bytes, Segments)> {
     let control = segments
-        .split_to(header.control_len as usize)
+        .split_to(control_len as usize)
         .context("virtqueue message control data is truncated")?
         .into_bytes();
 
@@ -78,16 +78,12 @@ mod tests {
 
     use super::*;
 
-    fn header(payload_len: u32, control_len: u32) -> MsgHeader {
-        MsgHeader::new(MsgKind::Request, 1, payload_len, control_len)
-    }
-
     #[test]
     fn payload_contiguous_control_reuses_storage() {
         // Control and external data share one transport allocation.
         let bytes = Bytes::from_static(b"ctrldata");
         let ptr = bytes.as_ptr();
-        let (control, mut source) = decode_payload(&header(8, 4), Segments::single(bytes)).unwrap();
+        let (control, mut source) = decode_payload(4, Segments::single(bytes)).unwrap();
 
         assert_eq!(&control[..], b"ctrl");
         assert_eq!(control.as_ptr(), ptr);
@@ -114,7 +110,7 @@ mod tests {
             boundary,
         ]);
 
-        let (control, mut source) = decode_payload(&header(8, 4), segments).unwrap();
+        let (control, mut source) = decode_payload(4, segments).unwrap();
         assert_eq!(&control[..], b"ctrl");
 
         // Only the control bytes are collected into contiguous storage.
@@ -128,7 +124,7 @@ mod tests {
     #[test]
     fn payload_rejects_truncated_control() {
         let segments = Segments::single(Bytes::from_static(b"ctr"));
-        assert!(decode_payload(&header(4, 4), segments).is_err());
+        assert!(decode_payload(4, segments).is_err());
     }
 
     #[test]
@@ -216,10 +212,9 @@ mod tests {
         let mut external_values = ExternalValues::new();
         let control = call.encode(&mut buffer, &mut external_values).unwrap();
         let control_len = u32::try_from(control.len()).unwrap();
-        let header = MsgHeader::new(MsgKind::Request, 1, control_len + 4, control_len);
         let segments = Segments::new([Bytes::copy_from_slice(control), external]);
 
-        let decoded = decode_request(&header, segments).unwrap();
+        let decoded = decode_request(control_len, segments).unwrap();
         assert_eq!(decoded.function_name, "echo");
         let ParameterValue::ByteChunks(chunks) =
             decoded.parameters.unwrap().into_iter().next().unwrap()
