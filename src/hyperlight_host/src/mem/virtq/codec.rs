@@ -13,44 +13,69 @@ use hyperlight_common::virtq::{RecvChain, WritableChain};
 
 use super::mem::HostMemOps;
 
-/// Decode one complete host function call from a G2H request.
+/// One received G2H message with a validated header.
 ///
 /// Control data and external values are copied out of guest-writable scratch.
 /// Unconsumed trailing bytes are rejected.
-pub(crate) fn get_host_function_call(
-    chain: &mut RecvChain<HostMemOps>,
-    header: &MsgHeader,
-) -> anyhow::Result<FunctionCall> {
-    let control = read_control(chain, header)?;
-    FunctionCall::decode(&control, chain)
+pub(crate) struct RecvMessage {
+    header: MsgHeader,
+    chain: RecvChain<HostMemOps>,
 }
 
-/// Read and validate one complete G2H message header.
-pub(crate) fn read_message_header(
-    request: &mut RecvChain<HostMemOps>,
-) -> anyhow::Result<MsgHeader> {
-    let mut bytes = [0u8; MsgHeader::SIZE];
-    request.read_exact(&mut bytes)?;
+impl RecvMessage {
+    /// Read the header and check its payload length against the chain.
+    pub(crate) fn new(mut chain: RecvChain<HostMemOps>) -> anyhow::Result<Self> {
+        let mut bytes = [0u8; MsgHeader::SIZE];
+        chain.read_exact(&mut bytes)?;
 
-    let header = MsgHeader::from_bytes(&bytes).context("G2H message has an invalid header")?;
-    if header.payload_len as usize != request.remaining() {
-        bail!(
-            "G2H message declares {} payload bytes, received {}",
-            header.payload_len,
-            request.remaining()
-        );
+        let header = MsgHeader::from_bytes(&bytes).context("G2H message has an invalid header")?;
+        if header.payload_len as usize != chain.remaining() {
+            bail!(
+                "G2H message declares {} payload bytes, received {}",
+                header.payload_len,
+                chain.remaining()
+            );
+        }
+
+        Ok(Self { header, chain })
     }
 
-    Ok(header)
-}
+    pub(crate) fn kind(&self) -> MsgKind {
+        self.header.kind
+    }
 
-/// Decode a guest-function result body after its G2H header.
-pub(crate) fn read_guest_function_call_result(
-    request: &mut RecvChain<HostMemOps>,
-    header: &MsgHeader,
-) -> anyhow::Result<FunctionCallResult> {
-    let control = read_control(request, header)?;
-    FunctionCallResult::decode(&control, request)
+    pub(crate) fn cid(&self) -> u32 {
+        self.header.cid
+    }
+
+    pub(crate) fn decode_call(&mut self) -> anyhow::Result<FunctionCall> {
+        let control = self.read_control()?;
+        FunctionCall::decode(&control, &mut self.chain)
+    }
+
+    pub(crate) fn decode_result(&mut self) -> anyhow::Result<FunctionCallResult> {
+        let control = self.read_control()?;
+        FunctionCallResult::decode(&control, &mut self.chain)
+    }
+
+    /// Logs carry no external values.
+    pub(crate) fn decode_log(&mut self) -> anyhow::Result<GuestLogData> {
+        let control = self.read_control()?;
+        self.chain.finish()?;
+        GuestLogData::try_from(control.as_slice())
+    }
+
+    /// Return the chain for completion.
+    pub(crate) fn into_chain(self) -> RecvChain<HostMemOps> {
+        self.chain
+    }
+
+    /// Copy the control data and leave external values unread.
+    fn read_control(&mut self) -> anyhow::Result<Vec<u8>> {
+        let mut control = zeroed_vec(self.header.control_len as usize, "G2H control data")?;
+        self.chain.read_exact(&mut control)?;
+        Ok(control)
+    }
 }
 
 /// Append a complete response when it fits the remaining writable space.
@@ -79,35 +104,6 @@ pub(crate) fn try_write_response(
     Ok(true)
 }
 
-/// Decode guest log data and reject trailing external bytes.
-pub(crate) fn read_guest_log_data(
-    chain: &mut RecvChain<HostMemOps>,
-    header: &MsgHeader,
-) -> anyhow::Result<GuestLogData> {
-    let control = read_control(chain, header)?;
-    chain.finish()?;
-    GuestLogData::try_from(control.as_slice())
-}
-
-/// Copy the header's control data and leave external values unread.
-fn read_control(
-    request: &mut RecvChain<HostMemOps>,
-    header: &MsgHeader,
-) -> anyhow::Result<Vec<u8>> {
-    let control_len = header.control_len as usize;
-    if control_len > request.remaining() {
-        bail!(
-            "G2H control data declares {control_len} bytes, only {} remain",
-            request.remaining()
-        );
-    }
-
-    let mut control = zeroed_vec(control_len, "G2H control data")?;
-    request.read_exact(&mut control)?;
-
-    Ok(control)
-}
-
 /// Allocate zeroed host-owned storage without panicking on reserve failure.
 fn zeroed_vec(length: usize, what: &str) -> anyhow::Result<Vec<u8>> {
     let mut value = Vec::new();
@@ -127,24 +123,26 @@ mod tests {
     use super::*;
     use crate::mem::virtq::tests::TestCase;
 
-    fn with_control(payload: &[u8], test: impl FnOnce(&mut RecvChain<HostMemOps>)) {
+    /// Submit `message` as readable descriptors of `lens` bytes and poll it.
+    fn with_message(message: &[u8], lens: &[u32], test: impl FnOnce(RecvChain<HostMemOps>)) {
         let case = TestCase::new();
 
         let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
-        case.mem.write(case.g2h_pool_base, payload).unwrap();
+        case.mem.write(case.g2h_pool_base, message).unwrap();
 
-        let chain = BufferChainBuilder::new()
-            .readable(case.g2h_pool_base, payload.len() as u32)
-            .build()
+        let mut builder = BufferChainBuilder::new();
+        let mut addr = case.g2h_pool_base;
+        for &len in lens {
+            builder = builder.readable(addr, len);
+            addr += u64::from(len);
+        }
+        producer
+            .submit_available(&builder.build().unwrap())
             .unwrap();
 
-        producer.submit_available(&chain).unwrap();
-
         let mut consumer = case.g2h_consumer();
-        let (mut request, reply) = consumer.poll(payload.len()).unwrap().unwrap();
-
-        test(&mut request);
-        consumer.complete(request, reply).unwrap();
+        let (request, _reply) = consumer.poll(message.len()).unwrap().unwrap();
+        test(request);
     }
 
     #[test]
@@ -152,57 +150,54 @@ mod tests {
         assert!(zeroed_vec(usize::MAX, "test buffer").is_err());
     }
 
-    fn header(payload_len: u32, control_len: u32) -> MsgHeader {
-        MsgHeader::new(MsgKind::Request, 1, payload_len, control_len)
+    fn message(payload_len: u32, control_len: u32, payload: &[u8]) -> Vec<u8> {
+        let header = MsgHeader::new(MsgKind::Request, 1, payload_len, control_len);
+        let mut message = header.as_bytes().to_vec();
+        message.extend_from_slice(payload);
+        message
     }
 
     #[test]
-    fn read_control_rejects_truncated_body() {
-        with_control(b"ctr", |request| {
-            let error = read_control(request, &header(4, 4)).unwrap_err();
+    fn rejects_payload_length_mismatch() {
+        let message = message(4, 4, b"ctr");
+        with_message(&message, &[message.len() as u32], |request| {
+            let Err(error) = RecvMessage::new(request) else {
+                panic!("expected an invalid message");
+            };
             assert_eq!(
                 error.to_string(),
-                "G2H control data declares 4 bytes, only 3 remain"
+                "G2H message declares 4 payload bytes, received 3"
             );
-            assert_eq!(request.remaining(), 3);
         });
     }
 
     #[test]
-    fn read_message_header_rejects_control_longer_than_payload() {
-        let mut message = header(3, 4).as_bytes().to_vec();
-        message.extend_from_slice(b"ext");
-        with_control(&message, |request| {
-            let error = read_message_header(request).unwrap_err();
+    fn rejects_control_longer_than_payload() {
+        let message = message(3, 4, b"ext");
+        with_message(&message, &[message.len() as u32], |request| {
+            let Err(error) = RecvMessage::new(request) else {
+                panic!("expected an invalid message");
+            };
             assert_eq!(error.to_string(), "G2H message has an invalid header");
         });
     }
 
     #[test]
     fn read_control_leaves_external_bytes_unread() {
-        let case = TestCase::new();
-        let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
-        let payload = b"ctrlext";
-        let addr = case.g2h_pool_base;
-        case.mem.write(addr, payload).unwrap();
+        let message = message(7, 4, b"ctrlext");
+        // Control and external bytes both cross descriptor boundaries.
+        let lens = [MsgHeader::SIZE as u32 + 2, 3, 2];
+        with_message(&message, &lens, |request| {
+            let mut message = RecvMessage::new(request).unwrap();
+            assert_eq!(message.read_control().unwrap(), b"ctrl");
 
-        let chain = BufferChainBuilder::new()
-            .readable(addr, 2)
-            .readable(addr + 2, 3)
-            .readable(addr + 5, 2)
-            .build()
-            .unwrap();
-        producer.submit_available(&chain).unwrap();
+            let mut chain = message.into_chain();
+            assert_eq!(chain.remaining(), 3);
 
-        let mut consumer = case.g2h_consumer();
-        let (mut request, reply) = consumer.poll(payload.len()).unwrap().unwrap();
-        assert_eq!(read_control(&mut request, &header(7, 4)).unwrap(), b"ctrl");
-        assert_eq!(request.remaining(), 3);
-
-        let mut external = [0; 3];
-        request.read_exact(&mut external).unwrap();
-        assert_eq!(&external, b"ext");
-        consumer.complete(request, reply).unwrap();
+            let mut external = [0; 3];
+            chain.read_exact(&mut external).unwrap();
+            assert_eq!(&external, b"ext");
+        });
     }
 
     #[test]

@@ -837,13 +837,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 HyperlightError::TransportError(format!("G2H poll failed: {err}"))
             })?;
 
-            let Some((mut recv, reply)) = maybe_next else {
+            let Some((recv, reply)) = maybe_next else {
                 return Err(HyperlightError::TransportError(
                     "G2H has no guest function result after halt".into(),
                 ));
             };
 
-            let header = virtq::read_message_header(&mut recv).map_err(|err| {
+            let mut message = virtq::RecvMessage::new(recv).map_err(|err| {
                 HyperlightError::TransportError(format!("Failed to read G2H result header: {err}"))
             })?;
 
@@ -853,39 +853,43 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 ));
             }
 
-            match header.kind {
+            match message.kind() {
                 MsgKind::Log => {
-                    if header.cid != 0 {
+                    if message.cid() != 0 {
                         return Err(HyperlightError::TransportError(
                             "G2H log has a correlation ID".into(),
                         ));
                     }
 
-                    let log = virtq::read_guest_log_data(&mut recv, &header).map_err(|err| {
+                    let log = message.decode_log().map_err(|err| {
                         HyperlightError::TransportError(format!("Failed to read G2H log: {err}"))
                     })?;
 
-                    consumer.complete(recv, reply).map_err(|err| {
-                        HyperlightError::TransportError(format!(
-                            "Failed to complete G2H log: {err}"
-                        ))
-                    })?;
+                    consumer
+                        .complete(message.into_chain(), reply)
+                        .map_err(|err| {
+                            HyperlightError::TransportError(format!(
+                                "Failed to complete G2H log: {err}"
+                            ))
+                        })?;
 
                     crate::sandbox::outb::emit_guest_log(&log);
                 }
                 MsgKind::Response => {
-                    if header.cid != cid {
+                    if message.cid() != cid {
                         return Err(HyperlightError::TransportError(
                             "G2H guest function result correlation ID mismatch".into(),
                         ));
                     }
 
-                    let result = virtq::read_guest_function_call_result(&mut recv, &header);
-                    consumer.complete(recv, reply).map_err(|err| {
-                        HyperlightError::TransportError(format!(
-                            "Failed to complete G2H guest function result: {err}"
-                        ))
-                    })?;
+                    let result = message.decode_result();
+                    consumer
+                        .complete(message.into_chain(), reply)
+                        .map_err(|err| {
+                            HyperlightError::TransportError(format!(
+                                "Failed to complete G2H guest function result: {err}"
+                            ))
+                        })?;
 
                     return result.map_err(|err| {
                         HyperlightError::TransportError(format!(
