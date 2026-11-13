@@ -158,7 +158,7 @@ pub(super) fn encode_value<'b, T: Serialize>(
         .map_err(|e| anyhow!("Encode failed: {e}"))?;
     let mut out = core::mem::take(buffer);
     out.clear();
-    out.reserve_exact(size);
+    out.try_reserve_exact(size)?;
     *buffer = postcard::to_extend(value, out).map_err(|e| anyhow!("Encode failed: {e}"))?;
     Ok(buffer.as_slice())
 }
