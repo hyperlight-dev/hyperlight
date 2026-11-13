@@ -21,10 +21,7 @@ pub(crate) mod tests;
 
 use std::collections::HashSet;
 
-pub(crate) use codec::{
-    get_host_function_call, read_guest_function_call_result, read_guest_log_data,
-    read_message_header, try_write_response,
-};
+pub(crate) use codec::{RecvMessage, try_write_response};
 use hyperlight_common::transport::MailboxValue;
 use hyperlight_common::virtq::canonical::{validate_canon_image, validate_canon_prefix};
 use hyperlight_common::virtq::{Layout as VirtqLayout, Notifier, QueueStats, VirtqConsumer};

@@ -119,7 +119,6 @@ When reviewing a diff (your own or a PR), weight these for Hyperlight:
 * `src/hyperlight_guest_capi/`: guest C library.
 * `src/hyperlight_host/`: hyperlight-host library.
 * `src/hyperlight_testing/`: shared test code.
-* `schema/`: flatbuffer schemas.
 * `tests/`: test guest code in C and Rust.
 * `dev/`: development scripts and tools.
 * `fuzz/`: fuzzing tests.

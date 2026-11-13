@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+#[cfg(test)]
+mod abi_tests;
 mod codec;
 pub mod function_call;
 pub mod function_types;
@@ -17,5 +19,6 @@ pub mod host_function_definition;
 /// cbindgen:ignore
 pub mod host_function_details;
 pub mod util;
+mod wire;
 
 pub use codec::{ExternalValueSink, ExternalValueSource};

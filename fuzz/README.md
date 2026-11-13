@@ -50,6 +50,16 @@ The malformed target shares the memory backend and covers malformed descriptors.
 just fuzz-timed fuzz_virtq_roundtrip 60
 ```
 
+## Control data decoding
+
+`fuzz_control_decode` decodes untrusted function calls, results, and logs. The
+first two input bytes select the control length. The remaining
+bytes are external values. Decode errors are accepted. Panics fail the run.
+
+```sh
+just fuzz-timed fuzz_control_decode 60
+```
+
 ## On Failure 
 
 If you encounter a failure, you can re-run an entire seed (i.e., group of inputs) with:

@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::transport::{Buf, EncodedMessage, ExternalValues, MailboxValue, MsgKind};
 use hyperlight_common::virtq::ReplyChain;
@@ -744,13 +742,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_guest_function_call(&mut self, call: &FunctionCall) -> Result<u32> {
         let cid = self.next_guest_cid;
-        let params = call.parameters.as_deref().unwrap_or_default();
-        let cap = estimate_flatbuffer_capacity(&call.function_name, params);
 
-        let mut builder = FlatBufferBuilder::with_capacity(cap);
+        let mut buffer = Vec::new();
         let mut externals = ExternalValues::new();
 
-        let control = call.encode(&mut builder, &mut externals)?;
+        let control = call.encode(&mut buffer, &mut externals)?;
 
         let Some(msg) = EncodedMessage::new(MsgKind::Request, cid, control, externals) else {
             return Err(new_error!("H2G request exceeds the wire payload limit"));
@@ -841,13 +837,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 HyperlightError::TransportError(format!("G2H poll failed: {err}"))
             })?;
 
-            let Some((mut recv, reply)) = maybe_next else {
+            let Some((recv, reply)) = maybe_next else {
                 return Err(HyperlightError::TransportError(
                     "G2H has no guest function result after halt".into(),
                 ));
             };
 
-            let header = virtq::read_message_header(&mut recv).map_err(|err| {
+            let mut message = virtq::RecvMessage::new(recv).map_err(|err| {
                 HyperlightError::TransportError(format!("Failed to read G2H result header: {err}"))
             })?;
 
@@ -857,39 +853,43 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 ));
             }
 
-            match header.kind {
+            match message.kind() {
                 MsgKind::Log => {
-                    if header.cid != 0 {
+                    if message.cid() != 0 {
                         return Err(HyperlightError::TransportError(
                             "G2H log has a correlation ID".into(),
                         ));
                     }
 
-                    let log = virtq::read_guest_log_data(&mut recv).map_err(|err| {
+                    let log = message.decode_log().map_err(|err| {
                         HyperlightError::TransportError(format!("Failed to read G2H log: {err}"))
                     })?;
 
-                    consumer.complete(recv, reply).map_err(|err| {
-                        HyperlightError::TransportError(format!(
-                            "Failed to complete G2H log: {err}"
-                        ))
-                    })?;
+                    consumer
+                        .complete(message.into_chain(), reply)
+                        .map_err(|err| {
+                            HyperlightError::TransportError(format!(
+                                "Failed to complete G2H log: {err}"
+                            ))
+                        })?;
 
                     crate::sandbox::outb::emit_guest_log(&log);
                 }
                 MsgKind::Response => {
-                    if header.cid != cid {
+                    if message.cid() != cid {
                         return Err(HyperlightError::TransportError(
                             "G2H guest function result correlation ID mismatch".into(),
                         ));
                     }
 
-                    let result = virtq::read_guest_function_call_result(&mut recv);
-                    consumer.complete(recv, reply).map_err(|err| {
-                        HyperlightError::TransportError(format!(
-                            "Failed to complete G2H guest function result: {err}"
-                        ))
-                    })?;
+                    let result = message.decode_result();
+                    consumer
+                        .complete(message.into_chain(), reply)
+                        .map_err(|err| {
+                            HyperlightError::TransportError(format!(
+                                "Failed to complete G2H guest function result: {err}"
+                            ))
+                        })?;
 
                     return result.map_err(|err| {
                         HyperlightError::TransportError(format!(
@@ -1310,9 +1310,7 @@ mod tests {
 
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-    use hyperlight_common::transport::{
-        MsgHeader, SIZE_PREFIX_LEN, size_prefix_payload_len, size_prefixed_len,
-    };
+    use hyperlight_common::transport::MsgHeader;
     use hyperlight_common::virtq::DescFlags;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
@@ -1466,12 +1464,7 @@ mod tests {
         assert_eq!(header.cid, cid);
         assert_eq!(header.payload_len as usize, wire.len() - MsgHeader::SIZE);
 
-        let control =
-            size_prefix_payload_len(&wire[MsgHeader::SIZE..MsgHeader::SIZE + SIZE_PREFIX_LEN])
-                .unwrap();
-
-        let control_len = size_prefixed_len(control).unwrap();
-        let external = &wire[MsgHeader::SIZE + control_len..];
+        let external = &wire[MsgHeader::SIZE + header.control_len as usize..];
         assert_eq!(external, vec![0xa5; external_len]);
 
         let cursor = mgr.h2g_consumer.as_ref().unwrap().avail_cursor();

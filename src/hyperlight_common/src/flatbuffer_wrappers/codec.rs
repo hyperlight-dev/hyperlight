@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use anyhow::Result;
 use bytes::Bytes;
 
-/// Receives external byte values while their FlatBuffer metadata is encoded.
+/// Receives external byte values while their control data is encoded.
 ///
 /// Values are delivered in their logical order without flattening chunked
 /// values. The value lifetime allows a sink to retain references until the
@@ -19,7 +19,7 @@ pub trait ExternalValueSink<'a> {
     fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()>;
 }
 
-/// Supplies complete external byte values while a FlatBuffer is decoded.
+/// Supplies complete external byte values while control data is decoded.
 ///
 /// [`RecvChain`](crate::virtq::RecvChain) copies values out of shared memory.
 /// [`Segments`](crate::virtq::Segments) retains existing chunk owners.
