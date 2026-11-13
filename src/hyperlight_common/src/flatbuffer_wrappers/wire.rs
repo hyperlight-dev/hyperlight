@@ -12,6 +12,7 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use anyhow::{Result, anyhow, bail};
+use postcard::ser_flavors::Size;
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -147,12 +148,17 @@ pub(super) enum WireResult<'a> {
 }
 
 /// Write `value` as control data into `buffer`.
+///
+/// Measures the encoded size first so `buffer` grows at most once.
 pub(super) fn encode_value<'b, T: Serialize>(
     value: &T,
     buffer: &'b mut Vec<u8>,
 ) -> Result<&'b [u8]> {
+    let size = postcard::serialize_with_flavor::<T, Size, usize>(value, Size::default())
+        .map_err(|e| anyhow!("Encode failed: {e}"))?;
     let mut out = core::mem::take(buffer);
     out.clear();
+    out.reserve_exact(size);
     *buffer = postcard::to_extend(value, out).map_err(|e| anyhow!("Encode failed: {e}"))?;
     Ok(buffer.as_slice())
 }
