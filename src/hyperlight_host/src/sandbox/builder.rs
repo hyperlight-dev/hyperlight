@@ -10,7 +10,7 @@ use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use tracing_core::LevelFilter;
 
 use crate::func::HostFunction;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -18,8 +18,7 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::config::GuestMsrError;
 use crate::sandbox::host_funcs::FunctionEntry;
 use crate::sandbox::snapshot::Snapshot;
-use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
-use crate::{GuestBinary, HostFunctions, Result, Sandbox, UninitializedSandbox, new_error};
+use crate::{GuestBinary, HostFunctions, Result, Sandbox, UninitializedSandbox};
 
 /// What a [`SandboxBuilder`] builds the sandbox from.
 enum Source {
@@ -88,7 +87,6 @@ pub struct SandboxBuilder {
     source: Source,
     cfg: SandboxConfiguration,
     host_funcs: HostFunctions,
-    init_data: Option<(Vec<u8>, MemoryRegionFlags)>,
     mapped_file_cow: Vec<(std::path::PathBuf, u64)>,
     mapped_memory_regions: Vec<MemoryRegion>,
     guest_log_level: Option<LevelFilter>,
@@ -100,7 +98,6 @@ impl SandboxBuilder {
             source,
             cfg: SandboxConfiguration::default(),
             host_funcs: HostFunctions::default(),
-            init_data: None,
             mapped_file_cow: Vec::new(),
             mapped_memory_regions: Vec::new(),
             guest_log_level: None,
@@ -126,17 +123,11 @@ impl SandboxBuilder {
     }
 
     /// Create the sandbox.
-    ///
-    /// # Errors
-    ///
-    /// When building from a snapshot, returns an error if [`Self::init_data`]
-    /// is set because the snapshot already contains it.
     pub fn build(self) -> Result<Sandbox> {
         let Self {
             source,
             mut cfg,
             host_funcs,
-            init_data,
             mapped_file_cow,
             mapped_memory_regions,
             guest_log_level,
@@ -144,15 +135,7 @@ impl SandboxBuilder {
 
         let mut sandbox = match source {
             Source::GuestBinary(guest_binary) => {
-                let env = GuestEnvironment {
-                    init_data: init_data.as_ref().map(|(data, flags)| GuestBlob {
-                        data,
-                        permissions: *flags,
-                    }),
-                    guest_binary,
-                };
-
-                let mut uninitialized_sandbox = UninitializedSandbox::new(env, Some(cfg))?;
+                let mut uninitialized_sandbox = UninitializedSandbox::new(guest_binary, Some(cfg))?;
 
                 uninitialized_sandbox.host_funcs = Arc::new(Mutex::new(host_funcs.into_inner()));
 
@@ -167,12 +150,6 @@ impl SandboxBuilder {
                 uninitialized_sandbox.evolve()?
             }
             Source::Snapshot(snapshot) => {
-                if init_data.is_some() {
-                    return Err(new_error!(
-                        "init_data has no effect when building from a snapshot, as the snapshot already contains it"
-                    ));
-                }
-
                 if let Some(log_level) = guest_log_level {
                     cfg.set_max_guest_log_level(log_level);
                 }
@@ -198,16 +175,6 @@ impl SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Sets the sandbox `init_data` into the sandbox's memory when it is built, with `flags` as
-    /// the guest's permissions on that region.
-    ///
-    /// Note: [`Self::build`] errors if this setting is set and the builder's
-    /// source is a snapshot, as the snapshot already contains the init data.
-    pub fn init_data(mut self, data: impl Into<Vec<u8>>, flags: MemoryRegionFlags) -> Self {
-        self.init_data = Some((data.into(), flags));
-        self
-    }
-
     /// Map the contents of the file at `path` into the guest at `guest_base`,
     /// copy-on-write.
     ///
@@ -448,7 +415,6 @@ mod tests {
     use tracing_core::LevelFilter;
 
     use super::SandboxBuilder;
-    use crate::mem::memory_region::MemoryRegionFlags;
 
     #[test]
     fn transport_settings_are_normalized() {
@@ -515,17 +481,10 @@ mod tests {
     }
 
     #[test]
-    fn build_from_snapshot_rejects_init_data_and_accepts_guest_log_level() {
+    fn build_from_snapshot_accepts_guest_log_level() {
         let path = simple_guest_as_string().unwrap();
         let mut sandbox = SandboxBuilder::from_file(path).build().unwrap();
         let snapshot = sandbox.snapshot().unwrap();
-
-        assert!(
-            SandboxBuilder::from_snapshot(snapshot.clone())
-                .init_data([0u8; 8], MemoryRegionFlags::READ)
-                .build()
-                .is_err()
-        );
 
         assert!(
             SandboxBuilder::from_snapshot(snapshot)

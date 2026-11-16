@@ -14,8 +14,8 @@ A snapshot carries four independently evolvable version markers:
   [src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs](../src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs)).
   This is what the host reads back from a snapshot: the `OutBAction`
   and `VmAction` port numbers, the virtqueue transport layout, the
-  offset and size of each memory region (including the `HyperlightPEB`
-  size), and the calling convention for guest function entry. A change
+  offset and size of each memory region, and the calling convention for
+  guest function entry. A change
   to any of these breaks older snapshots unless the loader adds a
   compat path.
 * **Snapshot blob encoding**, `MT_SNAPSHOT_V2`
@@ -27,8 +27,8 @@ A snapshot carries four independently evolvable version markers:
   (`application/vnd.hyperlight.snapshot.transport.v1`), aliased as
   `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
   virtqueue state stored outside the memory layer.
-* **Config schema**, `MT_CONFIG_V5`
-  (`application/vnd.hyperlight.snapshot.config.v5+json`), aliased as
+* **Config schema**, `MT_CONFIG_V6`
+  (`application/vnd.hyperlight.snapshot.config.v6+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
@@ -36,7 +36,8 @@ A snapshot carries four independently evolvable version markers:
   changing its type, or adding a required field is a schema change and
   bumps this constant. Version 4 describes snapshot blobs, the blob with
   the page tables, and transport geometry, and requires a transport
-  layer. Version 5 drops the heap size. Config v1 to v4 are incompatible
+  layer. Version 5 drops the heap size. Version 6 contains code and scratch
+  geometry without init-data fields. Config v1 to v5 are incompatible
   with the current ABI.
 
 ABI 6 requires checkpoint readiness after guest initialization and permits
@@ -51,6 +52,9 @@ regenerated.
 
 ABI 9 removes the heap region from snapshot memory. Earlier snapshots must
 be regenerated.
+
+ABI 10 contains no PEB or init-data region. Guest entry takes the random seed,
+host page size, and log level. Earlier snapshots must be regenerated.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
@@ -83,7 +87,7 @@ Compile-time tripwires in
 [src/hyperlight_host/src/sandbox/snapshot/tripwires.rs](../src/hyperlight_host/src/sandbox/snapshot/tripwires.rs)
 hold a copy of every value that defines the format:
 `SNAPSHOT_ABI_VERSION`, the snapshot and config media-type strings, the
-OCI layout version, the `HyperlightPEB` size, every `OutBAction` and
+OCI layout version, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.
 

@@ -12,11 +12,9 @@ use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::{GUEST_LOG_FILTER_UPDATE_PENDING, GuestLogFilter};
-use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::write_abort;
-use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest::layout::{HEAP_GVA_END, HEAP_GVA_START};
 use talc::TalcLock;
 use talc::source::Manual;
@@ -116,7 +114,6 @@ pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
 
-pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
@@ -254,17 +251,8 @@ core::arch::global_asm!(
 /// Architecture-nonspecific initialisation: set up the heap,
 /// coordinate some addresses and configuration with the host, and run
 /// user initialisation
-pub(crate) extern "C" fn generic_init(
-    peb_address: u64,
-    _seed: u64,
-    ops: u64,
-    max_log_level: u64,
-) -> u64 {
+pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) -> u64 {
     unsafe {
-        GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
-        #[allow(static_mut_refs)]
-        let peb_ptr = GUEST_HANDLE.peb().unwrap();
-
         #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
         #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
@@ -280,8 +268,7 @@ pub(crate) extern "C" fn generic_init(
                 (HEAP_GVA_END - HEAP_GVA_START) as usize,
             )
             .expect("Failed to claim guest heap");
-        peb_ptr
-    };
+    }
 
     // Save the guest start TSC for tracing
     #[cfg(feature = "trace_guest")]
@@ -289,8 +276,7 @@ pub(crate) extern "C" fn generic_init(
 
     #[cfg(feature = "libc")]
     unsafe {
-        let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
-        srand(srand_seed);
+        srand(_seed as u32);
     }
 
     unsafe {

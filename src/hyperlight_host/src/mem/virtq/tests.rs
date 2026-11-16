@@ -101,7 +101,7 @@ pub(crate) fn memory_layout() -> SandboxMemoryLayout {
     config.set_g2h_pool_pages(3);
     config.set_h2g_pool_pages(3);
 
-    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
+    SandboxMemoryLayout::new(config, 4096).unwrap()
 }
 
 fn host_scratch() -> HostSharedMemory {

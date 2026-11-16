@@ -291,7 +291,6 @@ impl Sandbox {
     ) -> Result<Self> {
         use rand::RngExt;
 
-        use crate::mem::ptr::RawPtr;
         use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
 
         // Validate that the provided host functions are a superset of
@@ -331,11 +330,10 @@ impl Sandbox {
             let mut rng = rand::rng();
             rng.random::<u64>()
         };
-        let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
 
         // For NextAction::Call, initialise is a no-op. Runtime overrides are
         // delivered through the scratch-memory request below.
-        vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, max_guest_log_level)
+        vm.initialise(seed, &mut hshm, &host_funcs, max_guest_log_level)
             .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
         if matches!(
             snapshot.next_action(),
@@ -1473,7 +1471,6 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::{Snapshot, SnapshotOptions};
-    use crate::sandbox::uninitialized::{GuestBlob, GuestEnvironment};
     use crate::{
         GuestBinary, HyperlightError, Result, Sandbox, SandboxBuilder, SandboxStatus,
         UninitializedSandbox,
@@ -2120,8 +2117,7 @@ mod tests {
         // Leave room for runtime allocations and eagerly copied page tables.
         let scratch_size = {
             let defaults = SandboxConfiguration::default();
-            let layout =
-                crate::mem::layout::SandboxMemoryLayout::new(defaults, 0, 0, None).unwrap();
+            let layout = crate::mem::layout::SandboxMemoryLayout::new(defaults, 0).unwrap();
             layout.min_scratch().next_multiple_of(page_size::get())
         } + 0x40000;
 
@@ -3700,18 +3696,11 @@ mod tests {
 
     #[test]
     fn snapshot_restore_replaces_rust_guest_with_c_guest() {
-        let init_data = b"cross-layout-init-data";
-        let source_env = GuestEnvironment {
-            guest_binary: GuestBinary::FilePath(c_simple_guest_as_pathbuf()),
-            init_data: Some(GuestBlob {
-                data: init_data,
-                permissions: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            }),
-        };
-        let mut source = UninitializedSandbox::new(source_env, None)
-            .unwrap()
-            .evolve()
-            .unwrap();
+        let mut source =
+            UninitializedSandbox::new(GuestBinary::FilePath(c_simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
         let mut target =
             UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
                 .unwrap()
@@ -3726,14 +3715,6 @@ mod tests {
         assert_ne!(
             source.mem_mgr.layout.code_size(),
             target.mem_mgr.layout.code_size()
-        );
-        assert_ne!(
-            source.mem_mgr.layout.init_data_size(),
-            target.mem_mgr.layout.init_data_size()
-        );
-        assert_ne!(
-            source.mem_mgr.layout.init_data_permissions(),
-            target.mem_mgr.layout.init_data_permissions()
         );
 
         let snapshot = source.snapshot().unwrap();
@@ -5389,7 +5370,7 @@ mod tests {
             let mut config = SandboxConfiguration::default();
             config.guest_msrs(&[KERNEL_GS_BASE]).unwrap();
             let snapshot = Arc::new(
-                Snapshot::from_env(GuestBinary::FilePath(simple_guest_as_pathbuf()), config)
+                Snapshot::from_binary(GuestBinary::FilePath(simple_guest_as_pathbuf()), config)
                     .unwrap(),
             );
             assert!(snapshot.msrs().is_none());
@@ -6358,7 +6339,7 @@ mod tests {
         fn round_trip_pre_init_snapshot() {
             let path = simple_guest_as_pathbuf();
             let snap =
-                Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                Snapshot::from_binary(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
             assert!(snap.virtq().is_none());
             let mut sbox = SandboxBuilder::from_snapshot(Arc::new(snap))
@@ -6391,7 +6372,7 @@ mod tests {
             // emit one guest log message at each level, and count how many
             // reached the host (guest logs carry target "hyperlight_guest").
             let count_guest_logs = |max_level: LevelFilter| -> usize {
-                let snap = Snapshot::from_env(
+                let snap = Snapshot::from_binary(
                     GuestBinary::FilePath(simple_guest_as_pathbuf()),
                     SandboxConfiguration::default(),
                 )
@@ -6876,7 +6857,7 @@ mod tests {
         fn pre_init_snapshot_accepts_arbitrary_host_functions() {
             let path = simple_guest_as_pathbuf();
             let snap =
-                Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                Snapshot::from_binary(GuestBinary::FilePath(path), SandboxConfiguration::default())
                     .unwrap();
             let mut hf = HostFunctions::default();
             hf.register_host_function("Unrelated", |a: i32| Ok(a + 1))

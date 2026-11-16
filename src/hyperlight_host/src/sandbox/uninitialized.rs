@@ -16,7 +16,6 @@ use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
-use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
@@ -69,9 +68,7 @@ impl GuestBinary {
     ///
     /// For [`GuestBinary::FilePath`], this resolves the path to its canonical
     /// form. For [`GuestBinary::Buffer`], this method is a no-op.
-    /// TODO: Maybe we should make the GuestEnvironment or
-    ///       GuestBinary constructors crate-private and turn this
-    ///       into an invariant on one of those types.
+    /// TODO: Make canonical paths an invariant of `GuestBinary`.
     pub fn canonicalize(&mut self) -> Result<()> {
         if let GuestBinary::FilePath(p) = self {
             *p = p
@@ -79,58 +76,6 @@ impl GuestBinary {
                 .map_err(|e| new_error!("GuestBinary not found: '{}': {}", p.display(), e))?;
         }
         Ok(())
-    }
-}
-
-/// A `GuestBlob` containing data and the permissions for its use.
-#[derive(Debug)]
-pub struct GuestBlob<'a> {
-    /// The data contained in the blob.
-    pub data: &'a [u8],
-    /// The permissions for the blob in memory.
-    /// By default, it's READ
-    pub permissions: MemoryRegionFlags,
-}
-
-impl<'a> From<&'a [u8]> for GuestBlob<'a> {
-    fn from(data: &'a [u8]) -> Self {
-        GuestBlob {
-            data,
-            permissions: DEFAULT_GUEST_BLOB_MEM_FLAGS,
-        }
-    }
-}
-
-/// Container for a guest binary and optional initialization data.
-///
-/// This struct combines a guest binary (either from a file or memory buffer) with
-/// optional data that will be available to the guest during execution.
-///
-/// The guest binary is owned. `'b` is the lifetime of the borrowed init data.
-#[derive(Debug)]
-pub struct GuestEnvironment<'b> {
-    /// The guest binary, which can be a file path or a buffer.
-    pub guest_binary: GuestBinary,
-    /// An optional guest blob, which can be used to provide additional data to the guest.
-    pub init_data: Option<GuestBlob<'b>>,
-}
-
-impl<'b> GuestEnvironment<'b> {
-    /// Creates a new `GuestEnvironment` with the given guest binary and an optional guest blob.
-    pub fn new(guest_binary: GuestBinary, init_data: Option<&'b [u8]>) -> Self {
-        GuestEnvironment {
-            guest_binary,
-            init_data: init_data.map(GuestBlob::from),
-        }
-    }
-}
-
-impl From<GuestBinary> for GuestEnvironment<'_> {
-    fn from(guest_binary: GuestBinary) -> Self {
-        GuestEnvironment {
-            guest_binary,
-            init_data: None,
-        }
     }
 }
 
@@ -170,7 +115,7 @@ impl UninitializedSandbox {
         Ok(sandbox)
     }
 
-    /// Creates a new uninitialized sandbox for the given guest environment.
+    /// Creates a new uninitialized sandbox for the given guest binary.
     ///
     /// The guest binary can be provided as either a file path or memory buffer.
     /// An optional configuration can customize memory sizes and sandbox settings.
@@ -178,15 +123,12 @@ impl UninitializedSandbox {
     /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
     #[instrument(
         err(Debug),
-        skip(env),
+        skip(guest_binary),
         parent = Span::current()
     )]
-    pub fn new<'b>(
-        env: impl Into<GuestEnvironment<'b>>,
-        cfg: Option<SandboxConfiguration>,
-    ) -> Result<Self> {
+    pub fn new(guest_binary: GuestBinary, cfg: Option<SandboxConfiguration>) -> Result<Self> {
         let cfg = cfg.unwrap_or_default();
-        let snapshot = Snapshot::from_env(env, cfg)?;
+        let snapshot = Snapshot::from_binary(guest_binary, cfg)?;
         Self::from_snapshot(Arc::new(snapshot), Some(cfg))
     }
 
@@ -344,7 +286,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
+    use crate::sandbox::uninitialized::GuestBinary;
     use crate::{Result, Sandbox, UninitializedSandbox, new_error};
 
     #[cfg(target_os = "linux")]
@@ -362,23 +304,6 @@ mod tests {
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None);
 
         assert!(sandbox.is_ok());
-    }
-
-    #[test]
-    fn test_load_extra_blob() {
-        let binary_path = simple_guest_as_pathbuf();
-        let buffer = [0xde, 0xad, 0xbe, 0xef];
-        let guest_env =
-            GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
-
-        let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox = uninitialized_sandbox.evolve().unwrap();
-
-        let res = sandbox
-            .call::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
-            .expect("Failed to call ReadFromUserMemory");
-
-        assert_eq!(res, buffer.to_vec());
     }
 
     #[test]
@@ -1064,10 +989,10 @@ mod tests {
 
         // Test 1: Create snapshot with default config, create multiple sandboxes from it
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default())
+                Snapshot::from_binary(env, Default::default())
                     .expect("Failed to create snapshot with default config"),
             );
 
@@ -1089,10 +1014,10 @@ mod tests {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024);
 
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
+                Snapshot::from_binary(env, cfg)
                     .expect("Failed to create snapshot with custom stack size"),
             );
 
@@ -1107,10 +1032,10 @@ mod tests {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_scratch_size(512 * 1024); // 512KB scratch
 
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
+                Snapshot::from_binary(env, cfg)
                     .expect("Failed to create snapshot with all custom settings"),
             );
 
@@ -1132,7 +1057,7 @@ mod tests {
             let binary_bytes = fs::read(&binary_path).expect("Failed to read binary file");
 
             let snapshot = Arc::new(
-                Snapshot::from_env(GuestBinary::Buffer(binary_bytes), Default::default())
+                Snapshot::from_binary(GuestBinary::Buffer(binary_bytes), Default::default())
                     .expect("Failed to create snapshot from buffer"),
             );
 
@@ -1144,10 +1069,10 @@ mod tests {
 
         // Test 6: Register host functions on sandboxes created from snapshot
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default()).expect("Failed to create snapshot"),
+                Snapshot::from_binary(env, Default::default()).expect("Failed to create snapshot"),
             );
 
             let mut sandbox = UninitializedSandbox::from_snapshot(snapshot, None)
@@ -1176,28 +1101,11 @@ mod tests {
             assert_eq!(result, ReturnValue::Int(30));
         }
 
-        // Test 7: Create snapshot with init data (guest blob)
-        {
-            let init_data = [0xCA, 0xFE, 0xBA, 0xBE];
-            let guest_env =
-                GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&init_data));
-
-            let snapshot = Arc::new(
-                Snapshot::from_env(guest_env, Default::default())
-                    .expect("Failed to create snapshot with init data"),
-            );
-
-            let sandbox = UninitializedSandbox::from_snapshot(snapshot, None)
-                .expect("Failed to create sandbox from snapshot with init data");
-
-            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
-        }
-
         // Test 8: Create snapshot from existing sandbox
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
             let orig_snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default())
+                Snapshot::from_binary(env, Default::default())
                     .expect("Failed to create snapshot with default config"),
             );
             let orig_sandbox = UninitializedSandbox::from_snapshot(orig_snapshot, None)

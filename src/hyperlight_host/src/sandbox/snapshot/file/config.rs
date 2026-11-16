@@ -163,7 +163,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v5+json`.
+/// `application/vnd.hyperlight.snapshot.config.v6+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -218,7 +218,7 @@ pub(super) struct OciSnapshotConfig {
     pub(super) metadata: BTreeMap<String, serde_json::Value>,
 }
 
-/// Sizes and permissions of the regions inside the snapshot blob,
+/// Sizes and addresses of the regions inside the snapshot blob,
 /// enough for the loader to rebuild a `SandboxMemoryLayout`.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,9 +228,6 @@ pub(super) struct MemoryLayout {
     /// code region is identity mapped.
     #[serde(default)]
     pub(super) code_virt_base: u64,
-    pub(super) init_data_size: usize,
-    /// Memory region flag bits. `None` means default permissions.
-    pub(super) init_data_permissions: Option<u32>,
     pub(super) scratch_size: usize,
     pub(super) g2h_queue_size: usize,
     pub(super) h2g_queue_size: usize,
@@ -487,7 +484,6 @@ impl OciSnapshotConfig {
         let max_region = SandboxMemoryLayout::MAX_MEMORY_SIZE;
         for (name, value) in [
             ("code_size", self.layout.code_size),
-            ("init_data_size", self.layout.init_data_size),
             ("scratch_size", self.layout.scratch_size),
             ("g2h_buffer_size", self.layout.g2h_buffer_size),
             ("h2g_buffer_size", self.layout.h2g_buffer_size),
@@ -824,8 +820,6 @@ mod tests {
             layout: MemoryLayout {
                 code_size: 0,
                 code_virt_base: 0,
-                init_data_size: 0,
-                init_data_permissions: None,
                 scratch_size: 0,
                 g2h_queue_size: 64,
                 h2g_queue_size: 32,
@@ -926,7 +920,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 9,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "layer_alignment": 4096,
@@ -1088,8 +1082,6 @@ mod schema_pin {
   "layout": {
     "code_size": 4,
     "code_virt_base": 0,
-    "init_data_size": 5,
-    "init_data_permissions": null,
     "scratch_size": 8,
     "g2h_queue_size": 64,
     "h2g_queue_size": 32,
@@ -1122,7 +1114,7 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 9,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
   "layer_alignment": 16384,
@@ -1140,8 +1132,6 @@ mod schema_pin {
   "layout": {
     "code_size": 4,
     "code_virt_base": 0,
-    "init_data_size": 5,
-    "init_data_permissions": null,
     "scratch_size": 8,
     "g2h_queue_size": 64,
     "h2g_queue_size": 32,

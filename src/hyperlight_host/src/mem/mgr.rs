@@ -1603,7 +1603,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
         let path = simple_guest_as_pathbuf();
-        let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
+        let snapshot = Snapshot::from_binary(GuestBinary::FilePath(path), config)
             .unwrap_or_else(|e| panic!("{}: failed to create snapshot: {}", name, e));
 
         // Verify NULL page (0x0) is NOT mapped
@@ -1650,7 +1650,7 @@ mod tests {
         let bin = GuestBinary::FilePath(path);
         let config = SandboxConfiguration::default();
 
-        let snapshot = Snapshot::from_env(bin, config).unwrap();
+        let snapshot = Snapshot::from_binary(bin, config).unwrap();
 
         let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
         let (mgr, _) = mgr.build().unwrap();
@@ -1701,7 +1701,7 @@ mod tests {
 
     fn virtual_reader_manager() -> (SandboxMemoryManager<HostSharedMemory>, u64, u64) {
         let cfg = SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, 0, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE).unwrap();
         let host_page_size = page_size::get();
         let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
         let second_gpa = base + host_page_size as u64;
@@ -1834,8 +1834,7 @@ mod tests {
     #[test]
     fn guest_physical_memory_view_resolves_scratch_and_dynamic_edges() {
         let host_page_size = page_size::get();
-        let layout =
-            SandboxMemoryLayout::new(SandboxConfiguration::default(), PAGE_SIZE, 0, None).unwrap();
+        let layout = SandboxMemoryLayout::new(SandboxConfiguration::default(), PAGE_SIZE).unwrap();
         let scratch_start = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
         let snapshot = Arc::new(flat_memory(
             &[0u8; PAGE_SIZE],

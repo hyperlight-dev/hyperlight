@@ -36,7 +36,7 @@ use crate::mem::mgr::{BackingSource, GuestBacking, GuestPageTableBuffer, GuestPh
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::mem::virtq::VirtqSnapshot;
 use crate::sandbox::SandboxConfiguration;
-use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
+use crate::sandbox::uninitialized::GuestBinary;
 
 const PTE_SIZE: usize = size_of::<vmem::PageTableEntry>();
 
@@ -564,16 +564,9 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
 }
 
 impl Snapshot {
-    /// Create a new snapshot from the guest binary identified by `env`. With the configuration
-    /// specified in `cfg`.
-    pub(crate) fn from_env<'b>(
-        env: impl Into<GuestEnvironment<'b>>,
-        cfg: SandboxConfiguration,
-    ) -> Result<Self> {
-        let env = env.into();
-        let mut bin = env.guest_binary;
+    /// Create a snapshot from a guest binary with the configuration in `cfg`.
+    pub(crate) fn from_binary(mut bin: GuestBinary, cfg: SandboxConfiguration) -> Result<Self> {
         bin.canonicalize()?;
-        let blob = env.init_data;
 
         let exe_info = match bin {
             GuestBinary::FilePath(bin_path) => ExeInfo::from_file(&bin_path)?,
@@ -591,15 +584,7 @@ impl Snapshot {
             });
         }
 
-        let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
-        let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
-
-        let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
-            cfg,
-            exe_info.loaded_size(),
-            guest_blob_size,
-            guest_blob_mem_flags,
-        )?;
+        let mut layout = crate::mem::layout::SandboxMemoryLayout::new(cfg, exe_info.loaded_size())?;
 
         let load_addr = layout.get_guest_code_gpa() as u64;
         let base_va = exe_info.base_va();
@@ -675,10 +660,6 @@ impl Snapshot {
             &mut data[layout.guest_code_offset()..],
         )?;
 
-        layout.write_peb(data)?;
-
-        blob.map(|x| layout.write_init_data(data, x.data))
-            .transpose()?;
         memory.copy_from_slice(&pt_bytes, data_len)?;
         let memory = Arc::new(SnapshotMemory::from_flat(
             memory.freeze(data_len)?,
@@ -1421,7 +1402,7 @@ mod tests {
     fn make_pt_mgr(data_gpa: u64, gvas: &[u64]) -> (SandboxMemoryManager<HostSharedMemory>, u64) {
         let cfg = crate::sandbox::SandboxConfiguration::default();
         let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let memory = make_pt_memory(&vec![0u8; page_size::get()], pt_base, data_gpa, gvas);
         layout
@@ -1440,7 +1421,7 @@ mod tests {
     #[test]
     fn capture_and_restore_preserve_multiple_page_table_roots() {
         let cfg = crate::sandbox::SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
         let pt_buf = GuestPageTableBuffer::new(pt_base as usize);
@@ -1824,7 +1805,7 @@ mod tests {
     fn capture_reuses_shared_pages_and_materializes_private_pages() {
         let host_page_size = page_size::get();
         let cfg = crate::sandbox::SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let scratch_offset = layout.get_scratch_size() / 2;
         let scratch_gpa = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size())
@@ -2005,7 +1986,7 @@ mod tests {
     fn capture_rejects_leaf_into_page_table_tail() {
         let host_page_size = page_size::get();
         let cfg = crate::sandbox::SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
         let pt_buf = GuestPageTableBuffer::new(pt_base as usize);
@@ -2080,7 +2061,7 @@ mod tests {
     fn capture_rejects_delta_exceeding_layer_limit() {
         let host_page_size = page_size::get();
         let cfg = crate::sandbox::SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap();
+        let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let scratch_offset = layout.get_scratch_size() / 2;
         let scratch_gpa = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size())

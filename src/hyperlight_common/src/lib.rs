@@ -25,9 +25,6 @@ pub mod layout;
 pub mod log_level;
 
 /// cbindgen:ignore
-pub mod mem;
-
-/// cbindgen:ignore
 pub mod outb;
 
 /// cbindgen:ignore

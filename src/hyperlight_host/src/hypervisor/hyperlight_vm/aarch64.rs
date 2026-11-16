@@ -107,10 +107,8 @@ impl HyperlightVm {
         Ok(ret)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
-        peb_addr: crate::mem::ptr::RawPtr,
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
@@ -120,10 +118,9 @@ impl HyperlightVm {
             return Ok(());
         };
         let mut x: [u64; 31] = [0; 31];
-        x[0] = peb_addr.into();
-        x[1] = seed;
-        x[2] = self.page_size as u64;
-        x[3] = get_guest_log_filter(guest_max_log_level);
+        x[0] = seed;
+        x[1] = self.page_size as u64;
+        x[2] = get_guest_log_filter(guest_max_log_level);
         let regs = CommonRegisters {
             pc: initialise,
             sp: self.rsp_gva,

@@ -7,10 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
+### Changed
+* **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
+  and existing snapshots regenerated. Guest entry takes the random seed, host
+  page size, and log level.
+
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 * HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
 * Host-written snapshot memory has instruction-cache coherence before guest execution.
+
+### Removed
+* **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
+  `GuestHandle`, `HyperlightPEB`, and `read_n_bytes_from_user_memory`.
+  Pass startup data through a host function and retain its `ByteChunks` reply.
+  `UninitializedSandbox::new` takes a `GuestBinary`.
 
 ## [v0.19.0] - 2026-11-04
 

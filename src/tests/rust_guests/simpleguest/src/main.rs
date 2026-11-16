@@ -37,15 +37,13 @@ use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
-use hyperlight_guest_bin::host_comm::{
-    call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
-};
+use hyperlight_guest_bin::host_comm::{call_host_function, print_output_with_host_print};
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
 // `log` is intentionally kept here: the LogMessage guest function exercises the
 // guest-side `log` crate path to verify that guests using `log` are still supported.
 use log::LevelFilter;
-use tracing::{Span, error, instrument};
+use tracing::{Span, instrument};
 
 extern crate hyperlight_guest;
 
@@ -1117,22 +1115,6 @@ fn add(a: i32, b: i32) -> Result<i32> {
 #[guest_function("LargeParameters")]
 fn large_parameters(v: Vec<u8>, s: String) {
     black_box((v, s));
-}
-
-#[guest_function("ReadFromUserMemory")]
-fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
-    let bytes = read_n_bytes_from_user_memory(num).expect("Failed to read from user memory");
-
-    // verify that the user memory contains the expected data
-    if bytes != expected {
-        error!("User memory does not contain the expected data");
-        return Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "User memory does not contain the expected data".to_string(),
-        ));
-    }
-
-    Ok(bytes)
 }
 
 #[guest_function("MapZeroInitPage")]
