@@ -336,7 +336,7 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
         manifest["artifactType"],
         "application/vnd.hyperlight.snapshot.config.v6+json"
     );
-    assert_eq!(config["abi_version"], 10);
+    assert_eq!(config["abi_version"], 11);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {
@@ -2444,7 +2444,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 10");
+        assert_err_contains(err, "incompatible with snapshot ABI 11");
     }
 }
 

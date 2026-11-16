@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
   and existing snapshots regenerated. Guest entry takes the random seed, host
   page size, and log level.
+* **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
 
 ### Fixed
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.

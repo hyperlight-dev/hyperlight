@@ -8,6 +8,9 @@
 //! the `OutBAction` and `VmAction` port numbers, and `BASE_ADDRESS`.
 //! A change to any of these breaks loading of older snapshots.
 //!
+//! The host-guest message encoding is pinned by tests in
+//! `hyperlight_common/src/flatbuffer_wrappers/abi_tests.rs`.
+//!
 //! When an assertion fires, see `docs/snapshot-versioning.md`.
 
 use super::file::{
@@ -15,7 +18,7 @@ use super::file::{
     SNAPSHOT_ABI_VERSION,
 };
 
-const EXPECTED_ABI_VERSION: u32 = 10;
+const EXPECTED_ABI_VERSION: u32 = 11;
 const EXPECTED_MT_CONFIG: &str = "application/vnd.hyperlight.snapshot.config.v6+json";
 const EXPECTED_MT_SNAPSHOT: &str = "application/vnd.hyperlight.snapshot.memory.v2";
 const EXPECTED_MT_TRANSPORT: &str = "application/vnd.hyperlight.snapshot.transport.v1";

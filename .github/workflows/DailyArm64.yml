@@ -86,7 +86,7 @@ jobs:
 
   # Fuzz on aarch64. This coverage was removed from PRs in #1594 to conserve the
   # limited arm64 runners, and runs here daily instead. The tracing
-  # fuzzers (fuzz_guest_trace, fuzz_guest_estimate_trace_event) are x86_64-only
+  # fuzzers (fuzz_guest_trace, fuzz_guest_trace_decode) are x86_64-only
   fuzzing:
     needs: build-guests
     strategy:

@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
-use anyhow::{Error, Result, anyhow};
-use flatbuffers::size_prefixed_root;
+use anyhow::{Error, Result};
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::guest_log_level::LogLevel;
-use crate::flatbuffers::hyperlight::generated::{
-    GuestLogData as FbGuestLogData, GuestLogDataArgs as FbGuestLogDataArgs, LogLevel as FbLogLevel,
-};
+use super::wire::{decode_value, encode_value};
 
 /// The guest log data for a VM sandbox
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct GuestLogData {
     pub message: String,
@@ -51,23 +49,7 @@ impl TryFrom<&[u8]> for GuestLogData {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
     fn try_from(raw_bytes: &[u8]) -> Result<Self> {
-        let gld_gen = size_prefixed_root::<FbGuestLogData>(raw_bytes)
-            .map_err(|e| anyhow!("Error while reading GuestLogData: {:?}", e))?;
-        let message = convert_generated_option("message", gld_gen.message())?;
-        let source = convert_generated_option("source", gld_gen.source())?;
-        let level = LogLevel::try_from(&gld_gen.level())?;
-        let caller = convert_generated_option("caller", gld_gen.caller())?;
-        let source_file = convert_generated_option("source file", gld_gen.source_file())?;
-        let line = gld_gen.line();
-
-        Ok(GuestLogData {
-            message,
-            source,
-            level,
-            caller,
-            source_file,
-            line,
-        })
+        decode_value(raw_bytes)
     }
 }
 
@@ -75,28 +57,9 @@ impl TryFrom<&GuestLogData> for Vec<u8> {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
     fn try_from(value: &GuestLogData) -> Result<Vec<u8>> {
-        let mut builder = flatbuffers::FlatBufferBuilder::new();
-        let message = builder.create_string(&value.message);
-        let source = builder.create_string(&value.source);
-        let caller = builder.create_string(&value.caller);
-        let source_file = builder.create_string(&value.source_file);
-        let level = FbLogLevel::from(&value.level);
-
-        let guest_log_data_fb = FbGuestLogData::create(
-            &mut builder,
-            &FbGuestLogDataArgs {
-                message: Some(message),
-                source: Some(source),
-                level,
-                caller: Some(caller),
-                source_file: Some(source_file),
-                line: value.line,
-            },
-        );
-        builder.finish_size_prefixed(guest_log_data_fb, None);
-        let res = builder.finished_data().to_vec();
-
-        Ok(res)
+        let mut buffer = Vec::new();
+        encode_value(value, &mut buffer)?;
+        Ok(buffer)
     }
 }
 
@@ -108,8 +71,23 @@ impl TryFrom<GuestLogData> for Vec<u8> {
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-fn convert_generated_option(field_name: &str, opt: Option<&str>) -> Result<String> {
-    opt.map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("Missing field: {}", field_name))
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::*;
+
+    #[test]
+    fn round_trips() {
+        let log = GuestLogData::new(
+            "message".to_string(),
+            "source".to_string(),
+            LogLevel::Warning,
+            "caller".to_string(),
+            "file.rs".to_string(),
+            42,
+        );
+        let encoded: Vec<u8> = (&log).try_into().unwrap();
+        assert_eq!(GuestLogData::try_from(encoded.as_slice()).unwrap(), log);
+    }
 }
