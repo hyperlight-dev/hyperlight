@@ -20,16 +20,16 @@ set -o pipefail
 ## 
 ## Usage examples:
 ##   ./dev/notify-fuzzing-failure.sh
-##   ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="area/testing,kind/bug"
+##   ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
 ##   ./dev/notify-fuzzing-failure.sh --test
 ## Run this script locally like:
-##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="area/testing,kind/bug"
+##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-fuzzing-failure.sh --title="Nightly Failure" --labels="A-testing,C-bug"
 
 REPO="${GITHUB_REPOSITORY:-hyperlight-dev/hyperlight}"
 WORKFLOW_RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
 TEST_MODE=false
 ISSUE_TITLE=""
-LABELS="area/testing,kind/bug,area/fuzzing,lifecycle/needs-review"
+LABELS="A-testing,C-bug,A-fuzzing,S-needs-triage"
 
 for arg in "$@"; do
     case $arg in
@@ -53,7 +53,7 @@ done
 IFS=',' read -r -a LABEL_ARRAY <<< "$LABELS"
 
 # Choose a label to search existing issues for; prefer the first label if present
-SEARCH_LABEL="${LABEL_ARRAY[0]:-area/fuzzing}"
+SEARCH_LABEL="${LABEL_ARRAY[0]:-A-fuzzing}"
 
 # Build issue title if not provided
 if [ -z "$ISSUE_TITLE" ]; then

@@ -1,0 +1,6 @@
+[toolchain]
+# Stable Rust 1.95+ requires an upstream Hyperlight target.
+# Keep this file in sync with src/tests/rust_guests/rust-toolchain.toml.
+channel = "1.94.1"
+components = ["clippy", "rust-src"]
+targets = ["x86_64-unknown-none"]

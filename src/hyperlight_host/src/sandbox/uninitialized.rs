@@ -16,30 +16,10 @@ use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
-use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, Sandbox, new_error};
-
-#[cfg(any(crashdump, gdb))]
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SandboxRuntimeConfig {
-    #[cfg(crashdump)]
-    pub(crate) binary_path: Option<PathBuf>,
-    #[cfg(gdb)]
-    pub(crate) debug_info: Option<super::config::DebugInfo>,
-    #[cfg(crashdump)]
-    pub(crate) guest_core_dump: bool,
-    /// The original entry point address of the loaded guest binary
-    /// (load_addr + ELF entry offset). Used for AT_ENTRY in core dumps
-    /// so GDB can compute the correct load offset for PIE binaries.
-    ///
-    /// `None` until resolved from the snapshot's `NextAction::Initialise`
-    /// in `set_up_hypervisor_partition`.
-    #[cfg(crashdump)]
-    pub(crate) entry_point: Option<u64>,
-}
 
 /// A preliminary sandbox that represents allocated memory and registered host functions,
 /// but has not yet created the underlying virtual machine.
@@ -58,8 +38,6 @@ pub struct UninitializedSandbox {
     /// The memory manager for the sandbox.
     pub(crate) mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
     pub(crate) config: SandboxConfiguration,
-    #[cfg(any(crashdump, gdb))]
-    pub(crate) rt_cfg: SandboxRuntimeConfig,
     pub(crate) load_info: crate::mem::exe::LoadInfo,
     // This is needed to convey the stack pointer between the snapshot
     // and the HyperlightVm creation
@@ -90,9 +68,7 @@ impl GuestBinary {
     ///
     /// For [`GuestBinary::FilePath`], this resolves the path to its canonical
     /// form. For [`GuestBinary::Buffer`], this method is a no-op.
-    /// TODO: Maybe we should make the GuestEnvironment or
-    ///       GuestBinary constructors crate-private and turn this
-    ///       into an invariant on one of those types.
+    /// TODO: Make canonical paths an invariant of `GuestBinary`.
     pub fn canonicalize(&mut self) -> Result<()> {
         if let GuestBinary::FilePath(p) = self {
             *p = p
@@ -103,58 +79,6 @@ impl GuestBinary {
     }
 }
 
-/// A `GuestBlob` containing data and the permissions for its use.
-#[derive(Debug)]
-pub struct GuestBlob<'a> {
-    /// The data contained in the blob.
-    pub data: &'a [u8],
-    /// The permissions for the blob in memory.
-    /// By default, it's READ
-    pub permissions: MemoryRegionFlags,
-}
-
-impl<'a> From<&'a [u8]> for GuestBlob<'a> {
-    fn from(data: &'a [u8]) -> Self {
-        GuestBlob {
-            data,
-            permissions: DEFAULT_GUEST_BLOB_MEM_FLAGS,
-        }
-    }
-}
-
-/// Container for a guest binary and optional initialization data.
-///
-/// This struct combines a guest binary (either from a file or memory buffer) with
-/// optional data that will be available to the guest during execution.
-///
-/// The guest binary is owned. `'b` is the lifetime of the borrowed init data.
-#[derive(Debug)]
-pub struct GuestEnvironment<'b> {
-    /// The guest binary, which can be a file path or a buffer.
-    pub guest_binary: GuestBinary,
-    /// An optional guest blob, which can be used to provide additional data to the guest.
-    pub init_data: Option<GuestBlob<'b>>,
-}
-
-impl<'b> GuestEnvironment<'b> {
-    /// Creates a new `GuestEnvironment` with the given guest binary and an optional guest blob.
-    pub fn new(guest_binary: GuestBinary, init_data: Option<&'b [u8]>) -> Self {
-        GuestEnvironment {
-            guest_binary,
-            init_data: init_data.map(GuestBlob::from),
-        }
-    }
-}
-
-impl From<GuestBinary> for GuestEnvironment<'_> {
-    fn from(guest_binary: GuestBinary) -> Self {
-        GuestEnvironment {
-            guest_binary,
-            init_data: None,
-        }
-    }
-}
-
 impl UninitializedSandbox {
     // Creates a new uninitialized sandbox from a pre-built snapshot.
     // Note that since memory configuration is part of the snapshot the only configuration
@@ -162,11 +86,7 @@ impl UninitializedSandbox {
     // `InterruptHandler` on Linux.
     //
     // This is ok for now as this is not a public function
-    fn from_snapshot(
-        snapshot: Arc<Snapshot>,
-        cfg: Option<SandboxConfiguration>,
-        #[cfg(crashdump)] binary_path: Option<PathBuf>,
-    ) -> Result<Self> {
+    fn from_snapshot(snapshot: Arc<Snapshot>, cfg: Option<SandboxConfiguration>) -> Result<Self> {
         #[cfg(feature = "build-metadata")]
         log_build_details();
 
@@ -175,28 +95,6 @@ impl UninitializedSandbox {
         check_windows_version()?;
 
         let sandbox_cfg = cfg.unwrap_or_default();
-
-        #[cfg(any(crashdump, gdb))]
-        let rt_cfg = {
-            #[cfg(crashdump)]
-            let guest_core_dump = sandbox_cfg.get_guest_core_dump();
-
-            #[cfg(gdb)]
-            let debug_info = sandbox_cfg.get_guest_debug_info();
-
-            SandboxRuntimeConfig {
-                #[cfg(crashdump)]
-                binary_path,
-                #[cfg(gdb)]
-                debug_info,
-                #[cfg(crashdump)]
-                guest_core_dump,
-                // entry_point is set later in set_up_hypervisor_partition
-                // once the entrypoint is resolved from the snapshot
-                #[cfg(crashdump)]
-                entry_point: None,
-            }
-        };
 
         let mem_mgr_wrapper =
             SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
@@ -207,8 +105,6 @@ impl UninitializedSandbox {
             host_funcs,
             mgr: mem_mgr_wrapper,
             config: sandbox_cfg,
-            #[cfg(any(crashdump, gdb))]
-            rt_cfg,
             load_info: snapshot.load_info(),
             stack_top_gva: snapshot.stack_top_gva(),
             pending_file_mappings: Vec::new(),
@@ -219,7 +115,7 @@ impl UninitializedSandbox {
         Ok(sandbox)
     }
 
-    /// Creates a new uninitialized sandbox for the given guest environment.
+    /// Creates a new uninitialized sandbox for the given guest binary.
     ///
     /// The guest binary can be provided as either a file path or memory buffer.
     /// An optional configuration can customize memory sizes and sandbox settings.
@@ -227,27 +123,13 @@ impl UninitializedSandbox {
     /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
     #[instrument(
         err(Debug),
-        skip(env),
+        skip(guest_binary),
         parent = Span::current()
     )]
-    pub fn new<'b>(
-        env: impl Into<GuestEnvironment<'b>>,
-        cfg: Option<SandboxConfiguration>,
-    ) -> Result<Self> {
+    pub fn new(guest_binary: GuestBinary, cfg: Option<SandboxConfiguration>) -> Result<Self> {
         let cfg = cfg.unwrap_or_default();
-        let env = env.into();
-        #[cfg(crashdump)]
-        let binary_path = match &env.guest_binary {
-            GuestBinary::FilePath(path) => Some(path.clone()),
-            GuestBinary::Buffer(_) => None,
-        };
-        let snapshot = Snapshot::from_env(env, cfg)?;
-        Self::from_snapshot(
-            Arc::new(snapshot),
-            Some(cfg),
-            #[cfg(crashdump)]
-            binary_path,
-        )
+        let snapshot = Snapshot::from_binary(guest_binary, cfg)?;
+        Self::from_snapshot(Arc::new(snapshot), Some(cfg))
     }
 
     /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
@@ -269,6 +151,10 @@ impl UninitializedSandbox {
     /// the sandbox's primary shared memory region (`BASE_ADDRESS` to
     /// `BASE_ADDRESS + shared_mem_size`).
     ///
+    /// [`Sandbox::snapshot`] copies only the pages of this region that the
+    /// guest has mapped into its page tables, during initialization or a later
+    /// call, then removes the region. Pages the guest has not mapped are lost.
+    ///
     /// Returns the length of the mapping in bytes.
     #[instrument(err(Debug), skip(self, file_path, guest_base), parent = Span::current())]
     pub fn map_file_cow(
@@ -278,7 +164,7 @@ impl UninitializedSandbox {
     ) -> crate::Result<u64> {
         // Validate that guest_base is outside the sandbox's primary memory slot.
         // (Full range check happens after prepare_file_cow when we know the mapped size.)
-        let shared_size = self.mgr.shared_mem.mem_size() as u64;
+        let shared_size = self.mgr.shared_mem.gpa_span_len() as u64;
         let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
 
         let prepared = super::file_mapping::prepare_file_cow(file_path, guest_base)?;
@@ -332,7 +218,7 @@ impl UninitializedSandbox {
     /// This is useful for placing file mappings at guest physical addresses
     /// that don't overlap the primary shared memory slot.
     pub fn shared_mem_size(&self) -> usize {
-        self.mgr.shared_mem.mem_size()
+        self.mgr.shared_mem.gpa_span_len()
     }
 
     /// Sets the maximum log level for guest code execution.
@@ -400,7 +286,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_pathbuf;
 
     use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
+    use crate::sandbox::uninitialized::GuestBinary;
     use crate::{Result, Sandbox, UninitializedSandbox, new_error};
 
     #[cfg(target_os = "linux")]
@@ -418,23 +304,6 @@ mod tests {
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None);
 
         assert!(sandbox.is_ok());
-    }
-
-    #[test]
-    fn test_load_extra_blob() {
-        let binary_path = simple_guest_as_pathbuf();
-        let buffer = [0xde, 0xad, 0xbe, 0xef];
-        let guest_env =
-            GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
-
-        let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox = uninitialized_sandbox.evolve().unwrap();
-
-        let res = sandbox
-            .call::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
-            .expect("Failed to call ReadFromUserMemory");
-
-        assert_eq!(res, buffer.to_vec());
     }
 
     #[test]
@@ -458,7 +327,7 @@ mod tests {
         // Non default memory configuration
         let cfg = {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(0x1000);
+            cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE * 2);
             Some(cfg)
         };
 
@@ -1120,117 +989,63 @@ mod tests {
 
         // Test 1: Create snapshot with default config, create multiple sandboxes from it
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default())
+                Snapshot::from_binary(env, Default::default())
                     .expect("Failed to create snapshot with default config"),
             );
 
             // Create first sandbox from snapshot
-            let sandbox1 = UninitializedSandbox::from_snapshot(
-                snapshot.clone(),
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create first sandbox from snapshot");
+            let sandbox1 = UninitializedSandbox::from_snapshot(snapshot.clone(), None)
+                .expect("Failed to create first sandbox from snapshot");
 
             // Create second sandbox from same snapshot
-            let sandbox2 = UninitializedSandbox::from_snapshot(
-                snapshot.clone(),
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create second sandbox from snapshot");
+            let sandbox2 = UninitializedSandbox::from_snapshot(snapshot.clone(), None)
+                .expect("Failed to create second sandbox from snapshot");
 
             // Both should be able to evolve independently
             let _evolved1 = sandbox1.evolve().expect("Failed to evolve sandbox1");
             let _evolved2 = sandbox2.evolve().expect("Failed to evolve sandbox2");
         }
 
-        // Test 2: Create snapshot with custom heap size
-        {
-            let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(16 * 1024 * 1024); // 16MB heap
-
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
-
-            let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
-                    .expect("Failed to create snapshot with custom heap size"),
-            );
-
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot with custom heap");
-
-            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
-        }
-
-        // Test 3: Create snapshot with custom scratch size
+        // Test 2: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_scratch_size(SandboxConfiguration::DEFAULT_SCRATCH_SIZE + 64 * 1024);
 
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
+                Snapshot::from_binary(env, cfg)
                     .expect("Failed to create snapshot with custom stack size"),
             );
 
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot with custom stack");
+            let sandbox = UninitializedSandbox::from_snapshot(snapshot, None)
+                .expect("Failed to create sandbox from snapshot with custom stack");
 
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 4: Create snapshot with custom heap and scratch sizes
+        // Test 3: Create several sandboxes from a snapshot with a custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
             cfg.set_scratch_size(512 * 1024); // 512KB scratch
 
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, cfg)
+                Snapshot::from_binary(env, cfg)
                     .expect("Failed to create snapshot with all custom settings"),
             );
 
             // Create multiple sandboxes from the same snapshot
-            let sandbox1 = UninitializedSandbox::from_snapshot(
-                snapshot.clone(),
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox1 from fully customized snapshot");
-            let sandbox2 = UninitializedSandbox::from_snapshot(
-                snapshot.clone(),
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox2 from fully customized snapshot");
-            let sandbox3 = UninitializedSandbox::from_snapshot(
-                snapshot.clone(),
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox3 from fully customized snapshot");
+            let sandbox1 = UninitializedSandbox::from_snapshot(snapshot.clone(), None)
+                .expect("Failed to create sandbox1 from fully customized snapshot");
+            let sandbox2 = UninitializedSandbox::from_snapshot(snapshot.clone(), None)
+                .expect("Failed to create sandbox2 from fully customized snapshot");
+            let sandbox3 = UninitializedSandbox::from_snapshot(snapshot.clone(), None)
+                .expect("Failed to create sandbox3 from fully customized snapshot");
 
             let _evolved1 = sandbox1.evolve().expect("Failed to evolve sandbox1");
             let _evolved2 = sandbox2.evolve().expect("Failed to evolve sandbox2");
@@ -1242,36 +1057,26 @@ mod tests {
             let binary_bytes = fs::read(&binary_path).expect("Failed to read binary file");
 
             let snapshot = Arc::new(
-                Snapshot::from_env(GuestBinary::Buffer(binary_bytes), Default::default())
+                Snapshot::from_binary(GuestBinary::Buffer(binary_bytes), Default::default())
                     .expect("Failed to create snapshot from buffer"),
             );
 
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                None,
-            )
-            .expect("Failed to create sandbox from buffer-based snapshot");
+            let sandbox = UninitializedSandbox::from_snapshot(snapshot, None)
+                .expect("Failed to create sandbox from buffer-based snapshot");
 
             let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
         // Test 6: Register host functions on sandboxes created from snapshot
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
 
             let snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default()).expect("Failed to create snapshot"),
+                Snapshot::from_binary(env, Default::default()).expect("Failed to create snapshot"),
             );
 
-            let mut sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot");
+            let mut sandbox = UninitializedSandbox::from_snapshot(snapshot, None)
+                .expect("Failed to create sandbox from snapshot");
 
             // Register a custom host function
             sandbox
@@ -1296,55 +1101,23 @@ mod tests {
             assert_eq!(result, ReturnValue::Int(30));
         }
 
-        // Test 7: Create snapshot with init data (guest blob)
-        {
-            let init_data = [0xCA, 0xFE, 0xBA, 0xBE];
-            let guest_env =
-                GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&init_data));
-
-            let snapshot = Arc::new(
-                Snapshot::from_env(guest_env, Default::default())
-                    .expect("Failed to create snapshot with init data"),
-            );
-
-            let sandbox = UninitializedSandbox::from_snapshot(
-                snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create sandbox from snapshot with init data");
-
-            let _evolved = sandbox.evolve().expect("Failed to evolve sandbox");
-        }
-
         // Test 8: Create snapshot from existing sandbox
         {
-            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let env = GuestBinary::FilePath(binary_path.clone());
             let orig_snapshot = Arc::new(
-                Snapshot::from_env(env, Default::default())
+                Snapshot::from_binary(env, Default::default())
                     .expect("Failed to create snapshot with default config"),
             );
-            let orig_sandbox = UninitializedSandbox::from_snapshot(
-                orig_snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create orig_sandbox");
+            let orig_sandbox = UninitializedSandbox::from_snapshot(orig_snapshot, None)
+                .expect("Failed to create orig_sandbox");
             let mut initialized_sandbox = orig_sandbox
                 .evolve()
                 .expect("Failed to evolve orig_sandbox");
             let new_snapshot = initialized_sandbox
                 .snapshot()
                 .expect("Failed to create new_snapshot");
-            let new_sandbox = UninitializedSandbox::from_snapshot(
-                new_snapshot,
-                None,
-                #[cfg(crashdump)]
-                Some(binary_path.clone()),
-            )
-            .expect("Failed to create new_sandbox");
+            let new_sandbox = UninitializedSandbox::from_snapshot(new_snapshot, None)
+                .expect("Failed to create new_sandbox");
             let _evolved = new_sandbox.evolve().expect("Failed to evolve new_sandbox");
         }
     }

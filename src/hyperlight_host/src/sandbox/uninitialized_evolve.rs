@@ -4,12 +4,10 @@ use rand::RngExt;
 use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
-#[cfg(any(crashdump, gdb))]
-use super::uninitialized::SandboxRuntimeConfig;
+use super::snapshot::NextAction;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -25,7 +23,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     let (mut hshm, gshm) = u_sbox.mgr.build()?;
 
     // Get the host page size. Narrowed to u32 because the guest ABI
-    // passes it via a 32-bit register (rdx), but widened back to usize
+    // stores it as u32, but widened back to usize
     // for host-side alignment calculations in set_up_hypervisor_partition.
     let page_size = u32::try_from(page_size::get())?;
 
@@ -34,18 +32,12 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         &u_sbox.config,
         u_sbox.stack_top_gva,
         page_size as usize,
-        #[cfg(any(crashdump, gdb))]
-        u_sbox.rt_cfg,
         u_sbox.load_info,
     )?;
 
     let seed = {
         let mut rng = rand::rng();
         rng.random::<u64>()
-    };
-    let peb_addr = {
-        let peb_u64 = u64::try_from(hshm.layout.peb_address())?;
-        RawPtr::from(peb_u64)
     };
 
     #[cfg(target_os = "linux")]
@@ -77,16 +69,15 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         prepared.mark_consumed();
     }
 
-    vm.initialise(
-        peb_addr,
-        seed,
-        &mut hshm,
-        &u_sbox.host_funcs,
-        max_guest_log_level,
-    )
-    .map_err(HyperlightVmError::Initialize)?;
+    let initialise_guest = matches!(vm.get_next_action(), NextAction::Initialise(_));
+    vm.initialise(seed, &mut hshm, &u_sbox.host_funcs, max_guest_log_level)
+        .map_err(HyperlightVmError::Initialize)?;
 
-    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+    if initialise_guest {
+        hshm.finish_snapshot_checkpoint()?;
+    }
+
+    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm, u_sbox.config);
 
     if let Some(log_level) = max_guest_log_level {
         sbox.log_level(log_level)?;
@@ -100,12 +91,11 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     stack_top_gva: u64,
     page_size: usize,
-    #[cfg(any(crashdump, gdb))] rt_cfg: SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
-    let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
+    let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {
         use crate::hypervisor::gdb::create_gdb_thread;
 
         let gdb_conn = create_gdb_thread(port);
@@ -127,21 +117,6 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
-    // Store the original entry point address in the runtime config for core dumps.
-    // This is needed because `next_action` transitions from `Initialise(addr)` to
-    // `Call(dispatch_addr)` after guest initialisation, losing the original value
-    // that GDB needs to compute the PIE binary's load offset. The manager carries
-    // it across that transition (and across snapshot save/restore), so it is
-    // correct for both the evolve path and `Sandbox::from_snapshot`.
-    #[cfg(crashdump)]
-    let rt_cfg = {
-        let mut rt_cfg = rt_cfg;
-        if mgr.original_entrypoint != 0 {
-            rt_cfg.entry_point = Some(mgr.original_entrypoint);
-        }
-        rt_cfg
-    };
-
     Ok(HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
@@ -152,8 +127,6 @@ pub(crate) fn set_up_hypervisor_partition(
         config,
         #[cfg(gdb)]
         gdb_conn,
-        #[cfg(crashdump)]
-        rt_cfg,
         #[cfg(feature = "mem_profile")]
         trace_info,
     )

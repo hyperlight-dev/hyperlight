@@ -2,7 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::{layout, vmem};
+use hyperlight_common::vmem;
 
 // There are no notable architecture-specific safety considerations
 // here, and the general conditions are documented in the
@@ -22,7 +22,7 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
             prev_base = out(reg) prev_base,
         );
     }
-    let limit = layout::scratch_allocator_limit_gpa();
+    let limit = crate::layout::allocator_limit_gpa();
     if prev_base.checked_add(nbytes).is_none_or(|end| end > limit) {
         unsafe {
             crate::exit::abort_with_code_and_message(

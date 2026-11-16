@@ -104,7 +104,7 @@ struct Tier {
     /// Number of slots in this tier.
     count: usize,
     /// Free slot addresses, popped/pushed LIFO.
-    free: SmallVec<[u64; 64]>,
+    free: SmallVec<[u64; 16]>,
     /// One bit per slot index; set means the slot is currently handed out.
     allocated: FixedBitSet,
 }
@@ -114,10 +114,6 @@ impl Tier {
         let mut free = SmallVec::new();
         free.try_reserve_exact(layout.slot_count)
             .map_err(|_| AllocError::Bookkeeping)?;
-
-        for i in 0..layout.slot_count {
-            free.push(layout.base_addr + (i * layout.slot_size as usize) as u64);
-        }
 
         Ok(Self {
             base_addr: layout.base_addr,
@@ -186,6 +182,28 @@ impl Tier {
         Ok(())
     }
 
+    /// Keep one queue-owned slot unavailable for a pool swap.
+    fn reserve_addr(&mut self, addr: u64) -> Result<(), AllocError> {
+        let slot = self.slot_of(addr)?;
+
+        if self.allocated.contains(slot) {
+            return Err(AllocError::InvalidArg);
+        }
+
+        self.allocated.insert(slot);
+        Ok(())
+    }
+
+    /// Populate the free list from the allocation bitmap.
+    fn rebuild_free(&mut self) {
+        self.free.clear();
+
+        for slot in self.allocated.zeroes() {
+            self.free
+                .push(self.base_addr + slot as u64 * u64::from(self.slot_size));
+        }
+    }
+
     fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
         self.live_slot_of(addr)?;
         Ok(self.slot_size as usize)
@@ -205,15 +223,6 @@ impl Tier {
                 .ones()
                 .map(|slot| self.base_addr + (slot * self.slot_size as usize) as u64),
         );
-    }
-
-    fn for_each_free(&self, f: &mut impl FnMut(Allocation)) {
-        for slot in self.allocated.zeroes() {
-            f(Allocation {
-                addr: self.base_addr + slot as u64 * u64::from(self.slot_size),
-                len: self.slot_size,
-            });
-        }
     }
 
     fn layout(&self) -> SlotLayout {
@@ -343,6 +352,11 @@ impl Inner {
     fn layouts(&self) -> (Option<SlotLayout>, SlotLayout) {
         (self.lower.as_ref().map(Tier::layout), self.upper.layout())
     }
+
+    /// Byte span of both tiers, including any gap.
+    fn byte_len(&self) -> usize {
+        (self.upper.layout().end_addr() - self.base_addr()) as usize
+    }
 }
 
 /// A buffer pool with one or two fixed-slot tiers.
@@ -356,6 +370,34 @@ pub struct SlotPool {
 }
 
 impl SlotPool {
+    /// Whether both handles share allocation state.
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Create allocation state for a pool swap with the supplied live slots reserved.
+    ///
+    /// Invalid or duplicate reservations leave this pool unchanged.
+    pub(crate) fn swap(&self, reserved: impl Iterator<Item = u64>) -> Result<Self, AllocError> {
+        let current = self.inner.borrow();
+        let (lower, upper) = current.layouts();
+        let mut inner = Inner::new(lower, upper)?;
+
+        for addr in reserved {
+            // this address is a valid allocation in the current pool
+            current.allocation_len(addr)?;
+            if let Some(lower) = &mut inner.lower
+                && lower.contains(addr)
+            {
+                lower.reserve_addr(addr)?;
+            } else {
+                inner.upper.reserve_addr(addr)?;
+            }
+        }
+
+        Ok(Self::from_inner(inner))
+    }
+
     /// Create a single-tier recycling pool from exact slot placement.
     pub fn new(layout: SlotLayout) -> Result<Self, AllocError> {
         Self::from_layouts(None, layout)
@@ -371,26 +413,23 @@ impl SlotPool {
     }
 
     fn from_layouts(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
-        let inner = Inner::new(lower, upper)?;
-        Ok(Self {
+        Ok(Self::from_inner(Inner::new(lower, upper)?))
+    }
+
+    fn from_inner(mut inner: Inner) -> Self {
+        inner.upper.rebuild_free();
+        if let Some(lower) = &mut inner.lower {
+            lower.rebuild_free();
+        }
+
+        Self {
             inner: Rc::new(RefCell::new(inner)),
-        })
+        }
     }
 
     /// Return every live slot address in deterministic tier and index order.
     pub fn live_addrs(&self) -> Vec<u64> {
         self.inner.borrow().live_addrs()
-    }
-
-    /// Visit every free slot in lower-then-upper index order.
-    ///
-    /// The callback must not allocate or free slots in this pool.
-    pub fn for_each_free(&self, mut f: impl FnMut(Allocation)) {
-        let inner = self.inner.borrow();
-        if let Some(lower) = &inner.lower {
-            lower.for_each_free(&mut f);
-        }
-        inner.upper.for_each_free(&mut f);
     }
 
     /// Return the lower and upper tier layouts.
@@ -467,6 +506,11 @@ impl SlotPool {
     /// Allocate one slot holding at least `len` bytes.
     pub fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         self.inner.borrow_mut().alloc(len)
+    }
+
+    /// Byte span from the first slot to the last, including any gap between tiers.
+    pub fn byte_len(&self) -> usize {
+        self.inner.borrow().byte_len()
     }
 
     #[cfg(test)]

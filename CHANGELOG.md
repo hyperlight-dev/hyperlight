@@ -5,84 +5,132 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
-* Namespaced application metadata on immutable snapshots.
-* Guest paging operations and AArch64 system-register macros in `hyperlight-guest`.
-* Per-direction virtqueue configuration through `SandboxConfiguration` and
-  `SandboxBuilder`, with allocations included in scratch sizing.
-* Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values.
-* `ExternalValueSource` implementations for `RecvChain` and `Segments`.
-* Producer batch completion without notification and segmented payload
-  assembly and extraction without flattening.
+* Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
 ### Changed
-* `Sandbox` is the primary initialized sandbox type. `MultiUseSandbox` remains
-  as a deprecated alias.
-* `Sandbox` lives in the private `sandbox::initialized` module and is reached
-  through `hyperlight_host::Sandbox` or `hyperlight_host::sandbox::Sandbox`.
-  `sandbox::initialized_multi_use` remains as a deprecated public path.
-* C guests may omit `c_guest_dispatch_function` when they do not need custom
-  fallback dispatch.
-* Support overriding the guest log level when building or restoring initialized
-  snapshots.
-* Expose C guest `ByteChunks` values as pointer and length arrays.
-* Return typed `hl_ReturnValue` objects from C guest functions through
-  `hl_result_from_*` constructors.
-* Guest tracing skips its per-call and per-callsite work while the guest log
-  level is `OFF`. `hyperlight_guest_tracing::is_trace_enabled` reports whether
-  the configured level is above `OFF` rather than whether the tracing state was
-  allocated.
-* **Breaking:** Virtqueue rings and pools occupy host-owned scratch before page
-  tables. Snapshots use ABI 5 and config schema v3. Existing snapshots must be
-  regenerated.
-* Host virtqueue access uses checked copies and atomics across mapped scratch.
-  Snapshot admission checks geometry, canonical rings, and distinct, aligned
-  H2G pool slots.
-  Consumers validate descriptors and payload accesses during use.
-* Virtqueue producers use concrete `SlotPool` allocation and `BufferLease`
-  ownership. `BufferMap` supplies complete owners exposing initialized bytes.
-* `VirtqProducer::reset` and `GuestContext::prepare_snapshot` are unsafe.
-  Peers must stay stopped with no live consumer-side chain handles until
-  their consumers are reset or replaced.
-* `ChainBuilder::build()` allocates readable and writable requests.
-  `writable_avail()` reserves available upper-tier slots within the descriptor
-  budget. It may add zero slots to a nonempty chain.
-* Require guest logs and all host and guest function calls to use virtqueues.
-* Keep registered Rust guest return values typed until transport encoding so
-  external byte results avoid intermediate FlatBuffer copies.
-* Store canonical virtqueue rings in versioned OCI transport layers. Config v3
-  rejects snapshots without transport state.
-* Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls
-  keep their deferred result path.
-* Reject snapshot capture while guest-owned transport buffers are retained.
-* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12
-  and 8 pages.
-* `hyperlight_guest_bin::exception::arch`, previously available on
-  amd64 only, has been deprecated in favour of new
-  architecture-independent exception handling hooks. The new
-  interfaces are significantly more liminited, but more portable; they
-  will be extended in the future.
-* MSHV: vCPU creation reads the partition's XSAVE format once. This removes
-  one hypercall from every restore.
-
-### Removed
-* `RunPool` and the run-specific `AllocError::InvalidAlign` variant.
-* Remove legacy stack I/O, its `GuestHandle` methods, and its sandbox
-  configuration and builder options.
-* Embedded byte payload tables and their value-union variants.
+* **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
+  and existing snapshots regenerated. Guest entry takes the random seed, host
+  page size, and log level.
 
 ### Fixed
-* AMD64 exception handlers clear the direction flag before calling Rust.
-* Linear-time segment consumption for fragmented virtqueue messages.
-* Allow reclaimed virtqueue completions to span multiple ring reuse cycles.
-* Virtqueue consumers return errors when payload copies or runtime bookkeeping
-  cannot be allocated.
-* Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility.
-* Guest virtqueue copies reject overlapping buffers before accessing memory.
-* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity.
-* Snapshot checkpoints ignore idle cancellation and clear partial abort state.
-* Keep sandboxes usable when G2H calls exhaust reply capacity.
-* Reject incompatible transport snapshots before changing sandbox state.
-* Allow guest host-return conversions to call or log to the host.
+* Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
+* HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
+* Host-written snapshot memory has instruction-cache coherence before guest execution.
+
+### Removed
+* **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
+  `GuestHandle`, `HyperlightPEB`, and `read_n_bytes_from_user_memory`.
+  Pass startup data through a host function and retain its `ByteChunks` reply.
+  `UninitializedSandbox::new` takes a `GuestBinary`.
+
+## [v0.19.0] - 2026-11-04
+
+### Added
+* `Sandbox::snapshot_with_options` takes a snapshot with `SnapshotOptions`. `SnapshotOptions::scratch_size` gives the sandbox, and later restores of the snapshot, a different scratch size. A guest can boot with the scratch its initialisation needs and run guest function calls from a snapshot with only the scratch they need, so each restore costs less. It can also give a guest more scratch than it booted with.
+* `Sandbox::scratch_allocated_bytes` returns how much scratch the guest has allocated since the sandbox was last restored or snapshotted. The guest controls the value it is read from.
+* `hyperlight-component-csharp` crate for generating C# host bindings from WIT worlds by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
+
+### Changed
+* Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
+
+* **Breaking:** Generated libc bindings use `usize` for `size_t` arguments and return values, including `strlen` and `memcpy`. Rust callers that use `u64` or `c_ulong` need explicit conversions. The C ABI is unchanged.
+* **Breaking:** Snapshots use ABI 9 and config schema v5. Existing snapshots
+  must be regenerated.
+* **Breaking:** `PtRootFinder` receives a `SnapshotMemoryReader` and returns a
+  `Result<Vec<u64>>`. Read snapshot bytes with `snapshot.read_exact(gpa, buffer)?`
+  and return roots with `Ok(roots)`.
+* Related snapshots share immutable memory layers. This reduces capture time
+  and memory use. A guest can read data it overwrote before a snapshot from the
+  older layers of that snapshot.
+* KVM: deleting a memory slot flushes only that slot's guest mappings on Linux
+  6.12 and later. This speeds up the first guest call after a snapshot,
+  restore, or unmap changes memory slots.
+* **Breaking:** `Sandbox::snapshot` installs the captured snapshot into the
+  sandbox and removes `map_region` and `map_file_cow` regions, which only
+  `restore` removed before. Region pages the guest has not mapped into its page
+  tables become unreachable at the snapshot instead of at the next restore.
+* `vmem::walk_va_spaces` merges adjacent mappings of the same kind into one
+  mapping.
+* A new sandbox writes only the guest code, PEB and init data into its memory.
+  The host populates other pages on first guest touch, which speeds up sandbox
+  creation.
+* Use `talc` as the guest heap allocator. Guest init writes only the start and
+  end of the heap, which speeds up sandbox creation.
+* **Breaking:** Snapshots no longer contain a zero-filled heap region, which
+  makes them smaller and faster to create, save, and load. The guest heap is
+  backed by scratch and has no fixed size. Running out of scratch aborts the
+  guest with `MallocFailed` instead of failing the allocation.
+
+* **Breaking:** The transport arena sits one unmapped guard page below the reserved scratch-top pages, at an address independent of the scratch size, and the page tables at the scratch base. The guest's page allocator stops at the arena GPA the host publishes in the scratch-top metadata, so guests must be rebuilt. `hyperlight_common::layout::scratch_allocator_limit_gpa` is renamed `scratch_reserved_top_gpa`, the start of the reserved pages. An allocator that stops there runs into the arena. The minimum scratch size grows by that guard page. Snapshot ABI 7: existing snapshots must be regenerated.
+
+* **Breaking:** `hyperlight-component-macro`: `host_bindgen!` and `guest_bindgen!` encode values little-endian and qualify function names with their interface, such as `wasi:http/types@0.2.0#[method]fields.get` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
+
+### Removed
+* **Breaking:** `SandboxConfiguration::set_heap_size`,
+  `SandboxConfiguration::DEFAULT_HEAP_SIZE`, `SandboxBuilder::heap_size`, and
+  `SandboxBuilder::get_heap_size`.
+
+### Fixed
+
+* Guest libc accepts null buffers for zero-length writes.
+* Fix calls to guest functions with more than 11 parameters. Registration accepts up to 32, but every call with more than 11 failed.
+* Fix restore on KVM not rewinding the guest TSC when restores are less than a second apart.
+
+## [v0.18.0] - 2026-10-13
+
+### Added
+* Windows on ARM64 support using the WHP backend by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1638
+* Virtqueue-based host-guest communication. Per-direction virtqueue configuration is available through `SandboxConfiguration` and `SandboxBuilder`, with allocations included in scratch sizing by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793 and https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Shared virtqueue framing with a 12-byte `MsgHeader` and external byte values, plus `ExternalValueSource` implementations for `RecvChain` and `Segments` by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1792, https://github.com/hyperlight-dev/hyperlight/pull/1793, and https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Producer batch completion without notification, and segmented payload assembly and extraction without flattening by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793 and https://github.com/hyperlight-dev/hyperlight/pull/1794
+* `MailboxValue`, which defines the transport mailbox's allowed wire values, and `virtq::canonical::validate_canon_prefix`, which validates a bounded available descriptor prefix by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1891
+* Retained guest `Bytes` and `ByteChunks` preserve contents and pointers across snapshot capture, restore, and cloning by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1891
+* Namespaced application metadata on immutable snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1860
+* Support overriding the guest log level when building or restoring initialized snapshots by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1833
+* Guest paging operations and AArch64 system-register macros in `hyperlight-guest` by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1889
+* Architecture-independent page fault and undefined instruction exception hooks in `hyperlight-guest-bin` by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1877
+* Guest virtual memory support for lazily zero-initialized regions and in-place mapping modification by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1873 and https://github.com/hyperlight-dev/hyperlight/pull/1874
+
+### Changed
+* **Breaking:** All guest logs and host and guest function calls now go through virtqueues. Virtqueue rings and pools occupy host-owned scratch before page tables, and canonical virtqueue rings are stored in versioned OCI transport layers. Retained-buffer checkpoints use ABI 6 and config schema v3, which rejects snapshots without transport state. Existing snapshots must be regenerated by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793, https://github.com/hyperlight-dev/hyperlight/pull/1794, and https://github.com/hyperlight-dev/hyperlight/pull/1891
+* **Breaking:** `VirtqProducer::reset` and `GuestContext::prepare_snapshot` are unsafe. Peers must stay stopped with no live consumer-side chain handles until their consumers are reset or replaced by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793 and https://github.com/hyperlight-dev/hyperlight/pull/1794
+* **Breaking:** Snapshot checkpoints reject host function calls. Violations poison the sandbox by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1896
+* `Sandbox` is the primary initialized sandbox type and is reached through `hyperlight_host::Sandbox` or `hyperlight_host::sandbox::Sandbox`. `MultiUseSandbox` remains as a deprecated alias, and `sandbox::initialized_multi_use` remains as a deprecated public path by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1866
+* `hyperlight_guest_bin::exception::arch`, previously available on amd64 only, has been deprecated in favour of the new architecture-independent exception handling hooks. The new interfaces are significantly more limited, but more portable; they will be extended in the future by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1877
+* ELF loading respects program header virtual addresses for non-PIE guest binaries by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1530
+* Host virtqueue access uses checked copies and atomics across mapped scratch. Snapshot admission checks geometry, canonical rings, and distinct, aligned H2G pool slots. Consumers validate descriptors and payload accesses during use by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793 and https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Virtqueue producers use concrete `SlotPool` allocation and `BufferLease` ownership. `BufferMap` supplies complete owners exposing initialized bytes by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793
+* `ChainBuilder::build()` allocates readable and writable requests. `writable_avail()` reserves available upper-tier slots within the descriptor budget. It may add zero slots to a nonempty chain by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793
+* Guest transport aliases follow buffer ownership. Restored buffers keep captured backing while their scratch slots become reusable by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1891
+* Running snapshots checkpoint dirty virtqueues before capture. Ordinary calls keep their deferred result path by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Keep registered Rust guest return values typed until transport encoding so external byte results avoid intermediate FlatBuffer copies by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Use the reclaimed stack pages to raise the default G2H and H2G pools to 12 and 8 pages by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* C guests may omit `c_guest_dispatch_function` when they do not need custom fallback dispatch by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1848
+* Expose C guest `ByteChunks` values as pointer and length arrays, and return typed `hl_ReturnValue` objects from C guest functions through `hl_result_from_*` constructors by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1792
+* Guest tracing skips its per-call and per-callsite work while the guest log level is `OFF`. `hyperlight_guest_tracing::is_trace_enabled` reports whether the configured level is above `OFF` rather than whether the tracing state was allocated by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1840
+* MSHV: vCPU creation reads the partition's XSAVE format once. This removes one hypercall from every restore by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1912
+
+### Removed
+* Legacy stack I/O, its `GuestHandle` methods, and its sandbox configuration and builder options by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Embedded byte payload tables and their value-union variants by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* `RunPool` and the run-specific `AllocError::InvalidAlign` variant by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793
+
+### Fixed
+* Reserve 48 KiB for guest exception stacks and metadata to cover debug paging walks by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1891
+* AMD64 exception handlers clear the direction flag before calling Rust by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1882
+* Use a stronger TLB invalidation barrier when updating guest page tables by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1876
+* The `gdb` feature is now a no-op in release builds by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1886
+* Use checked arithmetic and conversions in `push_buffer` as defense in depth by @JM00NJ in https://github.com/hyperlight-dev/hyperlight/pull/1820 and https://github.com/hyperlight-dev/hyperlight/pull/1825
+* Use a 16 KiB-aligned default scratch size for Apple Silicon compatibility by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793
+* Guest virtqueue copies reject overlapping buffers before accessing memory by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1793
+* Linear-time segment consumption for fragmented virtqueue messages by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Allow reclaimed virtqueue completions to span multiple ring reuse cycles by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Virtqueue consumers return errors when payload copies or runtime bookkeeping cannot be allocated by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Keep sandboxes usable after an H2G request exceeds available virtqueue capacity, or when G2H calls exhaust reply capacity by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Snapshot checkpoints ignore idle cancellation and clear partial abort state by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Reject incompatible transport snapshots before changing sandbox state by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* Allow guest host-return conversions to call or log to the host by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/1794
+* `Sandbox::from_snapshot` now honours the guest log level set via `SandboxConfiguration::set_max_guest_log_level` instead of ignoring it and falling back to `RUST_LOG` by @sethryanrollins in https://github.com/hyperlight-dev/hyperlight/pull/1699
 
 ## [v0.17.0] - 2026-08-27
 
@@ -112,7 +160,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Reset XCR0 during x86 snapshot restore by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1718
 * Reseed guest libc `rand()` and `random()` after restoring a snapshot to avoid multiple sandboxes sharing PRNG state by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1667
 * Validate ELF program headers in `ElfInfo::new()` to prevent host process abort from malformed guest binaries. PT_LOAD segments are now bounds-checked, `base_va`/`va_size` are stored as fields, and `load_at()` uses fully checked arithmetic by @danbugs
-* `MultiUseSandbox::from_snapshot` now honours the guest log level set via `SandboxConfiguration::set_max_guest_log_level` instead of ignoring it and falling back to `RUST_LOG` by @sethryanrollins in https://github.com/hyperlight-dev/hyperlight/pull/1699
 
 ## [v0.16.0] - 2026-06-26
 
@@ -433,7 +480,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.17.0...HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.19.0...HEAD>
+[v0.19.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.18.0...v0.19.0>
+[v0.18.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.17.0...v0.18.0>
 [v0.17.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.16.0...v0.17.0>
 [v0.16.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0...v0.16.0>
 [v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>

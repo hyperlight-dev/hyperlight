@@ -10,6 +10,13 @@ on:
         required: false
         type: string
         default: "false"
+      prime_cache:
+        description: >-
+          Run the checks from a cold target and save the caches. Skips them
+          when the caches are up to date.
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,11 +42,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         with:
-          rust-toolchain: "1.94" 
+          additional-toolchain-directory: src/tests/rust_guests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check guest toolchains match
+        run: |
+          guest=$(cd src/tests/rust_guests && rustup show active-toolchain)
+          capi=$(cd src/hyperlight_guest_capi && rustup show active-toolchain)
+          if [[ "${guest%% *}" != "${capi%% *}" ]]; then
+            echo "::error::Guest Rust toolchains must match"
+            exit 1
+          fi
 
       # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
@@ -50,59 +66,70 @@ jobs:
         with:
           path: |
             src/tests/rust_guests/target/sysroot
-          key: sysroot-linux-${{ hashFiles('rust-toolchain.toml') }}
+          key: sysroot-linux-${{ hashFiles('src/tests/rust_guests/rust-toolchain.toml', 'src/hyperlight_guest_capi/rust-toolchain.toml') }}
 
+      # Priming builds cold, so the entry holds only what this commit needs.
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        id: rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
+          prefix-key: v1-rust
           shared-key: "code-checks-linux"
-          cache-on-failure: "true"
-          # Only save on main as caches are not shared across branches.
-          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ inputs.prime_cache }}
+          save-if: ${{ inputs.prime_cache }}
           workspaces: |
             . -> target
             src/tests/rust_guests -> target
 
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
+      - name: Check whether the caches are up to date
+        id: prime
+        if: inputs.prime_cache
+        run: echo "skip=${{ steps.rust-cache.outputs.cache-hit == 'true' && steps.sysroot-cache.outputs.cache-hit == 'true' }}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure up-to-date Cargo.lock
+        if: steps.prime.outputs.skip != 'true'
         run: |
           cargo fetch --locked
           cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
       - name: fmt
+        if: steps.prime.outputs.skip != 'true'
         run: just fmt-check
 
       - name: Install cargo-hyperlight
+        if: steps.prime.outputs.skip != 'true'
         run: just ensure-cargo-hyperlight
 
       - name: clippy exhaustive check (debug)
+        if: steps.prime.outputs.skip != 'true'
         run: just clippy-exhaustive debug
 
       - name: clippy exhaustive check (release)
+        if: steps.prime.outputs.skip != 'true'
         run: just clippy-exhaustive release
 
       - name: Verify MSRV
+        if: steps.prime.outputs.skip != 'true'
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
       - name: Check cargo features compile
+        if: steps.prime.outputs.skip != 'true'
         run: just check
 
       - name: Check compilation with no default features
+        if: steps.prime.outputs.skip != 'true'
         run: |
           just test-compilation-no-default-features debug
           just test-compilation-no-default-features release
 
       - name: Run loom concurrency tests
+        if: steps.prime.outputs.skip != 'true'
         run: just test-loom
 
       # A job step, not a post-job step, so the save runs before rust-cache's
-      # post-job cleanup deletes the sysroot. Only main saves, as caches are not
-      # shared across branches.
+      # post-job cleanup deletes the sysroot.
       - name: Save sysroot cache
-        if: ${{ github.ref == 'refs/heads/main' && steps.sysroot-cache.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.prime_cache && steps.sysroot-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
@@ -121,9 +148,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         with:
-          rust-toolchain: "1.94" 
+          additional-toolchain-directory: src/tests/rust_guests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -136,60 +163,70 @@ jobs:
         with:
           path: |
             src/tests/rust_guests/target/sysroot
-          key: sysroot-windows-${{ hashFiles('rust-toolchain.toml') }}
+          key: sysroot-windows-${{ hashFiles('src/tests/rust_guests/rust-toolchain.toml', 'src/hyperlight_guest_capi/rust-toolchain.toml') }}
 
+      # Priming builds cold, so the entry holds only what this commit needs.
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        id: rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
+          prefix-key: v1-rust
           shared-key: "code-checks-windows"
-          cache-on-failure: "true"
-          # Only save on main as caches are not shared across branches.
-          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ inputs.prime_cache }}
+          save-if: ${{ inputs.prime_cache }}
           workspaces: |
             . -> target
             src/tests/rust_guests -> target
 
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
+      - name: Check whether the caches are up to date
+        id: prime
+        if: inputs.prime_cache
+        run: echo "skip=${{ steps.rust-cache.outputs.cache-hit == 'true' && steps.sysroot-cache.outputs.cache-hit == 'true' }}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure up-to-date Cargo.lock
+        if: steps.prime.outputs.skip != 'true'
         run: |
           cargo fetch --locked
           cargo fetch --manifest-path src/tests/rust_guests/Cargo.toml --locked
 
       - name: fmt
+        if: steps.prime.outputs.skip != 'true'
         run: just fmt-check
 
       - name: Install cargo-hyperlight
+        if: steps.prime.outputs.skip != 'true'
         run: just ensure-cargo-hyperlight
 
       - name: clippy (debug)
+        if: steps.prime.outputs.skip != 'true'
         run: |
           just clippy debug 
           just clippy-guests debug
 
       - name: clippy (release)
+        if: steps.prime.outputs.skip != 'true'
         run: |
           just clippy release 
           just clippy-guests release
 
       - name: Verify MSRV
+        if: steps.prime.outputs.skip != 'true'
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
       - name: Check cargo features compile
+        if: steps.prime.outputs.skip != 'true'
         run: just check
 
       - name: Check compilation with no default features
+        if: steps.prime.outputs.skip != 'true'
         run: |
           just test-compilation-no-default-features debug
           just test-compilation-no-default-features release
 
       # A job step, not a post-job step, so the save runs before rust-cache's
-      # post-job cleanup deletes the sysroot. Only main saves, as caches are not
-      # shared across branches.
+      # post-job cleanup deletes the sysroot.
       - name: Save sysroot cache
-        if: ${{ github.ref == 'refs/heads/main' && steps.sysroot-cache.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.prime_cache && steps.sysroot-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |

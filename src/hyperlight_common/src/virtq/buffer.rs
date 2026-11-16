@@ -245,7 +245,7 @@ impl Buf for SegmentsBuf<'_> {
     }
 }
 
-/// An exclusively owned buffer allocation returned to its pool on drop.
+/// A buffer allocation returned to its original pool on drop.
 pub struct BufferLease {
     /// The pool that allocated the buffer.
     pool: SlotPool,
@@ -300,6 +300,46 @@ mod tests {
         let reused = pool.alloc(4).unwrap();
         assert_eq!(reused.addr, allocation.addr);
         pool.dealloc(reused.addr).unwrap();
+    }
+
+    #[test]
+    fn old_leases_do_not_release_a_reused_slot() {
+        let mut pool = SlotPool::new(SlotLayout::new(0x1000, 4096, 1).unwrap()).unwrap();
+        let mut allocation = pool.alloc(4096).unwrap();
+        let mut retained = Vec::new();
+
+        for _ in 0..3 {
+            retained.push(BufferLease::new(pool.clone(), allocation));
+            pool = pool.swap(core::iter::empty()).unwrap();
+            let reused = pool.alloc(4096).unwrap();
+            assert_eq!(reused.addr, allocation.addr);
+            allocation = reused;
+        }
+
+        drop(retained);
+        assert_eq!(pool.num_free(), 0);
+        drop(BufferLease::new(pool.clone(), allocation));
+        assert_eq!(pool.num_free(), 1);
+    }
+
+    #[test]
+    fn swap_preserves_queue_reservations() {
+        let pool = SlotPool::new(SlotLayout::new(0x1000, 4096, 2).unwrap()).unwrap();
+        let reserved = pool.alloc(4096).unwrap();
+        let captured = pool.alloc(4096).unwrap();
+        let retained = BufferLease::new(pool.clone(), captured);
+
+        let swapped = pool.swap(core::iter::once(reserved.addr)).unwrap();
+        assert_eq!(swapped.num_free(), 1);
+        assert_eq!(swapped.alloc(4096).unwrap().addr, captured.addr);
+
+        drop(retained);
+        assert_eq!(swapped.num_free(), 0);
+        swapped.dealloc(reserved.addr).unwrap();
+        swapped.dealloc(captured.addr).unwrap();
+        assert_eq!(swapped.num_free(), 2);
+        pool.dealloc(reserved.addr).unwrap();
+        assert_eq!(pool.num_free(), 2);
     }
 
     #[test]

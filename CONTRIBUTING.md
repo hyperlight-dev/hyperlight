@@ -118,3 +118,18 @@ For more detailed instructions on setting up GPG signing, see [GitHub's document
 ### Rust Analyzer
 
 If you are using the [Rust Analyzer](https://rust-analyzer.github.io/manual.html) then you may need to set the configuration option `rust-analyzer.rustfmt.extraArgs` to `["+nightly"]` to ensure that formatting works correctly as this project has a [`rustfmt.toml`](./rustfmt.toml) file that uses nightly features.
+
+### Rust toolchains
+
+The root `rust-toolchain.toml` pins the rust version for host builds and tools.
+
+Rust guests and the C API use the toolchains pinned in
+`src/tests/rust_guests/rust-toolchain.toml` and
+`src/hyperlight_guest_capi/rust-toolchain.toml`. These files should be kept in sync.
+
+Stable Rust 1.95+ requires an upstream Hyperlight target to build guests.
+
+Run `just build` for the host and `just guests` for the guests. The guest recipes
+change directories so rustup selects the guest toolchain. A `cargo --manifest-path`
+argument alone does not select a toolchain. Run direct guest Cargo commands from
+the guest directory.

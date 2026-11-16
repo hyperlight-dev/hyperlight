@@ -50,23 +50,24 @@ jobs:
       # The shared setup reads /dev/kvm to report what the runner offers, which
       # a hosted one need not have. Miri wants a toolchain and two tools, so it
       # asks for those rather than everything a hypervisor job needs.
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # master
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30  # v2.0.1
         with:
-          toolchain: "1.94"
+          cache: "false"
+          # Miri's generated sysroot manifest emits a Cargo warning.
+          build-warnings: warn
 
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29  # v2.87.21
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: just,cargo-nextest
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
+          prefix-key: v1-rust
           shared-key: "${{ inputs.arch }}-Linux-miri"
-          cache-on-failure: "true"
-          # Only save on main as caches are not shared across branches.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: "false"
 
       # Miri reads no guest binaries: it covers hyperlight-common and the
       # shared memory tests, neither of which loads one.
       - name: Run Miri tests
-        run: env -u RUSTC_WRAPPER just miri-tests
+        run: just miri-tests

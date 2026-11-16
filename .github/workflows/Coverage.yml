@@ -38,23 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         with:
-          rust-toolchain: "1.94"
+          additional-toolchain-directory: src/tests/rust_guests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          shared-key: "${{ runner.os }}-debug"
-          cache-on-failure: "true"
-          # Only save on main as caches are not shared across branches.
-          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
 
       - name: Build guest binaries
         run: just guests
@@ -82,14 +70,14 @@ jobs:
           echo '> For a detailed per-file breakdown, download the **HTML coverage report** from the Artifacts section below.' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload HTML coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-html-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/html/
           if-no-files-found: error
 
       - name: Upload LCOV coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: coverage-lcov-${{ matrix.hypervisor }}-${{ matrix.cpu }}
           path: target/coverage/lcov.info
@@ -106,6 +94,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Coverage Failure
-        run: ./dev/notify-ci-failure.sh --title="Weekly Coverage Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review"
+        run: ./dev/notify-ci-failure.sh --title="Weekly Coverage Failure - ${{ github.run_number }}" --labels="A-ci-periodics,A-testing,S-needs-triage"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

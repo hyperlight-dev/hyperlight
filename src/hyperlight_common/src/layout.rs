@@ -9,7 +9,8 @@ use core::num::{NonZeroU16, NonZeroUsize};
 mod arch;
 
 pub use arch::{
-    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
+    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN,
+    VIRTQ_BUFFER_GVA_END, VIRTQ_BUFFER_GVA_START, io_page,
 };
 #[cfg(target_arch = "aarch64")]
 pub use arch::{WHP_GICD_BASE_GPA, WHP_GICR_BASE_GPA, WHP_GITS_TRANSLATOR_BASE_GPA};
@@ -18,14 +19,14 @@ use crate::virtq;
 
 const EXN_STACK_ALIGNMENT: usize = 16;
 /// Pages reserved for the exception stack and scratch-top metadata.
-pub const SCRATCH_TOP_RESERVED_PAGES: usize = 2;
+pub const SCRATCH_TOP_RESERVED_PAGES: usize = 12;
 
 // Fields are listed in ascending-address order. Public offsets are measured
 // down from the top of scratch memory.
 #[repr(C)]
 struct ScratchTopMetadata {
-    /// Padding that keeps the exception stack 16-byte aligned.
-    _alignment_padding: [u8; 8],
+    /// Nonzero if guest heap pages are mapped executable.
+    heap_executable: u64,
     /// Host-published capacity of each H2G buffer.
     h2g_buffer_size: u64,
     /// Number of pages reserved for the H2G pool.
@@ -84,10 +85,15 @@ pub const SCRATCH_TOP_LIBC_RNG_SEED_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, libc_rng_seed));
 pub const SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, guest_log_level));
+pub const SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, heap_executable));
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = size_of::<ScratchTopMetadata>() as u64;
 
 const _: () = {
-    assert!(size_of::<ScratchTopMetadata>().is_multiple_of(EXN_STACK_ALIGNMENT));
+    assert!(
+        size_of::<ScratchTopMetadata>().is_multiple_of(EXN_STACK_ALIGNMENT),
+        "pad ScratchTopMetadata at its low end to keep the exception stack 16-byte aligned"
+    );
     assert!(SCRATCH_TOP_SIZE_OFFSET == 0x08);
     assert!(SCRATCH_TOP_ALLOCATOR_OFFSET == 0x10);
     assert!(SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET == 0x18);
@@ -101,25 +107,59 @@ const _: () = {
     assert!(SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET == 0x58);
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x60);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x68);
+    assert!(SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET == 0x70);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
+
+    assert!(VIRTQ_BUFFER_GVA_START < VIRTQ_BUFFER_GVA_END);
+    assert!((VIRTQ_BUFFER_GVA_START as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!((VIRTQ_BUFFER_GVA_END as usize).is_multiple_of(crate::vmem::PAGE_SIZE));
+    assert!(VIRTQ_BUFFER_GVA_START > SNAPSHOT_PT_GVA_MAX as u64);
+
+    assert!(VIRTQ_BUFFER_GVA_END < scratch_base_gva(16 * 1024 * 1024 * 1024));
+    assert!((SCRATCH_TOP_GPA as u64) < VIRTQ_BUFFER_GVA_END - VIRTQ_BUFFER_GVA_START);
 };
 
-/// Exclusive upper GPA boundary for dynamic scratch allocations.
-pub const fn scratch_allocator_limit_gpa() -> u64 {
+/// Unmapped pages between the transport arena and the reserved top pages.
+/// On amd64 an exception stack overrun faults in them before it reaches the
+/// arena. aarch64 exception vectors lower SP before their first store, so
+/// nested faults there can step past them.
+pub const SCRATCH_TRANSPORT_GAP_PAGES: usize = 1;
+
+/// Start of the reserved pages at the top of scratch. The transport arena
+/// sits [`SCRATCH_TRANSPORT_GAP_PAGES`] below it. A guest's page allocator
+/// stops at the arena GPA the host publishes.
+pub const fn scratch_reserved_top_gpa() -> u64 {
     (SCRATCH_TOP_GPA + 1 - SCRATCH_TOP_RESERVED_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// [`scratch_reserved_top_gpa`] in the scratch mapping.
+pub const fn scratch_reserved_top_gva() -> u64 {
+    SCRATCH_TOP_GVA as u64 + 1 - (SCRATCH_TOP_RESERVED_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// Exclusive end of the transport arena: the reserved top pages, less the
+/// guard pages between them.
+pub const fn scratch_transport_end_gpa() -> u64 {
+    scratch_reserved_top_gpa() - (SCRATCH_TRANSPORT_GAP_PAGES * crate::vmem::PAGE_SIZE) as u64
+}
+
+/// [`scratch_transport_end_gpa`] in the scratch mapping.
+pub const fn scratch_transport_end_gva() -> u64 {
+    scratch_reserved_top_gva() - (SCRATCH_TRANSPORT_GAP_PAGES * crate::vmem::PAGE_SIZE) as u64
 }
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (SCRATCH_TOP_GPA - size + 1) as u64
 }
-pub fn scratch_base_gva(size: usize) -> u64 {
+pub const fn scratch_base_gva(size: usize) -> u64 {
     (SCRATCH_TOP_GVA - size + 1) as u64
 }
 
-/// Compute the minimum scratch region size needed for a sandbox.
+/// Compute fixed scratch overhead for a sandbox, saturating at [`usize::MAX`].
 ///
-/// `transport_len` includes both rings and buffer pools.
-/// The result saturates at [`usize::MAX`].
+/// `transport_len` covers the transport arena (rings, mailbox and buffer
+/// pools) and the [`SCRATCH_TRANSPORT_GAP_PAGES`] above it. Snapshot page
+/// tables and runtime allocations need additional scratch.
 pub fn min_scratch_size(transport_len: usize) -> usize {
     arch::min_scratch_size()
         .and_then(|fixed| fixed.checked_add(transport_len))
@@ -396,11 +436,12 @@ mod tests {
     }
 
     #[test]
-    fn minimum_scratch_includes_ring_arena_and_pools() {
+    fn minimum_scratch_includes_transport() {
         let fixed = arch::min_scratch_size().unwrap();
-        let transport_len = (1 + 8 + 4) * crate::vmem::PAGE_SIZE;
 
-        assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
+        for transport_len in [0, (1 + 8 + 4) * crate::vmem::PAGE_SIZE, 5 << 20] {
+            assert_eq!(fixed + transport_len, min_scratch_size(transport_len));
+        }
     }
 
     #[test]

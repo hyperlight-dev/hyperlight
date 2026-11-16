@@ -11,12 +11,19 @@
 pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff_ffff_efff;
 pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
+pub const VIRTQ_BUFFER_GVA_START: u64 = 0xffff_fc00_0000_0000;
+pub const VIRTQ_BUFFER_GVA_END: u64 = 0xffff_fd00_0000_0000;
 
 /// We assume 36-bit IPAs for now, since every amd64 processor
 /// supports at least 36 bits.  Almost all of them support at least 40
 /// bits, so we could consider bumping this in the future if we were
 /// ever memory-constrained.
 pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
+
+const _: () = {
+    assert!(VIRTQ_BUFFER_GVA_START >> 47 == 0x1ffff);
+    assert!((VIRTQ_BUFFER_GVA_END - 1) >> 47 == 0x1ffff);
+};
 
 pub fn io_page() -> Option<(u64, u64)> {
     None
@@ -27,7 +34,7 @@ pub fn io_page() -> Option<(u64, u64)> {
 /// - (up to) 4 pages for the PTEs for mapping that (including CoW'ing the root PT)
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for mapping that
-/// - Two pages for the exception stack and metadata
+/// - The exception stack and metadata reservation
 pub(super) fn min_scratch_size() -> Option<usize> {
-    12usize.checked_mul(crate::vmem::PAGE_SIZE)
+    (10 + super::SCRATCH_TOP_RESERVED_PAGES).checked_mul(crate::vmem::PAGE_SIZE)
 }

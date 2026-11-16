@@ -34,7 +34,7 @@ jobs:
           if [[ "${{ github.ref }}" == *"refs/heads/release/"* ]]; then
             echo "Release branch detected - checking for release blockers..."
             if ! ./dev/check-release-blockers.sh "$REPO"; then
-              echo "::error::Release blocked by open issues with 'release-blocker' label"
+              echo "::error::Release blocked by open issues with P-release-blocker"
               exit 1
             fi
           else

@@ -5,7 +5,6 @@ use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
     DescFlags, Descriptor, MemOps, RingError, SlotLayout, SlotPool, VirtqError, VirtqProducer,
 };
-use hyperlight_common::vmem;
 
 use super::mem::HostMemOps;
 use super::*;
@@ -32,12 +31,8 @@ impl TestCase {
         let layout = memory_layout();
         let arena = layout.get_transport_arena();
         let (g2h_layout, h2g_layout) = ring_layouts(&layout).unwrap();
-        let to_gva = |gpa| {
-            hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
-                + (gpa - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE))
-        };
-        let g2h_pool_base = to_gva(arena.g2h_pool_addr());
-        let h2g_pool_base = to_gva(arena.h2g_pool_addr());
+        let g2h_pool_base = scratch_gva(arena.g2h_pool_addr());
+        let h2g_pool_base = scratch_gva(arena.h2g_pool_addr());
         let h2g = layout.get_h2g_queue_dims();
         let mem = HostMemOps::new(&scratch);
         let buffer_size = layout.get_h2g_buffer_size();
@@ -91,6 +86,12 @@ impl TestCase {
     }
 }
 
+/// The test scratch's GVA for `gpa`.
+fn scratch_gva(gpa: u64) -> u64 {
+    hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE)
+        + (gpa - hyperlight_common::layout::scratch_base_gpa(SCRATCH_SIZE))
+}
+
 pub(crate) fn memory_layout() -> SandboxMemoryLayout {
     let mut config = SandboxConfiguration::default();
     config.set_scratch_size(SCRATCH_SIZE);
@@ -100,7 +101,7 @@ pub(crate) fn memory_layout() -> SandboxMemoryLayout {
     config.set_g2h_pool_pages(3);
     config.set_h2g_pool_pages(3);
 
-    SandboxMemoryLayout::new(config, 4096, 0, None).unwrap()
+    SandboxMemoryLayout::new(config, 4096).unwrap()
 }
 
 fn host_scratch() -> HostSharedMemory {
@@ -135,10 +136,14 @@ fn snapshots_and_restores_rings() {
 
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
     let restored = host_scratch();
-    let allocator = layout.get_first_free_scratch_gpa();
+    let allocator = layout.get_pt_base_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
+    let mbx_offset = layout.mbx_scratch_offset();
+    let cp = MailboxValue::CheckpointPending.as_bytes();
+
     restored.write::<u64>(allocator_offset, allocator).unwrap();
+    restored.copy_from_slice(cp, mbx_offset).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
     let restored_snapshot = VirtqSnapshot::capture(&layout, &restored).unwrap();
@@ -150,8 +155,21 @@ fn snapshots_and_restores_rings() {
 
     assert_eq!(restored_snapshot, captured);
     assert_eq!(restored.read::<u64>(allocator_offset).unwrap(), allocator);
+    let arena_gpa_offset = restored.mem_size()
+        - hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
+    assert_eq!(
+        restored.read::<u64>(arena_gpa_offset).unwrap(),
+        layout.get_transport_arena().base_addr()
+    );
     assert_eq!(restored.read::<[u8; 16]>(spare_offset).unwrap(), [0; 16]);
     assert_eq!(pool_bytes, [0; 16]);
+
+    let mbx = restored.read::<u64>(mbx_offset).unwrap();
+    assert_eq!(
+        MailboxValue::try_from(mbx).unwrap(),
+        MailboxValue::CheckpointComplete
+    );
+
     assert!(g2h.poll(0).unwrap().is_none());
     let (recv, reply) = h2g.poll(0).unwrap().unwrap();
     h2g.complete(recv, reply).unwrap();
@@ -169,23 +187,12 @@ fn rejects_snapshot_geometry_mismatches() {
     let case = TestCase::new();
     let layout = memory_layout();
     let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-    let scratch_size = layout.get_scratch_size();
     let g2h = captured.g2h_ring();
     let h2g = captured.h2g_ring();
 
-    for (size, g2h_len, h2g_len) in [
-        (scratch_size - vmem::PAGE_SIZE, g2h.len(), h2g.len()),
-        (scratch_size, g2h.len() - 1, h2g.len()),
-        (scratch_size, g2h.len(), h2g.len() - 1),
-    ] {
+    for (g2h_len, h2g_len) in [(g2h.len() - 1, h2g.len()), (g2h.len(), h2g.len() - 1)] {
         assert!(
-            VirtqSnapshot::new(
-                &layout,
-                size,
-                g2h[..g2h_len].to_vec(),
-                h2g[..h2g_len].to_vec(),
-            )
-            .is_err()
+            VirtqSnapshot::new(&layout, g2h[..g2h_len].to_vec(), h2g[..h2g_len].to_vec()).is_err()
         );
     }
 }
@@ -283,36 +290,10 @@ fn rejects_h2g_snapshot_chain_shape() {
 }
 
 #[test]
-fn restores_with_finalized_layout() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-
-    let mut grown_layout = layout;
-
-    grown_layout
-        .set_pt_size(layout.get_pt_size() + vmem::PAGE_SIZE)
-        .unwrap();
-    grown_layout.set_snapshot_size(layout.snapshot_size() + page_size::get());
-    let restored = host_scratch();
-
-    snapshot.restore(&grown_layout, &restored).unwrap();
-    assert_eq!(
-        VirtqSnapshot::capture(&grown_layout, &restored).unwrap(),
-        snapshot
-    );
-    let arena_gpa_offset = restored.mem_size()
-        - hyperlight_common::layout::SCRATCH_TOP_TRANSPORT_ARENA_GPA_OFFSET as usize;
-    assert_eq!(
-        restored.read::<u64>(arena_gpa_offset).unwrap(),
-        grown_layout.get_transport_arena().base_addr()
-    );
-}
-
-#[test]
 fn uses_scratch_payloads_outside_pools() {
     let case = TestCase::new();
-    let addr = case.h2g_pool_base + memory_layout().get_h2g_queue_dims().pool_len() as u64;
+    // General scratch, below the arena: the allocator's first free page.
+    let addr = scratch_gva(memory_layout().get_pt_base_gpa());
     case.mem.write(addr, &[1, 2, 3]).unwrap();
 
     let mut g2h_desc = Descriptor::new(addr, 3, 0, DescFlags::empty());
@@ -388,4 +369,27 @@ fn malformed_descriptors_fail_when_polled() {
         h2g.poll(0),
         Err(VirtqError::RingError(RingError::BadChain))
     ));
+}
+
+#[test]
+fn restores_partially_prefilled_h2g_ring() {
+    for prefill in 0..=4 {
+        let case = TestCase::new();
+
+        for index in prefill..4 {
+            case.set_h2g_desc(index, Descriptor::new(0, 0, 0, DescFlags::empty()));
+        }
+
+        let layout = memory_layout();
+        let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+        let restored = host_scratch();
+        let (_, mut consumer) = captured.restore(&layout, &restored).unwrap();
+
+        for _ in 0..prefill {
+            let (request, reply) = consumer.poll(0).unwrap().unwrap();
+            consumer.complete(request, reply).unwrap();
+        }
+
+        assert!(consumer.poll(0).unwrap().is_none());
+    }
 }

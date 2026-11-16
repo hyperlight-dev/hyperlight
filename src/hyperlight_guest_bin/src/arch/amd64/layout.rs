@@ -10,3 +10,13 @@
 /// a VA that will survive the snapshot process. Since we don't have a
 /// useful virtual allocator yet, we just put them here...
 pub const PROC_CONTROL_GVA: u64 = 0xffff_fd00_0000_0000;
+
+const _: () = assert!(
+    hyperlight_common::layout::VIRTQ_BUFFER_GVA_END <= PROC_CONTROL_GVA,
+    "transport aliases overlap processor control"
+);
+const _: () = assert!(
+    PROC_CONTROL_GVA + 2 * hyperlight_common::vmem::PAGE_SIZE as u64
+        <= hyperlight_guest::layout::HEAP_GVA_START,
+    "processor control overlaps the heap"
+);

@@ -127,7 +127,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
 /// declaration that implements this imported instance in terms of
 /// hyperlight host calls
 fn emit_import_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Instance<'b>) {
-    let mut s = s.with_cursor(wn.namespace_idents());
+    let mut s = s.with_instance(&wn);
     s.cur_helper_mod = Some(kebab_to_namespace(wn.name));
 
     let imports = it
@@ -241,7 +241,7 @@ fn emit_export_instance<'a, 'b, 'c>(
     path: Vec<String>,
     it: &'c Instance<'b>,
 ) -> TokenStream {
-    let mut s = s.with_cursor(wn.namespace_idents());
+    let mut s = s.with_instance(&wn);
     s.cur_helper_mod = Some(kebab_to_namespace(wn.name));
     s.cur_trait = Some(kebab_to_type(wn.name));
     let exports = it

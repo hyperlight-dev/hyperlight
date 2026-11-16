@@ -49,7 +49,7 @@ impl WitSource {
                     panic!("failed to parse WIT input '{}': {err:#}", path.display())
                 });
 
-                wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                wit_component::encode(&resolve, package, false).unwrap_or_else(|err| {
                     panic!(
                         "failed to encode WIT input '{}' as a wasm component type: {err:#}",
                         path.display()
@@ -79,7 +79,7 @@ impl WitSource {
                                 .unwrap_or_else(|err| {
                                     panic!("failed to parse inline WIT input: {err:#}")
                                 });
-                        wit_component::encode(&resolve, package).unwrap_or_else(|err| {
+                        wit_component::encode(&resolve, package, false).unwrap_or_else(|err| {
                             panic!("failed to encode inline WIT input as a wasm component type: {err:#}")
                         })
                     }
@@ -89,9 +89,13 @@ impl WitSource {
     }
 }
 
+/// Resolve `path` against the crate being built, or the working
+/// directory outside a cargo build.
 fn manifest_path(path: &std::path::Path) -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    std::path::Path::new(&manifest_dir).join(path)
+    match std::env::var_os("CARGO_MANIFEST_DIR") {
+        Some(dir) => std::path::Path::new(&dir).join(path),
+        None => path.to_path_buf(),
+    }
 }
 
 /// Read and parse a WIT type from a supported bindgen input.
@@ -145,7 +149,7 @@ pub fn emit_decls(decls: proc_macro2::TokenStream, for_kebab: &str) -> proc_macr
         if let Ok(file) = syn::parse2(decls.clone()) {
             std::fs::write(&dbg_out, prettyplease::unparse(&file)).unwrap();
         } else {
-            let decls = format!("{}", &decls);
+            let decls = format!("{}", decls);
             std::fs::write(&dbg_out, &decls).unwrap();
         }
         quote::quote! { include!(#dbg_out); }

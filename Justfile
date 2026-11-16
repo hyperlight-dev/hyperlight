@@ -76,12 +76,10 @@ build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
 
 # Build non-PIE variants of rust guests for testing ELF VA mapping.
-# Phase 1 builds the sysroot without RUSTFLAGS (avoids RUSTFLAGS leaking
-# into the sysroot wrapper build in cargo-hyperlight).
-# Phase 2 uses plain cargo with --sysroot and non-PIE link flags.
-build-rust-guests-non-pie target=default-target: (ensure-cargo-hyperlight)
-    cd src/tests/rust_guests/simpleguest && cargo hyperlight build --target-dir ../target-non-pie --profile={{ if target == "debug" { "dev" } else { target } }}
-    {{ if os() == "windows" { "$env:RUSTC_BOOTSTRAP=1; $env:RUSTFLAGS='--sysroot=' + (Resolve-Path src/tests/rust_guests/target-non-pie/sysroot).Path + ' -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTC_BOOTSTRAP=1 RUSTFLAGS=\"--sysroot=$(cd .. && pwd)/target-non-pie/sysroot -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint\"" } }} cargo build --target {{ hyperlight-target }} --target-dir ../target-non-pie/build --profile={{ if target == "debug" { "dev" } else { target } }}
+# Uses plain cargo with non-PIE link flags and the sysroot of the PIE build.
+# cargo-hyperlight would leak these RUSTFLAGS into its sysroot wrapper build.
+build-rust-guests-non-pie target=default-target: (build-rust-guests target)
+    {{ if os() == "windows" { "$env:RUSTC_BOOTSTRAP=1; $env:RUSTFLAGS='--sysroot=' + (Resolve-Path src/tests/rust_guests/target/sysroot).Path + ' -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint';" } else { "" } }} cd src/tests/rust_guests/simpleguest && {{ if os() == "windows" { "" } else { "RUSTC_BOOTSTRAP=1 RUSTFLAGS=\"--sysroot=$(cd .. && pwd)/target/sysroot -C relocation-model=static -C link-args=--no-pie -C link-args=--image-base=0x1000000 --cfg=hyperlight --check-cfg=cfg(hyperlight) -Clink-args=-eentrypoint\"" } }} cargo build --bin simpleguest --target {{ hyperlight-target }} --target-dir ../target-non-pie/build --profile={{ if target == "debug" { "dev" } else { target } }}
 
 non_pie_guests_target := "src/tests/rust_guests/target-non-pie/build/" + hyperlight-target
 
@@ -135,6 +133,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# test the tracing related features
     {{ if os() == "linux" { "RUST_LOG=debug just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
+    @# test generated C# bindings against witguest
+    {{ if arch() == "x86_64" { "just test-csharp-bindings " + config } else { "" } }}
+
 code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
@@ -151,7 +152,7 @@ code-checks-like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just clippy-exhaustive " + config } else { "" } }}
 
     @# Verify MSRV
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
     @# Check cargo features compile
     just check
@@ -248,6 +249,20 @@ like-ci config=default-target hypervisor="kvm":
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration target features) (test-doc target features) (test-tools target)
 
+# Cargo launches test binaries through the runner in this variable, for example
+# CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER.
+no-run-runner-var := "CARGO_TARGET_" + uppercase(arch()) + (if os() == "windows" { "_PC_WINDOWS_MSVC" } else if os() == "macos" { "_APPLE_DARWIN" } else { "_UNKNOWN_LINUX_GNU" }) + "_RUNNER"
+# Cargo runs `<runner> <binary> <args>`. Both forms exit 0 and ignore the rest.
+no-run-runner := if os() == "windows" { "cmd /c rem" } else { "true" }
+
+# Builds what `just test` and `cargo ci` compile, to fill the CI cache.
+# Tests build but do not run. Doctests are skipped because rustdoc compiles
+# them when they run.
+prime-caches target=default-target:
+    just build {{ target }}
+    cargo build -p hyperlight-ci
+    {{ set-env-command }}{{ no-run-runner-var }}='{{ no-run-runner }}'; just test-unit {{ target }} && just test-isolated {{ target }} && just test-integration {{ target }} && just test-tools {{ target }}
+
 # runs the tests of the tools this repository builds for itself, which sit
 # outside the default members the other recipes select
 test-tools target=default-target:
@@ -285,8 +300,9 @@ test-integration target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
-    @# run component-util integration tests that exercise WIT input codegen
-    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test wasmtime_guest_codegen
+    @# run component-util unit tests and the integration tests that exercise WIT input codegen
+    {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib --test wasmtime_guest_codegen
+    {{ cargo-cmd }} test -p hyperlight-component-csharp --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
     @# run the rest of the integration tests. `snapshot_goldens` is in
     @# the glob but no-ops without a mode token, so it needs no golden
@@ -335,6 +351,10 @@ test-rust-tracing target=default-target features="":
 
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
+
+# runs the C# binding tests against witguest. Needs the .NET 8 SDK or newer and the guests from `just guests`.
+test-csharp-bindings target=default-target:
+    dotnet run --project src/tests/csharp_host --property:HyperlightProfile={{ target }}
 
 # Nextest runs one Miri process per job, each with its own interpreter, so
 # memory grows with the job count at roughly 0.4GB per job. Lower MIRI_JOBS on
@@ -414,6 +434,8 @@ clippy-exhaustive target=default-target:
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-component-csharp {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-csharp-test-native {{ target }} {{ target-triple }}
     {{ if hyperlight-target-arch == "x86_64" { "./hack/clippy-package-features.sh hyperlight-guest-tracing " + target } else { "" } }}
     just clippy-guests {{ target }}
 
@@ -423,7 +445,7 @@ clippy-package package target=default-target:
 
 # Verify Minimum Supported Rust Version
 verify-msrv:
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-component-csharp hyperlight-guest-tracing
 
 #####################
 ### RUST EXAMPLES ###
@@ -467,8 +489,8 @@ bench-ci baseline features="":
     cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --verbose --save-baseline {{ baseline }}
 
 # Measure a commit and the current tree on this machine, and compare them
-bench-against commit guests features="":
-    cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --baseline-ref {{ commit }} --baseline-guests {{ guests }} --verbose
+bench-against commit guests features="" baseline_target_dir="":
+    cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --baseline-ref {{ commit }} --baseline-guests {{ guests }} {{ if baseline_target_dir == "" {''} else { "--baseline-target-dir " + baseline_target_dir } }} --verbose
 
 bench features="":
     cargo ci bench {{ if features == "" {''} else { "--features " + features } }} --verbose
@@ -536,6 +558,10 @@ fuzz-trace-cmin fuzz-target="fuzz_guest_trace":
 build-trace-fuzzers:
     cargo +{{nightly-toolchain}} fuzz build fuzz_guest_trace --features trace
 
+# Builds every fuzz target with the flags `just fuzz` uses
+build-fuzz-targets:
+    targets="$(cargo +{{nightly-toolchain}} fuzz list)" && [ -n "$targets" ] && for t in $targets; do case "$t" in *trace*) f="--features trace" ;; *) f="" ;; esac; cargo +{{nightly-toolchain}} fuzz build "$t" --release $f || exit 1; done
+
 ####################
 ### COVERAGE #######
 ####################
@@ -548,7 +574,7 @@ ensure-cargo-llvm-cov:
 
 # host-side packages to collect coverage for (guest/no_std crates are excluded because they
 # define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
-coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro -p hyperlight-component-csharp"
 
 # run all tests and examples with coverage instrumentation, collecting profdata without
 # generating a report. Mirrors test-like-ci + run-examples-like-ci to exercise all code paths
@@ -746,7 +772,7 @@ snapshot-goldens-regenerate target=default-target:
     mkdir -p target/snapshot-goldens
     cp -r "${layout}" "${dest}"
 
-# Validate the regen-goldens label against the goldens state.
+# Validate the S-needs-goldens label against the goldens state.
 # has_label is true when a PR carries the label. The label is set
 # when the current GOLDENS_VERSION was bumped and is not published.
 # base_ref is the git ref to diff the version against.
@@ -762,17 +788,17 @@ snapshot-goldens-check-label has_label base_ref image=default-snapshot-goldens-i
         base_version=""
         git cat-file -e "{{ base_ref }}:${version_file}" 2>/dev/null && base_version=$(git show "{{ base_ref }}:${version_file}" | parse_version)
         if [[ "${version}" == "${base_version}" ]]; then
-            echo "::error::regen-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
+            echo "::error::S-needs-goldens is set but GOLDENS_VERSION is unchanged from {{ base_ref }} (${version}). A regen accompanies a version bump. Remove the label or bump the version." >&2
             exit 1
         fi
         if published "${version}"; then
-            echo "::error::regen-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
+            echo "::error::S-needs-goldens is set but goldens for ${version} are already published. Remove the label so CI verifies against the published goldens." >&2
             exit 1
         fi
         echo "snapshot-goldens-check-label: OK. ${version} bumped from ${base_version} and not yet published."
     else
         if ! published "${version}"; then
-            echo "::error::goldens for ${version} are not published. Add the regen-goldens label, or run RegenSnapshotGoldens first." >&2
+            echo "::error::goldens for ${version} are not published. Add S-needs-goldens, or run RegenSnapshotGoldens first." >&2
             exit 1
         fi
         echo "snapshot-goldens-check-label: OK. ${version} is published."

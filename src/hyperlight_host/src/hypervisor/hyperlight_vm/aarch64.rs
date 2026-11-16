@@ -30,21 +30,19 @@ use crate::hypervisor::virtual_machine::{
     HypervisorType, RegisterError, ResetVcpuError, VirtualMachine, VmError,
     get_available_hypervisor,
 };
-use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::snapshot::NextAction;
+use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(target_os = "macos", allow(unused))]
     pub(crate) fn new(
-        snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
+        snapshot_mem: SnapshotMemoryBacking<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         root_pt_addr: u64,
         next_action: NextAction,
@@ -52,7 +50,6 @@ impl HyperlightVm {
         page_size: usize,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] _gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        #[cfg(crashdump)] _rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
         // TODO: support gdb on aarch64
@@ -83,8 +80,7 @@ impl HyperlightVm {
         let interrupt_handle: Arc<dyn InterruptHandleImpl> =
             Arc::new(WindowsInterruptHandle::new(vm.partition_handle()));
 
-        let snapshot_slot = 0u32;
-        let scratch_slot = 1u32;
+        let scratch_slot = 0u32;
         let vm_can_reset_vcpu = vm.can_reset_vcpu();
         let mut ret = Self {
             vm,
@@ -96,7 +92,7 @@ impl HyperlightVm {
             next_slot: scratch_slot + 1,
             freed_slots: Vec::new(),
 
-            snapshot_slot,
+            snapshot_mappings: Vec::new(),
             snapshot_memory: None,
             scratch_slot,
             scratch_memory: None,
@@ -111,10 +107,8 @@ impl HyperlightVm {
         Ok(ret)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
-        peb_addr: crate::mem::ptr::RawPtr,
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
@@ -124,10 +118,9 @@ impl HyperlightVm {
             return Ok(());
         };
         let mut x: [u64; 31] = [0; 31];
-        x[0] = peb_addr.into();
-        x[1] = seed;
-        x[2] = self.page_size as u64;
-        x[3] = get_guest_log_filter(guest_max_log_level);
+        x[0] = seed;
+        x[1] = self.page_size as u64;
+        x[2] = get_guest_log_filter(guest_max_log_level);
         let regs = CommonRegisters {
             pc: initialise,
             sp: self.rsp_gva,

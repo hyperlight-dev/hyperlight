@@ -36,10 +36,10 @@ page_size = "0.6.0"
 termcolor = "1.2.0"
 bitflags = "2.13.0"
 log = "0.4.32"
-opentelemetry = { version = "0.32.0", optional = true }
+opentelemetry = { version = "0.33.1", optional = true }
 tracing = { version = "0.1.44", features = ["log"] }
 tracing-core = "0.1.36"
-tracing-opentelemetry = { version = "0.33.0", optional = true }
+tracing-opentelemetry = { version = "0.34.0", optional = true }
 hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 crossbeam-channel = "0.5.15"
@@ -87,7 +87,6 @@ vmm-sys-util = "0.15.0"
 
 [dev-dependencies]
 uuid = { version = "1.23.3", features = ["v4"] }
-signal-hook-registry = "1.4.8"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "code_asm"] }
 proptest = "1.11.0"
 crossbeam-queue = "0.3.12"
@@ -98,11 +97,11 @@ env_logger = "0.11.10"
 tracing-forest = { version = "0.3.1", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.23", features = ["std", "env-filter"]}
-tracing-opentelemetry = "0.33.0"
-opentelemetry = "0.32.0"
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
+tracing-opentelemetry = "0.34.0"
+opentelemetry = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
 opentelemetry-semantic-conventions = "0.33"
-opentelemetry_sdk = { version = "0.32.0", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.33.1", features = ["rt-tokio"] }
 tokio = { version = "1.52.3", features = ["full"] }
 criterion = "0.8.2"
 tracing-chrome = "0.7.2"
@@ -124,7 +123,7 @@ proc-maps = "0.5.0"
 anyhow = { version = "1.0.102" }
 cfg_aliases = "0.2.1"
 built = { version = "0.8.1", optional = true, features = ["chrono", "git2"] }
-bindgen = { version = "0.72", features = ["prettyplease"] }
+bindgen = { version = "0.73", features = ["prettyplease"] }
 cc = "1.2"
 
 [features]

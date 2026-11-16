@@ -90,10 +90,15 @@
           # Hyperlight needs a variety of toolchains, since we use Nightly
           # for rustfmt and old toolchains to verify MSRV
           toolchains = lib.mapAttrs (_: customisedRustChannelOf) {
-            stable = {
-              date = "2026-03-05";
+            "1.99.1" = {
+              date = "2026-10-15";
               channel = "stable";
-              sha256 = "sha256-qqF33vNuAdU5vua96VKVIwuc43j4EFeEXbjQ6+l4mO4=";
+              sha256 = "fb152be80975c194aa5fc684b2aec3a6e14e2b855efe2faa4e5f8ae6e590f463";
+            };
+            "1.94.1" = {
+              date = "2026-03-26";
+              channel = "stable";
+              sha256 = "cc2f04dfc883549d683c8cc2a9393f523a3dfbd931f5d5eaef00303cca64a60d";
             };
             nightly = {
               date = "2026-09-22";
@@ -107,9 +112,11 @@
             };
           };
 
+          host-toolchain = toolchains.${(builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel};
+
           rust-platform = makeRustPlatform {
-            cargo = toolchains.stable.rust;
-            rustc = toolchains.stable.rust;
+            cargo = host-toolchain.rust;
+            rustc = host-toolchain.rust;
           };
 
           manifests = {
@@ -201,19 +208,36 @@
           rustup-like-wrapper = name: pkgs.writeShellScriptBin name
             (let
               clause = name: toolchain: ''
-                +${name}) base="${toolchain.rust}"; shift 1; ;;
-                +${name}-${toolchain.rust.toolchainVersionAttrs.date}) base="${toolchain.rust}"; shift 1; ;;
+                +${name}) base="${toolchain.rust}"; ;;
+                +${name}-${toolchain.rust.toolchainVersionAttrs.date}) base="${toolchain.rust}"; ;;
               '';
               clauses = lib.strings.concatStringsSep "\n"
                 (lib.mapAttrsToList clause toolchains);
             in ''
-              base="${toolchains.stable.rust}"
-              ${materialiseDeps}
-              case "$1" in
+              base="${host-toolchain.rust}"
+              requested="''${RUSTUP_TOOLCHAIN:-}"
+              if [[ "$1" == +* ]]; then
+                requested="''${1#+}"
+                shift
+              elif [[ -z "$requested" ]]; then
+                dir="$PWD"
+                while [[ "$dir" != / ]]; do
+                  if [[ -f "$dir/rust-toolchain.toml" ]]; then
+                    requested=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' "$dir/rust-toolchain.toml")
+                    break
+                  fi
+                  dir=$(dirname "$dir")
+                done
+              fi
+              case "+$requested" in
                 ${clauses}
-                install) exit 0; ;;
+                +stable | +stable-${host-toolchain.rust.toolchainVersionAttrs.date} | +) requested=stable; ;;
+                *) echo "Unsupported Rust toolchain: $requested" >&2; exit 1; ;;
               esac
+              if [[ "$1" == install ]]; then exit 0; fi
+              export RUSTUP_TOOLCHAIN="$requested"
               export PATH="$base/bin:$PATH"
+              ${materialiseDeps}
               exec "$base/bin/${name}" "$@"
             '');
           fake-rustup = pkgs.symlinkJoin {

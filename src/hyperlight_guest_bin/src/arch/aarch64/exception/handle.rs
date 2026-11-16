@@ -9,16 +9,23 @@ use hyperlight_common::arch::exn::{
 use hyperlight_common::vmem::{BasicMapping, Mapping, MappingKind, PAGE_SIZE, PhysAddr, VirtAddr};
 use hyperlight_guest::error::ErrorCode;
 use hyperlight_guest::exit::write_abort;
-use hyperlight_guest::layout::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
+use hyperlight_guest::layout::{
+    HEAP_GVA_END, HEAP_GVA_START, MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA,
+};
 
 use super::super::{mrs, msr};
 use super::types::*;
 use crate::HyperlightAbortWriter;
 
-fn handle_stack_fault(far: u64) {
-    // TODO: perhaps we should have a sanity check that the
-    // stack grows only one page at a time, which should be
-    // ensured by our stack probing discipline?
+/// Maps a fresh scratch page at `far` in the stack or heap range.
+///
+/// # Safety
+/// `far` must be in the stack or heap range and must not be mapped. No
+/// other page table operation may run concurrently.
+unsafe fn handle_stack_or_heap_fault(far: u64, executable: bool) {
+    // SAFETY: the scratch allocator is set up before any exception can
+    // occur, and the masked address is page aligned. The caller upholds
+    // the rest of the `map_region` contract.
     unsafe {
         let new_page = hyperlight_guest::prim_alloc::alloc_phys_pages(1);
         crate::paging::map_region(
@@ -28,7 +35,7 @@ fn handle_stack_fault(far: u64) {
             MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
-                executable: false,
+                executable,
             }),
         );
         // We don't use crate::barrier::first_valid_same_ctx, because
@@ -90,7 +97,22 @@ fn handle_internal_fault(exn: Exception, far: u64, orig_mapping: Option<Mapping>
             ..
         }) => {
             if (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&far) {
-                handle_stack_fault(far);
+                // TODO: perhaps we should have a sanity check that the
+                // stack grows only one page at a time, which should be
+                // ensured by our stack probing discipline?
+                // SAFETY: a translation fault in the stack region means
+                // the page is unmapped, and exception handling is the
+                // only page table writer.
+                unsafe { handle_stack_or_heap_fault(far, false) };
+                true
+            } else if (HEAP_GVA_START..HEAP_GVA_END).contains(&far) {
+                // SAFETY: the host writes the scratch-top metadata before entry.
+                let executable =
+                    unsafe { hyperlight_guest::layout::heap_executable_gva().read_volatile() } != 0;
+                // SAFETY: a translation fault in the heap region means
+                // the page is unmapped, and exception handling is the
+                // only page table writer.
+                unsafe { handle_stack_or_heap_fault(far, executable) };
                 true
             } else if let Some(
                 m @ Mapping {

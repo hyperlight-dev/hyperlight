@@ -183,7 +183,6 @@ const NON_MTRR_RESETTABLE_MSRS: &[u32] = &[
     // MSHV maps XSS through its U_XSS alias.
     MSR_XSS,
     MSR_TSC,
-    // Hyper-V stores TSC_ADJUST independently from TSC.
     MSR_TSC_ADJUST,
     // Host probing omits TSC_AUX when RDTSCP is unavailable.
     MSR_TSC_AUX,

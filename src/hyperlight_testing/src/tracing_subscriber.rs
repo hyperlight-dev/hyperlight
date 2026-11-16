@@ -133,7 +133,7 @@ impl Subscriber for TracingSubscriber {
             println!(
                 "Thread {:?} span {} values: {}",
                 std::thread::current().id(),
-                &span_id,
+                span_id,
                 to_string_pretty(&json_values).expect("Failed to pretty print json")
             );
             let json_values = json_values
@@ -152,7 +152,7 @@ impl Subscriber for TracingSubscriber {
             println!(
                 "Thread {:?} Updated Span {} values: {}",
                 std::thread::current().id(),
-                &span_id,
+                span_id,
                 to_string_pretty(&json_object).expect("Failed to pretty print json")
             );
         });

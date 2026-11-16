@@ -23,9 +23,8 @@ use super::regs::CommonRegisters;
 use crate::HyperlightError;
 use crate::hypervisor::regs::CommonFpu;
 use crate::hypervisor::virtual_machine::{HypervisorError, RegisterError, VirtualMachine};
-use crate::mem::layout::BaseGpaRegion;
 use crate::mem::memory_region::MemoryRegion;
-use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::mgr::{BackingSource, SandboxMemoryManager};
 use crate::mem::shared_mem::HostSharedMemory;
 
 #[derive(Debug, Error)]
@@ -111,11 +110,9 @@ impl<'a> DebugMemoryView<'a> {
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
         self.mem_mgr
-            .layout
-            .resolve_gpa(gpa, &self.guest_mmap_regions)
-            .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?
-            .with_memories(&self.mem_mgr.shared_mem, &self.mem_mgr.scratch_mem)
-            .copy_to_slice(data)
+            .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                memory.read(gpa, data).map(|_| ())
+            })
             .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))
     }
 
@@ -132,27 +129,28 @@ impl<'a> DebugMemoryView<'a> {
         data: &[u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let resolved = self
+        let backing = self
             .mem_mgr
-            .layout
-            .resolve_gpa(gpa, &self.guest_mmap_regions)
+            .with_guest_memory(&self.guest_mmap_regions, |memory| {
+                Ok(memory.resolve(gpa, data.len()))
+            })
+            .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?
             .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
 
-        // We can only safely write (without causing UB in the host
-        // process) if the address is in the scratch region
-        match resolved.base {
-            #[cfg(unshared_snapshot_mem)]
-            BaseGpaRegion::Snapshot(()) => self
+        // gdb builds give each sandbox private writable copies of its snapshot
+        // layers. Dynamic regions are host memory the sandbox must not modify.
+        match backing.source {
+            BackingSource::Snapshot(layer_index) => self
                 .mem_mgr
                 .shared_mem
-                .copy_from_slice(data, resolved.offset)
-                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e.into()))),
-            BaseGpaRegion::Scratch(()) => self
+                .write_layer(layer_index, backing.offset, data)
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e))),
+            BackingSource::Scratch => self
                 .mem_mgr
                 .scratch_mem
-                .copy_from_slice(data, resolved.offset)
+                .copy_from_slice(data, backing.offset)
                 .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e.into()))),
-            _ => Err(DebugMemoryAccessError::WriteToReadOnly),
+            BackingSource::Dynamic(_) => Err(DebugMemoryAccessError::WriteToReadOnly),
         }
     }
 }
@@ -503,7 +501,7 @@ mod tests {
         #[test]
         fn test_mem_access_write_single_byte() -> crate::Result<()> {
             let memory = TestMemory::new()?;
-            let scratch_gpa = memory.mem_mgr.layout.get_first_free_scratch_gpa();
+            let scratch_gpa = memory.mem_mgr.first_free_scratch_gpa();
 
             let write_data = [0xCCu8; 1];
             memory.access().write(&write_data, scratch_gpa).unwrap();
@@ -518,7 +516,7 @@ mod tests {
         #[test]
         fn test_mem_access_write_multiple_bytes() -> crate::Result<()> {
             let memory = TestMemory::new()?;
-            let scratch_gpa = memory.mem_mgr.layout.get_first_free_scratch_gpa();
+            let scratch_gpa = memory.mem_mgr.first_free_scratch_gpa();
 
             let write_data = [0xAAu8; 16];
             memory.access().write(&write_data, scratch_gpa).unwrap();

@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
@@ -13,6 +14,7 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 #[cfg(target_arch = "x86_64")]
 use crate::hypervisor::regs::MsrEntry;
 use crate::mem::layout::SandboxMemoryLayout;
+use crate::sandbox::snapshot::memory::{SnapshotBlob, host_page_size};
 
 // --- Arch and hypervisor identifiers --------------------------------
 
@@ -161,11 +163,11 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v3+json`.
+/// `application/vnd.hyperlight.snapshot.config.v6+json`.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
-/// memory layer (the snapshot bytes) and everything the loader needs
+/// data, page-table and transport layers and everything the loader needs
 /// to reconstruct a runnable `Snapshot`.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,6 +181,9 @@ pub(super) struct OciSnapshotConfig {
     pub(super) hypervisor: Hypervisor,
     /// CPU vendor captured at snapshot time. Checked on load.
     pub(super) cpu_vendor: CpuVendor,
+    /// Alignment of each layer's GPA and blob size: the larger of the host and
+    /// guest page sizes at capture. A loader must use the same alignment.
+    pub(super) layer_alignment: usize,
     /// Top of the guest stack, in guest virtual address space.
     pub(super) stack_top_gva: u64,
     /// Guest virtual address the loader resumes the paused call at.
@@ -196,9 +201,10 @@ pub(super) struct OciSnapshotConfig {
     #[cfg(target_arch = "x86_64")]
     pub(super) msrs: Vec<MsrEntry>,
     pub(super) layout: MemoryLayout,
-    /// Total size of the memory blob in bytes (including the guest
-    /// page-table tail, if any). Equal to `self.memory.mem_size()`.
-    pub(super) memory_size: u64,
+    /// Snapshot blobs, in manifest descriptor order.
+    pub(super) layers: Vec<OciSnapshotLayer>,
+    /// Index into `layers` of the blob with the page tables of this snapshot.
+    pub(super) page_table_layer: usize,
     /// Names and signatures of host functions registered when this
     /// snapshot was taken. Validated against the loader's registry.
     pub(super) host_functions: Vec<HostFunction>,
@@ -212,20 +218,16 @@ pub(super) struct OciSnapshotConfig {
     pub(super) metadata: BTreeMap<String, serde_json::Value>,
 }
 
-/// Sizes and permissions of the regions inside the snapshot blob,
+/// Sizes and addresses of the regions inside the snapshot blob,
 /// enough for the loader to rebuild a `SandboxMemoryLayout`.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MemoryLayout {
-    pub(super) heap_size: usize,
     pub(super) code_size: usize,
     /// Virtual base address of the code region. A value of zero means the
     /// code region is identity mapped.
     #[serde(default)]
     pub(super) code_virt_base: u64,
-    pub(super) init_data_size: usize,
-    /// Memory region flag bits. `None` means default permissions.
-    pub(super) init_data_permissions: Option<u32>,
     pub(super) scratch_size: usize,
     pub(super) g2h_queue_size: usize,
     pub(super) h2g_queue_size: usize,
@@ -233,8 +235,26 @@ pub(super) struct MemoryLayout {
     pub(super) h2g_buffer_size: usize,
     pub(super) g2h_pool_pages: usize,
     pub(super) h2g_pool_pages: usize,
-    pub(super) snapshot_size: usize,
-    pub(super) pt_size: Option<usize>,
+}
+
+/// One snapshot blob: guest data mapped at `gpa_start`, followed by page
+/// tables.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OciSnapshotLayer {
+    pub(super) gpa_start: u64,
+    pub(super) data_len: usize,
+    pub(super) page_table_len: usize,
+}
+
+impl From<&Arc<SnapshotBlob>> for OciSnapshotLayer {
+    fn from(layer: &Arc<SnapshotBlob>) -> Self {
+        Self {
+            gpa_start: layer.gpa_start(),
+            data_len: layer.data_len(),
+            page_table_len: layer.page_table_len(),
+        }
+    }
 }
 
 /// Name and signature of one host function registered when the
@@ -450,70 +470,20 @@ impl OciSnapshotConfig {
                 self.hyperlight_version
             ));
         }
-        // Bound memory size early so the subsequent file-size check
-        // does not have to deal with absurd values.
-        if self.memory_size == 0 || self.memory_size > SandboxMemoryLayout::MAX_MEMORY_SIZE as u64 {
+        if self.layer_alignment != host_page_size() {
             return Err(crate::new_error!(
-                "snapshot memory_size ({}) is out of range",
-                self.memory_size
-            ));
-        }
-        if !(self.memory_size as usize).is_multiple_of(PAGE_SIZE) {
-            return Err(crate::new_error!(
-                "snapshot memory_size ({}) is not a multiple of PAGE_SIZE",
-                self.memory_size
-            ));
-        }
-        // `snapshot_size` is the guest-visible prefix of the blob,
-        // mapped at `BASE_ADDRESS`. `pt_size` is the page-table tail
-        // after it, present in the blob and host mapping but outside
-        // the guest mapping. They sum to `memory_size`.
-        if self.layout.snapshot_size == 0 {
-            return Err(crate::new_error!("snapshot snapshot_size must be nonzero"));
-        }
-        if !self.layout.snapshot_size.is_multiple_of(PAGE_SIZE) {
-            return Err(crate::new_error!(
-                "snapshot snapshot_size ({}) is not a multiple of PAGE_SIZE",
-                self.layout.snapshot_size
-            ));
-        }
-        let pt = self
-            .layout
-            .pt_size
-            .ok_or_else(|| crate::new_error!("snapshot pt_size is missing"))?;
-        if pt == 0 {
-            return Err(crate::new_error!("snapshot pt_size must be nonzero"));
-        }
-        if !pt.is_multiple_of(PAGE_SIZE) {
-            return Err(crate::new_error!(
-                "snapshot pt_size ({}) is not a multiple of PAGE_SIZE",
-                pt
-            ));
-        }
-        // The total memory size might be bigger because it has to
-        // take into account the host page size, as well as the guest
-        // page size.
-        let total_size = (self.layout.snapshot_size as u64)
-            .saturating_add(pt as u64)
-            .next_multiple_of(page_size::get() as u64);
-        if total_size != self.memory_size {
-            return Err(crate::new_error!(
-                "snapshot snapshot_size ({}) + pt_size ({}), rounded to {}, does not equal memory_size ({})",
-                self.layout.snapshot_size,
-                pt,
-                total_size,
-                self.memory_size
+                "snapshot layer alignment mismatch: file uses {}, current host uses {}",
+                self.layer_alignment,
+                host_page_size()
             ));
         }
         // Cap each layout field at `MAX_MEMORY_SIZE` so the later
         // size and offset sums in `SandboxMemoryLayout` cannot
         // overflow `u64`. Whether the regions fit the snapshot is
-        // checked against `snapshot_size` in `load_inner`.
+        // checked against the snapshot GPA span in `load_inner`.
         let max_region = SandboxMemoryLayout::MAX_MEMORY_SIZE;
         for (name, value) in [
-            ("heap_size", self.layout.heap_size),
             ("code_size", self.layout.code_size),
-            ("init_data_size", self.layout.init_data_size),
             ("scratch_size", self.layout.scratch_size),
             ("g2h_buffer_size", self.layout.g2h_buffer_size),
             ("h2g_buffer_size", self.layout.h2g_buffer_size),
@@ -840,6 +810,7 @@ mod tests {
             abi_version: SNAPSHOT_ABI_VERSION,
             hypervisor: Hypervisor::Mshv,
             cpu_vendor: CpuVendor::current(),
+            layer_alignment: host_page_size(),
             stack_top_gva: 0x2000,
             entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
             original_entrypoint_addr: SandboxMemoryLayout::BASE_ADDRESS as u64,
@@ -847,11 +818,8 @@ mod tests {
             #[cfg(target_arch = "x86_64")]
             msrs: Vec::new(),
             layout: MemoryLayout {
-                heap_size: 0,
                 code_size: 0,
                 code_virt_base: 0,
-                init_data_size: 0,
-                init_data_permissions: None,
                 scratch_size: 0,
                 g2h_queue_size: 64,
                 h2g_queue_size: 32,
@@ -859,10 +827,9 @@ mod tests {
                 h2g_buffer_size: PAGE_SIZE,
                 g2h_pool_pages: 8,
                 h2g_pool_pages: 4,
-                snapshot_size: PAGE_SIZE,
-                pt_size: None,
             },
-            memory_size: PAGE_SIZE as u64,
+            layers: Vec::new(),
+            page_table_layer: 0,
             host_functions: Vec::new(),
             snapshot_generation: 0,
             metadata: BTreeMap::new(),
@@ -931,6 +898,18 @@ mod tests {
         let err = cfg.validate_for_load().unwrap_err().to_string();
         assert!(err.contains("hypervisor mismatch"), "got: {err}");
     }
+
+    #[test]
+    fn validate_for_load_rejects_layer_alignment_mismatch() {
+        let Some(current) = Hypervisor::current() else {
+            return;
+        };
+        let mut cfg = gating_config();
+        cfg.hypervisor = current;
+        cfg.layer_alignment = 2 * host_page_size();
+        let err = cfg.validate_for_load().unwrap_err().to_string();
+        assert!(err.contains("layer alignment mismatch"), "got: {err}");
+    }
 }
 
 #[cfg(test)]
@@ -941,9 +920,10 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "x86_64",
-  "abi_version": 5,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
+  "layer_alignment": 4096,
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
@@ -1100,22 +1080,24 @@ mod schema_pin {
     }
   ],
   "layout": {
-    "heap_size": 3,
     "code_size": 4,
     "code_virt_base": 0,
-    "init_data_size": 5,
-    "init_data_permissions": null,
     "scratch_size": 8,
     "g2h_queue_size": 64,
     "h2g_queue_size": 32,
     "g2h_buffer_size": 4096,
     "h2g_buffer_size": 4096,
     "g2h_pool_pages": 8,
-    "h2g_pool_pages": 4,
-    "snapshot_size": 9,
-    "pt_size": null
+    "h2g_pool_pages": 4
   },
-  "memory_size": 65536,
+  "layers": [
+    {
+      "gpa_start": 16384,
+      "data_len": 65536,
+      "page_table_len": 4096
+    }
+  ],
+  "page_table_layer": 0,
   "host_functions": [
     {
       "function_name": "fn_void",
@@ -1132,9 +1114,10 @@ mod schema_pin {
     const PINNED_CALL: &str = r#"{
   "hyperlight_version": "x.y.z",
   "arch": "aarch64",
-  "abi_version": 5,
+  "abi_version": 10,
   "hypervisor": "mshv",
   "cpu_vendor": "intel",
+  "layer_alignment": 16384,
   "stack_top_gva": 3735928559,
   "entrypoint_addr": 8192,
   "original_entrypoint_addr": 4096,
@@ -1147,22 +1130,24 @@ mod schema_pin {
     "sp_el1": 6
   },
   "layout": {
-    "heap_size": 3,
     "code_size": 4,
     "code_virt_base": 0,
-    "init_data_size": 5,
-    "init_data_permissions": null,
     "scratch_size": 8,
     "g2h_queue_size": 64,
     "h2g_queue_size": 32,
     "g2h_buffer_size": 4096,
     "h2g_buffer_size": 4096,
     "g2h_pool_pages": 8,
-    "h2g_pool_pages": 4,
-    "snapshot_size": 9,
-    "pt_size": null
+    "h2g_pool_pages": 4
   },
-  "memory_size": 65536,
+  "layers": [
+    {
+      "gpa_start": 16384,
+      "data_len": 65536,
+      "page_table_len": 4096
+    }
+  ],
+  "page_table_layer": 0,
   "host_functions": [
     {
       "function_name": "fn_void",

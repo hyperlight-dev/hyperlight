@@ -1,5 +1,4 @@
 [toolchain]
-channel = "1.94"
-# Target used for guest binaries. This is an additive list of targets in addition to host platform.
-# Will install the target if not already installed when building guest binaries.
-targets = ["x86_64-unknown-none", "x86_64-unknown-linux-musl"]
+channel = "1.99.1"
+components = ["clippy"]
+targets = ["x86_64-unknown-linux-musl"]

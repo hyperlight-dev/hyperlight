@@ -1,6 +1,6 @@
 #!/bin/bash
 set -Eeuo pipefail
-cargo install -q jaq
+cargo install -q --locked --version 3.1.1 jaq
 
 EXPECTED="$1"
 EXPECTED="${EXPECTED#refs/heads/release/}"

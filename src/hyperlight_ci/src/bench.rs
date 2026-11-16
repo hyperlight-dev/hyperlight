@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use criterion_swarm::{CriterionSwarm, OutputMode};
@@ -101,6 +101,10 @@ pub struct BenchArgs {
     /// `rust` and one `c` directory.
     #[arg(long, value_name = "DIR")]
     pub baseline_guests: Option<PathBuf>,
+    /// Cargo target directory the `--baseline-ref` pass builds in. A directory
+    /// seeded from a build of a nearby commit saves most of the compile.
+    #[arg(long, value_name = "DIR", requires = "baseline_ref")]
+    pub baseline_target_dir: Option<PathBuf>,
     /// Name criterion keeps the `--baseline-ref` results under
     #[arg(long, value_name = "NAME", default_value = "base")]
     pub baseline_name: String,
@@ -113,7 +117,7 @@ pub struct BenchArgs {
 pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
     let Some(spec) = args.baseline_ref.take() else {
         let bench_args = std::mem::take(&mut args.bench_args);
-        return measure(&args, bench_args, None).await;
+        return measure(&args, bench_args, None, None).await;
     };
 
     let commit = resolve(&spec, args.repo.as_deref())?;
@@ -133,6 +137,12 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&home)
         .with_context(|| format!("Failed to create {}", home.display()))?;
     std::env::set_var("CRITERION_HOME", &home);
+    let target_dir = args
+        .baseline_target_dir
+        .as_deref()
+        .map(std::path::absolute)
+        .transpose()
+        .context("Failed to resolve the baseline target directory")?;
 
     // A baseline left by an earlier run would otherwise stand in for any
     // benchmark this one cannot measure, which is every benchmark the commit
@@ -152,7 +162,13 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
     let here = std::env::current_dir().context("Failed to read the working directory")?;
     std::env::set_current_dir(worktree.path())
         .with_context(|| format!("Failed to enter {}", worktree.path().display()))?;
-    let measured = measure(&args, with(&args, "--save-baseline"), None).await;
+    let measured = measure(
+        &args,
+        with(&args, "--save-baseline"),
+        None,
+        target_dir.as_deref(),
+    )
+    .await;
     std::env::set_current_dir(&here)
         .with_context(|| format!("Failed to return to {}", here.display()))?;
     measured.with_context(|| format!("Failed to measure {commit}"))?;
@@ -164,6 +180,7 @@ pub async fn run(mut args: BenchArgs) -> anyhow::Result<()> {
         &args,
         with(&args, "--baseline-lenient"),
         Some(measured_against),
+        None,
     )
     .await
 }
@@ -224,10 +241,26 @@ fn with(args: &BenchArgs, flag: &str) -> Vec<String> {
     bench_args
 }
 
+/// The cargo arguments that build the benchmarks.
+fn cargo_args(features: &[String], target_dir: Option<&Path>) -> anyhow::Result<Vec<String>> {
+    let mut cargo_args = Vec::new();
+    if !features.is_empty() {
+        cargo_args.extend(["--features".to_string(), features.join(",")]);
+    }
+    if let Some(dir) = target_dir {
+        let dir = dir
+            .to_str()
+            .with_context(|| format!("{} is not valid UTF-8", dir.display()))?;
+        cargo_args.push(format!("--target-dir={dir}"));
+    }
+    Ok(cargo_args)
+}
+
 async fn measure(
     args: &BenchArgs,
     bench_args: Vec<String>,
     baseline: Option<String>,
+    target_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config = args
         .config_file
@@ -241,9 +274,7 @@ async fn measure(
         swarm = swarm.binaries(args.binary.clone());
     }
 
-    if !args.features.is_empty() {
-        swarm = swarm.build_args(["--features".to_string(), args.features.join(",")]);
-    }
+    swarm = swarm.build_args(cargo_args(&args.features, target_dir)?);
 
     for arg in bench_args {
         swarm = swarm.bench_arg(arg);
@@ -307,7 +338,7 @@ async fn measure(
     let ballast = if args.no_ballast {
         None
     } else {
-        Some(Ballast::start()?)
+        Some(Ballast::start(target_dir)?)
     };
 
     let result = swarm.run().await.context("Failed to run criterion swarm");
@@ -319,7 +350,9 @@ async fn measure(
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_baseline, resolve};
+    use std::path::Path;
+
+    use super::{cargo_args, clear_baseline, resolve};
 
     /// Only the baseline being rebuilt goes, so a run holds on to the
     /// measurements it is not about to replace.
@@ -381,6 +414,23 @@ mod tests {
         for spec in ["main", "HEAD^1", "3ee2d4cb", "v1.2.3"] {
             assert_eq!(resolve(spec, None).unwrap(), spec);
         }
+    }
+
+    #[test]
+    fn cargo_args_name_features_and_target_dir() {
+        assert!(cargo_args(&[], None).unwrap().is_empty());
+        assert_eq!(
+            cargo_args(
+                &["kvm".to_string(), "mshv3".to_string()],
+                Some(Path::new("/tmp/baseline-target"))
+            )
+            .unwrap(),
+            [
+                "--features",
+                "kvm,mshv3",
+                "--target-dir=/tmp/baseline-target"
+            ]
+        );
     }
 
     #[test]

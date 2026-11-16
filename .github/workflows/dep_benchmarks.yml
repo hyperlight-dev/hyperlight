@@ -5,9 +5,10 @@
 # Artifact upload:
 #   Benchmark results are uploaded as workflow artifacts named
 #   benchmarks_<OS>_<hypervisor>_<cpu_vendor>, kept for as long as GitHub
-#   allows so that a later run can still be compared against them. Reading
-#   them is left to whoever wants a report, so that a comparison covers every
-#   configuration at once.
+#   allows so that a later run can still be compared against them. A set
+#   mshv_kernel joins the hypervisor, as in benchmarks_Linux_mshv3-6.18_amd.
+#   Reading them is left to whoever wants a report, so that a comparison
+#   covers every configuration at once.
 
 name: Run Benchmarks
 
@@ -31,6 +32,11 @@ on:
         description: CPU architecture for the build, X64 or arm64 (passed from caller matrix)
         required: true
         type: string
+      mshv_kernel:
+        description: MSHV kernel of the Azure Linux 3 pool, for example 6.18. Empty selects the default mshv3 pool.
+        required: false
+        type: string
+        default: ""
       baseline_ref:
         description: >-
           Commit to measure these results against. When set, its benchmarks run
@@ -57,7 +63,7 @@ jobs:
     runs-on: ${{ fromJson(inputs.arch == 'X64'
         && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-benchmarks-{3}-{4}-{5}"]',
             inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
-            inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor,
+            inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && format('azlinux3-mshv{0}', inputs.mshv_kernel != '' && format('-{0}', inputs.mshv_kernel) || '') || inputs.hypervisor,
             inputs.cpu_vendor,
             github.run_id,
             github.run_number,
@@ -69,46 +75,51 @@ jobs:
           # The baseline pass checks out another commit, which needs its history.
           fetch-depth: ${{ inputs.baseline_ref == '' && 1 || 0 }}
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         with:
-          rust-toolchain: "1.94"
+          additional-toolchain-directory: src/tests/rust_guests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
+          prefix-key: v1-rust
           shared-key: "${{ inputs.arch }}-${{ runner.os }}-${{ inputs.hypervisor }}-release"
           save-if: "false"
 
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
-
       - name: Download Rust guests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: rust-guests-${{ inputs.arch }}-release
           path: src/tests/rust_guests/bin/release/
 
       - name: Download C guests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: c-guests-${{ inputs.arch }}-release
           path: src/tests/c_guests/bin/release/
 
       - name: Download baseline Rust guests
         if: inputs.baseline_ref != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: rust-guests-${{ inputs.arch }}-release-baseline
           path: ${{ runner.temp }}/baseline-guests/rust/
 
       - name: Download baseline C guests
         if: inputs.baseline_ref != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: c-guests-${{ inputs.arch }}-release-baseline
           path: ${{ runner.temp }}/baseline-guests/c/
+
+      # The baseline builds in its own target directory. Cargo fingerprints
+      # path dependencies by mtime and workspace path, so two checkouts cannot
+      # share one. A copy of the restored cache gives it the dependencies.
+      - name: Seed baseline target directory
+        if: inputs.baseline_ref != ''
+        run: if [ -d target ]; then cp -a target "$RUNNER_TEMP/baseline-target"; fi
 
       # Both commits are measured on this machine, so the comparison reflects
       # them rather than the difference between two runners. The branch point
@@ -124,14 +135,14 @@ jobs:
               echo "::error::HEAD is not a merge, so ${{ inputs.baseline_ref }} is not the branch point"
               exit 1
             }
-            just bench-against ${{ inputs.baseline_ref }} "$RUNNER_TEMP/baseline-guests"
+            just bench-against ${{ inputs.baseline_ref }} "$RUNNER_TEMP/baseline-guests" "" "$RUNNER_TEMP/baseline-target"
           else
             just bench-ci main
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu_vendor }}
+          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}${{ inputs.mshv_kernel != '' && format('-{0}', inputs.mshv_kernel) || '' }}_${{ inputs.cpu_vendor }}
           path: ./target/criterion/
           if-no-files-found: error
           # The longest GitHub keeps an artifact, so that a run stays readable

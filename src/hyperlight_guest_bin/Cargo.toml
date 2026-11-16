@@ -25,7 +25,7 @@ hyperlight-common = { workspace = true, default-features = false }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
 hyperlight-guest-macro = { workspace = true, default-features = false, optional = true }
 hyperlight-libc = { workspace = true, default-features = false, optional = true }
-buddy_system_allocator = "0.13.0"
+talc = { version = "5.1.1", default-features = false }
 log = { version = "0.4", default-features = false }
 linkme = { version = "0.3.36", optional = true }
 spin = "0.12.0"

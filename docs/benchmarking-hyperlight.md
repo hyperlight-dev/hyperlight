@@ -5,7 +5,7 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
 ## When Benchmarks are run
 
 1. Daily (scheduled)
-    - Benchmarks run daily via `DailyBenchmarks.yml`. Results are stored as workflow artifacts with 90-day retention, and are what pull requests are compared against.
+    - Benchmarks run daily via `DailyBenchmarks.yml`. Results are stored as workflow artifacts with 90-day retention, and are what pull requests are compared against. The daily run also benchmarks mshv3 on the MSHV 6.18 kernel pools, as `benchmarks_Linux_mshv3-6.18_<cpu_vendor>`.
 
     ```
     sandboxes/create_sandbox

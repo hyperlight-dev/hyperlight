@@ -107,6 +107,10 @@ pub enum SharedMemoryError {
     #[error("Cannot take exclusive access to a ReadonlySharedMemory")]
     ReadonlySharedMemoryExclusiveRequest,
 
+    /// Calling code attempted to freeze memory that still has writable aliases.
+    #[error("Cannot freeze shared memory that still has other owners")]
+    SharedMemoryNotExclusive,
+
     /// An error was encountered when trying to convert a slice of raw
     /// bytes into some logical data
     #[error("Error reading slice {0}")]
@@ -600,6 +604,49 @@ pub trait SharedMemory {
     }
 }
 
+/// Prepare host-written code in a guest-visible prefix for execution.
+///
+/// - Linux x86-64 relies on hardware instruction/data-cache coherence for KVM and MSHV.
+/// - On ARM64, KVM cleans the data cache as needed when installing stage-2 mappings.
+///   It invalidates the instruction cache before installing an executable mapping or
+///   adding execute permission to an existing mapping.
+///
+/// See Linux:
+/// -[stage-2 page-table code](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/arch/arm64/kvm/hyp/pgtable.c)
+/// -[cache helpers](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/arch/arm64/include/asm/kvm_mmu.h).
+fn sync_instr_cache(memory: &impl SharedMemory, size: usize) -> Result<()> {
+    bounds_check!(0usize, size, memory.mem_size());
+
+    if size == 0 {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn sys_icache_invalidate(start: *mut c_void, len: usize);
+        }
+
+        // SAFETY: The checked range is within a live host mapping.
+        unsafe {
+            sys_icache_invalidate(memory.base_ptr().cast(), size);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::System::Diagnostics::Debug::FlushInstructionCache;
+        use windows::Win32::System::Threading::GetCurrentProcess;
+
+        // SAFETY: The checked range belongs to the current process and its mapping is live.
+        unsafe {
+            FlushInstructionCache(GetCurrentProcess(), Some(memory.base_ptr().cast()), size)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn mapping_at(
     s: &impl SharedMemory,
     gpa: u64,
@@ -867,7 +914,7 @@ impl ExclusiveSharedMemory {
     ///   the safety documentation of pointer::offset.
     ///
     ///   This is ensured by a check in ::new()
-    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
     }
 
@@ -948,6 +995,32 @@ impl ExclusiveSharedMemory {
         )
     }
 
+    /// Convert this allocation to immutable memory without copying it.
+    pub(crate) fn freeze(mut self, guest_mapped_size: usize) -> Result<ReadonlySharedMemory> {
+        if guest_mapped_size > self.mem_size()
+            || !guest_mapped_size.is_multiple_of(page_size::get())
+        {
+            return Err(SharedMemoryError::MemoryRequest(
+                guest_mapped_size,
+                0,
+                self.mem_size(),
+                page_size::get(),
+            ));
+        }
+        if Arc::get_mut(&mut self.region).is_none() {
+            return Err(SharedMemoryError::SharedMemoryNotExclusive);
+        }
+
+        sync_instr_cache(&self, guest_mapped_size)?;
+
+        // This is the only Arc left. To make another one you have to clone this
+        // one, and it lives in `self`, which this function owns.
+        Ok(ReadonlySharedMemory {
+            region: self.region,
+            guest_mapped_size,
+        })
+    }
+
     /// Gets the file handle of the shared memory region for this Sandbox
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
@@ -1010,7 +1083,7 @@ impl GuestSharedMemory {
             }
             #[allow(clippy::panic)]
             // This will not ever actually panic: the only places this
-            // is called are HyperlightVm::update_snapshot_mapping and
+            // is called are SnapshotMemoryBacking::mappings and
             // HyperlightVm::update_scratch_mapping. The latter
             // statically uses the Scratch region type, and the former
             // does not use this at all when the unshared_snapshot_mem
@@ -1278,6 +1351,19 @@ impl HostSharedMemory {
         Ok(())
     }
 
+    /// Run `f` with the contents as a plain slice. The write lock keeps every
+    /// other host access to this memory out until `f` returns.
+    pub(crate) fn with_exclusive_contents<T>(&self, f: impl FnOnce(&[u8]) -> T) -> Result<T> {
+        let guard = self.lock.try_write()?;
+        let exclusive = ExclusiveSharedMemory {
+            region: self.region.clone(),
+        };
+        let ret = f(exclusive.as_slice());
+        drop(exclusive);
+        drop(guard);
+        Ok(ret)
+    }
+
     /// Copy the contents of the slice into the sandbox at the
     /// specified offset
     pub fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
@@ -1502,7 +1588,6 @@ pub struct ReadonlySharedMemory {
     /// exposes to the guest. Production callers pass the size of the
     /// guest-visible prefix of the snapshot blob; the remainder of
     /// the blob is the page-table tail that lives only host-side.
-    #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
     guest_mapped_size: usize,
 }
 // Safety: HostMapping is only non-Send/Sync (causing
@@ -1519,10 +1604,9 @@ unsafe impl Send for ReadonlySharedMemory {}
 unsafe impl Sync for ReadonlySharedMemory {}
 
 impl ReadonlySharedMemory {
+    #[cfg(any(test, hvf))]
     pub(crate) fn from_bytes(contents: &[u8], guest_mapped_size: usize) -> Result<Self> {
-        if guest_mapped_size == 0
-            || guest_mapped_size > contents.len()
-            || !guest_mapped_size.is_multiple_of(page_size::get())
+        if guest_mapped_size > contents.len() || !guest_mapped_size.is_multiple_of(page_size::get())
         {
             return Err(SharedMemoryError::MemoryRequest(
                 guest_mapped_size,
@@ -1534,14 +1618,10 @@ impl ReadonlySharedMemory {
         let mut anon =
             ExclusiveSharedMemory::new(contents.len().next_multiple_of(page_size::get()))?;
         anon.copy_from_slice(contents, 0)?;
-        Ok(ReadonlySharedMemory {
-            region: anon.region,
-            guest_mapped_size,
-        })
+        anon.freeze(guest_mapped_size)
     }
 
     /// The number of bytes that should be mapped into guest PA space.
-    #[cfg(not(unshared_snapshot_mem))]
     pub(crate) fn guest_mapped_size(&self) -> usize {
         self.guest_mapped_size
     }
@@ -1549,8 +1629,8 @@ impl ReadonlySharedMemory {
     /// Create a `ReadonlySharedMemory` backed by a file on disk.
     ///
     /// The file's length must be a non-zero multiple of `PAGE_SIZE`.
-    /// `guest_mapped_size` must be a non-zero multiple of `PAGE_SIZE`
-    /// no greater than the file's length.
+    /// `guest_mapped_size` must be a multiple of `PAGE_SIZE` no greater
+    /// than the file's length.
     pub(crate) fn from_file(file: &std::fs::File, guest_mapped_size: usize) -> Result<Self> {
         let len: usize = file
             .metadata()
@@ -1568,10 +1648,7 @@ impl ReadonlySharedMemory {
             ));
         }
 
-        if guest_mapped_size == 0
-            || guest_mapped_size > len
-            || !guest_mapped_size.is_multiple_of(page_size::get())
-        {
+        if guest_mapped_size > len || !guest_mapped_size.is_multiple_of(page_size::get()) {
             return Err(SharedMemoryError::MemoryRequest(
                 guest_mapped_size,
                 0,
@@ -1581,10 +1658,13 @@ impl ReadonlySharedMemory {
         }
 
         let region = Self::map_file(file, len)?;
-        Ok(ReadonlySharedMemory {
+        let memory = Self {
             region,
             guest_mapped_size,
-        })
+        };
+        sync_instr_cache(&memory, guest_mapped_size)?;
+
+        Ok(memory)
     }
 
     /// Linux: reserve `[guard][blob][guard]` as one anonymous
@@ -1741,14 +1821,18 @@ impl ReadonlySharedMemory {
 
     #[cfg(unshared_snapshot_mem)]
     pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
-        let mut writable = ExclusiveSharedMemory::new(self.mem_size())?;
-        writable.copy_from_slice(self.as_slice(), 0)?;
+        let mut writable = ExclusiveSharedMemory::new(self.guest_mapped_size)?;
+        writable.copy_from_slice(&self.as_slice()[..self.guest_mapped_size], 0)?;
+        sync_instr_cache(&writable, self.guest_mapped_size)?;
+
         Ok(writable)
     }
 
     #[cfg(not(unshared_snapshot_mem))]
-    pub(crate) fn build(self) -> (Self, Self) {
-        (self.clone(), self)
+    pub(crate) fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        bounds_check!(offset, slice.len(), self.mem_size());
+        slice.copy_from_slice(&self.as_slice()[offset..offset + slice.len()]);
+        Ok(())
     }
 
     #[cfg(not(unshared_snapshot_mem))]
@@ -1759,7 +1843,7 @@ impl ReadonlySharedMemory {
     ) -> MemoryRegion {
         #[allow(clippy::panic)]
         // This will not ever actually panic: the only place this is
-        // called is HyperlightVm::update_snapshot_mapping, which
+        // called is SnapshotMemoryBacking::mappings, which
         // always calls it with the Snapshot region type.
         if region_type != MemoryRegionType::Snapshot {
             panic!("ReadonlySharedMemory::mapping_at should only be used for Snapshot regions");
@@ -1833,7 +1917,7 @@ mod tests {
 
     #[cfg(not(miri))]
     use super::HostSharedMemory;
-    use super::{ExclusiveSharedMemory, Result, SharedMemory};
+    use super::{ExclusiveSharedMemory, Result, SharedMemory, SharedMemoryError};
     #[cfg(not(miri))]
     use crate::mem::shared_mem_tests::read_write_test_suite;
 
@@ -1942,6 +2026,43 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[test]
+    fn freeze_transfers_mapping_without_copying() {
+        let page_size = page_size::get();
+        let mut memory = ExclusiveSharedMemory::new(2 * page_size).unwrap();
+        memory.copy_from_slice(&[1, 2, 3, 4], page_size).unwrap();
+        let base_addr = memory.base_addr();
+
+        let frozen = memory.freeze(page_size).unwrap();
+
+        assert_eq!(frozen.base_addr(), base_addr);
+        assert_eq!(frozen.guest_mapped_size(), page_size);
+        assert_eq!(&frozen.as_slice()[page_size..page_size + 4], &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn freeze_rejects_writable_aliases() {
+        let memory = ExclusiveSharedMemory::new(page_size::get()).unwrap();
+        let alias = ExclusiveSharedMemory {
+            region: memory.region.clone(),
+        };
+
+        assert!(matches!(
+            memory.freeze(0),
+            Err(SharedMemoryError::SharedMemoryNotExclusive)
+        ));
+        drop(alias);
+    }
+
+    #[test]
+    fn freeze_rejects_invalid_guest_mapped_size() {
+        let page_size = page_size::get();
+        let freeze = |size| ExclusiveSharedMemory::new(page_size).unwrap().freeze(size);
+
+        assert!(freeze(page_size + 1).is_err());
+        assert!(freeze(2 * page_size).is_err());
     }
 
     #[test]
@@ -2355,248 +2476,14 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    mod guard_page_crash_test {
-        use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-
-        const TEST_EXIT_CODE: u8 = 211; // an uncommon exit code, used for testing purposes
-
-        /// hook sigsegv to exit with status code, to make it testable, rather than have it exit from a signal
-        /// NOTE: We CANNOT panic!() in the handler, and make the tests #[should_panic], because
-        ///     the test harness process will crash anyway after the test passes
-        fn setup_signal_handler() {
-            unsafe {
-                signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
-                    std::process::exit(TEST_EXIT_CODE.into());
-                })
-                .unwrap();
-            }
-        }
-
-        #[test]
-        #[ignore] // this test is ignored because it will crash the running process
-        fn read() {
-            setup_signal_handler();
-
-            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
-            let (hshm, _) = eshm.build();
-            let guard_page_ptr = hshm.raw_ptr();
-            unsafe { std::ptr::read_volatile(guard_page_ptr) };
-        }
-
-        #[test]
-        #[ignore] // this test is ignored because it will crash the running process
-        fn write() {
-            setup_signal_handler();
-
-            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
-            let (hshm, _) = eshm.build();
-            let guard_page_ptr = hshm.raw_ptr();
-            unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
-        }
-
-        #[test]
-        #[ignore] // this test is ignored because it will crash the running process
-        fn exec() {
-            setup_signal_handler();
-
-            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
-            let (hshm, _) = eshm.build();
-            let guard_page_ptr = hshm.raw_ptr();
-            let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
-            func();
-        }
-
-        // provides a way for running the above tests in a separate process since they expect to crash
-        #[test]
-        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
-        fn guard_page_testing_shim() {
-            let tests = vec!["read", "write", "exec"];
-            for test in tests {
-                let triple = std::env::var("TARGET_TRIPLE").ok();
-                let target_args = if let Some(triple) = triple.filter(|t| !t.is_empty()) {
-                    vec!["--target".to_string(), triple.to_string()]
-                } else {
-                    vec![]
-                };
-                let output = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host", "--lib"])
-                    .args(target_args)
-                    .args(["--", "--ignored", test])
-                    .stdin(std::process::Stdio::null())
-                    .output()
-                    .expect("Unable to launch tests");
-                let exit_code = output.status.code();
-                if exit_code != Some(TEST_EXIT_CODE.into()) {
-                    eprintln!("=== Guard Page test '{}' failed ===", test);
-                    eprintln!("Exit code: {:?} (expected {})", exit_code, TEST_EXIT_CODE);
-                    eprintln!("=== STDOUT ===");
-                    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-                    eprintln!("=== STDERR ===");
-                    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-                    panic!(
-                        "Guard Page test failed: {} (exit code {:?}, expected {})",
-                        test, exit_code, TEST_EXIT_CODE
-                    );
-                }
-            }
-        }
-    }
-
+    /// Shared by the guard page shims. The ignored tests crash on
+    /// purpose, so each one runs in its own process.
     #[cfg(not(miri))]
-    mod from_file_tests {
-        use std::io::Write;
-
-        use tempfile::NamedTempFile;
-
-        use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
-
-        pub(super) fn make_temp_file(len: usize) -> NamedTempFile {
-            let mut f = NamedTempFile::new().expect("create temp file");
-            if len > 0 {
-                let mut buf = vec![0u8; len];
-                for (i, b) in buf.iter_mut().enumerate() {
-                    *b = (i & 0xff) as u8;
-                }
-                f.write_all(&buf).expect("write temp file");
-                f.flush().expect("flush temp file");
-            }
-            f
-        }
-
-        #[test]
-        fn from_file_success_single_page() {
-            let tmp = make_temp_file(page_size::get());
-            let mut rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                .expect("from_file should succeed");
-            assert_eq!(rsm.mem_size(), page_size::get());
-            rsm.with_contents(|slice| {
-                for (i, b) in slice.iter().enumerate() {
-                    assert_eq!(*b, (i & 0xff) as u8);
-                }
-            })
-            .expect("with_contents should succeed");
-        }
-
-        #[test]
-        fn from_file_success_smaller_guest_mapped_size() {
-            let tmp = make_temp_file(2 * page_size::get());
-            let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                .expect("from_file should succeed");
-            assert_eq!(rsm.mem_size(), 2 * page_size::get());
-        }
-
-        #[test]
-        fn from_file_rejects_empty_file() {
-            let tmp = make_temp_file(0);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                .expect_err("empty file should be rejected");
-            assert!(format!("{}", err).contains("0x0 < 0x0"));
-        }
-
-        #[test]
-        fn from_file_rejects_unaligned_file_length() {
-            let tmp = make_temp_file(page_size::get() + 1);
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                .expect_err("unaligned file length should be rejected");
-            assert!(format!("{}", err).contains(&format!(
-                "0x{:x} % 0x{:x} = 0",
-                page_size::get() + 1,
-                page_size::get()
-            )));
-        }
-
-        #[test]
-        fn from_file_rejects_zero_guest_mapped_size() {
-            let tmp = make_temp_file(page_size::get());
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 0)
-                .expect_err("zero guest_mapped_size should be rejected");
-            assert!(format!("{}", err).contains("0x0 < 0x0"));
-        }
-
-        #[test]
-        fn from_file_rejects_unaligned_guest_mapped_size() {
-            let tmp = make_temp_file(2 * page_size::get());
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get() + 1)
-                .expect_err("unaligned guest_mapped_size should be rejected");
-            assert!(format!("{}", err).contains(&format!(
-                "0x{:x} % 0x{:x} = ",
-                page_size::get() + 1,
-                page_size::get()
-            )));
-        }
-
-        #[test]
-        fn from_file_rejects_guest_mapped_size_exceeding_file() {
-            let tmp = make_temp_file(page_size::get());
-            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 2 * page_size::get())
-                .expect_err("guest_mapped_size > file length should be rejected");
-            assert!(format!("{}", err).contains(&format!(
-                "0x{:x} <= 0x{:x}",
-                2 * page_size::get(),
-                page_size::get()
-            )));
-        }
-
-        /// Tests in this submodule are `#[ignore]`'d because each one
-        /// is expected to die from a memory access violation. They are
-        /// not run by a plain `cargo test`. The `from_file_guard_page_shim`
-        /// test in the parent module re-executes each one in a subprocess
-        /// and asserts the trap occurred.
-        mod guard_page_crash_tests {
-            use super::make_temp_file;
-            use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
-
-            /// Loads from the byte immediately before the mapping.
-            #[test]
-            #[ignore]
-            pub(super) fn leading_guard_page_traps() {
-                let tmp = make_temp_file(page_size::get());
-                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                    .expect("from_file should succeed");
-                let guard_ptr = unsafe { rsm.base_ptr().sub(page_size::get()) };
-                println!("reached_guard");
-                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
-                println!("survived_guard");
-            }
-
-            /// Loads from the byte immediately after the mapping.
-            #[test]
-            #[ignore]
-            pub(super) fn trailing_guard_page_traps() {
-                let tmp = make_temp_file(page_size::get());
-                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
-                    .expect("from_file should succeed");
-                let guard_ptr = unsafe { rsm.base_ptr().add(rsm.mem_size()) };
-                println!("reached_guard");
-                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
-                println!("survived_guard");
-            }
-        }
-
-        /// Spawn each ignored guard-page test as a subprocess and assert
-        /// it terminated by an OS access violation. Re-executes the
-        /// current test binary so no rebuild or `cargo` invocation is
-        /// needed.
-        #[test]
-        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
-        fn from_file_guard_page_shim() {
-            use guard_page_crash_tests::{leading_guard_page_traps, trailing_guard_page_traps};
-            let ignored_test_paths = [
-                test_path(leading_guard_page_traps),
-                test_path(trailing_guard_page_traps),
-            ];
-
-            let exe = std::env::current_exe().expect("current_exe");
-            for path in &ignored_test_paths {
-                run_guard_page_subprocess(&exe, path);
-            }
-        }
-
+    mod guard_page_subprocess {
         /// Derive a libtest filter path for a test function from its
         /// type name. Strips the leading crate-name segment that
         /// `type_name` includes but libtest does not.
-        fn test_path<F: Fn()>(_: F) -> &'static str {
+        pub(super) fn test_path<F: Fn()>(_: F) -> &'static str {
             let full = std::any::type_name::<F>();
             let (_, rest) = full
                 .split_once("::")
@@ -2604,7 +2491,7 @@ mod tests {
             rest
         }
 
-        fn run_guard_page_subprocess(exe: &std::path::Path, ignored_test_path: &str) {
+        pub(super) fn run_guard_page_subprocess(exe: &std::path::Path, ignored_test_path: &str) {
             let output = std::process::Command::new(exe)
                 .args([
                     "--ignored",
@@ -2685,6 +2572,200 @@ mod tests {
                 use windows::Win32::Foundation::STATUS_ACCESS_VIOLATION;
                 // See https://github.com/hyperlight-dev/hyperlight/issues/1507
                 status.code() == Some(STATUS_ACCESS_VIOLATION.0) || status.code() == Some(0xDEAD)
+            }
+        }
+    }
+
+    #[cfg(all(not(miri), any(target_os = "linux", windows)))]
+    mod guard_page_crash_test {
+        use super::guard_page_subprocess::{run_guard_page_subprocess, test_path};
+        use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn read() {
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            println!("reached_guard");
+            unsafe { std::ptr::read_volatile(guard_page_ptr) };
+            println!("survived_guard");
+        }
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn write() {
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            println!("reached_guard");
+            unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
+            println!("survived_guard");
+        }
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn exec() {
+            let eshm = ExclusiveSharedMemory::new(page_size::get()).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
+            println!("reached_guard");
+            func();
+            println!("survived_guard");
+        }
+
+        // provides a way for running the above tests in a separate process since they expect to crash
+        #[test]
+        fn guard_page_testing_shim() {
+            let exe = std::env::current_exe().expect("current_exe");
+            for path in [test_path(read), test_path(write), test_path(exec)] {
+                run_guard_page_subprocess(&exe, path);
+            }
+        }
+    }
+
+    #[cfg(not(miri))]
+    mod from_file_tests {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+
+        pub(super) fn make_temp_file(len: usize) -> NamedTempFile {
+            let mut f = NamedTempFile::new().expect("create temp file");
+            if len > 0 {
+                let mut buf = vec![0u8; len];
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = (i & 0xff) as u8;
+                }
+                f.write_all(&buf).expect("write temp file");
+                f.flush().expect("flush temp file");
+            }
+            f
+        }
+
+        #[test]
+        fn from_file_success_single_page() {
+            let tmp = make_temp_file(page_size::get());
+            let mut rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                .expect("from_file should succeed");
+            assert_eq!(rsm.mem_size(), page_size::get());
+            rsm.with_contents(|slice| {
+                for (i, b) in slice.iter().enumerate() {
+                    assert_eq!(*b, (i & 0xff) as u8);
+                }
+            })
+            .expect("with_contents should succeed");
+        }
+
+        #[test]
+        fn from_file_success_smaller_guest_mapped_size() {
+            let tmp = make_temp_file(2 * page_size::get());
+            let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                .expect("from_file should succeed");
+            assert_eq!(rsm.mem_size(), 2 * page_size::get());
+        }
+
+        #[test]
+        fn from_file_rejects_empty_file() {
+            let tmp = make_temp_file(0);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                .expect_err("empty file should be rejected");
+            assert!(format!("{}", err).contains("0x0 < 0x0"));
+        }
+
+        #[test]
+        fn from_file_rejects_unaligned_file_length() {
+            let tmp = make_temp_file(page_size::get() + 1);
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                .expect_err("unaligned file length should be rejected");
+            assert!(format!("{}", err).contains(&format!(
+                "0x{:x} % 0x{:x} = 0",
+                page_size::get() + 1,
+                page_size::get()
+            )));
+        }
+
+        #[test]
+        fn from_file_rejects_unaligned_guest_mapped_size() {
+            let tmp = make_temp_file(2 * page_size::get());
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get() + 1)
+                .expect_err("unaligned guest_mapped_size should be rejected");
+            assert!(format!("{}", err).contains(&format!(
+                "0x{:x} % 0x{:x} = ",
+                page_size::get() + 1,
+                page_size::get()
+            )));
+        }
+
+        #[test]
+        fn from_file_rejects_guest_mapped_size_exceeding_file() {
+            let tmp = make_temp_file(page_size::get());
+            let err = ReadonlySharedMemory::from_file(tmp.as_file(), 2 * page_size::get())
+                .expect_err("guest_mapped_size > file length should be rejected");
+            assert!(format!("{}", err).contains(&format!(
+                "0x{:x} <= 0x{:x}",
+                2 * page_size::get(),
+                page_size::get()
+            )));
+        }
+
+        /// Tests in this submodule are `#[ignore]`'d because each one
+        /// is expected to die from a memory access violation. They are
+        /// not run by a plain `cargo test`. The `from_file_guard_page_shim`
+        /// test in the parent module re-executes each one in a subprocess
+        /// and asserts the trap occurred.
+        mod guard_page_crash_tests {
+            use super::make_temp_file;
+            use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+
+            /// Loads from the byte immediately before the mapping.
+            #[test]
+            #[ignore]
+            pub(super) fn leading_guard_page_traps() {
+                let tmp = make_temp_file(page_size::get());
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                    .expect("from_file should succeed");
+                let guard_ptr = unsafe { rsm.base_ptr().sub(page_size::get()) };
+                println!("reached_guard");
+                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
+                println!("survived_guard");
+            }
+
+            /// Loads from the byte immediately after the mapping.
+            #[test]
+            #[ignore]
+            pub(super) fn trailing_guard_page_traps() {
+                let tmp = make_temp_file(page_size::get());
+                let rsm = ReadonlySharedMemory::from_file(tmp.as_file(), page_size::get())
+                    .expect("from_file should succeed");
+                let guard_ptr = unsafe { rsm.base_ptr().add(rsm.mem_size()) };
+                println!("reached_guard");
+                let _ = unsafe { std::ptr::read_volatile(guard_ptr) };
+                println!("survived_guard");
+            }
+        }
+
+        /// Spawn each ignored guard-page test as a subprocess and assert
+        /// it terminated by an OS access violation. Re-executes the
+        /// current test binary so no rebuild or `cargo` invocation is
+        /// needed.
+        #[test]
+        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
+        fn from_file_guard_page_shim() {
+            use guard_page_crash_tests::{leading_guard_page_traps, trailing_guard_page_traps};
+
+            use super::guard_page_subprocess::{run_guard_page_subprocess, test_path};
+            let ignored_test_paths = [
+                test_path(leading_guard_page_traps),
+                test_path(trailing_guard_page_traps),
+            ];
+
+            let exe = std::env::current_exe().expect("current_exe");
+            for path in &ignored_test_paths {
+                run_guard_page_subprocess(&exe, path);
             }
         }
     }

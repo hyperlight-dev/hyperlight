@@ -26,6 +26,7 @@ fn test_slot_pool_preserves_exact_base() {
     let pool = SlotPool::new(layout).unwrap();
 
     assert_eq!(pool.base_addr(), 0x80001);
+    assert_eq!(pool.byte_len(), 8192);
     assert_eq!(pool.count(), 2);
     assert_eq!(pool.slot_addr(0), Some(0x80001));
     assert_eq!(pool.slot_addr(1), Some(0x81001));
@@ -41,6 +42,7 @@ fn test_tiered_slot_pool_reports_layouts() {
     assert_eq!(lower, Some(SlotLayout::new(0x80001, 0x100, 2).unwrap()));
     assert_eq!(upper, SlotLayout::new(0x90001, 0x1000, 2).unwrap());
     assert_eq!(pool.base_addr(), 0x80001);
+    assert_eq!(pool.byte_len(), 0x12000);
     assert_eq!(pool.slot_size(), 0x1000);
     assert_eq!(pool.count(), 4);
     assert_eq!(pool.slot_addr(0), Some(0x80001));
@@ -48,6 +50,88 @@ fn test_tiered_slot_pool_reports_layouts() {
     assert_eq!(pool.slot_addr(2), Some(0x90001));
     assert_eq!(pool.slot_addr(3), Some(0x91001));
     assert_eq!(pool.slot_addr(4), None);
+}
+
+#[test]
+fn swap_preserves_tier_layouts_and_reservations() {
+    for (lower_count, upper_count) in [(2, 2), (16, 11), (17, 17), (64, 65)] {
+        let pool = make_tiered_slot_pool(lower_count, upper_count);
+        let lower = pool.alloc(256).unwrap();
+        let upper = pool.alloc(4096).unwrap();
+        let retained = pool.alloc(256).unwrap();
+        let original_live = pool.live_addrs();
+
+        let swapped = pool.swap([lower.addr, upper.addr].into_iter()).unwrap();
+
+        assert!(!swapped.ptr_eq(&pool));
+        assert_eq!(swapped.layouts(), pool.layouts());
+        assert_eq!(pool.live_addrs(), original_live);
+        assert_eq!(swapped.live_addrs(), vec![lower.addr, upper.addr]);
+        assert_eq!(swapped.num_free_lower(), lower_count - 1);
+        assert_eq!(swapped.num_free_upper(), upper_count - 1);
+        assert_eq!(swapped.alloc(256).unwrap().addr, retained.addr);
+        let free_upper = swapped.alloc(4096).unwrap();
+        assert_ne!(free_upper.addr, upper.addr);
+        assert_eq!(swapped.num_free(), lower_count + upper_count - 4);
+        assert_eq!(pool.live_addrs(), original_live);
+    }
+}
+
+#[test]
+fn swap_preserves_free_order_across_inline_storage_boundary() {
+    for count in [1, 8, 11, 16, 17, 32, 64, 65] {
+        let pool = make_slot_pool(count, 256);
+        assert_eq!(pool.num_free(), count);
+        let allocations: Vec<_> = (0..count).map(|_| pool.alloc(256).unwrap()).collect();
+        let reserved = allocations[0].addr;
+        let swapped = pool.swap(core::iter::once(reserved)).unwrap();
+        assert_eq!(swapped.num_free(), count - 1);
+
+        for allocation in &allocations[1..] {
+            assert_eq!(swapped.alloc(256).unwrap().addr, allocation.addr);
+        }
+        assert!(matches!(swapped.alloc(256), Err(AllocError::NoSpace)));
+
+        for allocation in &allocations {
+            pool.dealloc(allocation.addr).unwrap();
+        }
+        assert_eq!(pool.num_free(), count);
+        assert_eq!(swapped.num_free(), 0);
+
+        swapped.dealloc(reserved).unwrap();
+        assert_eq!(swapped.alloc(256).unwrap().addr, reserved);
+        for allocation in &allocations {
+            swapped.dealloc(allocation.addr).unwrap();
+        }
+        assert_eq!(swapped.num_free(), count);
+    }
+}
+
+#[test]
+fn swap_rejects_invalid_reservations_without_mutation() {
+    let pool = make_slot_pool(2, 64);
+    let allocation = pool.alloc(64).unwrap();
+    let original_live = pool.live_addrs();
+
+    assert!(matches!(
+        pool.swap([allocation.addr, allocation.addr].into_iter()),
+        Err(AllocError::InvalidArg)
+    ));
+    for addr in [
+        0,
+        pool.base_addr(),
+        allocation.addr + 1,
+        allocation.addr + 64,
+    ] {
+        assert!(matches!(
+            pool.swap(core::iter::once(addr)),
+            Err(AllocError::InvalidFree(_, _))
+        ));
+        assert_eq!(pool.live_addrs(), original_live);
+        assert_eq!(pool.num_free(), 1);
+    }
+    pool.dealloc(allocation.addr).unwrap();
+    assert_eq!(pool.num_free(), 2);
 }
 
 #[test]
@@ -61,6 +145,7 @@ fn test_tiered_slot_pool_combines_contiguous_equal_sized_layouts() {
         (None, SlotLayout::new(0x80000, 0x100, 5).unwrap())
     );
     assert_eq!(pool.base_addr(), 0x80000);
+    assert_eq!(pool.byte_len(), 0x500);
     assert_eq!(pool.slot_size(), 0x100);
     assert_eq!(pool.count(), 5);
     assert_eq!(pool.num_free_lower(), 0);
@@ -132,6 +217,9 @@ fn test_slot_layout_rejects_overflowing_ranges() {
 
     let layout = SlotLayout::new(u64::MAX - 8, 4, 2).unwrap();
     assert_eq!(layout.end_addr(), u64::MAX);
+
+    let pool = SlotPool::new(layout).unwrap();
+    assert_eq!(pool.byte_len(), 8);
 }
 
 #[test]
@@ -243,34 +331,6 @@ fn test_tiered_slot_pool_live_addrs_are_deterministic() {
     assert_eq!(
         pool.live_addrs(),
         vec![lower_low.addr, lower_high.addr, upper_high.addr]
-    );
-}
-
-#[test]
-fn free_slots_include_full_capacities_and_preserve_allocation_order() {
-    let pool = make_tiered_slot_pool(2, 2);
-    let lower = pool.alloc(128).unwrap();
-    let upper = pool.alloc(1024).unwrap();
-    let mut free = Vec::new();
-    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
-    assert_eq!(free, [(0x80000, 256), (0x90000, 4096)]);
-    assert_eq!(pool.live_addrs(), [lower.addr, upper.addr]);
-
-    pool.dealloc(lower.addr).unwrap();
-    let repeated = pool.alloc(128).unwrap();
-    assert_eq!(repeated.addr, lower.addr);
-    pool.dealloc(repeated.addr).unwrap();
-    pool.dealloc(upper.addr).unwrap();
-    free.clear();
-    pool.for_each_free(|allocation| free.push((allocation.addr, allocation.len)));
-    assert_eq!(
-        free,
-        [
-            (0x80000, 256),
-            (0x80100, 256),
-            (0x90000, 4096),
-            (0x91000, 4096)
-        ]
     );
 }
 

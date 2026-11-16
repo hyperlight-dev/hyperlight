@@ -98,7 +98,7 @@ jobs:
     with:
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
 
-  # Pick the goldens mode. The `regen-goldens` label means regenerate. No label means pull.
+  # Pick the goldens mode. The `S-needs-goldens` label means regenerate. No label means pull.
   # Also validate the label against the goldens state so a stale or missing label fails fast.
   check-golden-label:
     runs-on: ubuntu-latest
@@ -111,14 +111,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4
         with:
-          rust-toolchain: "1.94"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          just-version: '1.41'
 
       - name: Install oras
-        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2.0.1
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63  # v2.0.3
         with:
           version: 1.3.1
 
@@ -137,13 +135,13 @@ jobs:
         run: |
           labels="$(gh pr view ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} --json labels -q '.labels[].name')"
-          if grep -qx regen-goldens <<<"$labels"; then
+          if grep -qx S-needs-goldens <<<"$labels"; then
             echo "should_regen_goldens=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_regen_goldens=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Validate regen-goldens label
+      - name: Validate S-needs-goldens label
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -317,11 +315,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30  # v2
         with:
-          rust-toolchain: "1.94"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'false'
+          matcher: 'false'
+          build-warnings: ''
 
       - name: Create benchmarks report
         run: |
@@ -335,7 +333,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload PR comment artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: pr-comment
           path: pr-comment.md
@@ -348,7 +346,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
     - name: Spell Check Repo
-      uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461  # v1.50.3
+      uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85  # v1.52.0
 
   license-headers:
     name: check license headers

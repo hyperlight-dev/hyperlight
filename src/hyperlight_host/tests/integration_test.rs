@@ -531,42 +531,16 @@ fn guest_allocate_vec() {
     });
 }
 
-// checks that malloc failures are captured correctly
 #[test]
 fn guest_malloc_abort() {
-    with_rust_sandbox(|mut sbox1| {
-        let size = 20000000_i32; // some big number that should fail when allocated
-
-        let res = sbox1.call::<i32>("TestMalloc", size).unwrap_err();
+    with_rust_sandbox(|mut sbox| {
+        // Writing more heap memory than scratch holds exhausts scratch.
+        let res = sbox
+            .call::<()>("AllocAndWritePattern", 20_000_000_u64)
+            .unwrap_err();
         assert!(
             matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
             "unexpected error: {res:?}"
-        );
-    });
-
-    // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 40 * 1024;
-    let size_to_allocate = 0x10000;
-    assert!(
-        size_to_allocate > heap_size,
-        "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
-    );
-
-    let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
-    with_rust_sandbox_from(configure, |mut sbox2| {
-        let err = sbox2
-            .call::<i32>(
-                "CallMalloc", // uses the rust allocator to allocate a vector on heap
-                size_to_allocate as i32,
-            )
-            .unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
-                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
-            ),
-            "unexpected error: {err:?}"
         );
     });
 }
@@ -588,23 +562,11 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn guest_panic_no_alloc() {
-    let heap_size = 40 * 1024;
-
-    let configure = |builder: SandboxBuilder| builder.heap_size(heap_size);
-    with_rust_sandbox_from(configure, |mut sbox| {
-        let res = sbox
-            .call::<i32>(
-                "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
-                (),
-            )
-            .unwrap_err();
-
+fn guest_heap_exhaustion_aborts() {
+    with_rust_sandbox(|mut sbox| {
+        let res = sbox.call::<()>("ExhaustHeap", ()).unwrap_err();
         assert!(
-            matches!(
-                &res,
-                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
-            ),
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
             "unexpected error: {res:?}"
         );
     });
@@ -922,6 +884,161 @@ fn c_guest_accesses_byte_chunks() {
             );
         }
     });
+}
+
+/// Restore recovers the captured owner after the source guest releases it.
+#[test]
+fn retained_guest_call_bytes_survive_restore() {
+    with_rust_sandbox(|mut sandbox| {
+        let expected = vec![0x5a; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Both guest APIs keep host-reply buffers alive across calls and restore.
+#[test]
+fn retained_host_reply_bytes_survive_restore() {
+    common::with_all_guests(|path| {
+        let mut sandbox = SandboxBuilder::from_file(&path)
+            .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .build()
+            .unwrap();
+
+        let expected = vec![0xa5; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainHostByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let echo: String = sandbox.call("Echo", "hello".to_string()).unwrap();
+        assert_eq!(echo, "hello");
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Captured aliases survive scratch reuse and further snapshot generations.
+#[test]
+fn retained_byte_chunks_survive_pool_swap() {
+    let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        .guest_log_level(tracing_core::LevelFilter::OFF)
+        .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+        .build()
+        .unwrap();
+
+    let expected = vec![0xa5; 8192];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let actual: i32 = sandbox
+        .call(
+            "RetainHostByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    // Capture recovered pools while their older retained aliases remain live.
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let replacement = vec![0x3c; 6 * 4096];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&replacement)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, replacement.len());
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), replacement);
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+        6 * 4096
+    );
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap(),
+        8192
+    );
 }
 
 /// Test that validates interrupt behavior with random kill timing under concurrent load
@@ -1735,57 +1852,6 @@ fn page_fault_handler() {
     });
 }
 
-/// Tests that an exception can be properly handled even when the heap is exhausted.
-/// The guest function fills the heap completely, then triggers a ud2 exception.
-/// This validates that the exception handling path does not require heap allocations.
-#[test]
-fn fill_heap_and_cause_exception() {
-    with_rust_sandbox(|mut sandbox| {
-        let result = sandbox.call::<()>("FillHeapAndCauseException", ());
-
-        // The call should fail with an exception error since there's no handler installed
-        assert!(result.is_err(), "Expected an error from ud2 exception");
-
-        let err = result.unwrap_err();
-        match &err {
-            HyperlightError::GuestAborted(code, message) => {
-                assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
-
-                // Verify the message was properly formatted (proves no-allocation path worked)
-                // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
-                #[cfg(target_arch = "x86_64")]
-                let vector = "Exception vector: 6";
-                #[cfg(target_arch = "aarch64")]
-                let vector = "Exception vector: CurrentSP0 Synchronous";
-                assert!(
-                    message.contains(vector),
-                    "Message should contain '{}'\nFull error: {:?}",
-                    vector,
-                    err
-                );
-                assert!(
-                    message.contains("Faulting Instruction:"),
-                    "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "x86_64")]
-                assert!(
-                    message.contains("Stack Pointer:"),
-                    "Message should contain 'Stack Pointer:'\nFull error: {:?}",
-                    err
-                );
-                #[cfg(target_arch = "aarch64")]
-                assert!(
-                    message.contains("Exception Syndrome:"),
-                    "Message should contain 'Exception Syndrome:'\nFull error: {:?}",
-                    err
-                );
-            }
-            _ => panic!("Expected GuestAborted error, got: {:?}", err),
-        }
-    });
-}
-
 /// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
 /// and WHvCancelRunVirtualProcessor continues, and tries to access freed memory.
 ///
@@ -1865,8 +1931,6 @@ fn memory_region_types_are_publicly_accessible() {
 
     // MemoryRegionType enum and all its variants are pub
     let _rt = MemoryRegionType::Code;
-    let _rt = MemoryRegionType::InitData;
-    let _rt = MemoryRegionType::Peb;
     let _rt = MemoryRegionType::Heap;
     let _rt = MemoryRegionType::Scratch;
     let _rt = MemoryRegionType::Snapshot;

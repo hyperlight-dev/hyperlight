@@ -30,6 +30,10 @@ const CORE_DUMP_PID: i32 = 1;
 /// The page size of the core dump
 const CORE_DUMP_PAGE_SIZE: usize = 0x1000;
 
+/// Process name and command line in the core dump. Sandboxes do not
+/// record which guest binary they run.
+const UNKNOWN_PROCESS: &str = "<unknown>";
+
 /// Structure to hold the crash dump context
 /// This structure contains the information needed to create a core dump
 #[derive(Debug)]
@@ -38,7 +42,6 @@ pub(crate) struct CrashDumpContext {
     regs: [u64; 27],
     xsave: Vec<u8>,
     entry: u64,
-    binary: Option<PathBuf>,
 }
 
 impl CrashDumpContext {
@@ -47,14 +50,12 @@ impl CrashDumpContext {
         regs: [u64; 27],
         xsave: Vec<u8>,
         entry: u64,
-        binary: Option<PathBuf>,
     ) -> Self {
         Self {
             regions,
             regs,
             xsave,
             entry,
-            binary,
         }
     }
 }
@@ -88,21 +89,6 @@ impl GuestView {
             })
             .collect();
 
-        let filename = ctx
-            .binary
-            .as_deref()
-            .and_then(|path| path.file_name())
-            .map_or("<unknown>".to_string(), |name| {
-                name.to_string_lossy().into_owned()
-            });
-
-        let cmd = ctx
-            .binary
-            .as_deref()
-            .map_or("<unknown>".to_string(), |path| {
-                path.to_string_lossy().into_owned()
-            });
-
         // The xsave state is checked as it can be empty
         let mut components = vec![];
         if !ctx.xsave.is_empty() {
@@ -122,7 +108,7 @@ impl GuestView {
             tid: 1,
             uid: 0, // User ID
             gid: 0, // Group ID
-            comm: filename,
+            comm: UNKNOWN_PROCESS.to_string(),
             ppid: 0,    // Parent PID
             pgrp: 0,    // Process group ID
             nice: 0,    // Nice value
@@ -135,7 +121,7 @@ impl GuestView {
             session: 0, // Session ID of the process
             sighold: 0, // Blocked signal
             sigpend: 0, // Pending signal
-            cmd_line: cmd,
+            cmd_line: UNKNOWN_PROCESS.to_string(),
 
             arch_state: Box::new(ArchState {
                 gpr_state: ctx.regs.to_vec(),
@@ -435,13 +421,7 @@ mod test {
     #[test]
     fn test_crashdump_write_fails_when_no_regions() {
         // Create a dummy context
-        let ctx = CrashDumpContext::new(
-            vec![],
-            [0; 27],
-            vec![],
-            0,
-            Some(PathBuf::from("dummy_binary")),
-        );
+        let ctx = CrashDumpContext::new(vec![], [0; 27], vec![], 0);
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
 
@@ -466,13 +446,7 @@ mod test {
             region_type: crate::mem::memory_region::MemoryRegionType::Code,
         }];
         // Create a dummy context
-        let ctx = CrashDumpContext::new(
-            regions,
-            [0; 27],
-            vec![],
-            0x1000,
-            Some(PathBuf::from("dummy_binary")),
-        );
+        let ctx = CrashDumpContext::new(regions, [0; 27], vec![], 0x1000);
 
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
 

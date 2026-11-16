@@ -38,11 +38,27 @@ jobs:
       cpu_vendor: ${{ matrix.cpu_vendor }}
       arch: ${{ matrix.arch }}
 
+  # mshv3 on the MSHV 6.18 kernel pools. A separate job, so a failure here
+  # cannot cancel the matrix above.
+  benchmarks-mshv-6-18:
+    needs: [build-guests]
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu_vendor: [amd, intel]
+    uses: ./.github/workflows/dep_benchmarks.yml
+    secrets: inherit
+    with:
+      hypervisor: mshv3
+      mshv_kernel: "6.18"
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: X64
+
   # File a GitHub issue if any job fails.
   notify-failure:
     runs-on: ubuntu-latest
-    needs: [build-guests, benchmarks]
-    if: always() && (needs.build-guests.result == 'failure' || needs.benchmarks.result == 'failure')
+    needs: [build-guests, benchmarks, benchmarks-mshv-6-18]
+    if: always() && (needs.build-guests.result == 'failure' || needs.benchmarks.result == 'failure' || needs.benchmarks-mshv-6-18.result == 'failure')
     permissions:
       issues: write
     steps:
@@ -50,6 +66,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Notify Benchmark Failure
-        run: ./dev/notify-ci-failure.sh --title="Benchmark Failure - ${{ github.run_number }}" --labels="area/benchmarks,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --title="Benchmark Failure - ${{ github.run_number }}" --labels="A-perf,A-testing,S-needs-triage,P-release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

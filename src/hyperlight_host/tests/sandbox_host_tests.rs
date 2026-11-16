@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
-use core::f64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -13,9 +12,17 @@ use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
-    with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
+    with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from, with_rust_sandbox,
     with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
 };
+
+#[test]
+fn libc_stubs_handle_empty_writes_and_clock_outputs() {
+    with_c_sandbox(|mut sandbox| {
+        let result: i32 = sandbox.call("CheckLibcStubs", ()).unwrap();
+        assert_eq!(result, 0);
+    });
+}
 
 #[test]
 fn pass_byte_array() {
@@ -37,15 +44,18 @@ fn pass_byte_array() {
 fn fragmented_control_round_trip_releases_buffers() {
     // The control body exceeds the four inline segment slots.
     let input = "x".repeat(5 * SandboxConfiguration::DEFAULT_H2G_BUFFER_SIZE);
+
     with_all_guests(|path| {
         let mut sbox = SandboxBuilder::from_file(path)
-            .heap_size(256 * 1024)
+            .scratch_size(512 * 1024)
             .build()
             .unwrap();
-        let output: String = sbox.call("Echo", input.clone()).unwrap();
-        assert_eq!(output, input);
 
-        // Snapshot preparation rejects retained transport buffers.
+        for _ in 0..3 {
+            let output: String = sbox.call("Echo", input.clone()).unwrap();
+            assert_eq!(output, input);
+        }
+
         sbox.snapshot().unwrap();
     });
 }
@@ -190,6 +200,24 @@ fn multiple_parameters() {
 }
 
 #[test]
+fn guest_function_with_thirty_two_parameters() {
+    with_rust_sandbox(|mut sandbox| {
+        let sum: i32 = sandbox
+            .call(
+                "SumThirtyTwoArgs",
+                (
+                    1_i32, 2_i32, 3_i32, 4_i32, 5_i32, 6_i32, 7_i32, 8_i32, 9_i32, 10_i32, 11_i32,
+                    12_i32, 13_i32, 14_i32, 15_i32, 16_i32, 17_i32, 18_i32, 19_i32, 20_i32, 21_i32,
+                    22_i32, 23_i32, 24_i32, 25_i32, 26_i32, 27_i32, 28_i32, 29_i32, 30_i32, 31_i32,
+                    32_i32,
+                ),
+            )
+            .unwrap();
+        assert_eq!(sum, (1..=32).sum::<i32>());
+    });
+}
+
+#[test]
 fn incorrect_parameter_type() {
     with_all_sandboxes(|mut sandbox| {
         let res = sandbox.call::<i32>(
@@ -315,13 +343,16 @@ fn c_fallback_error_overrides_null() {
     });
 }
 
+/// Scratch small enough that leaked call results exhaust it.
+const LEAK_TEST_SCRATCH_SIZE: usize = 400 * 1024;
+
 #[test]
 fn c_registered_error_drops_returned_value() {
     with_c_sandbox_from(
-        |builder| builder.heap_size(64 * 1024),
+        |builder| builder.scratch_size(LEAK_TEST_SCRATCH_SIZE),
         |mut sbox| {
-            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
-            for _ in 0..8 {
+            // 32 leaked 16 KiB results would exceed `LEAK_TEST_SCRATCH_SIZE`.
+            for _ in 0..32 {
                 let error = sbox
                     .call::<Vec<u8>>("ReturnValueWithError", ())
                     .unwrap_err();
@@ -342,10 +373,10 @@ fn c_registered_error_drops_returned_value() {
 #[test]
 fn c_fallback_error_drops_returned_value() {
     with_c_sandbox_from(
-        |builder| builder.heap_size(64 * 1024),
+        |builder| builder.scratch_size(LEAK_TEST_SCRATCH_SIZE),
         |mut sbox| {
-            // Eight ignored 16 KiB results exceed this heap if their payloads leak.
-            for _ in 0..8 {
+            // 32 leaked 16 KiB results would exceed `LEAK_TEST_SCRATCH_SIZE`.
+            for _ in 0..32 {
                 let error = sbox
                     .call::<Vec<u8>>("FallbackValueWithError", ())
                     .unwrap_err();
@@ -612,6 +643,48 @@ fn h2g_capacity_failure_does_not_poison_sandbox() {
     });
 }
 
+#[test]
+fn retained_sub_page_h2g_slot_keeps_neighbors_available() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_buffer_size(256);
+    cfg.set_h2g_pool_pages(1);
+
+    with_rust_uninit_sandbox_cfg(cfg, |sandbox| {
+        let mut sandbox = sandbox.evolve().unwrap();
+        let expected = vec![0x5a; 16];
+
+        // Every H2G slot shares the retained slot's page.
+        let retained: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+        assert_eq!(retained as usize, expected.len());
+
+        let snapshot = sandbox.snapshot().unwrap();
+        let echo: String = sandbox.call("Echo", "source".to_string()).unwrap();
+        assert_eq!(echo, "source");
+
+        let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(released, retained);
+
+        for _ in 0..2 {
+            sandbox.restore(snapshot.clone()).unwrap();
+
+            // The host writes this request beside the retained slot before guest entry.
+            let echo: String = sandbox.call("Echo", "restored".to_string()).unwrap();
+            assert_eq!(echo, "restored");
+
+            let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+            assert_eq!(actual.concat(), expected);
+
+            let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
+            assert_eq!(released, retained);
+        }
+    });
+}
+
 fn assert_g2h_reply_capacity_failure_is_recoverable(queue_size: usize, pool_pages: usize) {
     let mut cfg = SandboxConfiguration::default();
     cfg.set_g2h_buffer_size(4096);
@@ -704,6 +777,43 @@ fn g2h_reply_capacity_retained_buffers_are_recoverable() {
             .call("RoundTripHostVecBytes", expected.clone())
             .unwrap();
         assert_eq!(result, expected);
+    });
+}
+
+#[test]
+fn retained_g2h_reply_on_every_page_keeps_neighbors_available() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_buffer_size(256);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(tracing_core::LevelFilter::OFF);
+
+        // The retained reply touches both pool pages.
+        sandbox
+            .register("HostEchoByteChunks", |_: Vec<Bytes>| {
+                vec![Bytes::from(vec![0xa5; 6000])]
+            })
+            .unwrap();
+        sandbox.register("HostNoOp", || {}).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        let retained: i32 = sandbox
+            .call("RetainHostByteChunks", Vec::<Bytes>::new())
+            .unwrap();
+        assert_eq!(retained, 6000);
+
+        let snapshot = sandbox.snapshot().unwrap();
+
+        for restore in [false, true] {
+            if restore {
+                sandbox.restore(snapshot.clone()).unwrap();
+            }
+
+            sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+            let released: i32 = sandbox.call("ReleaseHostByteChunks", ()).unwrap();
+            assert_eq!(released, retained);
+        }
     });
 }
 

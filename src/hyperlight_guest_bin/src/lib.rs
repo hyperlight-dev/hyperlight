@@ -8,16 +8,16 @@ extern crate alloc;
 use core::fmt::Write;
 
 use arch::dispatch::dispatch_function;
-use buddy_system_allocator::LockedHeap;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::log_level::{GUEST_LOG_FILTER_UPDATE_PENDING, GuestLogFilter};
-use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::write_abort;
-use hyperlight_guest::guest_handle::handle::GuestHandle;
+use hyperlight_guest::layout::{HEAP_GVA_END, HEAP_GVA_START};
+use talc::TalcLock;
+use talc::source::Manual;
 
 // === Modules ===
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
@@ -50,10 +50,12 @@ mod init;
 pub use hyperlight_libc as libc;
 
 // Globals
+type GuestHeap = TalcLock<spin::Mutex<()>, Manual>;
+
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
-struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
+struct ProfiledLockedHeap(GuestHeap);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
-unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap<ORDER> {
+unsafe impl alloc::alloc::GlobalAlloc for ProfiledLockedHeap {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let addr = unsafe { self.0.alloc(layout) };
         unsafe {
@@ -107,13 +109,11 @@ unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap
 // === Globals ===
 #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
 #[global_allocator]
-pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
+pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
-pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
-    ProfiledLockedHeap(LockedHeap::<32>::empty());
+pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
 
-pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
@@ -251,29 +251,24 @@ core::arch::global_asm!(
 /// Architecture-nonspecific initialisation: set up the heap,
 /// coordinate some addresses and configuration with the host, and run
 /// user initialisation
-pub(crate) extern "C" fn generic_init(
-    peb_address: u64,
-    _seed: u64,
-    ops: u64,
-    max_log_level: u64,
-) -> u64 {
+pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) -> u64 {
     unsafe {
-        GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
-        #[allow(static_mut_refs)]
-        let peb_ptr = GUEST_HANDLE.peb().unwrap();
-
-        let heap_start = (*peb_ptr).guest_heap.ptr as usize;
-        let heap_size = (*peb_ptr).guest_heap.size as usize;
         #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
         #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
         let heap_allocator = &HEAP_ALLOCATOR.0;
+        // SAFETY: nothing else uses the heap range, and init claims it
+        // once. The fault handlers, installed before this point, map
+        // each page from scratch on first touch.
         heap_allocator
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
-            .init(heap_start, heap_size);
-        peb_ptr
-    };
+            .claim(
+                HEAP_GVA_START as *mut u8,
+                (HEAP_GVA_END - HEAP_GVA_START) as usize,
+            )
+            .expect("Failed to claim guest heap");
+    }
 
     // Save the guest start TSC for tracing
     #[cfg(feature = "trace_guest")]
@@ -281,8 +276,7 @@ pub(crate) extern "C" fn generic_init(
 
     #[cfg(feature = "libc")]
     unsafe {
-        let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
-        srand(srand_seed);
+        srand(_seed as u32);
     }
 
     unsafe {
@@ -338,6 +332,11 @@ pub(crate) extern "C" fn generic_init(
         // flushed to the host, if necessary.
         hyperlight_guest_tracing::flush();
     }
+
+    // SAFETY: Host calls have returned with no live chain handles. The host
+    // resets consumers before the next dispatch refreshes aliases.
+    unsafe { hyperlight_guest::transport::prepare_snapshot() }
+        .expect("failed to prepare initial transport snapshot");
 
     dispatch_function as *const () as usize as u64
 }

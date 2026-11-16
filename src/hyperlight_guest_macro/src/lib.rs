@@ -37,7 +37,7 @@ impl Parse for NameArg {
 ///
 /// The function arguments must be supported parameter types, and the return type must be
 /// a supported return type or a `Result<T, HyperlightGuestError>` with T being a supported
-/// return type.
+/// return type. Guest functions take at most 32 parameters, the limit `ParameterTuple` sets.
 ///
 /// # Note
 /// The function will be registered with the host at program initialization regardless of

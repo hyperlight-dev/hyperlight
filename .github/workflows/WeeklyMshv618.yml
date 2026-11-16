@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Weekly MSHV 6.18
+
+# Runs the mshv3 tests and examples on the Azure Linux 3 pools with the MSHV
+# 6.18 kernel. PRs test only the default mshv3 pools. DailyBenchmarks.yml
+# benchmarks these pools.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # Runs at 03:00 UTC every Monday
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  contents: read
+
+jobs:
+  build-guests:
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [debug, release]
+    uses: ./.github/workflows/dep_build_guests.yml
+    secrets: inherit
+    with:
+      arch: X64
+      config: ${{ matrix.config }}
+
+  build-test:
+    needs: build-guests
+    permissions:
+      # checkout in the called workflow
+      contents: read
+      # pull goldens from GHCR in the called workflow
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu_vendor: [amd, intel]
+        config: [debug, release]
+    uses: ./.github/workflows/dep_build_test.yml
+    secrets: inherit
+    with:
+      hypervisor: mshv3
+      mshv_kernel: "6.18"
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: X64
+      config: ${{ matrix.config }}
+
+  run-examples:
+    needs: build-guests
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu_vendor: [amd, intel]
+        config: [debug, release]
+    uses: ./.github/workflows/dep_run_examples.yml
+    secrets: inherit
+    with:
+      hypervisor: mshv3
+      mshv_kernel: "6.18"
+      cpu_vendor: ${{ matrix.cpu_vendor }}
+      arch: X64
+      config: ${{ matrix.config }}
+
+  # The first label is the de-duplication key used by notify-ci-failure.sh, so
+  # these failures share one release-blocking issue. That label must exist in
+  # the repo or `gh issue create` fails.
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [build-guests, build-test, run-examples]
+    if: always() && github.event_name != 'pull_request' && (needs.build-guests.result == 'failure' || needs.build-test.result == 'failure' || needs.run-examples.result == 'failure')
+    permissions:
+      # Job-level permissions replace the workflow-level grant, so checkout needs contents:read here.
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Notify Weekly MSHV 6.18 Failure
+        run: ./dev/notify-ci-failure.sh --title="Weekly MSHV 6.18 Failure - ${{ github.run_number }}" --labels="A-ci-periodics-mshv-6.18,A-ci-periodics,A-testing,S-needs-triage,P-release-blocker"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

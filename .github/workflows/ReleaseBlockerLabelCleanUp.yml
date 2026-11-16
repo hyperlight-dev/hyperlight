@@ -14,20 +14,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Remove release-blocker label from closed issue
+      - name: Remove P-release-blocker label from closed issue
         run: |
           ISSUE_NUMBER=${{ github.event.issue.number }}
-          echo "Checking if issue #$ISSUE_NUMBER has release-blocker label..."
+          echo "Checking if issue #$ISSUE_NUMBER has P-release-blocker label..."
           
-          # Check if the issue has the release-blocker label
-          HAS_LABEL=$(gh issue view "$ISSUE_NUMBER" --json labels -q '.labels[] | select(.name == "release-blocker") | .name')
+          # Check if the issue has the P-release-blocker label
+          HAS_LABEL=$(gh issue view "$ISSUE_NUMBER" --json labels -q '.labels[] | select(.name == "P-release-blocker") | .name')
           
           if [ -n "$HAS_LABEL" ]; then
-            echo "✅ Issue #$ISSUE_NUMBER has release-blocker label, removing it..."
-            gh issue edit "$ISSUE_NUMBER" --remove-label "release-blocker"
-            echo "✅ Successfully removed release-blocker label from issue #$ISSUE_NUMBER"
+            echo "✅ Issue #$ISSUE_NUMBER has P-release-blocker label, removing it..."
+            gh issue edit "$ISSUE_NUMBER" --remove-label "P-release-blocker"
+            echo "✅ Successfully removed P-release-blocker label from issue #$ISSUE_NUMBER"
           else
-            echo "ℹ️ Issue #$ISSUE_NUMBER does not have release-blocker label, no action needed"
+            echo "ℹ️ Issue #$ISSUE_NUMBER does not have P-release-blocker label, no action needed"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

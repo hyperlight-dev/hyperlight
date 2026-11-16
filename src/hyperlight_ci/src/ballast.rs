@@ -3,7 +3,7 @@
 //! A resident VM held for the duration of a benchmark run.
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 use anyhow::{Context, bail};
@@ -26,9 +26,10 @@ pub(crate) struct Ballast {
 }
 
 impl Ballast {
-    /// Build the helper, start it, and wait until its sandbox is live.
-    pub(crate) fn start() -> anyhow::Result<Self> {
-        let exe = build().context("Failed to build the ballast helper")?;
+    /// Build the helper in `target_dir`, start it, and wait until its sandbox
+    /// is live.
+    pub(crate) fn start(target_dir: Option<&Path>) -> anyhow::Result<Self> {
+        let exe = build(target_dir).context("Failed to build the ballast helper")?;
 
         let mut child = Command::new(&exe)
             .stdin(Stdio::piped())
@@ -62,21 +63,23 @@ impl Drop for Ballast {
 }
 
 /// Build the ballast example and return the executable cargo produced.
-fn build() -> anyhow::Result<PathBuf> {
+fn build(target_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
 
-    let output = Command::new(cargo)
-        .args([
-            "build",
-            "--release",
-            "--package",
-            "hyperlight-host",
-            "--example",
-            "ballast",
-            "--message-format=json-render-diagnostics",
-        ])
-        .stderr(Stdio::inherit())
-        .output()?;
+    let mut cmd = Command::new(cargo);
+    cmd.args([
+        "build",
+        "--release",
+        "--package",
+        "hyperlight-host",
+        "--example",
+        "ballast",
+        "--message-format=json-render-diagnostics",
+    ]);
+    if let Some(dir) = target_dir {
+        cmd.arg("--target-dir").arg(dir);
+    }
+    let output = cmd.stderr(Stdio::inherit()).output()?;
 
     if !output.status.success() {
         bail!("cargo build failed for the ballast helper");

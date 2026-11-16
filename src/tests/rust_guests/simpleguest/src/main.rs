@@ -37,15 +37,13 @@ use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
-use hyperlight_guest_bin::host_comm::{
-    call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
-};
+use hyperlight_guest_bin::host_comm::{call_host_function, print_output_with_host_print};
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
 // `log` is intentionally kept here: the LogMessage guest function exercises the
 // guest-side `log` crate path to verify that guests using `log` are still supported.
 use log::LevelFilter;
-use tracing::{Span, error, instrument};
+use tracing::{Span, instrument};
 
 extern crate hyperlight_guest;
 
@@ -326,6 +324,13 @@ fn print_eleven_args(arg1: String, arg2: i32, arg3: i64, arg4: String, arg5: Str
     host_print(message)
 }
 
+#[rustfmt::skip]
+#[allow(clippy::too_many_arguments)]
+#[guest_function("SumThirtyTwoArgs")]
+fn sum_thirty_two_args(a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, a14: i32, a15: i32, a16: i32, a17: i32, a18: i32, a19: i32, a20: i32, a21: i32, a22: i32, a23: i32, a24: i32, a25: i32, a26: i32, a27: i32, a28: i32, a29: i32, a30: i32, a31: i32, a32: i32) -> i32 {
+    a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 + a32
+}
+
 #[guest_function("BufferOverrun")]
 fn buffer_overrun(value: String) -> i32 {
     let c_str = value.as_str();
@@ -384,34 +389,13 @@ fn call_malloc(size: i32) -> i32 {
     size
 }
 
-#[guest_function("FillHeapAndCauseException")]
-fn fill_heap_and_cause_exception() {
-    let layout: Layout = Layout::new::<u8>();
-    let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    while !ptr.is_null() {
-        black_box(ptr);
-        ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    }
-
-    // trigger an undefined instruction exception
-    trigger_exception();
-}
-
+/// Allocates until scratch runs out and the guest aborts.
 #[guest_function("ExhaustHeap")]
 fn exhaust_heap() {
     let layout: Layout = Layout::new::<u8>();
-    let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    while !ptr.is_null() {
-        black_box(ptr);
-        ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    loop {
+        black_box(unsafe { alloc::alloc::alloc_zeroed(layout) });
     }
-
-    // after alloc::alloc_zeroed failure (null return when called in loop above)
-    // allocate a Vec to ensure OOM panic
-    let vec = Vec::<i32>::with_capacity(1);
-    black_box(vec);
-
-    panic!("function should have panicked before due to OOM")
 }
 
 #[guest_function("MallocAndFree")]
@@ -443,6 +427,20 @@ fn echo_guest_byte_chunks(data: Vec<Bytes>) -> Vec<Bytes> {
     data
 }
 
+/// Read each segment's endpoints and release its owner before returning.
+#[guest_function("ByteChunksLen")]
+fn byte_chunks_len(data: Vec<Bytes>) -> i32 {
+    let mut len = 0;
+
+    for chunk in data {
+        black_box(chunk.first().copied());
+        black_box(chunk.last().copied());
+        len += chunk.len();
+    }
+
+    len as i32
+}
+
 static mut RETAINED_GUEST_CHUNKS: Option<Vec<Bytes>> = None;
 static mut RETAINED_HOST_CHUNKS: Option<Vec<Bytes>> = None;
 
@@ -452,6 +450,16 @@ fn retain_guest_byte_chunks(data: Vec<Bytes>) -> i32 {
     // SAFETY: the guest is single threaded, so the static has no concurrent access.
     unsafe { RETAINED_GUEST_CHUNKS = Some(data) };
     len as i32
+}
+
+/// Return the retained bytes without releasing their buffers.
+#[guest_function("ReadRetainedGuestByteChunks")]
+fn read_retained_guest_byte_chunks() -> Vec<Bytes> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        RETAINED_GUEST_CHUNKS.clone().unwrap_or_default()
+    }
 }
 
 #[guest_function("ReleaseGuestByteChunks")]
@@ -472,6 +480,16 @@ fn retain_host_byte_chunks(data: Vec<Bytes>) -> Result<i32> {
     // SAFETY: the guest is single threaded, so the static has no concurrent access.
     unsafe { RETAINED_HOST_CHUNKS = Some(chunks) };
     Ok(len as i32)
+}
+
+/// Return the retained bytes without releasing their buffers.
+#[guest_function("ReadRetainedHostByteChunks")]
+fn read_retained_host_byte_chunks() -> Vec<Bytes> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        RETAINED_HOST_CHUNKS.clone().unwrap_or_default()
+    }
 }
 
 #[guest_function("ReleaseHostByteChunks")]
@@ -1099,20 +1117,23 @@ fn large_parameters(v: Vec<u8>, s: String) {
     black_box((v, s));
 }
 
-#[guest_function("ReadFromUserMemory")]
-fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
-    let bytes = read_n_bytes_from_user_memory(num).expect("Failed to read from user memory");
-
-    // verify that the user memory contains the expected data
-    if bytes != expected {
-        error!("User memory does not contain the expected data");
-        return Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "User memory does not contain the expected data".to_string(),
-        ));
+#[guest_function("MapZeroInitPage")]
+fn map_zero_init_page(base: u64) -> bool {
+    // SAFETY: The test supplies an unused, page-aligned GVA.
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            0,
+            base as *mut u8,
+            PAGE_SIZE as u64,
+            MappingKind::ZeroInit(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
     }
-
-    Ok(bytes)
+    true
 }
 
 #[guest_function("ReadMappedBuffer")]
@@ -1282,6 +1303,13 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
         format!("HostFunction {hostfuncname} was not found")
     );
     Ok(())
+}
+
+#[guest_function("ReadTsc")]
+#[cfg(target_arch = "x86_64")]
+fn read_tsc() -> u64 {
+    // SAFETY: RDTSC reads the time-stamp counter and has no memory effects.
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 #[guest_function("ReadMSR")]

@@ -7,8 +7,8 @@ use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
-    Msrs, kvm_debugregs, kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
-    kvm_xsave,
+    KVM_CAP_DISABLE_QUIRKS2, KVM_X86_QUIRK_SLOT_ZAP_ALL, Msrs, kvm_debugregs, kvm_enable_cap,
+    kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{
@@ -174,6 +174,29 @@ impl KvmVm {
         let vm_fd = hv
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+
+        // Deleting a memslot flushes the guest mappings of every memslot unless
+        // this quirk is disabled. KVM keeps the flush as a workaround for
+        // assigned GPUs. Hyperlight assigns no devices.
+        let quirks = vm_fd.check_extension_raw(KVM_CAP_DISABLE_QUIRKS2.into());
+        // `quirks` has one bit per quirk this kernel can disable.
+        if quirks <= 0 || quirks & KVM_X86_QUIRK_SLOT_ZAP_ALL as i32 == 0 {
+            tracing::debug!(
+                "Host kernel cannot disable KVM_X86_QUIRK_SLOT_ZAP_ALL. Each memory slot \
+                 deletion invalidates guest mappings in all slots, which adds latency to the \
+                 first guest call after a snapshot, restore, or unmap. Host kernel version \
+                 6.12 or later enables per-slot invalidation."
+            );
+        } else {
+            let cap = kvm_enable_cap {
+                cap: KVM_CAP_DISABLE_QUIRKS2,
+                args: [KVM_X86_QUIRK_SLOT_ZAP_ALL.into(), 0, 0, 0],
+                ..Default::default()
+            };
+            vm_fd
+                .enable_cap(&cap)
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        }
 
         #[cfg(feature = "hw-interrupts")]
         let timer_irq_eventfd = Self::setup_irqfd(&vm_fd)?;
@@ -539,14 +562,27 @@ impl VirtualMachine for KvmVm {
     }
 
     fn set_msrs(&self, msrs: &[MsrEntry]) -> std::result::Result<(), RegisterError> {
-        let entries: Vec<kvm_msr_entry> = msrs
-            .iter()
-            .map(|e| kvm_msr_entry {
+        let mut entries = Vec::with_capacity(msrs.len() + 1);
+        for e in msrs {
+            let mut value = e.value;
+            if e.index == MSR_TSC {
+                // KVM syncs a zero write instead of applying it.
+                value = value.max(1);
+                // KVM ignores a host TSC write within one second of the last write
+                // plus elapsed time. A write half the counter range away first makes
+                // the next one exact.
+                entries.push(kvm_msr_entry {
+                    index: MSR_TSC,
+                    data: value.wrapping_add(1 << 63),
+                    ..Default::default()
+                });
+            }
+            entries.push(kvm_msr_entry {
                 index: e.index,
-                data: e.value,
+                data: value,
                 ..Default::default()
-            })
-            .collect();
+            });
+        }
         if entries.is_empty() {
             return Ok(());
         }

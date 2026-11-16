@@ -177,20 +177,6 @@ impl<F: Copy> GuestFunctionDefinition<F> {
 
     /// Verify that `self` has same signature as the provided `parameter_types`.
     pub fn verify_parameters(&self, parameter_types: &[ParameterType]) -> Result<()> {
-        // Verify that the function does not have more than `MAX_PARAMETERS` parameters.
-        const MAX_PARAMETERS: usize = 11;
-        if parameter_types.len() > MAX_PARAMETERS {
-            return Err(HyperlightGuestError::new(
-                ErrorCode::GuestError,
-                format!(
-                    "Function {} has too many parameters: {} (max allowed is {}).",
-                    self.function_name,
-                    parameter_types.len(),
-                    MAX_PARAMETERS
-                ),
-            ));
-        }
-
         if self.parameter_types.len() != parameter_types.len() {
             return Err(HyperlightGuestError::new(
                 ErrorCode::GuestFunctionIncorrecNoOfParameters,

@@ -267,7 +267,7 @@ After the core dump has been created, to inspect the state of the guest, load th
 
 #### Using gdb
 
-Load the core dump alongside the guest binary that was running when the crash occurred:
+Load the core dump alongside the guest binary that was running when the crash occurred. Core dumps do not record which guest binary that was, so keep track of the guest each sandbox runs:
 
 ```bash
 gdb <guest-binary> -c <core-dump-file>

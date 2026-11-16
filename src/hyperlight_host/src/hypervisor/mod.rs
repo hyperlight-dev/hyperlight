@@ -129,6 +129,10 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
     /// Mark the handle as dropped
     fn set_dropped(&self);
+
+    /// Points cancellation at a replacement partition.
+    #[cfg(target_os = "windows")]
+    fn set_partition(&self, partition: WHV_PARTITION_HANDLE);
 }
 
 pub(crate) trait InterruptHandleInternal {
@@ -334,6 +338,9 @@ trait SynchronousInterruptState: Debug + Send + Sync {
 
     #[cfg(hvf)]
     fn set_vcpu(&mut self, vcpu: Option<hv_vcpu_t>);
+
+    #[cfg(target_os = "windows")]
+    fn set_partition(&mut self, partition: WHV_PARTITION_HANDLE);
 }
 
 #[cfg(any(target_os = "windows", hvf))]
@@ -357,6 +364,17 @@ impl<T: SynchronousInterruptState> InterruptHandleImpl for SynchronousInterruptH
             Ok(mut guard) => {
                 guard.0 = true;
             }
+            Err(e) => {
+                tracing::error!("Failed to acquire partition_state write lock: {}", e);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_partition(&self, partition: WHV_PARTITION_HANDLE) {
+        // The write lock waits for in-flight kills on the previous partition.
+        match self.dropped_state.write() {
+            Ok(mut guard) => guard.1.set_partition(partition),
             Err(e) => {
                 tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
@@ -425,6 +443,10 @@ impl SynchronousInterruptState for WHV_PARTITION_HANDLE {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
         unsafe { WHvCancelRunVirtualProcessor(*self, 0, 0).is_ok() }
     }
+
+    fn set_partition(&mut self, partition: WHV_PARTITION_HANDLE) {
+        *self = partition;
+    }
 }
 
 #[cfg(hvf)]
@@ -470,8 +492,6 @@ pub(crate) mod tests {
     use hyperlight_testing::dummy_guest_as_pathbuf;
 
     use crate::sandbox::uninitialized::GuestBinary;
-    #[cfg(any(crashdump, gdb))]
-    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present};
@@ -483,14 +503,11 @@ pub(crate) mod tests {
             return Ok(());
         }
 
-        use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
 
         let filename = dummy_guest_as_pathbuf();
 
         let config: SandboxConfiguration = Default::default();
-        #[cfg(any(crashdump, gdb))]
-        let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (mut mem_mgr, gshm) = sandbox.mgr.build().unwrap();
@@ -502,26 +519,18 @@ pub(crate) mod tests {
             &config,
             exn_stack_top_gva,
             page_size::get(),
-            #[cfg(any(crashdump, gdb))]
-            rt_cfg,
             sandbox.load_info,
         )?;
 
         // Set up required parameters for initialise
-        let peb_addr = RawPtr::from(0x1000u64); // Dummy PEB address
-        let seed = 12345u64; // Random seed
+        // The dummy guest halts only when it receives these values.
+        let seed = 1234567890u64;
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
         let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
         // Test the initialise method
-        vm.initialise(
-            peb_addr,
-            seed,
-            &mut mem_mgr,
-            &host_funcs,
-            guest_max_log_level,
-        )
-        .unwrap();
+        vm.initialise(seed, &mut mem_mgr, &host_funcs, guest_max_log_level)
+            .unwrap();
 
         Ok(())
     }

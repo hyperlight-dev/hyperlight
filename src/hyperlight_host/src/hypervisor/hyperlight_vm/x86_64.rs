@@ -37,15 +37,12 @@ use crate::hypervisor::virtual_machine::{
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::snapshot::NextAction;
+use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 #[cfg(gdb)]
 type BoxedVm = Box<dyn DebuggableVm>;
@@ -57,7 +54,7 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
+        snapshot_mem: SnapshotMemoryBacking<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
         _root_pt_addr: u64,
         next_action: NextAction,
@@ -65,7 +62,6 @@ impl HyperlightVm {
         page_size: usize,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
         let mut vm: BoxedVm = match get_available_hypervisor() {
@@ -105,8 +101,7 @@ impl HyperlightVm {
         })
         .map_err(VmError::Register)?;
 
-        let snapshot_slot = 0u32;
-        let scratch_slot = 1u32;
+        let scratch_slot = 0u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
@@ -118,7 +113,7 @@ impl HyperlightVm {
             next_slot: scratch_slot + 1,
             freed_slots: Vec::new(),
 
-            snapshot_slot,
+            snapshot_mappings: Vec::new(),
             snapshot_memory: None,
             scratch_slot,
             scratch_memory: None,
@@ -136,7 +131,7 @@ impl HyperlightVm {
             #[cfg(feature = "mem_profile")]
             trace_info,
             #[cfg(crashdump)]
-            rt_cfg,
+            guest_core_dump: config.get_guest_core_dump(),
             msr_reset,
         };
 
@@ -169,13 +164,10 @@ impl HyperlightVm {
         Ok(ret)
     }
 
-    /// Initialise the internally stored vCPU with the given PEB address and
-    /// random number seed, then run it until a HLT instruction.
+    /// Initialise the vCPU with a random seed and run it until a HLT instruction.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
-        peb_addr: RawPtr,
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
@@ -196,10 +188,9 @@ impl HyperlightVm {
             rsp: self.rsp_gva - 8,
 
             // function args
-            rdi: peb_addr.into(),
-            rsi: seed,
-            rdx: self.page_size as u64,
-            rcx: get_guest_log_filter(guest_max_log_level),
+            rdi: seed,
+            rsi: self.page_size as u64,
+            rdx: get_guest_log_filter(guest_max_log_level),
             rflags: 1 << 1,
 
             ..Default::default()
@@ -521,7 +512,7 @@ impl HyperlightVm {
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     ) -> std::result::Result<Option<crate::hypervisor::crashdump::CrashDumpContext>, CrashDumpError>
     {
-        if self.rt_cfg.guest_core_dump {
+        if self.guest_core_dump {
             let mut regs = [0; 27];
 
             let vcpu_regs = self.vm.regs()?;
@@ -557,17 +548,12 @@ impl HyperlightVm {
             regs[25] = sregs.fs.selector as u64; // fs
             regs[26] = sregs.gs.selector as u64; // gs
 
-            // Use the stored entry point address from the runtime config.
-            // This is the original entry point (load_addr + ELF entry offset)
-            // which GDB needs for AT_ENTRY to compute the PIE load offset.
-            // We cannot use self.next_action here because it transitions from
-            // Initialise(addr) to Call(dispatch_addr) after guest init.
-            let initialise = self.rt_cfg.entry_point.unwrap_or_else(|| {
-                tracing::warn!(
-                    "entry_point was never set in SandboxRuntimeConfig; AT_ENTRY will be 0"
-                );
-                0
-            });
+            // GDB derives the PIE load offset from AT_ENTRY. `next_action`
+            // holds the dispatch address after init, so use the ELF entry.
+            let entry = mem_mgr.original_entrypoint;
+            if entry == 0 {
+                tracing::warn!("Guest entry point is unknown; AT_ENTRY will be 0");
+            }
             let mmap_regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
             let root_pt = self.get_root_pt()?;
 
@@ -579,8 +565,7 @@ impl HyperlightVm {
                 regions,
                 regs,
                 xsave.to_vec(),
-                initialise,
-                self.rt_cfg.binary_path.clone(),
+                entry,
             )))
         } else {
             Ok(None)
@@ -876,12 +861,9 @@ mod tests {
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::MemoryRegionFlags;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
-    use crate::mem::ptr::RawPtr;
-    use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
+    use crate::mem::shared_mem::ExclusiveSharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::host_funcs::FunctionRegistry;
-    #[cfg(any(crashdump, gdb))]
-    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
 
     /// Test context holding an initialized VM with memory manager.
@@ -1426,7 +1408,7 @@ mod tests {
 
     fn create_test_layout(code_size: usize) -> (SandboxMemoryLayout, Box<[u8]>) {
         let config = SandboxConfiguration::default();
-        let mut layout = SandboxMemoryLayout::new(config, code_size, 4096, None).unwrap();
+        let layout = SandboxMemoryLayout::new(config, code_size).unwrap();
 
         let pt_base_gpa = layout.get_pt_base_gpa();
         let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
@@ -1464,7 +1446,7 @@ mod tests {
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 
         let pt_bytes = pt_buf.into_bytes();
-        layout.set_pt_size(pt_bytes.len()).unwrap();
+        layout.ensure_page_tables_fit(pt_bytes.len()).unwrap();
         (layout, pt_bytes)
     }
 
@@ -1472,32 +1454,30 @@ mod tests {
     /// both `hyperlight_vm()` and `create_test_vm_context()`.
     fn create_test_vm_context(code: &[u8]) -> TestVmContext {
         let config: SandboxConfiguration = Default::default();
-        #[cfg(any(crashdump, gdb))]
-        let rt_cfg: SandboxRuntimeConfig = Default::default();
 
         let (layout, pt_bytes) = create_test_layout(code.len());
 
         let mem_size = layout.get_memory_size().unwrap();
         let mut snapshot_contents = vec![0u8; mem_size];
-        let snapshot_pt_start = mem_size - layout.get_pt_size();
-        snapshot_contents[snapshot_pt_start..].copy_from_slice(&pt_bytes);
         snapshot_contents[layout.guest_code_offset()..layout.guest_code_offset() + code.len()]
             .copy_from_slice(code);
-        layout.write_peb(&mut snapshot_contents).unwrap();
-        let ro_mem =
-            ReadonlySharedMemory::from_bytes(&snapshot_contents, snapshot_pt_start).unwrap();
+        let snapshot_memory = crate::sandbox::snapshot::memory::tests::flat_memory(
+            &snapshot_contents,
+            &pt_bytes,
+            SandboxMemoryLayout::BASE_ADDRESS as u64,
+            hyperlight_common::layout::scratch_base_gpa(config.get_scratch_size()),
+        );
 
         let scratch_mem = ExclusiveSharedMemory::new(config.get_scratch_size()).unwrap();
         let mem_mgr = SandboxMemoryManager::new(
             layout,
-            ro_mem.to_mgr_snapshot_mem().unwrap(),
+            SnapshotMemoryBacking::from_snapshot(Arc::new(snapshot_memory)).unwrap(),
             scratch_mem,
             NextAction::Initialise(layout.get_guest_code_gva() as u64),
         );
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
-        let peb_address = gshm.layout.peb_address();
         let stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
@@ -1506,19 +1486,15 @@ mod tests {
             &config,
             stack_top_gva,
             page_size::get(),
-            #[cfg(any(crashdump, gdb))]
-            rt_cfg,
             crate::mem::exe::LoadInfo::dummy(),
         )
         .unwrap();
 
         let seed = rand::rng().random::<u64>();
-        let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
-        vm.initialise(peb_addr, seed, &mut hshm, &host_funcs, None)
-            .unwrap();
+        vm.initialise(seed, &mut hshm, &host_funcs, None).unwrap();
 
         TestVmContext {
             vm,
@@ -1574,6 +1550,12 @@ mod tests {
         for i in 0..8 {
             expected_fpu.fpr[i][10..16].copy_from_slice(&got_fpu.fpr[i][10..16]);
         }
+        // The x87 error pointers are undefined while FSW.ES is clear, and AMD
+        // CPUs save them as 0 in that state.
+        assert_eq!(fpu.fsw & (1 << 7), 0);
+        expected_fpu.last_opcode = got_fpu.last_opcode;
+        expected_fpu.last_ip = got_fpu.last_ip;
+        expected_fpu.last_dp = got_fpu.last_dp;
         assert_eq!(got_fpu, expected_fpu);
 
         // Verify xsave was set by checking key dirty values in the legacy region.
@@ -2143,11 +2125,11 @@ mod tests {
 
             const CODE_SIZE_BOUND: usize = 512;
 
-            let (layout, _) = create_test_layout(CODE_SIZE_BOUND);
+            let (layout, pt_bytes) = create_test_layout(CODE_SIZE_BOUND);
             let scratch_size = layout.get_scratch_size();
             let scratch_base_gpa = hyperlight_common::layout::scratch_base_gpa(scratch_size);
             let scratch_base_gva = hyperlight_common::layout::scratch_base_gva(scratch_size);
-            let fxsave_gpa = layout.get_first_free_scratch_gpa();
+            let fxsave_gpa = layout.get_pt_base_gpa() + pt_bytes.len() as u64;
             let fxsave_offset = usize::try_from(fxsave_gpa - scratch_base_gpa).unwrap();
             let fxsave_gva = scratch_base_gva + fxsave_offset as u64;
             let flag_gva = fxsave_gva + 512;
@@ -2210,7 +2192,7 @@ mod tests {
 
             // Reuse common test setup - initialise() will run the code
             let ctx = create_test_vm_context(&code);
-            assert_eq!(ctx.hshm.layout.get_first_free_scratch_gpa(), fxsave_gpa);
+            assert_eq!(ctx.hshm.first_free_scratch_gpa(), fxsave_gpa);
 
             FxsaveTestContext { ctx, fxsave_offset }
         }

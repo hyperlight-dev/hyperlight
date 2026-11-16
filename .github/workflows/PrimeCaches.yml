@@ -1,13 +1,16 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 
-# Builds on main to populate the GitHub Actions cache for all Swatinem/rust-cache
-# shared-keys used by PR workflows. Caches saved on `refs/heads/main` are
-# restorable from every PR via the base-branch fallback. PR workflows are
-# configured with `save-if: github.ref == 'refs/heads/main'`, so they only ever
-# read from this cache.
+# The only workflow that writes the Rust caches pull requests restore. Entries
+# saved on main are restorable from every pull request. Every other workflow
+# only reads them.
 #
-# No tests are run here. The goal is just to populate dependency build artifacts
-# so that PR jobs start warm.
+# Each job looks up the entry for its current lockfiles and toolchain. If it
+# is missing, the job builds from a cold target and saves. rust-cache keeps
+# every dependency version it restores, so a build on a restored entry would
+# grow it with each lockfile change. Tests build but do not run.
+#
+# Keys hash lockfiles and toolchains, not build commands. Bump `prefix-key` in
+# every rust-cache step after changing what a job here builds.
 
 name: Prime Caches
 
@@ -15,6 +18,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
+# A new run replaces a pending one and never cancels the running one, so the
+# newest commit always saves.
+concurrency:
+  group: prime-caches-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -40,17 +49,31 @@ jobs:
     with:
       arch: ${{ matrix.arch }}
       config: ${{ matrix.config }}
+      prime_cache: true
 
-  # Populate v0-rust-code-checks-{linux,windows} caches.
+  # Populate v1-rust-code-checks-{linux,windows} caches.
   code-checks:
     uses: ./.github/workflows/dep_code_checks.yml
     secrets: inherit
+    with:
+      prime_cache: true
+
+  # Populate the fuzz cache (key fuzz-{arch}) with every fuzz target.
+  fuzz:
+    uses: ./.github/workflows/dep_fuzzing.yml
+    secrets: inherit
+    with:
+      prime_cache: true
+      arch: X64
+      target: all
+      max_total_time: 0
+      timeout_minutes: 30
 
   # Populate the host caches (key {arch}-{os}-{hypervisor}-{config}) used by
   # dep_build_test.yml. Linux is primed once per hypervisor because the kvm
   # pools run Ubuntu and the mshv3 pools run Azure Linux 3, and we want each
-  # distro to restore a cache produced under its own libc. Only the host
-  # dependency graph is built here, no tests are run.
+  # distro to restore a cache produced under its own libc. The host, its tests
+  # and hyperlight-ci are built here. No tests run.
   host:
     strategy:
       fail-fast: false
@@ -96,23 +119,48 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
-        with:
-          rust-toolchain: "1.94"
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Keep the steps before this one in sync with dep_build_test.yml. The key
+      # hashes the installed toolchains and the Rust and C build env vars.
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        id: rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
+          prefix-key: v1-rust
           shared-key: "${{ matrix.arch }}-${{ runner.os }}-${{ matrix.hypervisor }}-${{ matrix.config }}"
-          cache-on-failure: "true"
-          # Only save on main as caches are not shared across branches.
-          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: true
 
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
+      - name: Build host and tests
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: just prime-caches ${{ matrix.config }}
 
-      - name: Build host
-        run: just build ${{ matrix.config }}
+  # Rust keys end in a toolchain hash and a lockfile hash. Sysroot keys end in
+  # one hash. Each change leaves the old entry behind. Keep the newest entry
+  # per key and delete the rest to stay under the repository cache quota.
+  cleanup:
+    needs: [guests, code-checks, fuzz, host]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Delete superseded caches
+        run: |
+          # Filter by key prefix. The listing caps at 1000 entries.
+          for prefix in v1-rust- sysroot-; do
+            gh cache list --ref "$GITHUB_REF" --key "$prefix" --limit 1000 --json id,key,createdAt
+          done | jq -s -r '
+            add
+            | group_by(.key | if startswith("sysroot-") then sub("-[^-]*$"; "") else sub("-[^-]*-[^-]*$"; "") end)
+            | map(sort_by(.createdAt) | reverse | .[1:][])
+            | .[] | "\(.id) \(.key)"' |
+          while read -r id key; do
+            echo "Deleting $key"
+            gh cache delete "$id" || echo "::warning::Failed to delete $key"
+          done

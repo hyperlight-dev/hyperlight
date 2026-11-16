@@ -14,12 +14,12 @@ A snapshot carries four independently evolvable version markers:
   [src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs](../src/hyperlight_host/src/sandbox/snapshot/file/media_types.rs)).
   This is what the host reads back from a snapshot: the `OutBAction`
   and `VmAction` port numbers, the virtqueue transport layout, the
-  offset and size of each memory region (including the `HyperlightPEB`
-  size), and the calling convention for guest function entry. A change
+  offset and size of each memory region, and the calling convention for
+  guest function entry. A change
   to any of these breaks older snapshots unless the loader adds a
   compat path.
-* **Snapshot blob encoding**, `MT_SNAPSHOT_V1`
-  (`application/vnd.hyperlight.snapshot.memory.v1`), aliased as
+* **Snapshot blob encoding**, `MT_SNAPSHOT_V2`
+  (`application/vnd.hyperlight.snapshot.memory.v2`), aliased as
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
@@ -27,16 +27,34 @@ A snapshot carries four independently evolvable version markers:
   (`application/vnd.hyperlight.snapshot.transport.v1`), aliased as
   `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
   virtqueue state stored outside the memory layer.
-* **Config schema**, `MT_CONFIG_V3`
-  (`application/vnd.hyperlight.snapshot.config.v3+json`), aliased as
+* **Config schema**, `MT_CONFIG_V6`
+  (`application/vnd.hyperlight.snapshot.config.v6+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
   sizes, `abi_version`, `hyperlight_version`, etc.). Renaming a field,
   changing its type, or adding a required field is a schema change and
-  bumps this constant. Version 3 describes the virtqueue-only memory layout
-  and requires a transport layer. Config v1 and v2 are incompatible with
-  the current ABI.
+  bumps this constant. Version 4 describes snapshot blobs, the blob with
+  the page tables, and transport geometry, and requires a transport
+  layer. Version 5 drops the heap size. Version 6 contains code and scratch
+  geometry without init-data fields. Config v1 to v5 are incompatible
+  with the current ABI.
+
+ABI 6 requires checkpoint readiness after guest initialization and permits
+H2G prefill to omit retained slots. Earlier snapshots must be regenerated.
+
+ABI 7 places the transport arena below the reserved scratch-top pages, at an
+address independent of the scratch size, and the page tables at the scratch
+base. Earlier snapshots must be regenerated.
+
+ABI 8 stores snapshot memory as layers. Earlier snapshots must be
+regenerated.
+
+ABI 9 removes the heap region from snapshot memory. Earlier snapshots must
+be regenerated.
+
+ABI 10 contains no PEB or init-data region. Guest entry takes the random seed,
+host page size, and log level. Earlier snapshots must be regenerated.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
@@ -69,7 +87,7 @@ Compile-time tripwires in
 [src/hyperlight_host/src/sandbox/snapshot/tripwires.rs](../src/hyperlight_host/src/sandbox/snapshot/tripwires.rs)
 hold a copy of every value that defines the format:
 `SNAPSHOT_ABI_VERSION`, the snapshot and config media-type strings, the
-OCI layout version, the `HyperlightPEB` size, every `OutBAction` and
+OCI layout version, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.
 
@@ -126,7 +144,7 @@ Steps:
    format, dispatching on `abi_version`.
 5. Update the tripwire assertions in `tripwires.rs` and any affected
    tests to match the new values.
-6. Bump `GOLDENS_VERSION` to the next major. Apply the `regen-goldens`
+6. Bump `GOLDENS_VERSION` to the next major. Apply the `S-needs-goldens`
    label to the pull request so the verify job regenerates against the
    branch. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)
@@ -154,7 +172,7 @@ Steps:
 3. Bump `SNAPSHOT_ABI_VERSION`.
 4. Update the tripwire assertions in `tripwires.rs` and any affected
    tests to match the new values.
-5. Bump `GOLDENS_VERSION` to the next major. Apply the `regen-goldens`
+5. Bump `GOLDENS_VERSION` to the next major. Apply the `S-needs-goldens`
    label to the pull request so the verify job regenerates against the
    branch. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)
@@ -173,7 +191,7 @@ loads the tag `{GOLDENS_VERSION}-{arch}-{hv}-{cpu}-{profile}` from a
 local directory that `just snapshot-goldens-pull` populates from GHCR. A
 freshly bumped `GOLDENS_VERSION` has no tags on GHCR until the bump
 merges to `main` and the publish workflow runs, so pull requests that
-bump the version verify through the `regen-goldens` label instead (see
+bump the version verify through the `S-needs-goldens` label instead (see
 [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request)).
 
 A snapshot is bound to its CPU vendor. The loader rejects a snapshot
@@ -221,7 +239,7 @@ frozen from then on. The publish workflow only publishes a version
 whose completion marker is absent from GHCR, so a published baseline
 cannot be clobbered by a later run. While a developer iterates on a v1
 to v2 bump the new version is unpublished, so they verify locally with
-`just snapshot-goldens-generate` and the `regen-goldens` label rather
+`just snapshot-goldens-generate` and the `S-needs-goldens` label rather
 than pushing to GHCR.
 
 The freeze is enforced by the publish workflow's marker check, not by a
@@ -238,7 +256,7 @@ corrupted push.
 
 A pull request that bumps `GOLDENS_VERSION` introduces a tag set that
 GHCR does not carry yet, so the default pull-and-verify path has nothing
-to load. The `regen-goldens` label switches the verify job into
+to load. The `S-needs-goldens` label switches the verify job into
 regenerate mode for that pull request.
 
 * **Without the label**, the job pulls the published tag set for the
@@ -246,7 +264,7 @@ regenerate mode for that pull request.
   tags fail the job. This is what turns an accidental format break into
   a red build: the published bytes stop loading, and the author must
   either restructure the change or own the break with the label.
-* **With the `regen-goldens` label**, the job generates the current
+* **With the `S-needs-goldens` label**, the job generates the current
   golden from the branch source, pulls the `COMPAT_VERSIONS` goldens
   from the registry, and runs both through the branch loader. This
   proves the new format is internally loadable on each runner and that
@@ -292,7 +310,7 @@ with `force: true` republishes a version that already exists, reserved
 for recovering a corrupted or partial push.
 
 The push-triggered publish closes the window in which a pull request
-that bumped the version needs the `regen-goldens` label. Once `main`
+that bumped the version needs the `S-needs-goldens` label. Once `main`
 carries the bump and the publish lands, new pull requests pass on the
 default pull-and-verify path.
 
@@ -330,7 +348,7 @@ Steps:
 2. Bump `GOLDENS_VERSION` minor (e.g. `v1.2` to `v1.3`). The new prefix
    has no published tags, so the default verify path fails until they
    exist.
-3. Apply the `regen-goldens` label to the pull request. The verify job
+3. Apply the `S-needs-goldens` label to the pull request. The verify job
    regenerates the full check set against the branch and runs it back
    through the branch loader. See
    [Breaking the format on a pull request](#breaking-the-format-on-a-pull-request).

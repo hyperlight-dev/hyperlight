@@ -29,6 +29,13 @@ on:
         required: false
         type: string
         default: "false"
+      prime_cache:
+        description: >-
+          Build every fuzz target from a cold target and save the cache, without
+          fuzzing. Skips the build when the cache is up to date.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,23 +58,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: hyperlight-dev/ci-setup-workflow@2f4142ba17cf573af44fc1e1f1ffc743daded5b3  # v1.10.0
-        with:
-          rust-toolchain: "1.94"
+      - uses: hyperlight-dev/ci-setup-workflow@59673866360458f8dd035f4a9fa766aeebad2038  # v2.3.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up sccache
-        uses: ./.github/actions/setup-sccache
+      # rust-cache hashes installed toolchains, so the pinned nightly must be
+      # installed before the key is computed.
+      - name: Install fuzzing toolchain
+        run: rustup toolchain install "$(just --evaluate nightly-toolchain)" --profile minimal
+
+      # One entry serves every target. Priming builds cold, so the entry holds
+      # only what this commit needs.
+      - name: Rust cache
+        id: rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: "fuzz-${{ inputs.arch }}"
+          lookup-only: ${{ inputs.prime_cache }}
+          save-if: ${{ inputs.prime_cache }}
+
+      - name: Check whether the cache is up to date
+        id: prime
+        if: inputs.prime_cache
+        run: echo "skip=${{ steps.rust-cache.outputs.cache-hit == 'true' }}" >> "$GITHUB_OUTPUT"
 
       - name: Download Rust guests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        if: ${{ !inputs.prime_cache }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: rust-guests-${{ inputs.arch }}-release
           path: src/tests/rust_guests/bin/release/
 
       - name: Install cargo-fuzz
+        if: steps.prime.outputs.skip != 'true'
         run: command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz
+
+      - name: Build fuzz targets
+        if: inputs.prime_cache && steps.prime.outputs.skip != 'true'
+        run: just build-fuzz-targets
 
       # cargo-fuzz resolves the fuzz project by walking up from the working
       # directory, so the corpus lives at <repo root>/fuzz/corpus/<target>.
@@ -83,6 +112,7 @@ jobs:
             fuzz-corpus-${{ inputs.target }}-
 
       - name: Run Fuzzing
+        if: ${{ !inputs.prime_cache }}
         run: just fuzz-timed ${{ inputs.target }} ${{ inputs.max_total_time }} > /dev/null
         working-directory: src/hyperlight_host
 
@@ -108,7 +138,7 @@ jobs:
 
       - name: Upload Crash Artifacts
         if: failure() # This ensures artifacts are only uploaded on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: fuzz-crash-artifacts-${{ inputs.target }}
           path: fuzz/artifacts/

@@ -45,7 +45,7 @@ pub use config::SandboxConfiguration;
 #[allow(deprecated)]
 pub use initialized::MultiUseSandbox;
 /// Re-export for the `Sandbox` type
-pub use initialized::{PtRootFinder, Sandbox, SandboxStatus};
+pub use initialized::{PtRootFinder, Sandbox, SandboxStatus, SnapshotMemoryReader};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type

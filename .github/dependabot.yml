@@ -8,7 +8,7 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
+      - "C-deps"
   - package-ecosystem: "cargo"
     directory: "/"
     cooldown:
@@ -17,7 +17,7 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
+      - "C-deps"
     open-pull-requests-limit: 20
     groups:
       windows:
@@ -29,6 +29,7 @@ updates:
       wasm-tools:
         patterns:
           - "wasmparser"
+          - "wat"
           - "wit-parser"
           - "wit-component"
   - package-ecosystem: "cargo"
@@ -39,8 +40,7 @@ updates:
       interval: "daily"
       time: "03:00"
     labels:
-      - "kind/dependencies"
-      - "area/guest"
+      - "C-deps"
     open-pull-requests-limit: 5
     groups:
       windows:

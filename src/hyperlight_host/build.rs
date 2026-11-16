@@ -48,9 +48,10 @@ fn main() -> Result<()> {
 
         // Note: When we build hyperlight_surrogate.exe CARGO_TARGET_DIR cannot
         // be the same as the CARGO_TARGET_DIR for the hyperlight-host otherwise
-        // the build script will hang. Using a sub directory works tho!
+        // the build script will hang. Keep the separate target directory inside
+        // OUT_DIR so dependency caches preserve it with the build-script output.
         // xref - https://github.com/rust-lang/cargo/issues/6412
-        let target_dir = out_path.join("../../hls");
+        let target_dir = out_path.join("hls");
 
         let profile = std::env::var("PROFILE")?;
         let build_profile = if profile.to_lowercase() == "debug" {
@@ -85,7 +86,7 @@ fn main() -> Result<()> {
 
         println!(
             "cargo:rustc-env=HYPERLIGHT_SURROGATE_DIR={}",
-            &surrogate_binary_dir.display()
+            surrogate_binary_dir.display()
         );
     }
 
@@ -160,20 +161,6 @@ fn main() -> Result<()> {
         // the gdb feature (only temporarily!) needs to use
         // writable/un-shared snapshot memories.
         unshared_snapshot_mem: { gdb },
-        // The `ReadableSharedMemory` trait in `mem::layout` is only
-        // needed in two situations:
-        //   1. The `gdb` debug path reads guest memory through it
-        //      (`ResolvedGpa::copy_to_slice`), which only exists under
-        //      the `gdb` cfg (gdb feature + debug build).
-        //   2. The `mem_profile` stack unwinder reads guest memory
-        //      through it — but ONLY when snapshots are shared/read-only
-        //      (`not(unshared_snapshot_mem)`). When the gdb feature
-        //      forces un-shared snapshots, `mem_profile` instead reads
-        //      via the inherent `HostSharedMemory::copy_to_slice`, so
-        //      the trait is genuinely unused.
-        // Gating the trait (and its impls) on this exact condition means
-        // we never have to `#[allow(dead_code)]` it.
-        readable_shared_mem: { any(gdb, all(feature = "mem_profile", not(unshared_snapshot_mem))) },
     }
 
     #[cfg(feature = "build-metadata")]
