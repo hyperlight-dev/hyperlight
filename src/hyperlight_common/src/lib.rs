@@ -29,6 +29,9 @@ pub mod resource;
 /// cbindgen:ignore
 pub mod stream;
 
+/// cbindgen:ignore
+pub mod future;
+
 /// Shared guest and host transport protocol.
 // cbindgen:ignore
 pub mod transport;

@@ -6,12 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 * ARM64 guests support CPUs without LSE atomics when built with `-C target-feature=-lse`.
-* Cross-boundary byte streams require the `streams` Cargo feature on `hyperlight-host` and `hyperlight-guest-bin`. It is off by default. Poisoning the sandbox wakes stream waiters, closes host writes, and aborts unfinished reads after their buffered bytes.
+* Cross-boundary byte streams and futures require the `streams` Cargo feature on `hyperlight-host` and `hyperlight-guest-bin`. It is off by default. Poisoning the sandbox wakes stream waiters, closes host writes, and aborts unfinished reads after their buffered bytes.
 * Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 * Add `hyperlight_guest::stream::produce`, which returns a stream reader and fills the stream in a guest task. The task lends the writer to an async closure. `Ok` closes the stream, `Err` aborts it, and closing the reader drops the closure's future. A guest function call polls ready tasks after the function returns. `hyperlight_guest::stream` re-exports the stream endpoints.
 * Add `Sandbox::block_on`, which runs a future on the calling thread and drives stream traffic and ready guest tasks until it completes. The future returns `Result<T, E>`, and sandbox failures convert into `E`. `InterruptHandle::kill()` ends the drive, and poisons the sandbox only when it interrupts the guest. `hyperlight_host::stream` re-exports the stream endpoints.
+* Add `hyperlight_common::future`, futures that carry one value over a stream. `future::new` returns a `FutureReader<T>` and a `FutureWriter<T>`. `FutureWriter::write` writes the value and ends the future without waiting for room, and awaiting the reader returns the value. Dropping an unwritten writer aborts the future. `()`, `Bytes`, `Vec<u8>`, and `String` implement `FutureValue`, which encodes values of at most `MAX_VALUE` bytes. Guest and host functions take and return a `FutureReader<T>`. `hyperlight_guest::future` and `hyperlight_host::future` re-export the future types.
+* Add `hyperlight_guest::future::produce`, which runs an async block in a guest task and returns a future of its outcome. `Ok` writes the value, and `Err` aborts the future. The task runs to completion even after the reader closes, so it never cuts short a stream it writes.
 * Add virtqueue `ChainBuilder::keep_free(n)`. `build` leaves `n` ring descriptors and pool slots free for later single-slot chains, or reports `Backpressure`.
 * Add virtqueue `SlotPool::max_free_slot_size()`, the size of the largest free slot.
 
@@ -41,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * **Breaking:** Encode function calls and results through `transport::PendingMessage`, which owns their values until publication settles. `FunctionCall::decode` and `FunctionCallResult::decode` take `streams: &mut Mux` as their last argument.
 * `Sandbox::snapshot` and `snapshot_with_options` fail with `HyperlightError::StreamsActive` while cross-boundary streams or guest tasks are live, and leave the sandbox unchanged. Guest initialization that leaves either live fails sandbox creation.
 * A guest function call fails with `HyperlightError::GuestError` and leaves the sandbox usable when its result exceeds the G2H virtqueue capacity, or when its returned stream reader cannot move to the host.
+* Restoring, recreating, or dropping a sandbox fails host readers of guest streams with `StreamError::Aborted` after their buffered bytes, unless the stream already ended.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.

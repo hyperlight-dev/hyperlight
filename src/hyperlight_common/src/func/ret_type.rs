@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 
 use super::error::Error;
 use crate::flatbuffer_wrappers::function_types::{ReturnType, ReturnValue};
+use crate::future::{FutureReader, FutureValue};
 
 /// This is a marker trait that is used to indicate that a type is a valid Hyperlight return type.
 ///
@@ -100,6 +101,22 @@ where
 }
 
 for_each_return_type!(impl_supported_return_type);
+
+/// A future crosses as the reader of the stream that carries its value.
+impl<T: FutureValue + 'static> SupportedReturnType for FutureReader<T> {
+    const TYPE: ReturnType = ReturnType::StreamReader;
+
+    fn into_value(self) -> ReturnValue {
+        ReturnValue::StreamReader(self.into_stream())
+    }
+
+    fn from_value(value: ReturnValue) -> Result<Self, Error> {
+        match value {
+            ReturnValue::StreamReader(reader) => Ok(Self::from_stream(reader)),
+            other => Err(Error::ReturnValueConversionFailure(other, "FutureReader")),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

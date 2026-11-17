@@ -18,10 +18,13 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
+use core::future::{Future, IntoFuture};
 use core::hint::black_box;
+use core::pin::pin;
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::task::{Poll, Waker};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -33,6 +36,7 @@ use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+use hyperlight_guest::future::{self, FutureReader};
 use hyperlight_guest::stream::{self, StreamError, StreamReader};
 #[cfg(target_arch = "x86_64")]
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
@@ -626,6 +630,124 @@ fn host_stream() -> Result<StreamReader<u8>>;
 #[guest_function("ForwardHostStream")]
 fn forward_host_stream() -> Result<StreamReader<u8>> {
     host_stream()
+}
+
+/// Return a guest error with `error`'s message.
+fn stream_error(error: StreamError) -> HyperlightGuestError {
+    HyperlightGuestError::new(ErrorCode::GuestError, error.to_string())
+}
+
+/// Poll `future` once. A guest function cannot wait, so a pending future fails.
+fn poll_ready<F: IntoFuture>(future: F) -> Result<F::Output> {
+    // `core::task::Context`, since the exception handler's `Context` is in scope.
+    let mut cx = core::task::Context::from_waker(Waker::noop());
+
+    match pin!(future.into_future()).poll(&mut cx) {
+        Poll::Ready(output) => Ok(output),
+        Poll::Pending => Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "future is pending".to_string(),
+        )),
+    }
+}
+
+/// Return the value of a future that the call carries.
+#[guest_function("ReadFuture")]
+fn read_future(reader: FutureReader<String>) -> Result<String> {
+    poll_ready(reader)?.map_err(stream_error)
+}
+
+/// Return a future of `value`.
+#[guest_function("WriteFuture")]
+fn write_future(value: String) -> Result<FutureReader<String>> {
+    let (reader, writer) = future::new();
+    writer.write(value).map_err(stream_error)?;
+    Ok(reader)
+}
+
+#[host_function("HostKeepFuture")]
+fn host_keep_future(reader: FutureReader<String>) -> Result<()>;
+
+/// Pass a future of `value` to the host function `HostKeepFuture`.
+#[guest_function("SendFuture")]
+fn send_future(value: String) -> Result<()> {
+    let (reader, writer) = future::new();
+    writer.write(value).map_err(stream_error)?;
+    host_keep_future(reader)
+}
+
+#[host_function("HostFuture")]
+fn host_future(value: String) -> FutureReader<String>;
+
+#[host_function("HostFuture")]
+fn try_host_future(value: String) -> Result<FutureReader<String>>;
+
+/// The future that `KeepHostFuture` or `TryKeepHostFuture` keeps for `ReadKeptFuture`.
+static mut KEPT_FUTURE: Option<FutureReader<String>> = None;
+
+/// Keep the future that the host function `HostFuture` returns.
+#[guest_function("KeepHostFuture")]
+fn keep_host_future(value: String) {
+    let reader = host_future(value);
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { KEPT_FUTURE = Some(reader) };
+}
+
+/// Keep the future that the host function `HostFuture` returns, through its `Result` declaration.
+#[guest_function("TryKeepHostFuture")]
+fn try_keep_host_future(value: String) -> Result<()> {
+    let reader = try_host_future(value)?;
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    unsafe { KEPT_FUTURE = Some(reader) };
+    Ok(())
+}
+
+/// Return the value of the kept future.
+#[guest_function("ReadKeptFuture")]
+fn read_kept_future() -> Result<String> {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    let reader = unsafe { KEPT_FUTURE.take() };
+
+    let Some(reader) = reader else {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "no kept future".to_string(),
+        ));
+    };
+
+    poll_ready(reader)?.map_err(stream_error)
+}
+
+/// Return a future of the number of bytes that `input` carries.
+#[guest_function("CountStream")]
+fn count_stream(mut input: StreamReader<u8>) -> FutureReader<String> {
+    future::produce(async move {
+        let mut len = 0;
+
+        while let Some(chunk) = input.read_chunk().await? {
+            len += chunk.len();
+        }
+
+        Ok::<_, StreamError>(len.to_string())
+    })
+}
+
+#[host_function("HostKeepStream")]
+fn host_keep_stream(reader: StreamReader<u8>) -> Result<()>;
+
+/// Pass a reader of `data` to the host function `HostKeepStream`, and return a future that
+/// resolves once the stream closes.
+#[guest_function("SendStream")]
+fn send_stream(data: Vec<u8>) -> Result<FutureReader<()>> {
+    let (reader, mut writer) = stream::new();
+    host_keep_stream(reader)?;
+
+    Ok(future::produce(async move {
+        writer.write_all(&data).await?;
+        writer.close();
+        Ok::<_, StreamError>(())
+    }))
 }
 
 #[guest_function("EchoI32")]

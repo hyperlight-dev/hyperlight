@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Byte streams that cross the sandbox boundary.
+//! Byte streams and futures that cross the sandbox boundary.
 
 #![cfg(feature = "streams")]
 
@@ -18,6 +18,7 @@ use std::{assert_matches, thread};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
 use hyperlight_common::stream::{DEFAULT_WINDOW, MAX_STREAMS};
+use hyperlight_host::future::{self, FutureReader};
 use hyperlight_host::stream::{self, StreamError, StreamReader, StreamWriter};
 use hyperlight_host::{HyperlightError, SandboxBuilder};
 
@@ -788,5 +789,147 @@ fn guest_result_keeps_g2h_room_for_status() {
         // The last STATUS is zero.
         let pattern: Vec<u8> = sandbox.call("ReadPattern", ()).unwrap();
         assert_eq!(pattern.len(), RESULT_LEN);
+    });
+}
+
+/// The Request's flush carries the value, so the guest function reads it in the same call.
+#[test]
+fn guest_function_reads_a_host_future_in_the_same_call() {
+    with_rust_sandbox(|mut sandbox| {
+        let (reader, writer) = future::new();
+        writer.write("hello".to_string()).unwrap();
+
+        let value: String = sandbox.call("ReadFuture", reader).unwrap();
+        assert_eq!(value, "hello");
+    });
+}
+
+/// The Response's flush carries the value, so the host reads it once the call returns.
+#[test]
+fn guest_function_returns_a_written_future() {
+    with_rust_sandbox(|mut sandbox| {
+        let reader: FutureReader<String> =
+            sandbox.call("WriteFuture", "hello".to_string()).unwrap();
+
+        assert_eq!(
+            poll_once(reader.into_future()),
+            Poll::Ready(Ok("hello".to_string()))
+        );
+    });
+}
+
+/// The guest flushes no stream records before a host call, so the value follows the Response.
+#[test]
+fn host_function_receives_a_guest_future() {
+    let (sender, receiver) = mpsc::channel();
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostKeepFuture", move |reader: FutureReader<String>| {
+            sender.send(reader).unwrap();
+        })
+    };
+
+    with_rust_sandbox_from(configure, |mut sandbox| {
+        sandbox
+            .call::<()>("SendFuture", "hello".to_string())
+            .unwrap();
+
+        let reader = receiver.try_recv().unwrap();
+
+        assert_eq!(
+            poll_once(reader.into_future()),
+            Poll::Ready(Ok("hello".to_string()))
+        );
+    });
+}
+
+/// Register `HostFuture`, which returns a future of its argument.
+fn register_host_future(builder: SandboxBuilder) -> SandboxBuilder {
+    builder.host_function("HostFuture", |value: String| {
+        let (reader, writer) = future::new();
+        writer.write(value).unwrap();
+        reader
+    })
+}
+
+/// A host function reply carries no stream records, so the value crosses with the next call.
+#[test]
+fn host_function_returns_a_future() {
+    with_rust_sandbox_from(register_host_future, |mut sandbox| {
+        sandbox
+            .call::<()>("KeepHostFuture", "hello".to_string())
+            .unwrap();
+
+        let value: String = sandbox.call("ReadKeptFuture", ()).unwrap();
+        assert_eq!(value, "hello");
+    });
+}
+
+/// The guest's `Result` declaration of `HostFuture` receives the future too.
+#[test]
+fn host_function_returns_a_future_through_a_result() {
+    with_rust_sandbox_from(register_host_future, |mut sandbox| {
+        sandbox
+            .call::<()>("TryKeepHostFuture", "hello".to_string())
+            .unwrap();
+
+        let value: String = sandbox.call("ReadKeptFuture", ()).unwrap();
+        assert_eq!(value, "hello");
+    });
+}
+
+/// A guest task reads the host stream across several windows, then resolves the future.
+#[test]
+fn produced_future_counts_a_host_stream() {
+    let window = DEFAULT_WINDOW.get() as usize;
+    let data: Vec<u8> = (0..4 * window + 17).map(|i| (i % 251) as u8).collect();
+
+    with_rust_sandbox(|mut sandbox| {
+        let (input, mut writer) = stream::new();
+        let len: FutureReader<String> = sandbox.call("CountStream", input).unwrap();
+
+        let len = sandbox
+            .block_on(async {
+                writer.write_all(&data).await?;
+                writer.close();
+                Ok::<_, DriveError>(len.await?)
+            })
+            .unwrap();
+
+        assert_eq!(len, data.len().to_string());
+    });
+}
+
+/// The host reads the stream to its end before awaiting the future. Awaiting first would stall
+/// once the stream fills its window.
+#[test]
+fn produced_future_resolves_after_a_stream_kept_by_the_host() {
+    // The Request carries `data`, so it fits one H2G entry.
+    let window = DEFAULT_WINDOW.get() as usize;
+    let data: Vec<u8> = (0..window + 17).map(|i| (i % 251) as u8).collect();
+    let (sender, receiver) = mpsc::channel();
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostKeepStream", move |reader: StreamReader<u8>| {
+            sender.send(reader).unwrap();
+        })
+    };
+
+    with_rust_sandbox_from(configure, |mut sandbox| {
+        let done: FutureReader<()> = sandbox.call("SendStream", data.clone()).unwrap();
+        let mut reader = receiver.try_recv().unwrap();
+
+        let received = sandbox
+            .block_on(async {
+                let mut received = Vec::new();
+
+                while let Some(chunk) = reader.read_chunk().await? {
+                    received.extend_from_slice(&chunk);
+                }
+
+                done.await?;
+                Ok::<_, DriveError>(received)
+            })
+            .unwrap();
+
+        assert_eq!(received, data);
     });
 }
