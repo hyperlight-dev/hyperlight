@@ -110,7 +110,7 @@ impl UninitializedSandbox {
             pending_file_mappings: Vec::new(),
         };
 
-        crate::debug!("Sandbox created:  {:#?}", sandbox);
+        tracing::debug!("Sandbox created:  {:#?}", sandbox);
 
         Ok(sandbox)
     }
