@@ -153,6 +153,7 @@ impl FfiReturnValue {
                     ReturnValue::ByteChunks(value.value.ByteChunks.into_owned_bytes())
                 }
                 ReturnType::StreamReader => unreachable!("no constructor creates a stream reader"),
+                ReturnType::Tuple => unreachable!("no constructor creates a tuple"),
             }
         }
     }

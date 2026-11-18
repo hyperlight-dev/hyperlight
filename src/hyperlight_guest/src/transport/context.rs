@@ -91,7 +91,11 @@ impl ReplyCapacity {
     /// Select reply capacity for one host function return type.
     fn for_return_type(return_type: ReturnType) -> Self {
         match return_type {
-            ReturnType::String | ReturnType::VecBytes | ReturnType::ByteChunks => Self::Available,
+            // TODO: Bound tuples without byte elements by their largest encoding.
+            ReturnType::String
+            | ReturnType::VecBytes
+            | ReturnType::ByteChunks
+            | ReturnType::Tuple => Self::Available,
             _ => Self::Bounded(G2H_LOWER_SLOT_SIZE),
         }
     }
@@ -376,7 +380,7 @@ impl GuestContext {
     /// Publish a result, or return the admission error to send to the host.
     fn send_result(&mut self, cid: u32, result: FunctionCallResult) -> Result<Option<String>> {
         // Committing a reader transfer can change STATUS.
-        let moves_reader = result.reader().is_some();
+        let moves_reader = result.readers().next().is_some();
 
         let pending = match PendingMessage::new_result(result, cid, &mut self.mux) {
             Ok(pending) => pending,

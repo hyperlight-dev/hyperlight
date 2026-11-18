@@ -86,7 +86,7 @@ fn function_result() {
     let mut external_values = ExternalValues::new();
 
     let ok = FunctionCallResult::new(Ok(ReturnValue::UInt(300)));
-    let encoded = ok.encode(&mut buffer, &mut external_values, None).unwrap();
+    let encoded = ok.encode(&mut buffer, &mut external_values, &[]).unwrap();
     // Ok, UInt, varint 300.
     assert_wire_bytes("FunctionCallResult::Ok", encoded, &[0, 1, 0xac, 0x02]);
 
@@ -94,9 +94,19 @@ fn function_result() {
         ErrorCode::GuestFunctionNotFound,
         "no".to_string(),
     )));
-    let encoded = err.encode(&mut buffer, &mut external_values, None).unwrap();
+    let encoded = err.encode(&mut buffer, &mut external_values, &[]).unwrap();
     // Err, code 4, message "no".
     assert_wire_bytes("FunctionCallResult::Err", encoded, &[1, 4, 2, b'n', b'o']);
+
+    let tuple = FunctionCallResult::new(Ok(ReturnValue::Tuple(vec![
+        ReturnValue::Int(1),
+        ReturnValue::Bool(true),
+    ])));
+    let encoded = tuple
+        .encode(&mut buffer, &mut external_values, &[])
+        .unwrap();
+    // Tuple, 2 elements, Int(1), Bool(true).
+    assert_wire_bytes("FunctionCallResult::Tuple", encoded, &[2, 2, 0, 2, 7, 1]);
     assert_eq!(external_values.total_len(), 0);
 }
 
@@ -148,6 +158,7 @@ fn return_type_tags() {
         ReturnType::VecBytes,
         ReturnType::ByteChunks,
         ReturnType::StreamReader,
+        ReturnType::Tuple,
     ];
     for (tag, value) in types.into_iter().enumerate() {
         let what = alloc::format!("ReturnType::{value:?}");

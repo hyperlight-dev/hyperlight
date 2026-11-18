@@ -933,3 +933,67 @@ fn produced_future_resolves_after_a_stream_kept_by_the_host() {
         assert_eq!(received, data);
     });
 }
+
+/// A stream of `"one"`, 1 KiB of bytes, and a future of `"two"`.
+///
+/// The bytes exceed the reply capacity that a guest reserves for a scalar.
+fn stream_bytes_and_future() -> (StreamReader<u8>, Vec<u8>, FutureReader<String>) {
+    let (one, mut one_writer) = stream::new();
+    let (two, two_writer) = future::new::<String>();
+
+    assert_matches!(poll_once(one_writer.write_all(b"one")), Poll::Ready(Ok(())));
+    one_writer.close();
+    two_writer.write("two".to_string()).unwrap();
+
+    (one, vec![7; 1024], two)
+}
+
+/// The host reads the stream to its end, then awaits the future of its producer's outcome.
+#[test]
+fn guest_function_returns_a_stream_with_its_outcome() {
+    let window = DEFAULT_WINDOW.get() as usize;
+    let pattern: Vec<u8> = (0..4 * window + 17).map(|i| (i % 251) as u8).collect();
+
+    with_rust_sandbox(|mut sandbox| {
+        let (mut reader, outcome): (StreamReader<u8>, FutureReader<()>) = sandbox
+            .call("StreamWithOutcome", pattern.len() as u32)
+            .unwrap();
+
+        let received = sandbox
+            .block_on(async {
+                let mut received = Vec::new();
+
+                while let Some(chunk) = reader.read_chunk().await? {
+                    received.extend_from_slice(&chunk);
+                }
+
+                outcome.await?;
+                Ok::<_, DriveError>(received)
+            })
+            .unwrap();
+
+        assert_eq!(received, pattern);
+    });
+}
+
+/// The tuple returns to its origin in order. The readers' values stay readable without a guest
+/// turn.
+#[test]
+fn host_function_tuple_returns_to_its_origin() {
+    let configure =
+        |builder: SandboxBuilder| builder.host_function("HostTuple", stream_bytes_and_future);
+
+    with_rust_sandbox_from(configure, |mut sandbox| {
+        let (mut one, bytes, two): (StreamReader<u8>, Vec<u8>, FutureReader<String>) =
+            sandbox.call("ForwardHostTuple", ()).unwrap();
+        let mut received = Vec::new();
+
+        assert!(read_received(&mut one, &mut received));
+        assert_eq!(received, b"one");
+        assert_eq!(bytes, vec![7; 1024]);
+        assert_eq!(
+            poll_once(two.into_future()),
+            Poll::Ready(Ok("two".to_string()))
+        );
+    });
+}

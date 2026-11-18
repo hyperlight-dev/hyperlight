@@ -3,6 +3,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::slice;
 
 use anyhow::{Error, Result, anyhow, bail};
 pub use bytes::Bytes;
@@ -15,39 +16,49 @@ use super::guest_error::GuestError;
 #[cfg(feature = "fuzzing")]
 use super::util::arbitrary_byte_chunks;
 use super::util::try_byte_chunks_len;
-use super::wire::{WireResult, WireValue, decode_value, encode_capped};
+use super::wire::{TupleOut, WireResult, WireValue, decode_result, encode_capped};
 use crate::future::{FutureReader, FutureValue};
 use crate::stream::{Mux, StreamReader, Transfer};
 
 pub struct FunctionCallResult(core::result::Result<ReturnValue, GuestError>);
 
 impl FunctionCallResult {
-    /// Encode control data and supply a borrowed byte value to `external_values`.
+    /// Encode control data and supply borrowed byte values to `external_values`.
     ///
-    /// `transfer` describes the result's reader, when present.
+    /// `transfers` describes the result's readers in their wire order.
     pub(crate) fn encode<'a, 'b, S>(
         &'a self,
         buffer: &'b mut Vec<u8>,
         external_values: &mut S,
-        transfer: Option<Transfer>,
+        transfers: &[Transfer],
     ) -> Result<&'b [u8]>
     where
         S: ExternalValueSink<'a> + ?Sized,
     {
-        let external_len = match &self.0 {
-            Ok(ReturnValue::VecBytes(v)) => v.len(),
-            Ok(ReturnValue::ByteChunks(v)) => try_byte_chunks_len(v)
-                .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?,
-            _ => 0,
-        };
+        let mut external_len = 0usize;
+
+        for value in self.values() {
+            let length = match value {
+                ReturnValue::VecBytes(v) => v.len(),
+                ReturnValue::ByteChunks(v) => try_byte_chunks_len(v)
+                    .ok_or_else(|| anyhow!("External ByteChunks length overflow"))?,
+                _ => continue,
+            };
+
+            external_len = external_len
+                .checked_add(length)
+                .ok_or_else(|| anyhow!("External values length overflow"))?;
+        }
 
         let cap = control_cap(external_len)?;
-        encode_capped(&self.wire(transfer)?, buffer, cap)?;
+        encode_capped(&self.wire(transfers)?, buffer, cap)?;
 
-        match &self.0 {
-            Ok(ReturnValue::VecBytes(value)) => external_values.push_bytes(value)?,
-            Ok(ReturnValue::ByteChunks(value)) => external_values.push_chunks(value)?,
-            _ => {}
+        for value in self.values() {
+            match value {
+                ReturnValue::VecBytes(value) => external_values.push_bytes(value)?,
+                ReturnValue::ByteChunks(value) => external_values.push_chunks(value)?,
+                _ => {}
+            }
         }
 
         Ok(buffer.as_slice())
@@ -61,45 +72,65 @@ impl FunctionCallResult {
         self.0
     }
 
-    /// Decode control data, receiving a reader or taking a byte value from `external_values`.
+    /// Decode control data, receiving readers and taking byte values from `external_values`.
     ///
-    /// A failure closes the received reader. A result moves at most one reader, so `streams`
-    /// stays usable.
+    /// A tuple receives its readers before taking its byte values. A failure closes the received
+    /// readers and keeps `streams` usable. Only a malformed result leaves transfers unreceived.
     pub fn decode<S>(control: &[u8], external_values: &mut S, streams: &mut Mux) -> Result<Self>
     where
         S: ExternalValueSource + ?Sized,
     {
-        let result = match decode_value(control)? {
-            WireResult::Ok(value) => Ok(decode_return_value(value, external_values, streams)?),
-            WireResult::Err { code, message } => {
-                Err(GuestError::new(code.into(), message.to_string()))
-            }
-        };
+        let result = decode_result(control, external_values, streams)?;
 
         external_values.finish()?;
         Ok(FunctionCallResult(result))
     }
 
-    /// Borrow the returned reader.
-    pub fn reader(&self) -> Option<&StreamReader<u8>> {
+    /// Borrow the returned readers in their wire order.
+    pub fn readers(&self) -> impl Iterator<Item = &StreamReader<u8>> {
+        self.values().iter().filter_map(|value| match value {
+            ReturnValue::StreamReader(reader) => Some(reader),
+            _ => None,
+        })
+    }
+
+    /// Take the returned readers to commit their transfers.
+    pub(crate) fn into_readers(self) -> impl Iterator<Item = StreamReader<u8>> {
+        let (value, tuple) = match self.0 {
+            Ok(ReturnValue::Tuple(values)) => (None, values),
+            Ok(value) => (Some(value), Vec::new()),
+            Err(_) => (None, Vec::new()),
+        };
+
+        value
+            .into_iter()
+            .chain(tuple)
+            .filter_map(|value| match value {
+                ReturnValue::StreamReader(reader) => Some(reader),
+                _ => None,
+            })
+    }
+
+    /// Borrow the returned values in their wire order. An error has none.
+    fn values(&self) -> &[ReturnValue] {
         match &self.0 {
-            Ok(ReturnValue::StreamReader(reader)) => Some(reader),
-            _ => None,
+            Ok(ReturnValue::Tuple(values)) => values,
+            Ok(value) => slice::from_ref(value),
+            Err(_) => &[],
         }
     }
 
-    /// Take the returned reader to commit its transfer.
-    pub(crate) fn into_reader(self) -> Option<StreamReader<u8>> {
-        match self.0 {
-            Ok(ReturnValue::StreamReader(reader)) => Some(reader),
-            _ => None,
-        }
-    }
-
-    /// The result's control data with its prepared reader transfer.
-    fn wire(&self, transfer: Option<Transfer>) -> Result<WireResult<'_>> {
+    /// The result's control data with its prepared reader transfers.
+    fn wire<'w>(&'w self, transfers: &'w [Transfer]) -> Result<WireResult<'w, TupleOut<'w>>> {
         Ok(match &self.0 {
-            Ok(value) => WireResult::Ok(WireValue::from_return(value, transfer)?),
+            Ok(ReturnValue::Tuple(values)) => WireResult::Tuple(TupleOut {
+                values,
+                xfers: transfers,
+            }),
+            Ok(value) => {
+                let mut xfers = transfers.iter().copied();
+                WireResult::Ok(WireValue::from_return(value, &mut xfers)?)
+            }
             Err(error) => WireResult::Err {
                 code: error.code.into(),
                 message: &error.message,
@@ -200,6 +231,8 @@ pub enum ReturnValue {
     ByteChunks(Vec<Bytes>),
     /// A stream reader, which moves to the caller.
     StreamReader(StreamReader<u8>),
+    /// Values in order. An element is neither `Void` nor a tuple.
+    Tuple(Vec<ReturnValue>),
 }
 
 /// Supported return types from function calling. Variant order is the wire tag.
@@ -232,6 +265,8 @@ pub enum ReturnType {
     ByteChunks,
     /// A stream reader.
     StreamReader,
+    /// A tuple of values.
+    Tuple,
 }
 
 impl ReturnType {
@@ -313,7 +348,7 @@ where
     })
 }
 
-fn decode_return_value<S>(
+pub(super) fn decode_return_value<S>(
     value: WireValue<'_>,
     externals: &mut S,
     streams: &mut Mux,
@@ -675,6 +710,7 @@ mod tests {
     use alloc::vec;
 
     use super::super::guest_error::ErrorCode;
+    use super::super::wire::decode_value;
     use super::*;
     use crate::stream::{DEFAULT_WINDOW, Side};
     use crate::transport::PendingMessage;
@@ -810,7 +846,7 @@ mod tests {
                 },
                 _ => unreachable!(),
             };
-            let result: WireResult<'_> = decode_value(&encoded).unwrap();
+            let result: WireResult<'_, usize> = decode_value(&encoded).unwrap();
             assert_eq!(result, WireResult::Ok(wire));
 
             let decoded = decode(&encoded, &mut external_values)

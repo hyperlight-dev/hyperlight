@@ -5,8 +5,10 @@
 //!
 //! Control data is one postcard call or result. The message header records its
 //! length. Byte values travel as external values, and control data carries their
-//! length. A stream reader carries its stream ID and consumed position.
+//! length. A stream reader carries its stream ID and consumed position. A tuple
+//! result carries its elements as a sequence, like call parameters.
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use anyhow::{Result, anyhow, bail};
@@ -15,9 +17,12 @@ use serde::ser::{Error as _, SerializeSeq};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::codec::ExternalValueSource;
-use super::function_types::{ParameterValue, ReturnType, ReturnValue, decode_parameter_value};
+use super::function_types::{
+    ParameterValue, ReturnType, ReturnValue, decode_parameter_value, decode_return_value,
+};
+use super::guest_error::GuestError;
 use super::util::byte_chunks_len;
-use crate::stream::{MAX_TRANSFERS, Mux, ProtocolError, Transfer};
+use crate::stream::{MAX_TRANSFERS, Mux, ProtocolError, StreamReader, Transfer};
 
 /// One control value. Variant order is the wire tag.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -66,10 +71,14 @@ impl<'a> WireValue<'a> {
         })
     }
 
-    /// Encode `value` with its prepared transfer when it is a reader.
+    /// Encode `value` with the next prepared transfer for a reader.
     ///
-    /// Byte lengths must have been checked by the caller.
-    pub(super) fn from_return(value: &'a ReturnValue, xfer: Option<Transfer>) -> Result<Self> {
+    /// Byte lengths must have been checked by the caller. A tuple result encodes as
+    /// [`WireResult::Tuple`], so a tuple here is nested and fails.
+    pub(super) fn from_return(
+        value: &'a ReturnValue,
+        xfers: &mut impl Iterator<Item = Transfer>,
+    ) -> Result<Self> {
         Ok(match value {
             ReturnValue::Int(v) => Self::Int(*v),
             ReturnValue::UInt(v) => Self::UInt(*v),
@@ -89,8 +98,9 @@ impl<'a> WireValue<'a> {
                 chunked: true,
             },
             ReturnValue::StreamReader(_) => {
-                Self::StreamReader(xfer.ok_or_else(|| anyhow!("Missing transfer"))?)
+                Self::StreamReader(xfers.next().ok_or_else(|| anyhow!("Missing transfer"))?)
             }
+            ReturnValue::Tuple(_) => bail!("A tuple cannot hold a tuple"),
         })
     }
 }
@@ -108,6 +118,30 @@ impl Serialize for ParamsOut<'_> {
 
         for val in self.values {
             let val = WireValue::from_parameter(val, &mut xfers).map_err(S::Error::custom)?;
+            seq.serialize_element(&val)?;
+        }
+
+        seq.end()
+    }
+}
+
+/// Serializes tuple elements as a sequence without collecting them first.
+pub(super) struct TupleOut<'a> {
+    pub(super) values: &'a [ReturnValue],
+    pub(super) xfers: &'a [Transfer],
+}
+
+impl Serialize for TupleOut<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.values.len()))?;
+        let mut xfers = self.xfers.iter().copied();
+
+        for val in self.values {
+            if matches!(val, ReturnValue::Void(())) {
+                return Err(S::Error::custom("Void is not a valid tuple element"));
+            }
+
+            let val = WireValue::from_return(val, &mut xfers).map_err(S::Error::custom)?;
             seq.serialize_element(&val)?;
         }
 
@@ -167,15 +201,103 @@ where
     Ok((head, params))
 }
 
-/// A function call result.
+/// A function call result. Variant order is the wire tag.
+///
+/// Encoding writes a tuple's elements through [`TupleOut`]. Decoding reads only a tuple's
+/// element count as `usize`, and the elements follow it.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub(super) enum WireResult<'a> {
+pub(super) enum WireResult<'a, T> {
     #[serde(borrow)]
     Ok(WireValue<'a>),
     Err {
         code: u64,
         message: &'a str,
     },
+    Tuple(T),
+}
+
+/// A tuple element as read from control data, or the reader its transfer gave.
+enum Element<'a> {
+    Wire(WireValue<'a>),
+    Reader(StreamReader<u8>),
+}
+
+/// Decode a result and convert its value.
+pub(super) fn decode_result<S>(
+    control: &[u8],
+    externals: &mut S,
+    streams: &mut Mux,
+) -> Result<core::result::Result<ReturnValue, GuestError>>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    let mut elems = Vec::new();
+    let mut deserializer = postcard::Deserializer::from_bytes(control);
+    let head = WireResult::<usize>::deserialize(&mut deserializer)?;
+
+    if let WireResult::Tuple(count) = head {
+        // Each element takes at least one byte.
+        elems.reserve(count.min(control.len()));
+        let mut reader_cnt = 0;
+
+        for _ in 0..count {
+            let value = WireValue::deserialize(&mut deserializer)?;
+
+            match value {
+                WireValue::Void => bail!("Void is not a valid tuple element"),
+                WireValue::StreamReader(_) => reader_cnt += 1,
+                _ => {}
+            }
+
+            if reader_cnt > MAX_TRANSFERS {
+                return Err(ProtocolError::Transfer.into());
+            }
+
+            elems.push(Element::Wire(value));
+        }
+    }
+
+    let rest = deserializer.finalize()?;
+
+    if !rest.is_empty() {
+        bail!("Control data has {} trailing bytes", rest.len());
+    }
+
+    Ok(match head {
+        WireResult::Ok(value) => Ok(decode_return_value(value, externals, streams)?),
+        WireResult::Err { code, message } => Err(GuestError::new(code.into(), message.to_string())),
+        WireResult::Tuple(_) => {
+            let values = decode_tuple(elems, externals, streams)?;
+            Ok(ReturnValue::Tuple(values))
+        }
+    })
+}
+
+/// Convert a tuple's elements in order.
+///
+/// Every transfer is received before any external value is taken. A short external value then
+/// leaves no transfer unreceived, and the failure closes every received reader.
+fn decode_tuple<S>(
+    mut elems: Vec<Element<'_>>,
+    externals: &mut S,
+    streams: &mut Mux,
+) -> Result<Vec<ReturnValue>>
+where
+    S: ExternalValueSource + ?Sized,
+{
+    for element in &mut elems {
+        if let Element::Wire(WireValue::StreamReader(xfer)) = *element {
+            *element = Element::Reader(streams.recv_transfer(xfer)?);
+        }
+    }
+
+    elems
+        .into_iter()
+        .map(|element| match element {
+            Element::Wire(value) => decode_return_value(value, externals, streams),
+            Element::Reader(reader) => Ok(ReturnValue::StreamReader(reader)),
+        })
+        .collect()
 }
 
 /// Write `value` as control data into `buffer`.

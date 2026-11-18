@@ -2,9 +2,11 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use super::error::Error;
+use super::utils::for_each_tuple;
 use crate::flatbuffer_wrappers::function_types::{ReturnType, ReturnValue};
 use crate::future::{FutureReader, FutureValue};
 
@@ -118,10 +120,80 @@ impl<T: FutureValue + 'static> SupportedReturnType for FutureReader<T> {
     }
 }
 
-#[cfg(test)]
+mod sealed {
+    /// Restricts [`TupleElement`](super::TupleElement) to the types this crate lists.
+    pub trait Sealed {}
+}
+
+/// An element of a returned tuple.
+///
+/// A tuple of 2 to 32 elements is a [`SupportedReturnType`], and its elements return in order,
+/// as call parameters do. Every built-in return type except `()` and tuples is an element.
+pub trait TupleElement: SupportedReturnType + sealed::Sealed {}
+
+/// `()` returns no value, so it is not an element.
+macro_rules! impl_tuple_element {
+    ((), Void) => {};
+    ($type:ty, $enum:ident) => {
+        impl sealed::Sealed for $type {}
+        impl TupleElement for $type {}
+    };
+}
+
+for_each_return_type!(impl_tuple_element);
+
+impl<T: FutureValue + 'static> sealed::Sealed for FutureReader<T> {}
+impl<T: FutureValue + 'static> TupleElement for FutureReader<T> {}
+
+/// A tuple of 2 or more elements returns as [`ReturnValue::Tuple`]. `()` is `Void`.
+macro_rules! impl_return_tuple {
+    ([$count:expr] ()) => {};
+    ([$count:expr] ($name:ident: $ty:ident)) => {};
+    ([$count:expr] ($($name:ident: $ty:ident),*)) => {
+        impl<$($ty: TupleElement),*> SupportedReturnType for ($($ty,)*) {
+            const TYPE: ReturnType = ReturnType::Tuple;
+
+            fn into_value(self) -> ReturnValue {
+                let ($($name,)*) = self;
+
+                ReturnValue::Tuple(vec![$(<$ty as SupportedReturnType>::into_value($name)),*])
+            }
+
+            fn from_value(value: ReturnValue) -> Result<Self, Error> {
+                let values = match value {
+                    ReturnValue::Tuple(values) => values,
+                    other => return Err(Error::ReturnValueConversionFailure(other, "tuple")),
+                };
+
+                match <[ReturnValue; $count]>::try_from(values) {
+                    Ok([$($name),*]) => Ok(($(<$ty as SupportedReturnType>::from_value($name)?,)*)),
+                    Err(values) => Err(Error::ReturnValueConversionFailure(
+                        ReturnValue::Tuple(values),
+                        "tuple",
+                    )),
+                }
+            }
+        }
+
+        impl<$($ty: TupleElement),*> TryFrom<ReturnValue> for ($($ty,)*) {
+            type Error = anyhow::Error;
+
+            fn try_from(value: ReturnValue) -> Result<Self, anyhow::Error> {
+                Ok(<Self as SupportedReturnType>::from_value(value)?)
+            }
+        }
+    };
+}
+
+for_each_tuple!(impl_return_tuple);
+
+#[cfg(all(test, not(loom)))]
 mod tests {
+    use alloc::sync::Arc;
+
     use super::*;
     use crate::flatbuffer_wrappers::function_types::Bytes;
+    use crate::stream::{self, StreamReader};
 
     #[test]
     fn byte_chunks_return_round_trips_without_copying() {
@@ -135,5 +207,63 @@ mod tests {
             chunks,
             [Bytes::from_static(b"hello"), Bytes::from_static(b" world")]
         );
+    }
+
+    type Pair = (StreamReader<u8>, u64);
+
+    #[test]
+    fn tuple_moves_its_elements_in_order() {
+        let (reader, _writer) = stream::new::<u8>();
+        let pipe = Arc::clone(reader.pipe());
+
+        let value = <Pair as SupportedReturnType>::into_value((reader, 7));
+
+        assert!(matches!(
+            &value,
+            ReturnValue::Tuple(values) if matches!(
+                &values[..],
+                [ReturnValue::StreamReader(reader), ReturnValue::ULong(7)]
+                    if Arc::ptr_eq(reader.pipe(), &pipe)
+            )
+        ));
+
+        let (reader, number) = <Pair as SupportedReturnType>::from_value(value).unwrap();
+
+        assert!(Arc::ptr_eq(reader.pipe(), &pipe));
+        assert_eq!(number, 7);
+    }
+
+    #[test]
+    fn tuple_rejects_a_wrong_count() {
+        let (reader, _writer) = stream::new::<u8>();
+        let value = ReturnValue::Tuple(vec![
+            ReturnValue::StreamReader(reader),
+            ReturnValue::ULong(7),
+            ReturnValue::Bool(true),
+        ]);
+
+        let err = <Pair as SupportedReturnType>::from_value(value).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::ReturnValueConversionFailure(ReturnValue::Tuple(values), "tuple")
+                if values.len() == 3
+        ));
+    }
+
+    #[test]
+    fn tuple_rejects_a_wrong_element() {
+        let (reader, _writer) = stream::new::<u8>();
+        let value = ReturnValue::Tuple(vec![
+            ReturnValue::StreamReader(reader),
+            ReturnValue::Bool(true),
+        ]);
+
+        let err = <Pair as SupportedReturnType>::from_value(value).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::ReturnValueConversionFailure(ReturnValue::Bool(true), "u64")
+        ));
     }
 }

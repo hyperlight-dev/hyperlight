@@ -360,8 +360,9 @@ pub mod __private {
 
     use alloc::string::String;
 
-    use hyperlight_common::for_each_return_type;
+    use hyperlight_common::func::TupleElement;
     use hyperlight_common::future::{FutureReader, FutureValue};
+    use hyperlight_common::{for_each_return_type, for_each_tuple};
 
     macro_rules! impl_maybe_unwrap {
         ($ty:ty, $enum:ident) => {
@@ -400,6 +401,30 @@ pub mod __private {
             res
         }
     }
+
+    macro_rules! impl_maybe_unwrap_tuple {
+        ([$count:expr] ()) => {};
+        ([$count:expr] ($name:ident: $ty:ident)) => {};
+        ([$count:expr] ($($name:ident: $ty:ident),*)) => {
+            impl<$($ty: TupleElement),*> FromResult for ($($ty,)*) {
+                type Output = Self;
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    // Unwrapping here is fine as this would only run in a guest
+                    // and not in the host.
+                    res.unwrap()
+                }
+            }
+
+            impl<$($ty: TupleElement),*> FromResult for Result<($($ty,)*), HyperlightGuestError> {
+                type Output = ($($ty,)*);
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    res
+                }
+            }
+        };
+    }
+
+    for_each_tuple!(impl_maybe_unwrap_tuple);
 }
 
 #[cfg(feature = "macros")]
