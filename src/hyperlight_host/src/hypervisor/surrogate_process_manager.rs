@@ -20,12 +20,12 @@ use windows::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateProcessA, PROCESS_INFORMATION, STARTUPINFOA,
+    CREATE_SUSPENDED, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
 };
-use windows::core::PCSTR;
+use windows::core::{HSTRING, PCSTR};
 
 use super::surrogate_process::SurrogateProcess;
-use super::wrappers::{HandleWrapper, PSTRWrapper};
+use super::wrappers::HandleWrapper;
 use crate::HyperlightError::WindowsAPIError;
 use crate::{Result, log_then_return, new_error};
 
@@ -57,6 +57,10 @@ const INITIAL_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_INITIAL_SURROGATES";
 /// `HYPERLIGHT_INITIAL_SURROGATES` and <= `MAX_WHP_PARTITIONS`.
 /// Defaults to that limit if unset.
 const MAX_SURROGATES_ENV_VAR: &str = "HYPERLIGHT_MAX_SURROGATES";
+
+/// Environment variable overriding the runtime surrogate extraction directory.
+/// Defaults to the current executable's directory.
+const SURROGATE_EXTRACT_DIR_ENV_VAR: &str = "HYPERLIGHT_SURROGATE_EXTRACT_DIR";
 
 /// Returns the on-disk filename for the surrogate binary, incorporating the
 /// first 8 hex characters of the BLAKE3 hash of the embedded binary so that
@@ -194,8 +198,8 @@ impl SurrogateProcessManager {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn new() -> Result<Self> {
         let binary_name = surrogate_binary_name()?;
-        ensure_surrogate_process_exe(&binary_name)?;
         let surrogate_process_path = get_surrogate_process_dir()?.join(&binary_name);
+        ensure_surrogate_process_exe(&surrogate_process_path)?;
 
         let (initial, max) = surrogate_process_counts();
 
@@ -393,6 +397,10 @@ fn create_job_object() -> Result<HandleWrapper> {
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn get_surrogate_process_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os(SURROGATE_EXTRACT_DIR_ENV_VAR) {
+        return Ok(std::path::absolute(dir)?);
+    }
+
     let binding = std::env::current_exe()?;
     let path = binding
         .parent()
@@ -413,10 +421,7 @@ fn get_surrogate_process_dir() -> Result<PathBuf> {
 /// creating the file, the partial file is deleted so future runs do not
 /// mistake it for a valid binary.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn ensure_surrogate_process_exe(binary_name: &str) -> Result<()> {
-    let dir = get_surrogate_process_dir()?;
-    let surrogate_process_path = dir.join(binary_name);
-
+fn ensure_surrogate_process_exe(surrogate_process_path: &Path) -> Result<()> {
     // Resolve the embedded asset before touching the filesystem so a
     // missing asset can't leave a zero-byte ghost file on disk.
     let exe = Asset::get(EMBEDDED_SURROGATE_NAME)
@@ -426,12 +431,11 @@ fn ensure_surrogate_process_exe(binary_name: &str) -> Result<()> {
     // returns `AlreadyExists` and we skip extraction. The filename
     // embeds the content hash, so an existing file is guaranteed to
     // have the correct content.
-    match File::create_new(&surrogate_process_path) {
+    match File::create_new(surrogate_process_path) {
         Ok(mut f) => {
             info!(
-                "{} does not exist, extracting to {}",
-                binary_name,
-                &surrogate_process_path.display()
+                "extracting surrogate to {}",
+                surrogate_process_path.display()
             );
 
             if let Err(e) = f.write_all(exe.data.as_ref()) {
@@ -440,7 +444,7 @@ fn ensure_surrogate_process_exe(binary_name: &str) -> Result<()> {
                 // Drop the file handle first — on Windows, open handles
                 // prevent deletion.
                 drop(f);
-                let _ = std::fs::remove_file(&surrogate_process_path);
+                let _ = std::fs::remove_file(surrogate_process_path);
                 return Err(e.into());
             }
         }
@@ -465,23 +469,20 @@ fn create_surrogate_process(
     surrogate_process_path: &Path,
     job_handle: HandleWrapper,
 ) -> Result<HandleWrapper> {
-    let mut process_information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let mut startup_info: STARTUPINFOA = unsafe { std::mem::zeroed() };
-    let process_attributes: SECURITY_ATTRIBUTES = Default::default();
-    let thread_attributes: SECURITY_ATTRIBUTES = Default::default();
-    startup_info.cb = std::mem::size_of::<STARTUPINFOA>() as u32;
+    let mut process_information = PROCESS_INFORMATION::default();
+    let startup_info = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let application = HSTRING::from(surrogate_process_path);
 
-    let cmd_line = surrogate_process_path.to_str().ok_or(new_error!(
-        "failed to convert surrogate process path to a string"
-    ))?;
-    let p_cmd_line = &PSTRWrapper::try_from(cmd_line)?;
-
+    // SAFETY: all pointer arguments refer to locals that outlive the call.
     if let Err(e) = unsafe {
-        CreateProcessA(
-            PCSTR::null(),
-            Some(p_cmd_line.into()),
-            Some(&process_attributes),
-            Some(&thread_attributes),
+        CreateProcessW(
+            &application,
+            None,
+            None,
+            None,
             false,
             CREATE_SUSPENDED,
             None,
@@ -495,6 +496,7 @@ fn create_surrogate_process(
 
     let job_handle: HANDLE = job_handle.into();
     let process_handle: HANDLE = process_information.hProcess;
+    // SAFETY: both handles refer to live objects created by this manager.
     unsafe {
         if let Err(e) = AssignProcessToJobObject(job_handle, process_handle) {
             log_then_return!(WindowsAPIError(e.clone()));
@@ -519,6 +521,56 @@ mod tests {
 
     use super::*;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+
+    #[test]
+    #[ignore = "Run by `just test-surrogate-directory` with isolated process-wide configuration"]
+    fn test_surrogate_directory_override() {
+        let dir = PathBuf::from(std::env::var_os(SURROGATE_EXTRACT_DIR_ENV_VAR).unwrap());
+        let directory_name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(directory_name.contains('é'));
+        assert!(directory_name.contains(' '));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let manager = get_surrogate_process_manager().unwrap();
+        let path = dir.join(surrogate_binary_name().unwrap());
+        assert_eq!(manager.surrogate_process_path, path);
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            Asset::get(EMBEDDED_SURROGATE_NAME).unwrap().data.as_ref()
+        );
+        let _process = manager.get_surrogate_process().unwrap();
+    }
+
+    #[test]
+    #[ignore = "Run by `just test-surrogate-directory` with isolated process-wide configuration"]
+    fn test_surrogate_directory_relative() {
+        let dir = PathBuf::from(std::env::var_os(SURROGATE_EXTRACT_DIR_ENV_VAR).unwrap());
+        assert!(dir.is_relative());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = std::path::absolute(dir)
+            .unwrap()
+            .join(surrogate_binary_name().unwrap());
+        let manager = get_surrogate_process_manager().unwrap();
+        assert_eq!(manager.surrogate_process_path, path);
+        assert_eq!(manager.created_count.load(Ordering::Acquire), 0);
+
+        let original_dir = std::env::current_dir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(other_dir.path()).unwrap();
+        let process = manager.get_surrogate_process();
+        std::env::set_current_dir(original_dir).unwrap();
+        let _process = process.unwrap();
+    }
+
+    #[test]
+    #[ignore = "Run by `just test-surrogate-directory` with isolated process-wide configuration"]
+    fn test_surrogate_directory_missing() {
+        let dir = PathBuf::from(std::env::var_os(SURROGATE_EXTRACT_DIR_ENV_VAR).unwrap());
+        assert!(!dir.exists());
+        assert!(get_surrogate_process_manager().is_err());
+        assert!(!dir.exists());
+    }
+
     #[test]
     fn test_surrogate_process_manager() {
         let mut threads = Vec::new();
@@ -816,7 +868,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         // --- First call: extracts the binary ---
-        ensure_surrogate_process_exe(test_binary_name).expect("first call should succeed");
+        ensure_surrogate_process_exe(&path).expect("first call should succeed");
         assert!(path.exists(), "binary should exist after extraction");
 
         // --- Verify extracted content matches embedded binary ---
@@ -829,15 +881,14 @@ mod tests {
         );
 
         // --- Second call: file exists, should skip (AlreadyExists path) ---
-        ensure_surrogate_process_exe(test_binary_name)
+        ensure_surrogate_process_exe(&path)
             .expect("second call should succeed when file already exists");
 
         // --- Delete and re-extract ---
         std::fs::remove_file(&path).expect("should be able to delete test binary");
         assert!(!path.exists(), "binary should be gone after deletion");
 
-        ensure_surrogate_process_exe(test_binary_name)
-            .expect("should succeed re-extracting after deletion");
+        ensure_surrogate_process_exe(&path).expect("should succeed re-extracting after deletion");
         assert!(path.exists(), "binary should be re-created after deletion");
 
         // Clean up test artifact.
