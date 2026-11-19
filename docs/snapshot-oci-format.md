@@ -130,9 +130,11 @@ to `tag` is replaced.
 
 `index.json` is rewritten via a tmp file plus `rename`, the commit
 point for the whole operation. Concurrent readers observe either the
-prior layout or the new one, never a partial write. Power-loss
-durability is the caller's responsibility: add `fsync` on the file
-and parent directory if a crash must not lose a committed tag.
+prior layout or the new one, never a partial write. Saving does not
+call `fsync` on files or directories. Power-loss durability is the
+caller's responsibility: sync all referenced blob files and layout
+metadata, then their containing directories, if a crash must not lose
+a saved snapshot.
 
 Replaced tags leave orphan blobs behind. To compact, remove the
 directory and re-save. Concurrent writers to the same `path` are
