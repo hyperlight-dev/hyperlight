@@ -36,13 +36,14 @@ use spin::{RwLock, RwLockReadGuard};
 /// # Safety
 /// Informally: this only creates SharedRead references, so having a
 /// bunch of them going at once is fine.  Safe Rust in the host can't
-/// use any earlier borrows (potentially invalidating these) until
-/// borrow passed into [`ResourceEntry::lend`] has expired.  Because
-/// that borrow outlives the [`LentResourceGuard`], it will not expire
-/// until that destructor is called. That destructor ensures that (a)
-/// there are no outstanding [`BorrowedResourceGuard`]s alive (since
-/// they would be holding the read side of the [`RwLock`] if they
-/// were), and that (b) the shared flag has been set to false, so
+/// use any earlier borrows (potentially invalidating these) until the
+/// borrow passed into [`ResourceEntry::lend`] has expired.
+/// [`ResourceEntry::lend`] is marked `unsafe`, and its unsafe
+/// contract requires the caller to ensure that its destructor is
+/// called before that borrow expires. That destructor ensures that
+/// (a) there are no outstanding [`BorrowedResourceGuard`]s alive
+/// (since they would be holding the read side of the [`RwLock`] if
+/// they were), and that (b) the shared flag has been set to false, so
 /// [`ResourceEntry::borrow`] will never create another borrow
 pub enum ResourceEntry<T> {
     Empty,
@@ -105,7 +106,10 @@ impl<T> ResourceEntry<T> {
     pub fn give(x: T) -> ResourceEntry<T> {
         ResourceEntry::Owned(x)
     }
-    pub fn lend<'a>(x: &'a T) -> (LentResourceGuard<'a>, ResourceEntry<T>) {
+    /// # Safety
+    /// The caller must ensure that the destructor of the returned
+    /// `LentResourceGuard` is run before its `'a` lifetime expires.
+    pub unsafe fn lend<'a>(x: &'a T) -> (LentResourceGuard<'a>, ResourceEntry<T>) {
         let flag = Arc::new(RwLock::new(true));
         (
             LentResourceGuard {

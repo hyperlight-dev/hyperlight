@@ -672,7 +672,13 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                 let rid = format_ident!("resource{}", vi);
                 quote! {
                     let i = rts.#rid.len();
-                    let (lrg, re) = ::hyperlight_common::resource::ResourceEntry::lend(#id);
+                    let (lrg, re) = unsafe {
+                        // # Safety
+                        // The returned resource guard is placed in
+                        // the `to_cleanup` list, which is
+                        // unconditionally dropped at the end of this function
+                        ::hyperlight_common::resource::ResourceEntry::lend(#id)
+                    };
                     to_cleanup.push(Box::new(lrg));
                     rts.#rid.push_back(re);
                     alloc::vec::Vec::from(u32::to_le_bytes(i as u32))
