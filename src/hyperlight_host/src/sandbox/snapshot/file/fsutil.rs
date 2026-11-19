@@ -40,27 +40,44 @@ pub(super) fn put_blob(blobs_dir: &Path, digest: &Digest256, bytes: &[u8]) -> cr
 }
 
 /// Write a content-addressed blob into `blobs_dir`, reusing the
-/// existing file at `blobs_dir/<hex>` only if it is present, has the
-/// expected length, AND hashes to `digest`. A wrong-content file of
-/// the right length (corruption, partial copy, foreign tool) is
-/// overwritten.
-///
-/// Intended for the large snapshot blob, where the cost of one full
-/// re-hash of the existing file is far less than the cost of an
-/// unconditional rewrite.
+/// existing regular file at `blobs_dir/<hex>` if it has the expected
+/// length. Unless `verify_existing` is set, the content-addressed
+/// filename is trusted without reading the file. With verification,
+/// mismatched contents are replaced. Callers must keep published blobs
+/// immutable while snapshots use them.
 pub(super) fn put_blob_if_absent(
     blobs_dir: &Path,
     digest: &Digest256,
     bytes: &[u8],
+    verify_existing: bool,
 ) -> crate::Result<()> {
     let target = blobs_dir.join(&digest.hex);
-    if let Ok(meta) = std::fs::symlink_metadata(&target)
-        && meta.is_file()
-        && meta.len() == bytes.len() as u64
-        && let Ok(mut file) = std::fs::File::open(&target)
-        && verify_blob_file("existing snapshot", &mut file, &digest.hex).is_ok()
-    {
-        return Ok(());
+    match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_file() && meta.len() == bytes.len() as u64 => {
+            if !verify_existing {
+                return Ok(());
+            }
+            let mut file = open_no_follow(&target)?;
+            match verify_blob_file("existing snapshot", &mut file, &digest.hex) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::warn!(
+                        ?target,
+                        %error,
+                        "Replacing snapshot blob after failed content verification"
+                    );
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(crate::new_error!(
+                "failed to stat snapshot blob {:?}: {}",
+                target,
+                error
+            ));
+        }
     }
     replace_file_atomic(&target, bytes)
 }

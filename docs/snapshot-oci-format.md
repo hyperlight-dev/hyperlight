@@ -57,6 +57,29 @@ Manifest layers are ordered data, then transport.
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
 
+### Immutable blob reuse
+
+`Snapshot::save` caches each shared memory layer's SHA-256. Existing regular
+blob files with the expected length are trusted by their content-addressed
+filenames without reading or hashing their contents, even at a new destination.
+There is no backing-file cache. Missing blobs are written atomically; symlinks
+and wrong-length files are replaced.
+`Snapshot::checked_load` seeds the digest cache during verification; unchecked
+`load` does not. Metadata and transport blobs retain their normal write path.
+
+Callers must keep loaded and published memory blobs immutable for the lifetime
+of these snapshots and outside writable guest mounts. Host-side mutation and
+silent storage corruption are outside the save-time threat boundary. Saving
+does not detect same-length corruption; use `Snapshot::checked_load` to verify
+persisted contents explicitly. The persisted OCI format is unchanged.
+
+`Snapshot::checked_save` takes the fully verifying path: it recomputes all
+memory-layer digests without using the cache and hashes existing memory blob
+files before reusing them. Mismatched contents are atomically replaced from
+the snapshot's memory. It otherwise has the same layout and tag semantics as
+`save`. This is not protection against concurrent modification of loaded
+backing files, which must remain immutable while snapshots use them.
+
 ## Application metadata
 
 `Snapshot::with_metadata` creates a snapshot that shares the source snapshot's

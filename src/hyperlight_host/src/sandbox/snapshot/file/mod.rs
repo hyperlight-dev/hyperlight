@@ -41,6 +41,11 @@ use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
+#[cfg(test)]
+pub(super) fn test_hashed_bytes() -> usize {
+    digest::HASHED_BYTES.get()
+}
+
 /// Short golden-tag token for the host CPU vendor, or `None` if the
 /// goldens do not cover it. Exposed for the snapshot golden tests so
 /// they share the host crate's vendor detection.
@@ -333,6 +338,19 @@ impl Snapshot {
     /// digest but not by this tag. Snapshots under other tags are
     /// untouched.
     ///
+    /// # Immutable blob store
+    ///
+    /// Memory-layer digests are cached across snapshots sharing those layers.
+    /// Existing regular blob files with the expected length are trusted by
+    /// their content-addressed filenames without reading or hashing them.
+    ///
+    /// The caller must keep loaded and saved memory blobs immutable for the
+    /// lifetime of these snapshots and outside writable guest mounts. Saving
+    /// does not detect same-length corruption or host-side modifications.
+    /// Use [`Snapshot::checked_save`] to verify existing blobs before reuse,
+    /// or [`Snapshot::checked_load`] to verify persisted contents explicitly.
+    /// Metadata and transport blobs follow the normal write path.
+    ///
     /// # Portability
     ///
     /// Snapshot images are bound to the specific CPU architecture,
@@ -368,8 +386,30 @@ impl Snapshot {
     /// # }
     /// ```
     pub fn save(&self, path: impl AsRef<Path>, tag: &OciTag) -> crate::Result<OciDigest> {
-        let path = path.as_ref();
+        self.save_inner(path.as_ref(), tag, false)
+    }
 
+    /// Save this snapshot, recomputing memory-layer digests and verifying
+    /// existing blob contents before reuse.
+    ///
+    /// Unlike [`Self::save`], this method bypasses the memory-layer digest
+    /// cache and hashes existing memory blob files. Blobs with mismatched
+    /// contents are atomically replaced with the snapshot's memory contents.
+    /// It uses the same layout, tag semantics and return value as [`Self::save`].
+    ///
+    /// This does not protect against concurrent modification of the snapshot's
+    /// backing files. Loaded memory blobs must still remain immutable for the
+    /// lifetime of the snapshot.
+    pub fn checked_save(&self, path: impl AsRef<Path>, tag: &OciTag) -> crate::Result<OciDigest> {
+        self.save_inner(path.as_ref(), tag, true)
+    }
+
+    fn save_inner(
+        &self,
+        path: &Path,
+        tag: &OciTag,
+        verify_blobs: bool,
+    ) -> crate::Result<OciDigest> {
         // Building the config can reject the snapshot. Do it before
         // writing any file.
         let cfg = self.build_config()?;
@@ -466,7 +506,8 @@ impl Snapshot {
             Vec::new()
         };
 
-        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
+        let new_desc =
+            self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes, verify_blobs)?;
         let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
 
         // Replacement is by tag, not by digest: a new snapshot may
@@ -514,6 +555,7 @@ impl Snapshot {
         tag: &OciTag,
         cfg: &OciSnapshotConfig,
         cfg_bytes: &[u8],
+        verify_blobs: bool,
     ) -> crate::Result<Descriptor> {
         let blobs_dir = dir.join("blobs").join("sha256");
         std::fs::create_dir_all(&blobs_dir).map_err(|e| {
@@ -526,8 +568,13 @@ impl Snapshot {
             .blobs()
             .map(|blob| {
                 let bytes = blob.memory().as_slice();
-                let digest = Digest256::from_bytes(bytes);
-                put_blob_if_absent(&blobs_dir, &digest, bytes)?;
+                let digest = if verify_blobs {
+                    Digest256::from_bytes(bytes)
+                } else {
+                    let hex = blob.sha256.get_or_init(|| Digest256::from_bytes(bytes).hex);
+                    Digest256 { hex: hex.clone() }
+                };
+                put_blob_if_absent(&blobs_dir, &digest, bytes, verify_blobs)?;
                 blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())
             })
             .collect::<crate::Result<Vec<_>>>()?;
@@ -987,15 +1034,18 @@ impl Snapshot {
             .collect::<crate::Result<Vec<_>>>()?;
         let page_tables = blobs[cfg.page_table_layer].clone();
         let data_layers = blobs
-            .into_iter()
+            .iter()
             .filter(|blob| blob.data_len() > 0)
+            .cloned()
             .collect();
         let memory = Arc::new(SnapshotMemory::new(data_layers, page_tables)?);
         // Hash after validating the layers so malformed snapshots fail
         // cheaply.
         if verify_blobs {
-            for (desc, file) in data_descs.iter().zip(&mut snap_files) {
-                verify_blob_file("snapshot", file, &parse_oci_digest(desc.digest())?)?;
+            for ((desc, file), blob) in data_descs.iter().zip(&mut snap_files).zip(&blobs) {
+                let digest = parse_oci_digest(desc.digest())?;
+                verify_blob_file("snapshot", file, &digest)?;
+                blob.sha256.get_or_init(|| digest);
             }
         }
 
