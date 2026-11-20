@@ -232,8 +232,8 @@ impl<'a> GuestPhysicalMemoryView<'a> {
         Ok(())
     }
 
-    #[cfg(crashdump)]
-    fn host_range(&self, gpa: u64, len: usize) -> Result<std::ops::Range<usize>> {
+    #[cfg(any(crashdump, all(gdb, target_arch = "aarch64")))]
+    pub(crate) fn host_range(&self, gpa: u64, len: usize) -> Result<std::ops::Range<usize>> {
         let backing = self
             .resolve(gpa, len)
             .ok_or_else(|| new_error!("GPA range is not backed: {gpa:#x}"))?;
