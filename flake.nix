@@ -210,6 +210,7 @@
               clause = name: toolchain: ''
                 +${name}) base="${toolchain.rust}"; ;;
                 +${name}-${toolchain.rust.toolchainVersionAttrs.date}) base="${toolchain.rust}"; ;;
+                +${toolchain.rust}) base="${toolchain.rust}"; ;;
               '';
               clauses = lib.strings.concatStringsSep "\n"
                 (lib.mapAttrsToList clause toolchains);
