@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
 ### Changed
+* `Snapshot::save` caches memory-layer hashes and trusts existing same-length
+  regular blobs by their content-addressed filenames without verifying their
+  contents. Callers must keep blobs immutable. Use the new
+  `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
+  atomically repair mismatched contents.
 * `Snapshot::save` no longer synchronously flushes files to stable storage.
   Callers requiring power-loss durability must sync the snapshot files and
   directory hierarchy themselves after saving.

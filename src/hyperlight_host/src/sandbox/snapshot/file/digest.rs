@@ -6,6 +6,13 @@ use std::io::{Read, Seek, SeekFrom};
 use oci_spec::image::Digest;
 use sha2::{Digest as _, Sha256};
 
+#[cfg(test)]
+thread_local! {
+    // Counts hashed bytes to test save's cache reuse versus checked_save's full hashing.
+    // Thread-local storage isolates parallel tests; this is absent from production builds.
+    pub(super) static HASHED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A `sha256:<hex>` digest as recorded in OCI manifests. The bare hex
 /// (without prefix) is also the blob's filename inside `blobs/sha256/`.
 #[derive(Clone)]
@@ -16,6 +23,8 @@ pub(super) struct Digest256 {
 
 impl Digest256 {
     pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        #[cfg(test)]
+        HASHED_BYTES.update(|count| count + bytes.len());
         let arr: [u8; 32] = Sha256::digest(bytes).into();
         Self::from_digest_array(arr)
     }
@@ -86,6 +95,8 @@ pub(super) fn verify_blob_file(
             break;
         }
         hasher.update(&buf[..n]);
+        #[cfg(test)]
+        HASHED_BYTES.update(|count| count + n);
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|e| crate::new_error!("failed to rewind {} blob: {}", label, e))?;

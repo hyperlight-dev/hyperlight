@@ -17,7 +17,7 @@
 //! ```
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use hyperlight_common::vmem::PAGE_SIZE;
 
@@ -56,6 +56,7 @@ pub(crate) struct SnapshotBlob {
     memory: ReadonlySharedMemory,
     gpa_start: u64,
     page_table_len: usize,
+    pub(super) sha256: OnceLock<String>,
 }
 
 impl SnapshotBlob {
@@ -96,6 +97,7 @@ impl SnapshotBlob {
             memory,
             gpa_start,
             page_table_len,
+            sha256: OnceLock::new(),
         })
     }
 
