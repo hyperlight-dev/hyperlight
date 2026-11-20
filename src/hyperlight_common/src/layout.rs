@@ -21,12 +21,24 @@ const EXN_STACK_ALIGNMENT: usize = 16;
 /// Pages reserved for the exception stack and scratch-top metadata.
 pub const SCRATCH_TOP_RESERVED_PAGES: usize = 12;
 
+/// Host-written arguments consumed before guest heap initialization.
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct StartupArgs {
+    pub seed: u64,
+    pub host_page_size: u64,
+    pub max_log_level: u64,
+    /// Nonzero if guest heap pages are mapped executable.
+    pub heap_executable: u64,
+}
+
 // Fields are listed in ascending-address order. Public offsets are measured
 // down from the top of scratch memory.
 #[repr(C)]
 struct ScratchTopMetadata {
-    /// Nonzero if guest heap pages are mapped executable.
-    heap_executable: u64,
+    startup_args: StartupArgs,
+    /// Keeps the exception stack 16-byte aligned.
+    _alignment_padding: [u8; 8],
     /// Host-published capacity of each H2G buffer.
     h2g_buffer_size: u64,
     /// Number of pages reserved for the H2G pool.
@@ -85,8 +97,8 @@ pub const SCRATCH_TOP_LIBC_RNG_SEED_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, libc_rng_seed));
 pub const SCRATCH_TOP_GUEST_LOG_LEVEL_OFFSET: u64 =
     scratch_top_offset(offset_of!(ScratchTopMetadata, guest_log_level));
-pub const SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET: u64 =
-    scratch_top_offset(offset_of!(ScratchTopMetadata, heap_executable));
+pub const SCRATCH_TOP_STARTUP_ARGS_OFFSET: u64 =
+    scratch_top_offset(offset_of!(ScratchTopMetadata, startup_args));
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = size_of::<ScratchTopMetadata>() as u64;
 
 const _: () = {
@@ -107,8 +119,13 @@ const _: () = {
     assert!(SCRATCH_TOP_H2G_QUEUE_SIZE_OFFSET == 0x58);
     assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET == 0x60);
     assert!(SCRATCH_TOP_H2G_BUFFER_SIZE_OFFSET == 0x68);
-    assert!(SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET == 0x70);
-    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x70);
+    assert!(size_of::<StartupArgs>() == 0x20);
+    assert!(offset_of!(StartupArgs, seed) == 0x00);
+    assert!(offset_of!(StartupArgs, host_page_size) == 0x08);
+    assert!(offset_of!(StartupArgs, max_log_level) == 0x10);
+    assert!(offset_of!(StartupArgs, heap_executable) == 0x18);
+    assert!(SCRATCH_TOP_STARTUP_ARGS_OFFSET == 0x90);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET == 0x90);
 
     assert!(VIRTQ_BUFFER_GVA_START < VIRTQ_BUFFER_GVA_END);
     assert!((VIRTQ_BUFFER_GVA_START as usize).is_multiple_of(crate::vmem::PAGE_SIZE));

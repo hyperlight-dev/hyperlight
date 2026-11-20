@@ -333,7 +333,7 @@ impl Sandbox {
 
         // For NextAction::Call, initialise is a no-op. Runtime overrides are
         // delivered through the scratch-memory request below.
-        vm.initialise(seed, &mut hshm, &host_funcs, max_guest_log_level)
+        vm.initialise(seed, &mut hshm, &host_funcs, &config)
             .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
         if matches!(
             snapshot.next_action(),

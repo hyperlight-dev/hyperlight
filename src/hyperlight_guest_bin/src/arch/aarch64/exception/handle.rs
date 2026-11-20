@@ -106,9 +106,7 @@ fn handle_internal_fault(exn: Exception, far: u64, orig_mapping: Option<Mapping>
                 unsafe { handle_stack_or_heap_fault(far, false) };
                 true
             } else if (HEAP_GVA_START..HEAP_GVA_END).contains(&far) {
-                // SAFETY: the host writes the scratch-top metadata before entry.
-                let executable =
-                    unsafe { hyperlight_guest::layout::heap_executable_gva().read_volatile() } != 0;
+                let executable = crate::HEAP_EXECUTABLE.load(Ordering::Relaxed);
                 // SAFETY: a translation fault in the heap region means
                 // the page is unmapped, and exception handling is the
                 // only page table writer.

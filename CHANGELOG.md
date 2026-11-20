@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add `SandboxConfiguration::set_executable_heap` and `SandboxBuilder::executable_heap` to choose heap execution per sandbox. The `executable_heap` Cargo feature sets the default.
 * Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
@@ -17,13 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `Snapshot::save` no longer synchronously flushes files to stable storage.
   Callers requiring power-loss durability must sync the snapshot files and
   directory hierarchy themselves after saving.
-* **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
-  and existing snapshots regenerated. Guest entry takes the random seed, host
-  page size, and log level.
+* **Breaking:** Snapshots use ABI 12 and config schema v6. Rebuild guests and
+  regenerate snapshots. Pass a pointer to `StartupArgs` at guest entry.
 * **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
 * Stop resetting guest FPU state between guest calls to improve performance.
 
 ### Fixed
+* Fix snapshot restores overriding the heap execution setting for newly faulted pages.
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 * HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
