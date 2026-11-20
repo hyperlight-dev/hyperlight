@@ -22,9 +22,6 @@ pub(super) fn replace_file_atomic(target: &Path, bytes: &[u8]) -> crate::Result<
     tmp.write_all(bytes).map_err(|e| {
         crate::new_error!("atomic write: failed to write tmp {:?}: {}", tmp.path(), e)
     })?;
-    tmp.as_file_mut().sync_all().map_err(|e| {
-        crate::new_error!("atomic write: failed to sync tmp {:?}: {}", tmp.path(), e)
-    })?;
     tmp.persist(target).map_err(|e| {
         crate::new_error!("atomic write: failed to persist tmp to {:?}: {}", target, e)
     })?;

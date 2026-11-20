@@ -153,9 +153,14 @@ to `tag` is replaced.
 
 `index.json` is rewritten via a tmp file plus `rename`, the commit
 point for the whole operation. Concurrent readers observe either the
-prior layout or the new one, never a partial write. Power-loss
-durability is the caller's responsibility: add `fsync` on the file
-and parent directory if a crash must not lose a committed tag.
+prior layout or the new one, never a partial write. Saving does not
+call `fsync` on files or directories. Power-loss durability is the
+caller's responsibility: sync all referenced blob files and layout
+metadata, then sync the directory hierarchy bottom-up: `blobs/sha256`,
+`blobs`, the layout root, and the layout's existing parent directory.
+This also persists the directory entries that make a newly created layout
+reachable. If the caller created additional ancestor directories, continue
+upward through their first previously durable ancestor.
 
 Replaced tags leave orphan blobs behind. To compact, remove the
 directory and re-save. Concurrent writers to the same `path` are

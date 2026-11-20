@@ -351,6 +351,15 @@ impl Snapshot {
     /// or [`Snapshot::checked_load`] to verify persisted contents explicitly.
     /// Metadata and transport blobs follow the normal write path.
     ///
+    /// # Durability
+    ///
+    /// Files are atomically replaced, but are not synced to stable storage.
+    /// A successful save does not guarantee persistence across power loss.
+    /// Callers requiring crash durability must sync the snapshot files, then
+    /// sync directories bottom-up through the layout's existing parent after
+    /// saving. If the caller also created ancestor directories, sync those
+    /// through the first previously durable ancestor.
+    ///
     /// # Portability
     ///
     /// Snapshot images are bound to the specific CPU architecture,
@@ -395,7 +404,8 @@ impl Snapshot {
     /// Unlike [`Self::save`], this method bypasses the memory-layer digest
     /// cache and hashes existing memory blob files. Blobs with mismatched
     /// contents are atomically replaced with the snapshot's memory contents.
-    /// It uses the same layout, tag semantics and return value as [`Self::save`].
+    /// It uses the same layout, tag semantics, durability guarantees and return
+    /// value as [`Self::save`]; it does not sync files or directories.
     ///
     /// This does not protect against concurrent modification of the snapshot's
     /// backing files. Loaded memory blobs must still remain immutable for the
