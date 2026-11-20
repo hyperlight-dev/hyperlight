@@ -19,7 +19,7 @@ use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{CommonRegisters, CommonSpecialRegisters};
 #[cfg(hvf)]
 use crate::hypervisor::virtual_machine::hvf::HvfVm;
 #[cfg(kvm)]
@@ -163,9 +163,6 @@ impl HyperlightVm {
         }
         self.vm
             .set_regs(&regs)
-            .map_err(DispatchGuestCallError::SetupRegs)?;
-        self.vm
-            .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
         let result = self
             .run(mem_mgr, host_funcs)

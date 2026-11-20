@@ -23,7 +23,7 @@ use crate::hypervisor::gdb::{
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebugMemoryAccessError};
 use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, MsrEntry, MsrResetState,
+    CommonDebugRegs, CommonRegisters, CommonSpecialRegisters, MsrEntry, MsrResetState,
 };
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
@@ -278,11 +278,6 @@ impl HyperlightVm {
         };
         self.vm
             .set_regs(&regs)
-            .map_err(DispatchGuestCallError::SetupRegs)?;
-
-        // reset fpu
-        self.vm
-            .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
 
         let result = self
@@ -856,7 +851,9 @@ mod tests {
     use super::*;
     #[cfg(kvm)]
     use crate::hypervisor::regs::FP_CONTROL_WORD_DEFAULT;
-    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT};
+    use crate::hypervisor::regs::{
+        CommonFpu, CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT,
+    };
     use crate::hypervisor::virtual_machine::VirtualMachine;
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::MemoryRegionFlags;
