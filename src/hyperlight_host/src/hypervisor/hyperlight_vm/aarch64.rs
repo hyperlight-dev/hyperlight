@@ -131,8 +131,23 @@ impl HyperlightVm {
         };
         self.vm.set_regs(&regs)?;
 
-        self.run(mem_mgr, host_funcs)
-            .map_err(InitializeError::Run)?;
+        // The initialise function is allowed to make (sync) host
+        // calls and so on before it returns the final dispatch
+        // function address. We do the dispatch here, rather than in
+        // the caller (like dispatch_call_from_host does below)
+        // because the only way to know that initialize has finished
+        // is to be aware of whether or not any host work was
+        // requested on the queue.
+        loop {
+            self.run(mem_mgr, host_funcs)
+                .map_err(InitializeError::Run)?;
+            let (did_work, _) = crate::sandbox::virtq::dispatch_guest_requests(
+                mem_mgr,
+                host_funcs,
+                None,
+            )?;
+            if !did_work { break; }
+        }
 
         let regs = self.vm.regs()?;
         if !regs.sp.is_multiple_of(16) {

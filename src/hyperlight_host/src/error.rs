@@ -22,6 +22,7 @@ use crate::hypervisor::hyperlight_vm::HyperlightVmError;
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::ptr::RawPtr;
+use crate::sandbox::virtq::GuestRequestError;
 
 /// The error type for Hyperlight operations
 #[derive(Error, Debug)]
@@ -84,9 +85,18 @@ pub enum HyperlightError {
     #[error("Guest call is already in progress")]
     GuestFunctionCallAlreadyInProgress(),
 
+    /// The guest failed to make progress, but has not responded to
+    /// all outstanding requests
+    #[error("Guest execution stalled")]
+    GuestExecutionStalled(),
+
     /// The given type is not supported by the guest interface.
     #[error("Unsupported type: {0}")]
     GuestInterfaceUnsupportedType(String),
+
+    /// Responding to a request from the G2H queue
+    #[error("Responding to a request from G2H queue: {0}")]
+    GuestRequestError(#[from] GuestRequestError),
 
     /// The guest binary was built with a different hyperlight-guest-bin version than the host expects.
     /// Hyperlight currently provides no backwards compatibility guarantees for guest binaries,
@@ -312,7 +322,8 @@ impl HyperlightError {
             | HyperlightError::TransportError(_)
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
             // as poisoning here too for defense in depth.
-            | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_))
+            | HyperlightError::GuestRequestError(_)=> true,
 
             // These errors poison the sandbox because they can leave
             // it in an inconsistent state due to snapshot restore
@@ -334,6 +345,7 @@ impl HyperlightError {
             | HyperlightError::GuestBinVersionMismatch { .. }
             | HyperlightError::GuestError(_, _)
             | HyperlightError::GuestExecutionHungOnHostFunctionCall()
+            | HyperlightError::GuestExecutionStalled()
             | HyperlightError::GuestFunctionCallAlreadyInProgress()
             | HyperlightError::GuestInterfaceUnsupportedType(_)
             | HyperlightError::HostFunctionNotFound(_)

@@ -28,6 +28,7 @@ use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
 use crate::sandbox::snapshot::SnapshotMemoryBacking;
+use crate::sandbox::virtq::GuestRequestError;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// The lifecycle state of a [`Sandbox`].
@@ -593,7 +594,6 @@ impl Sandbox {
         self.with_guest_execution(|sbox| {
             sbox.mem_mgr.begin_snapshot_checkpoint()?;
             sbox.dispatch_guest_call_restricted()?;
-
             sbox.mem_mgr.finish_snapshot_checkpoint()?;
 
             sbox.transport_dirty = false;
@@ -1151,11 +1151,20 @@ impl Sandbox {
             );
 
             let cid = sbox.mem_mgr.write_guest_function_call(&fc)?;
-            sbox.dispatch_guest_call()?;
+            let guest_result = loop {
+                sbox.dispatch_guest_call()?;
+                match super::virtq::dispatch_guest_requests(
+                    &mut sbox.mem_mgr,
+                    &sbox.host_funcs,
+                    Some(cid),
+                )? {
+                    (_, Some(fcr)) => break fcr,
+                    (true, _) => continue,
+                    (false, _) => return Err(HyperlightError::GuestExecutionStalled()),
+                }
+            };
 
-            let guest_result = sbox.mem_mgr.read_h2g_result_from_g2h(cid)?.into_inner();
-
-            match guest_result {
+            match guest_result.into_inner() {
                 Ok(val) => Ok(val),
                 Err(guest_error) => {
                     metrics::counter!(
@@ -1202,8 +1211,34 @@ impl Sandbox {
 
     /// Dispatch in restricted mode, then restore the previous mode.
     fn dispatch_guest_call_restricted(&mut self) -> Result<()> {
+        // Handle anything that the guest still wants
+        let _ = super::virtq::dispatch_guest_requests(
+            &mut self.mem_mgr,
+            &self.host_funcs,
+            None,
+        )
+            .inspect_err(|_| self.poison())?;
+
         let mode = std::mem::replace(&mut self.mem_mgr.execution_mode, ExecutionMode::Restricted);
-        let res = self.dispatch_guest_call();
+        let res = (|| {
+            self.dispatch_guest_call()?;
+
+            // Check that the guest has not asked for anything from us
+            // during a snapshot
+            let (did_work, _) = super::virtq::dispatch_guest_requests(
+                &mut self.mem_mgr,
+                &self.host_funcs,
+                None,
+            )
+                .inspect_err(|_| self.poison())?;
+            if did_work {
+                self.poison();
+                return Err(HyperlightError::GuestRequestError(GuestRequestError::HostCallDuringCheckpoint));
+            }
+
+            Ok(())
+        })();
+
         self.mem_mgr.execution_mode = mode;
 
         res

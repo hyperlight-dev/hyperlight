@@ -79,7 +79,6 @@ impl TryFrom<u8> for Exception {
 /// - TraceBatch: reports a batch of spans and events from the guest
 /// - TraceMemoryAlloc: records memory allocation events
 /// - TraceMemoryFree: records memory deallocation events
-/// - VirtqNotify: reports newly available virtqueue work
 pub enum OutBAction {
     Abort = 102,
     DebugPrint = 103,
@@ -89,7 +88,6 @@ pub enum OutBAction {
     TraceMemoryAlloc = 105,
     #[cfg(feature = "mem_profile")]
     TraceMemoryFree = 106,
-    VirtqNotify = 109,
 }
 
 /// IO-port actions intercepted at the hypervisor level (in `run_vcpu`)
@@ -120,7 +118,6 @@ impl TryFrom<u16> for OutBAction {
             105 => Ok(OutBAction::TraceMemoryAlloc),
             #[cfg(feature = "mem_profile")]
             106 => Ok(OutBAction::TraceMemoryFree),
-            109 => Ok(OutBAction::VirtqNotify),
             _ => Err(anyhow::anyhow!("Invalid OutBAction value: {}", val)),
         }
     }

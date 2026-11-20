@@ -72,7 +72,6 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
     let initialise_guest = matches!(vm.get_next_action(), NextAction::Initialise(_));
     vm.initialise(seed, &mut hshm, &u_sbox.host_funcs, max_guest_log_level)
         .map_err(HyperlightVmError::Initialize)?;
-
     if initialise_guest {
         hshm.finish_snapshot_checkpoint()?;
     }

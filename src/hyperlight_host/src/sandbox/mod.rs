@@ -19,7 +19,10 @@ pub mod initialized_multi_use {
     pub use super::initialized::MultiUseSandbox;
     pub use super::initialized::{PtRootFinder, Sandbox, SandboxStatus};
 }
+/// Handlers for messages send via outb
 pub(crate) mod outb;
+/// Handlers for virtqueue messages
+pub(crate) mod virtq;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
 pub mod uninitialized;

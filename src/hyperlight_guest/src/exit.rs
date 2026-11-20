@@ -10,6 +10,16 @@ use hyperlight_common::outb::OutBAction;
 mod arch;
 pub(crate) use arch::out32;
 
+/// Trigger a VM exit because there is no work for us to do in the VM
+///
+/// # Safety
+/// The guest should be sure when using this function that the host
+/// will not wish to restart the dispatch loop from the top-level
+/// during this call.  If it does, it will essentially longjmp to the
+/// top of the stack, which is not sound since destructors will not be
+/// run.
+pub(crate) use arch::wait_for_host;
+
 /// Exits the VM with an Abort OUT action and code 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn abort() -> ! {

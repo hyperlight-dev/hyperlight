@@ -15,7 +15,7 @@
 //! configured-size slot aligned relative to the H2G pool start.
 
 mod codec;
-mod mem;
+pub(crate) mod mem;
 #[cfg(test)]
 pub(crate) mod tests;
 

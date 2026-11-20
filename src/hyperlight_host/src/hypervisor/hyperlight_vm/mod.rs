@@ -44,6 +44,7 @@ use crate::sandbox::outb::{HandleOutbError, handle_outb};
 use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
+use crate::sandbox::virtq::GuestRequestError;
 
 /// Get the logging level filter to pass to the guest entrypoint
 ///
@@ -166,6 +167,8 @@ pub enum InitializeError {
     ConvertPointer(String),
     #[error("Failed to run vm: {0}")]
     Run(#[from] RunVmError),
+    #[error("Failed to process guest request: {0}")]
+    GuestRequestError(#[from] GuestRequestError),
     #[error("Failed to setup registers: {0}")]
     SetupRegs(#[from] RegisterError),
     #[error("Guest initialised stack pointer to architecturally invalid value: {0}")]

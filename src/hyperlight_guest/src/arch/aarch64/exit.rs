@@ -16,3 +16,19 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
             .write_volatile(val as u64);
     }
 }
+
+const HLT_ADDR: u64 = IO_PAGE_GVA
+    + (core::mem::size_of::<u64>() as u64 * hyperlight_common::outb::VmAction::Halt as u64);
+
+// See doc comment in arch-independent reexport
+pub(crate) unsafe fn wait_for_host() {
+    unsafe {
+        core::arch::asm!("
+            ldr {temp}, ={hlt_addr}\n
+            str xzr, [{temp}]\n
+        ",
+            temp = out(reg) _,
+            hlt_addr = const HLT_ADDR,
+        );
+    }
+}

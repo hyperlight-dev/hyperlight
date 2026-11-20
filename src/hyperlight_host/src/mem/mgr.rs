@@ -873,7 +873,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
                             ))
                         })?;
 
-                    crate::sandbox::outb::emit_guest_log(&log);
+                    crate::sandbox::virtq::emit_guest_log(&log);
                 }
                 MsgKind::Response => {
                     if message.cid() != cid {

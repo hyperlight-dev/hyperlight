@@ -16,8 +16,7 @@ use hyperlight_common::transport::{
     EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind,
 };
 use hyperlight_common::virtq::{
-    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, SendChain,
-    SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, ReplyChain, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
 };
 use hyperlight_common::vmem::PAGE_SIZE;
 
@@ -32,9 +31,9 @@ pub struct OutbNotifier;
 
 impl Notifier for OutbNotifier {
     fn notify(&self, _stats: QueueStats) {
-        unsafe {
-            out32(OutBAction::VirtqNotify as u16, 0);
-        }
+        // Does not do anything right now, since we do not support
+        // concurrent host/guest
+        unsafe {}
     }
 }
 
@@ -215,17 +214,7 @@ impl GuestContext {
 
         // Poll completions, skipping earlier one-way acknowledgements until
         // the request reply is available.
-        let reply = loop {
-            let Some(reply) = self.g2h_producer.poll()? else {
-                bail!("G2H: no reply received");
-            };
-            if reply.token() == token {
-                break reply;
-            }
-            if matches!(&reply, UsedChain::Data(..)) {
-                bail!("G2H: unexpected reply token {:?}", reply.token());
-            }
-        };
+        let reply = self.recv_g2h_response_sync(token)?;
 
         let segments = match reply {
             UsedChain::Data(_, segments) => segments,
@@ -236,6 +225,34 @@ impl GuestContext {
         // segments.
         let fcr = codec::decode_response(segments, cid)?;
         Ok(fcr.into_inner()?)
+    }
+
+
+    /// Receive and process guest-to-host response until a reply for a
+    /// matching token is found
+    fn recv_g2h_response_sync(&mut self, token: Token) -> Result<UsedChain> {
+        loop {
+            let Some(reply) = self.g2h_producer.poll()? else {
+                unsafe {
+                    // Safety: the host only restarts the dispatch
+                    // loop during a snapshot. A snapshot cannot be
+                    // taken when any calls are live.
+                    crate::exit::wait_for_host();
+                }
+                continue;
+            };
+            if reply.token() == token {
+                return Ok(reply);
+            }
+            match reply {
+                UsedChain::Ack(_) => (),
+                UsedChain::Data(_, _) => {
+                    // In the future, this case will register the
+                    // response for an async host call
+                    bail!("G2H: while waiting for sync call, received wrong call response");
+                }
+            }
+        }
     }
 
     /// Receive one host-to-guest dispatch action.
