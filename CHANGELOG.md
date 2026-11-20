@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and existing snapshots regenerated. Guest entry takes the random seed, host
   page size, and log level.
 * **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
+* Stop resetting guest FPU state between guest calls to improve performance.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.
