@@ -55,6 +55,13 @@ For full details on available picolibc build options, see the
 
 The file list of picolibc sources to compile is maintained in `build_files.rs`.
 
+## Pinned Snapshot
+
+Hyperlight uses the BSD-filtered snapshot of upstream
+[`ff59ec82f`](https://github.com/picolibc/picolibc/commit/ff59ec82f), based on Picolibc
+1.8.12. This snapshot includes the buffered `fwrite` fixes and follow-up fixes for
+error reporting on `fclose` and buffered stream positioning.
+
 ## Updating Picolibc
 
 To update picolibc to a new version:

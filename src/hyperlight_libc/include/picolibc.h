@@ -9,10 +9,10 @@
 #define __NEWLIB__ 4
 #define __NEWLIB_MINOR__ 3
 #define __NEWLIB_PATCHLEVEL__ 0
-#define __PICOLIBC_VERSION__ "1.8.11"
+#define __PICOLIBC_VERSION__ "1.8.12"
 #define __PICOLIBC__ 1
 #define __PICOLIBC_MINOR__ 8
-#define __PICOLIBC_PATCHLEVEL__ 11
+#define __PICOLIBC_PATCHLEVEL__ 12
 
 // static configuration - enabled features
 #define __ASSERT_VERBOSE

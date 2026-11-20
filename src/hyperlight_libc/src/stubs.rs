@@ -18,7 +18,8 @@ extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
 
     unsafe {
         (*tv).tv_sec = ts.tv_sec;
-        (*tv).tv_usec = ts.tv_nsec / 1000;
+        // A normalized timespec converts to at most 999_999 microseconds.
+        (*tv).tv_usec = (ts.tv_nsec / 1000) as _;
     }
 
     0
