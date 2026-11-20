@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   page size, and log level.
 * **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
 * Stop resetting guest FPU state between guest calls to improve performance.
+* **Breaking:** Expose one processor feature set to MSHV and WHP guests. Leave out speculation control, TSX, CET, AMX, and other stateful features Hyperlight guests do not use. Snapshots use ABI 12, so existing snapshots must be regenerated.
+* Run WHP guests in their own speculation domain.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.
