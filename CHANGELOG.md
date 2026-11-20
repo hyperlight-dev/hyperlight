@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
 ### Changed
+* **Breaking:** In the guest libc bindings, `timeval.tv_usec` is now
+  `suseconds_t` (`i32`) instead of `c_long`. Use `suseconds_t` for values assigned
+  to the field, or convert existing `c_long` values with
+  `suseconds_t::try_from(value)`.
 * **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
   and existing snapshots regenerated. Guest entry takes the random seed, host
   page size, and log level.

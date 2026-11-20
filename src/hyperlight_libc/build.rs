@@ -12,6 +12,7 @@ use bindgen::Formatter::Prettyplease;
 use bindgen::RustEdition::Edition2021;
 use build_files::{
     LIBC_FILES, LIBC_FILES_AARCH64, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_AARCH64, LIBM_FILES_X86,
+    LIBOS_FALLBACK_FILES,
 };
 
 fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
@@ -158,6 +159,10 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: Target) -> Resul
     for file in files {
         let source_path = picolibc_dir.join("libc").join(file);
         build.file(&source_path);
+    }
+    let fallback_dir = picolibc_dir.join("libos/fallback");
+    for file in LIBOS_FALLBACK_FILES {
+        build.file(fallback_dir.join(file));
     }
 
     Ok(())
