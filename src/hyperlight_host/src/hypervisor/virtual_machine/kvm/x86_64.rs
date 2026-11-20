@@ -710,7 +710,11 @@ impl VirtualMachine for KvmVm {
 
 #[cfg(gdb)]
 impl DebuggableVm for KvmVm {
-    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
+    fn translate_gva(
+        &self,
+        gva: u64,
+        _memory: &crate::hypervisor::gdb::DebugMemoryView<'_>,
+    ) -> std::result::Result<u64, DebugError> {
         let gpa = self
             .vcpu_fd
             .translate_gva(gva)
