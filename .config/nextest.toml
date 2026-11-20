@@ -1,0 +1,7 @@
+[profile.arm64-mshv]
+test-threads = 4
+
+# Internally parallel tests run alone. VM replacement can double their partition count.
+[[profile.arm64-mshv.overrides]]
+filter = 'test(/thread|parallel|::create_[0-9]+_/) | (binary(integration_test) & test(/^interrupt_/))'
+threads-required = "num-test-threads"

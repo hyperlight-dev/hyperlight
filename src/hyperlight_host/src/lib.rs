@@ -96,6 +96,20 @@ pub use sandbox::uninitialized::GuestBinary;
 /// change or disappear without notice. Do not depend on it.
 #[doc(hidden)]
 pub mod __private {
+    /// Whether sandbox creation selects MSHV on this host.
+    pub fn is_mshv() -> bool {
+        #[cfg(mshv3)]
+        {
+            use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+            matches!(get_available_hypervisor(), Some(HypervisorType::Mshv))
+        }
+        #[cfg(not(mshv3))]
+        {
+            false
+        }
+    }
+
     /// Short golden-tag token for the host CPU vendor, or `None` if the
     /// goldens do not cover it. See the snapshot golden tests.
     pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {

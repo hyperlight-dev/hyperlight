@@ -33,11 +33,8 @@ on:
         default: ""
       full_aarch64:
         description: >-
-          When "true", also run the single-driver tests on aarch64. PRs leave
-          this "false" so the aarch64 runner builds and runs the default Rust
-          tests; the daily schedule (DailyArm64.yml) sets it "true". This
-          input only affects aarch64: it does not change X64, where those tests
-          already run on Linux and are skipped on Windows regardless.
+          When "true", also run the single-driver tests on Linux aarch64.
+          ARM64 MSHV always runs its single-driver suite once.
         required: false
         type: string
         default: "false"
@@ -62,7 +59,7 @@ defaults:
 jobs:
   build-and-test:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: ${{ fromJSON(vars.BUILD_TEST_JOB_TIMEOUT || '45') }}
+    timeout-minutes: ${{ fromJSON(vars.BUILD_TEST_JOB_TIMEOUT || (inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3' && '90' || '45')) }}
     runs-on: ${{ fromJson(inputs.arch == 'X64'
         && format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=build-and-test-{3}-{4}-{5}-{6}"]',
             inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux',
@@ -74,6 +71,12 @@ jobs:
             github.run_attempt)
         || inputs.hypervisor == 'hyperv-ws2025'
         && format('["self-hosted", "Windows", "ARM64", "1ES.Pool=hl-windows-arm", "JobId=build-and-test-{0}-{1}-{2}-{3}"]',
+            inputs.config,
+            github.run_id,
+            github.run_number,
+            github.run_attempt)
+        || inputs.hypervisor == 'mshv3'
+        && format('["self-hosted", "Linux", "ARM64", "1ES.Pool=hld-azlinux3-mshv-arm", "JobId=build-and-test-{0}-{1}-{2}-{3}"]',
             inputs.config,
             github.run_id,
             github.run_number,
@@ -158,16 +161,25 @@ jobs:
       - name: Build
         run: just build ${{ inputs.config }}
 
-      - name: Run Rust tests
+      - name: Limit ARM64 MSHV test concurrency
+        if: inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3'
         run: |
-          # with default features
-          just test ${{ inputs.config }}
+          echo "RUST_TEST_THREADS=1" >> "$GITHUB_ENV"
+          echo "NEXTEST_PROFILE=arm64-mshv" >> "$GITHUB_ENV"
+
+      - name: Install ARM64 MSHV test runner
+        if: inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3'
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941  # v2.89.1
+        with:
+          tool: cargo-nextest@0.9.151
+
+      - name: Run Rust tests
+        # ARM64 MSHV selects its driver here to avoid a duplicate full run.
+        run: just test ${{ inputs.config }} ${{ inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3' && 'mshv3 "nextest run"' || '' }}
 
       - name: Run Rust tests with single driver
-        # Linux-only. Skipped on aarch64 PRs to conserve the limited runners;
-        # the daily schedule (full_aarch64 == 'true') restores it. On X64 Linux
-        # it always runs.
-        if: runner.os == 'Linux' && (inputs.arch == 'X64' || inputs.full_aarch64 == 'true')
+        # ARM64 MSHV runs this suite in the preceding step.
+        if: runner.os == 'Linux' && (inputs.arch == 'X64' || (inputs.full_aarch64 == 'true' && inputs.hypervisor != 'mshv3'))
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
@@ -217,6 +229,16 @@ jobs:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
 
+      - name: Run ARM64 MSHV Gdb tests
+        if: inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3' && inputs.config == 'debug'
+        env:
+          RUST_LOG: debug
+        run: |
+          if ! command -v gdb > /dev/null 2>&1; then
+            sudo tdnf install -y gdb
+          fi
+          just test-rust-gdb-debugging debug mshv3
+
       - name: Run Rust Crashdump tests
         if: inputs.arch == 'X64'
         env:
@@ -234,14 +256,15 @@ jobs:
         if: inputs.arch == 'X64'
         run: just test-csharp-bindings ${{ inputs.config }}
 
+      # Snapshot goldens are not published for ARM64 WHP or MSHV.
       - name: Install oras
-        if: runner.os != 'Windows' || inputs.arch != 'arm64'
+        if: inputs.arch != 'arm64' || (runner.os != 'Windows' && inputs.hypervisor != 'mshv3')
         uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63  # v2.0.3
         with:
           version: 1.3.1
 
       - name: Log in to GHCR
-        if: runner.os != 'Windows' || inputs.arch != 'arm64'
+        if: inputs.arch != 'arm64' || (runner.os != 'Windows' && inputs.hypervisor != 'mshv3')
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -250,13 +273,13 @@ jobs:
           echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GHCR_USER}" --password-stdin
 
       - name: Snapshot goldens (pull and verify)
-        if: ${{ inputs.should_regen_goldens != 'true' && (runner.os != 'Windows' || inputs.arch != 'arm64') }}
+        if: ${{ inputs.should_regen_goldens != 'true' && (inputs.arch != 'arm64' || (runner.os != 'Windows' && inputs.hypervisor != 'mshv3')) }}
         run: |
           just snapshot-goldens-pull ${{ inputs.config }}
           just snapshot-goldens-verify ${{ inputs.config }}
 
       - name: Snapshot goldens (regenerate and verify)
-        if: ${{ inputs.should_regen_goldens == 'true' && (runner.os != 'Windows' || inputs.arch != 'arm64') }}
+        if: ${{ inputs.should_regen_goldens == 'true' && (inputs.arch != 'arm64' || (runner.os != 'Windows' && inputs.hypervisor != 'mshv3')) }}
         run: |
           # regenerate goldens from current branch
           just snapshot-goldens-regenerate ${{ inputs.config }}
