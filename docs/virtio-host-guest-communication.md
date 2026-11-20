@@ -185,8 +185,8 @@ Every logical message has this byte layout:
 
 ```text
  +----------------+-----------------------------+---------------------+
- | MsgHeader      | size-prefixed FlatBuffer    | external byte data  |
- | 12 bytes       | control data                | zero or more values |
+ | MsgHeader      | postcard control data       | external byte data  |
+ | 16 bytes       | control_len bytes           | zero or more values |
  +----------------+-----------------------------+---------------------+
 ```
 
@@ -196,8 +196,12 @@ Every logical message has this byte layout:
 * three reserved zero bytes
 * `cid: u32`
 * `payload_len: u32`
+* `control_len: u32`
 
-`payload_len` covers the control data and all external bytes. RPC correlation
+`payload_len` covers the control data and all external bytes. `control_len`
+covers the control data and never exceeds `payload_len`. The host reads it
+first so it can copy exactly the control data out of guest memory in one read
+before parsing. RPC correlation
 IDs are nonzero. Responses echo the request ID. Logs and snapshot checkpoints
 use ID zero.
 
@@ -208,8 +212,10 @@ The active message kinds are:
 * `Log`
 * `SnapshotCheckpoint`
 
-The FlatBuffer holds the typed function call or result and the lengths of
-external byte values. External bytes follow it in the same logical message.
+The control data holds the typed function call or result and the lengths of
+external byte values. It is one [postcard](https://docs.rs/postcard) value.
+Decoding rejects trailing bytes. External bytes follow it in the same logical
+message.
 A logical message may span several descriptors or several H2G receive buffers.
 
 The guest reads control data directly when it occupies one segment. It copies
@@ -218,22 +224,20 @@ control data out of guest writable scratch.
 
 ### Choosing a value type
 
-* `String`: UTF-8 text, encoded inside the FlatBuffer.
+* `String`: UTF-8 text, encoded inside the control data.
 * `VecBytes`: small binary values, or a receiver that needs a contiguous `Vec<u8>`.
 * `ByteChunks`: large binary data or data already held in chunks.
 
 For small `String` or `VecBytes` values, aim to fit the complete guest-sent G2H
-message in 256 bytes. The payload budget is `256 - 12 - envelope_overhead`.
-The 12-byte header is fixed. FlatBuffer overhead includes its size prefix
-and metadata, and varies with the call. This is a sizing guideline, not a
+message in 256 bytes. The payload budget is `256 - 16 - envelope_overhead`.
+The 16-byte header is fixed. Control data overhead varies with the call. This is a sizing guideline, not a
 limit on the value types.
 
 ### External byte values
 
-`VecBytes` and `ByteChunks` payloads stay outside the FlatBuffer. It contains the
-total logical value length and whether the value is chunked. The encoder can
-then reference the caller's byte slices directly without first copying them into
-one contiguous FlatBuffer.
+`VecBytes` and `ByteChunks` payloads stay outside the control data. It contains
+the total logical value length and whether the value is chunked. The encoder
+references the caller's byte slices directly.
 
 `ExternalValueSource` is implemented by `RecvChain` for host decoding and by
 `Segments` for guest decoding.
@@ -262,8 +266,8 @@ records one total length, not each source chunk length. The receiver sees the
 logical byte sequence split where it intersects transport buffers.
 
 Each payload letter represents 1 KiB. Metadata size varies with the call.
-It combines the fixed 12-byte message header and the size-prefixed
-FlatBuffer. This example uses 1 KiB of metadata.
+It combines the fixed 16-byte message header and the control data. This
+example uses 1 KiB of metadata.
 
 ```text
 Sender chunks:      [AB] [CDEFG] [HIJ]    2 + 5 + 3 KiB
@@ -274,8 +278,8 @@ Guest ByteChunks:                     [ABC] [DEFG] [HIJ]    3 + 4 + 3 KiB
 Guest chunks exclude the metadata and unused space.
 
 H2G chunking follows the preposted H2G slot size. G2H responses returned to
-the guest follow the G2H writable slot size. The message header and FlatBuffer
-can consume part of the first slot. The final slot can also be partial.
+the guest follow the G2H writable slot size. The message header and control
+data can consume part of the first slot. The final slot can also be partial.
 
 #### Example: keeping a payload in one chunk
 
@@ -409,7 +413,7 @@ freed virtual ranges bounds page-table growth by the alias high-water mark.
 
 ### Trust boundary
 
-The host treats guest rings, descriptors, headers, FlatBuffers, and payload
+The host treats guest rings, descriptors, headers, control data, and payload
 lengths as untrusted.
 
 * Rings and payloads use checked copies and atomics within mapped scratch.

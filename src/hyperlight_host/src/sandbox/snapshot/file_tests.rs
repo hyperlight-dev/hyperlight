@@ -336,7 +336,7 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
         manifest["artifactType"],
         "application/vnd.hyperlight.snapshot.config.v6+json"
     );
-    assert_eq!(config["abi_version"], 10);
+    assert_eq!(config["abi_version"], 11);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {
@@ -472,11 +472,8 @@ fn layered_snapshot_recapture_round_trip() {
     );
 }
 
-/// A pre-existing snapshot blob with the right length but wrong
-/// bytes (corruption, partial copy, foreign tool) must be detected
-/// and replaced by `save`, not silently trusted.
 #[test]
-fn save_self_heals_same_length_wrong_content_snapshot_blob() {
+fn save_trusts_existing_blob_name_without_verifying_contents() {
     let snapshot = create_snapshot();
 
     let dir = tempfile::tempdir().unwrap();
@@ -491,19 +488,98 @@ fn save_self_heals_same_length_wrong_content_snapshot_blob() {
     let len = std::fs::metadata(&snap_path).unwrap().len() as usize;
     std::fs::write(&snap_path, vec![0xAAu8; len]).unwrap();
 
-    // Re-save. `put_blob_if_absent` must notice the digest mismatch
-    // and rewrite the blob.
+    let before = super::file::test_hashed_bytes();
     snapshot
         .save(&oci, &OciTag::new("latest").unwrap())
         .unwrap();
+    assert!(super::file::test_hashed_bytes() - before < len);
+    assert_eq!(std::fs::read(&snap_path).unwrap(), vec![0xAAu8; len]);
+    let error = unwrap_err_snapshot(Snapshot::checked_load(&oci, OciTag::new("latest").unwrap()));
+    assert!(error.to_string().contains("digest mismatch"));
+}
 
-    // A checked load succeeds: the rewritten blob matches the
-    // descriptor digest.
-    let loaded = Snapshot::checked_load(&oci, OciTag::new("latest").unwrap()).unwrap();
-    let mut sbox2 =
-        Sandbox::from_snapshot(Arc::new(loaded), HostFunctions::default(), None).unwrap();
-    let result: String = sbox2.call("Echo", "hello\n".to_string()).unwrap();
-    assert_eq!(result, "hello\n");
+#[test]
+fn checked_save_rehashes_memory_and_existing_blobs() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    let digest = snapshot.save(dir.path(), &tag).unwrap();
+    let memory_bytes: usize = snapshot
+        .state
+        .memory
+        .blobs()
+        .map(|blob| blob.memory().as_slice().len())
+        .sum();
+
+    for _ in 0..2 {
+        let before = super::file::test_hashed_bytes();
+        let checked_digest = snapshot.checked_save(dir.path(), &tag).unwrap();
+        assert!(super::file::test_hashed_bytes() - before >= 2 * memory_bytes);
+        assert_eq!(checked_digest, digest);
+    }
+    Snapshot::checked_load(dir.path(), tag).unwrap();
+}
+
+#[test]
+fn checked_save_repairs_same_length_wrong_content_snapshot_blob() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    let digest = snapshot.checked_save(dir.path(), &tag).unwrap();
+    let path = find_snapshot_blob(dir.path());
+    let len = std::fs::metadata(&path).unwrap().len() as usize;
+    std::fs::write(&path, vec![0xAAu8; len]).unwrap();
+
+    assert_eq!(snapshot.checked_save(dir.path(), &tag).unwrap(), digest);
+    let loaded = Arc::new(Snapshot::checked_load(dir.path(), tag).unwrap());
+    let mut sandbox = Sandbox::from_snapshot(loaded, HostFunctions::default(), None).unwrap();
+    assert_eq!(
+        sandbox.call::<String>("Echo", "hello".to_string()).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn save_reuses_hashes_across_saves_and_checked_loads() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    let blob_len = std::fs::metadata(find_snapshot_blob(dir.path()))
+        .unwrap()
+        .len() as usize;
+
+    let before = super::file::test_hashed_bytes();
+    snapshot.save(dir.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < blob_len);
+
+    let loaded = Snapshot::checked_load(dir.path(), tag.clone()).unwrap();
+    let before = super::file::test_hashed_bytes();
+    loaded.save(dir.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < blob_len);
+    let loaded = Arc::new(Snapshot::checked_load(dir.path(), tag).unwrap());
+    let mut sandbox = Sandbox::from_snapshot(loaded, HostFunctions::default(), None).unwrap();
+    assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+}
+
+#[test]
+fn save_trusts_replaced_files_and_writes_new_destinations() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    let blob = find_snapshot_blob(dir.path());
+    let replacement = dir.path().join("replacement");
+    std::fs::copy(&blob, &replacement).unwrap();
+    std::fs::rename(replacement, &blob).unwrap();
+    let blob_len = std::fs::metadata(&blob).unwrap().len() as usize;
+    let before = super::file::test_hashed_bytes();
+    snapshot.save(dir.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < blob_len);
+
+    let other = tempfile::tempdir().unwrap();
+    snapshot.save(other.path(), &tag).unwrap();
+    Snapshot::checked_load(other.path(), tag).unwrap();
 }
 
 #[test]
@@ -2444,7 +2520,7 @@ fn legacy_config_versions_rejected() {
             &path,
             OciTag::new("latest").unwrap(),
         ));
-        assert_err_contains(err, "incompatible with snapshot ABI 10");
+        assert_err_contains(err, "incompatible with snapshot ABI 11");
     }
 }
 

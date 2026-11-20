@@ -12,7 +12,7 @@ Hyperlight runs all guest code inside a Virtual Machine, Each VM only has access
 
 ### Host-Guest Communication (Serialization and Deserialization)
 
-All communication between the host and the guest is done through a shared memory buffer. Messages are serialized and deserialized using [FlatBuffers](https://flatbuffers.dev/). To minimize attack surface area, we rely on FlatBuffers to formally specify the data structures passed to/from the host and guest, and to generate serialization/deserialization code. Of course, a compromised guest can write arbitrary data to the shared memory buffer, but the host will not accept anything that does not match our strongly typed FlatBuffer [schemas](../src/schema).
+All communication between the host and the guest is done through a shared memory buffer. Messages are serialized with [serde](https://serde.rs) into the [postcard](https://docs.rs/postcard) format, using strongly typed Rust definitions in `hyperlight-common`. The host copies guest data out of shared memory before decoding it. Decoding rejects malformed input and trailing bytes. Every length is checked against the received message, so allocations stay proportional to its size. A compromised guest can write arbitrary data to the shared memory buffer, but the host accepts only messages that decode into these types.
 
 ### Accessing host functionality from the guest
 

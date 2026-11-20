@@ -235,10 +235,11 @@ like-ci config=default-target hypervisor="kvm":
     just fuzz-like-ci fuzz_host_print {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_call {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_host_call {{config}} {{hypervisor}}
-    just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_trace_decode {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_malformed {{config}} {{hypervisor}}
     just fuzz-like-ci fuzz_virtq_roundtrip {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_control_decode {{config}} {{hypervisor}}
 
     @# spelling
     typos
@@ -278,6 +279,7 @@ test-loom:
 
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="" :
+    {{ if os() == "windows" { 'just test-surrogate-directory ' + target + ' "' + features + '"' } else { "" } }}
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_emit_guest_log --exact --ignored
     {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::initialized::tests::from_snapshot::max_guest_log_level_is_honored_from_snapshot --exact --ignored
@@ -319,6 +321,17 @@ test-compilation-no-default-features target=default-target:
     @# Linux should succeed with a hypervisor driver but without default features
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}  {{ target-triple-flag }}
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
+
+[windows]
+test-surrogate-directory target=default-target features="":
+    $env:HYPERLIGHT_SURROGATE_EXTRACT_DIR='{{root}}/target/surrogate directory é'; $env:HYPERLIGHT_INITIAL_SURROGATES=1; $env:HYPERLIGHT_MAX_SURROGATES=1; \
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- hypervisor::surrogate_process_manager::tests::test_surrogate_directory_override --exact --ignored
+
+    $env:HYPERLIGHT_SURROGATE_EXTRACT_DIR='../../target/surrogate-directory-test'; $env:HYPERLIGHT_INITIAL_SURROGATES=0; $env:HYPERLIGHT_MAX_SURROGATES=1; \
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- hypervisor::surrogate_process_manager::tests::test_surrogate_directory_relative --exact --ignored
+
+    $env:HYPERLIGHT_SURROGATE_EXTRACT_DIR='{{root}}/target/surrogate-directory-test/missing'; \
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- hypervisor::surrogate_process_manager::tests::test_surrogate_directory_missing --exact --ignored
 
 # runs a subset of existing tests with HYPERLIGHT_MAX_SURROGATES=0 (Windows only).
 # Covers guest calls, host callbacks, virtqueue buffers and errors,
@@ -383,7 +396,6 @@ miri-tests: (ensure-cargo-nextest) (ensure-nightly-miri)
 check:
     {{ cargo-cmd }} check  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features crashdump  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
@@ -665,21 +677,6 @@ coverage-ci hypervisor="kvm": (coverage-run hypervisor)
     cargo +{{nightly-toolchain}} llvm-cov report --html --output-dir target/coverage/html
     cargo +{{nightly-toolchain}} llvm-cov report --lcov --output-path target/coverage/lcov.info
     cargo +{{nightly-toolchain}} llvm-cov report | tee target/coverage/summary.txt
-
-###################
-### FLATBUFFERS ###
-###################
-
-gen-all-fbs-rust-code:
-    flatc --rust --rust-module-root-file --gen-all -o ./src/hyperlight_common/src/flatbuffers/ ./src/schema/all.fbs
-    just fmt-apply
-
-install-vcpkg:
-    cd .. && git clone https://github.com/Microsoft/vcpkg.git || cd -
-    cd ../vcpkg && ./bootstrap-vcpkg{{ bin-suffix }} && ./vcpkg integrate install || cd -
-
-install-flatbuffers-with-vcpkg: install-vcpkg
-    cd ../vcpkg && ./vcpkg install flatbuffers || cd -
 
 ###################################
 ### SNAPSHOT GOLDEN HELPERS     ###

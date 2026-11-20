@@ -30,6 +30,8 @@ use windows::core::PCSTR;
 use super::memory_region::{
     HostGuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
 };
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
 use crate::log_then_return;
 
 type Result<T> = core::result::Result<T, SharedMemoryError>;
@@ -1202,12 +1204,12 @@ impl SharedMemory for GuestSharedMemory {
 /// racing loads in LLVM return `undef`, as discussed above, we would
 /// ideally `llvm.freeze` the result of any load out of the sandbox.
 ///
-/// It would furthermore be ideal if we could run the flatbuffers
-/// parsing code directly on the guest memory, in order to avoid
+/// It would furthermore be ideal if we could run the message
+/// decoder directly on the guest memory, in order to avoid
 /// unnecessary copies.  That is unfortunately probably not viable at
-/// the present time: because the generated flatbuffers parsing code
-/// doesn't use atomic or volatile accesses, it is likely to introduce
-/// double-read vulnerabilities.
+/// the present time: because the decoder doesn't use atomic or
+/// volatile accesses, it is likely to introduce double-read
+/// vulnerabilities.
 ///
 /// In short, none of the Rust-level operations available to us do the
 /// right thing, at the Rust spec level or the LLVM spec level. Our
@@ -1510,8 +1512,8 @@ impl HostSharedMemory {
     /// Reset this memory region to all-zeros, choosing the fastest
     /// strategy for the current platform and hypervisor configuration.
     ///
-    /// On Linux/KVM (without mshv3), uses `MADV_DONTNEED` for lazy
-    /// zeroing.  On Linux/mshv3, falls through to `fill(0)`.
+    /// When the running hypervisor is KVM, uses `MADV_DONTNEED` for
+    /// lazy zeroing. Otherwise, uses `fill(0)`.
     ///
     /// On Windows, zeroing via `fill(0)` is prohibitively expensive
     /// for large regions (e.g. 448 MiB scratch).  Instead, the
@@ -1534,24 +1536,24 @@ impl HostSharedMemory {
         #[cfg(not(target_os = "windows"))]
         {
             self.with_exclusivity(|e| {
-                #[allow(unused_mut)]
-                let mut do_copy = true;
                 // TODO: Find a similar lazy zeroing approach that works on MSHV.
                 //       (See Note [Keeping mappings in sync between userspace and the guest])
-                #[cfg(all(feature = "kvm", not(any(feature = "mshv3"))))]
-                unsafe {
-                    let ret = libc::madvise(
-                        e.region.ptr() as *mut libc::c_void,
-                        e.region.size(),
-                        libc::MADV_DONTNEED,
-                    );
+                #[cfg(kvm)]
+                if matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+                    // SAFETY: `with_exclusivity` holds the write lock on this private anonymous
+                    // mapping. KVM MMU notifiers make the guest also read zeros after discard.
+                    let ret = unsafe {
+                        libc::madvise(
+                            e.region.ptr() as *mut libc::c_void,
+                            e.region.size(),
+                            libc::MADV_DONTNEED,
+                        )
+                    };
                     if ret == 0 {
-                        do_copy = false;
+                        return;
                     }
                 }
-                if do_copy {
-                    e.as_mut_slice().fill(0);
-                }
+                e.as_mut_slice().fill(0);
             })?;
             Ok(None)
         }

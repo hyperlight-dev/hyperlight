@@ -318,7 +318,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c0e531d93d39c34eef561e929e8a7f86d77a5af08aac4f6d6e39976c51858e9"
 dependencies = [
  "chrono",
- "git2",
 ]
 
 [[package]]
@@ -403,9 +402,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -545,6 +544,15 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "colorchoice"
@@ -1111,16 +1119,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5905ec755cc8386d7928353e4d356d2be3e89e81e5ca01fe630a1ca4d08dc175"
 
 [[package]]
-name = "flatbuffers"
-version = "25.12.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
-dependencies = [
- "bitflags 2.13.2",
- "rustc_version",
-]
-
-[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1396,18 +1394,6 @@ dependencies = [
  "libc",
  "system-deps",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "git2"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e"
-dependencies = [
- "bitflags 2.13.2",
- "libc",
- "libgit2-sys",
- "log",
 ]
 
 [[package]]
@@ -1698,12 +1684,13 @@ dependencies = [
  "bytes",
  "criterion",
  "fixedbitset",
- "flatbuffers",
  "hyperlight-testing",
  "log",
  "loom",
+ "postcard",
  "quickcheck",
  "rand 0.10.3",
+ "serde",
  "smallvec",
  "spin",
  "thiserror",
@@ -1770,7 +1757,6 @@ name = "hyperlight-guest"
 version = "0.19.0"
 dependencies = [
  "anyhow",
- "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",
  "itertools 0.15.0",
@@ -1782,7 +1768,6 @@ dependencies = [
 name = "hyperlight-guest-bin"
 version = "0.19.0"
 dependencies = [
- "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-macro",
@@ -1835,7 +1820,6 @@ dependencies = [
  "elfcore",
  "env_logger",
  "fallible-iterator",
- "flatbuffers",
  "framehop",
  "gdbstub",
  "gdbstub_arch",
@@ -1921,7 +1905,6 @@ name = "hyperlight_guest_capi"
 version = "0.19.0"
 dependencies = [
  "cbindgen",
- "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-bin",
@@ -2292,18 +2275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libgit2-sys"
-version = "0.18.8+1.9.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f7c568b25d7489bc3fb2988ed69ab111d2944d2f5fec3d5c987fe545ea97b50"
-dependencies = [
- "cc",
- "libc",
- "libz-sys",
- "pkg-config",
-]
-
-[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2343,18 +2314,6 @@ dependencies = [
  "anstyle",
  "clap",
  "escape8259",
-]
-
-[[package]]
-name = "libz-sys"
-version = "1.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
 ]
 
 [[package]]
@@ -2406,9 +2365,9 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "loom"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+checksum = "f1611ddbf89dc6ae42cfbd51fc207836140130257646eab8d6d2fb16577db2d2"
 dependencies = [
  "cfg-if",
  "generator",
@@ -3096,6 +3055,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "serde",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3464,9 +3433,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed"
-version = "8.13.0"
+version = "8.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19afa5b4b6a611de00bd1bdae6ae6f39084c9399f0679c3f52d8469cf335cc23"
+checksum = "e98f580cf7a2863aeb6827800283f52cbe6fb3f3bb7c1843783f903c16dcb8ad"
 dependencies = [
  "rust-embed-impl",
  "rust-embed-utils",
@@ -3475,9 +3444,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed-impl"
-version = "8.13.0"
+version = "8.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0d8afda6374eac59e066abee06d265247ebbaf3006cf878e2879e8356e34053"
+checksum = "a93e2f69cf224a6c7df7509aa5ba4a23f56828ee41b040e92ac8762371eb9ba7"
 dependencies = [
  "mime_guess",
  "proc-macro2",
@@ -3490,9 +3459,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed-utils"
-version = "8.13.0"
+version = "8.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d84e8ba78bd384263e5922f084cbe1b081c3b7e69add59c8fb097b879ba968a"
+checksum = "915e33dccbe7deb2b8a342dc4c517503fe85e0230ddbae40a4fb0220493dad9b"
 dependencies = [
  "globset",
  "sha2",
@@ -3510,15 +3479,6 @@ name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
-
-[[package]]
-name = "rustc_version"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
-dependencies = [
- "semver",
-]
 
 [[package]]
 name = "rustix"
@@ -4424,12 +4384,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vcpkg"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version-compare"

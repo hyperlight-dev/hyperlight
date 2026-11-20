@@ -468,6 +468,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError>;
     /// Set fpu regs
+    #[allow(dead_code)]
     fn set_fpu(&mut self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError>;
     /// Get special regs
     #[allow(dead_code)]

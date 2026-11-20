@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 
 ### Changed
@@ -12,20 +13,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `suseconds_t` (`i32`) instead of `c_long`. Use `suseconds_t` for values assigned
   to the field, or convert existing `c_long` values with
   `suseconds_t::try_from(value)`.
+* `Snapshot::save` caches memory-layer hashes and trusts existing same-length
+  regular blobs by their content-addressed filenames without verifying their
+  contents. Callers must keep blobs immutable. Use the new
+  `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
+  atomically repair mismatched contents.
+* `Snapshot::save` no longer synchronously flushes files to stable storage.
+  Callers requiring power-loss durability must sync the snapshot files and
+  directory hierarchy themselves after saving.
 * **Breaking:** Snapshots use ABI 10 and config schema v6. Guests must be rebuilt
   and existing snapshots regenerated. Guest entry takes the random seed, host
   page size, and log level.
+* **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
+* Stop resetting guest FPU state between guest calls to improve performance.
 
 ### Fixed
+* Fix surrogate process creation for Windows paths containing Unicode or spaces.
 * Fix restore on WHP not rewinding the guest TSC on hosts with `TSC_ADJUST` support.
 * HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
 * Host-written snapshot memory has instruction-cache coherence before guest execution.
+* Fix slow scratch zeroing on restore under KVM in default builds.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
   `GuestHandle`, `HyperlightPEB`, and `read_n_bytes_from_user_memory`.
   Pass startup data through a host function and retain its `ByteChunks` reply.
   `UninitializedSandbox::new` takes a `GuestBinary`.
+* Remove Git details from build logs. These were not shipped on crates.io.
+* Remove the `print_debug` feature and `hyperlight_host::debug!`. Use `tracing::debug!` instead.
 
 ## [v0.19.0] - 2026-11-04
 
