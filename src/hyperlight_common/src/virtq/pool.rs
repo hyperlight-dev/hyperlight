@@ -6,7 +6,7 @@ use thiserror::Error;
 
 mod slot;
 
-pub use slot::{SlotLayout, SlotPool};
+pub use slot::{PoolLayout, SlotLayout, SlotPool};
 
 /// Buffer allocation failure.
 #[derive(Debug, Error, Copy, Clone)]

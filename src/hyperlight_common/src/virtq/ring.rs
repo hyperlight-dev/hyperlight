@@ -73,7 +73,7 @@ use thiserror::Error;
 
 use super::desc::{DescFlags, DescTable, Descriptor};
 use super::event::{EventFlags, EventSuppression};
-use super::{Layout, MemOps};
+use super::{BootstrapInfo, Layout, MemOps};
 
 /// A single buffer element in a scatter-gather list.
 ///
@@ -198,7 +198,7 @@ pub enum RingError {
 
 impl RingError {
     #[inline]
-    fn mem_err(op: MemOp, addr: u64) -> Self {
+    pub(crate) fn mem_err(op: MemOp, addr: u64) -> Self {
         let len = match op {
             MemOp::ReadDesc | MemOp::WriteDesc => Descriptor::SIZE,
             MemOp::ReadEvent | MemOp::WriteEvent => EventSuppression::SIZE,
@@ -500,6 +500,11 @@ pub(super) struct Checkpoint {
     num_inflight: usize,
 }
 
+/// Read-only ID lookup at allocation position `index` in a fresh producer.
+pub(crate) fn id_for(ring_len: u16, index: u16) -> Option<u16> {
+    ring_len.checked_sub(index)?.checked_sub(1)
+}
+
 /// Producer (driver) side of a packed virtqueue.
 ///
 /// The producer submits buffer chains for the device to process and polls
@@ -539,7 +544,8 @@ pub struct RingProducer<M> {
 impl<M: MemOps> RingProducer<M> {
     /// Create a new producer from a memory layout and accessor.
     pub fn new(layout: Layout, mem: M) -> Self {
-        let size = layout.desc_table_len() as usize;
+        let len = layout.desc_table_len();
+        let size = usize::from(len);
         let raw = layout.desc_table_addr();
 
         // SAFETY: Layout fields are private and from_base validates ring geometry.
@@ -547,7 +553,8 @@ impl<M: MemOps> RingProducer<M> {
         let cursor = RingCursor::new(size);
 
         const DEFAULT_LEN: usize = DescTable::default_len();
-        let id_free = (0..size as u16).collect::<SmallVec<[_; DEFAULT_LEN]>>();
+        let mut id_free = SmallVec::<[_; DEFAULT_LEN]>::with_capacity(size);
+        id_free.extend((0..len).rev().filter_map(|index| id_for(len, index)));
         let id_num = SmallVec::<[_; DEFAULT_LEN]>::from_elem(0, size);
 
         // Notification enabled by default
@@ -565,6 +572,28 @@ impl<M: MemOps> RingProducer<M> {
             drv_evt_addr: layout.drv_evt_addr(),
             dev_evt_addr: layout.dev_evt_addr(),
         }
+    }
+
+    /// Reconstruct private state for a bootstrapped ring without accessing shared memory.
+    ///
+    /// No producer may have run since initialization. The consumer may already
+    /// have completed buffers, which remain pending at the initial used cursor.
+    pub fn from_bootstrap(info: BootstrapInfo, mem: M) -> Self {
+        let layout = info.layout();
+        let mut producer = Self::new(layout, mem);
+
+        let avail = info.avail();
+        let free = producer.len() - usize::from(avail);
+
+        producer.avail_cursor.advance_by(avail);
+        producer.num_free = free;
+
+        for &id in &producer.id_free[free..] {
+            producer.id_num[usize::from(id)] = 1;
+        }
+
+        producer.id_free.truncate(free);
+        producer
     }
 
     /// Fast path: submit exactly one descriptor

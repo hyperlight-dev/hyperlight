@@ -148,6 +148,7 @@
 //! ```
 
 mod access;
+mod bootstrap;
 mod buffer;
 mod consumer;
 mod desc;
@@ -163,7 +164,9 @@ use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
 pub use access::*;
+pub use bootstrap::*;
 pub use buffer::*;
+use bytemuck::Zeroable;
 pub use consumer::*;
 pub use desc::*;
 pub use event::*;
@@ -317,6 +320,33 @@ impl Layout {
         })
     }
 
+    /// Write a descriptor image and reset both event structures in one pass.
+    pub(crate) fn initialize_with<M: MemOps>(
+        &self,
+        mem: &M,
+        desc_at: impl Fn(u16) -> Descriptor,
+    ) -> Result<(), RingError> {
+        for index in 0..self.desc_table_len() {
+            let addr = self.desc_table_addr() + u64::from(index) * Descriptor::SIZE as u64;
+
+            desc_at(index)
+                .write_release(mem, addr)
+                .map_err(|_| RingError::mem_err(MemOp::WriteDesc, addr))?;
+        }
+
+        for addr in [self.drv_evt_addr(), self.dev_evt_addr()] {
+            EventSuppression::clear(mem, addr)
+                .map_err(|_| RingError::mem_err(MemOp::WriteEvent, addr))?;
+        }
+
+        Ok(())
+    }
+
+    /// Clear descriptors and enable both peers' notifications.
+    pub fn initialize<M: MemOps>(&self, mem: &M) -> Result<(), RingError> {
+        self.initialize_with(mem, |_| Descriptor::zeroed())
+    }
+
     /// Packed ring descriptor table base in shared memory.
     pub const fn desc_table_addr(&self) -> u64 {
         self.desc_table_addr
@@ -335,6 +365,11 @@ impl Layout {
     /// Device-written event suppression area in shared memory.
     pub const fn dev_evt_addr(&self) -> u64 {
         self.dev_evt_addr
+    }
+
+    /// Exclusive end of the ring, including both event-suppression structures.
+    pub const fn end_addr(&self) -> u64 {
+        self.dev_evt_addr + EventSuppression::SIZE as u64
     }
 
     /// Calculate the memory size needed for a ring with `num_descs` descriptors,
@@ -433,7 +468,7 @@ const _: () = {
         assert!(layout.dev_evt_addr() >= layout.drv_evt_addr() + EventSuppression::SIZE as u64);
 
         // Total size from query_size covers entire layout
-        let layout_end = layout.dev_evt_addr() + EventSuppression::SIZE as u64;
+        let layout_end = layout.end_addr();
         assert!(base + expected_size as u64 == layout_end);
     }
 
