@@ -70,6 +70,16 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnV
     }
 }
 
+// This function only runs one iteration of the dispatch loop. The
+// actual dispatch loop is implemented in assembly in the
+// architecture-specific functions. The reason for this is that the
+// host may need to initiate a top-level dispatch loop reset during
+// the snapshot/restore process, which it will do by forcibly jumping
+// to the beginning of the assembly dispatch loop initialisation stub
+// at the end of an existing dispatch loop iteration. If the looping
+// happened in this function (or any Rust function), that would
+// essentially be a longjmp; conditions for longjmp safety in Rust are
+// not yet well-established.
 pub(crate) fn internal_dispatch_function() {
     transport::maybe_refresh();
     crate::refresh_guest_log_level();

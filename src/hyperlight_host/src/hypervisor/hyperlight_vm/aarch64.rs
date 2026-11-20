@@ -100,6 +100,7 @@ impl HyperlightVm {
             mmap_regions: Vec::new(),
 
             vm_can_reset_vcpu,
+            needs_dispatch_loop_restart: true,
             pending_tlb_flush: false,
         };
         ret.update_snapshot_mapping(snapshot_mem)?;
@@ -139,6 +140,7 @@ impl HyperlightVm {
         }
         self.rsp_gva = regs.sp;
         self.next_action = NextAction::Call(regs.x[0]);
+        self.needs_dispatch_loop_restart = true;
 
         Ok(())
     }
@@ -151,23 +153,29 @@ impl HyperlightVm {
         let NextAction::Call(dispatch_func_addr) = self.next_action else {
             return Err(DispatchGuestCallError::Uninitialized);
         };
-        let mut regs = CommonRegisters {
-            pc: dispatch_func_addr,
-            sp: self.rsp_gva,
-            // start with interrupts disabled in EL1t
-            pstate: 0b11 << 6 | 0b100,
-            ..Default::default()
-        };
-        if self.pending_tlb_flush {
-            regs.pc += 4;
+        if self.needs_dispatch_loop_restart || self.pending_tlb_flush {
+            // TLB flush protocol is only implemented at the
+            // outside/start of the main dispatch loop, so always
+            // restart if we require a TLB flush.
+            let mut regs = CommonRegisters {
+                pc: dispatch_func_addr,
+                sp: self.rsp_gva,
+                // start with interrupts disabled in EL1t
+                pstate: 0b11 << 6 | 0b100,
+                ..Default::default()
+            };
+            if self.pending_tlb_flush {
+                regs.pc += 4;
+            }
+            self.vm
+                .set_regs(&regs)
+                .map_err(DispatchGuestCallError::SetupRegs)?;
+            self.needs_dispatch_loop_restart = false;
+            self.pending_tlb_flush = false;
         }
-        self.vm
-            .set_regs(&regs)
-            .map_err(DispatchGuestCallError::SetupRegs)?;
         let result = self
             .run(mem_mgr, host_funcs)
             .map_err(DispatchGuestCallError::Run);
-        self.pending_tlb_flush = false;
         result
     }
 
@@ -194,6 +202,11 @@ impl HyperlightVm {
         );
         self.vm.reset_vcpu()?;
         self.apply_sregs(cr3, sregs)?;
+        // Set a flag here that results in a restart in
+        // `dispatch_call_from_host` because, on the snapshot-restore
+        // path, we don't yet know the new dispatch function address
+        // (won't be set until [`Self::set_next_action`] is called).
+        self.needs_dispatch_loop_restart = true;
         Ok(())
     }
 

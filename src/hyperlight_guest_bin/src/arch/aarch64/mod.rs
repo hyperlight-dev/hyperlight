@@ -32,6 +32,7 @@ pub mod dispatch {
         bl {internal_dispatch_function}\n
         ldr x1, ={hlt_addr}\n
         str x0, [x1]\n
+        b 0b\n
         .cfi_endproc\n
     ",
         internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function,

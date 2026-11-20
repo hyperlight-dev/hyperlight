@@ -382,6 +382,14 @@ pub(crate) struct HyperlightVm {
 
     #[cfg(target_arch = "aarch64")]
     pub(self) vm_can_reset_vcpu: bool,
+    // This will restart the top-level dispatch loop, so we must not
+    // be depending on being in a nested dispatch loop (currently only
+    // used for sync hostcalls)
+    pub(super) needs_dispatch_loop_restart: bool,
+    // Currently, TLB flush is implemented via a top-level dispatch loop
+    // restart, for convenience, so any new tlbi operations should
+    // either (a) ensure that dispatch loop restart is safe or (b)
+    // change the TLB flush mechanism
     pub(super) pending_tlb_flush: bool,
 
     #[cfg(gdb)]
