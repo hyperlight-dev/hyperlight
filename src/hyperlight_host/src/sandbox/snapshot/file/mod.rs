@@ -333,6 +333,15 @@ impl Snapshot {
     /// digest but not by this tag. Snapshots under other tags are
     /// untouched.
     ///
+    /// # Durability
+    ///
+    /// Files are atomically replaced, but are not synced to stable storage.
+    /// A successful save does not guarantee persistence across power loss.
+    /// Callers requiring crash durability must sync the snapshot files, then
+    /// sync directories bottom-up through the layout's existing parent after
+    /// saving. If the caller also created ancestor directories, sync those
+    /// through the first previously durable ancestor.
+    ///
     /// # Portability
     ///
     /// Snapshot images are bound to the specific CPU architecture,
