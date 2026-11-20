@@ -137,9 +137,9 @@ runs `no_std` which `opentelemetry` doesn't know.
 
 ##### Guest
 
-When the guest starts executing the `entrypoint` function, it receives a `max_log_level` parameter that tells the guest what kind of logging level is expected from it.
+At startup, `StartupArgs::max_log_level` sets the guest log filter.
 
-The `trace_guest` logic takes advantage of this parameter and when the `max_log_level` is `trace`, it allocates a custom made `GuestSubscriber` that implements the `Subscriber`
+When this field is `trace`, the `trace_guest` logic allocates a custom made `GuestSubscriber` that implements the `Subscriber`
 trait from `tracing_core` that allows defining a subscriber for the `tracing` crate to handle new spans and events.
 
 This custom subscriber stores the spans and events in a buffer initialized only when tracing is enabled. For each new span and event, a method is called on the custom subscriber which not only stores the data, but also keeps track of the hierarchy and dependencies between the other spans/events.

@@ -1082,6 +1082,17 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok((gsnapshot, gscratch))
     }
 
+    pub(crate) fn write_startup_args(
+        &mut self,
+        args: hyperlight_common::layout::StartupArgs,
+    ) -> Result<u64> {
+        use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_STARTUP_ARGS_OFFSET};
+
+        let offset = self.scratch_mem.mem_size() - SCRATCH_TOP_STARTUP_ARGS_OFFSET as usize;
+        self.scratch_mem.write(offset, args)?;
+        Ok(SCRATCH_TOP_GVA as u64 + 1 - SCRATCH_TOP_STARTUP_ARGS_OFFSET)
+    }
+
     #[inline]
     fn update_scratch_bookkeeping_item(&mut self, offset: u64, value: u64) -> Result<()> {
         let scratch_size = self.scratch_mem.mem_size();
@@ -1159,10 +1170,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
             self.snapshot_count,
-        )?;
-        self.update_scratch_bookkeeping_item(
-            SCRATCH_TOP_HEAP_EXECUTABLE_OFFSET,
-            cfg!(feature = "executable_heap") as u64,
         )?;
         // Record the G2H and H2G queue sizes, pool page counts, and buffer sizes.
         self.update_scratch_bookkeeping_item(

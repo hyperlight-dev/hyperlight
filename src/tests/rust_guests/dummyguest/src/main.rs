@@ -47,8 +47,13 @@ fn mmio_read() {
 }
 
 #[allow(non_snake_case)]
+/// # Safety
+/// `args` must point to an aligned, initialized `[u64; 2]` until copied.
 #[no_mangle]
-pub extern "C" fn entrypoint(seed: u64, page_size: u64) -> i32 {
+pub unsafe extern "C" fn entrypoint(args: *const [u64; 2]) -> i32 {
+    // Raw words keep this guest independent of alloc.
+    // SAFETY: the caller guarantees two aligned, initialized argument words.
+    let [seed, page_size] = unsafe { args.read() };
     if seed != 1234567890 || page_size != 4096 {
         mmio_read();
     }

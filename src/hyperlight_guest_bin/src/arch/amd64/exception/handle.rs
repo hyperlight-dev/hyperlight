@@ -133,9 +133,7 @@ fn try_handle_internal_pagefault(
             return true;
         }
         if (HEAP_GVA_START..HEAP_GVA_END).contains(&gva) {
-            // SAFETY: the host writes the scratch-top metadata before entry.
-            let executable =
-                unsafe { hyperlight_guest::layout::heap_executable_gva().read_volatile() } != 0;
+            let executable = crate::HEAP_EXECUTABLE.load(Ordering::Relaxed);
             // SAFETY: the fault is not-present in the heap region, and
             // exception handling is the only page table writer.
             unsafe { handle_stack_or_heap_pagefault(gva, executable) };

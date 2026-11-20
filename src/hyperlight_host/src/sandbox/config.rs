@@ -83,6 +83,7 @@ pub struct SandboxConfiguration {
     g2h_pool_pages: usize,
     /// Number of pages in the H2G buffer pool.
     h2g_pool_pages: usize,
+    executable_heap: bool,
     /// Declared guest MSRs, stored inline to keep this type `Copy`.
     #[cfg(target_arch = "x86_64")]
     guest_msrs: [u32; Self::MAX_GUEST_MSRS],
@@ -113,6 +114,8 @@ impl SandboxConfiguration {
     pub const DEFAULT_G2H_POOL_PAGES: usize = 12;
     /// The default total number of H2G pool pages.
     pub const DEFAULT_H2G_POOL_PAGES: usize = 8;
+    /// The `executable_heap` Cargo feature sets this default.
+    pub const DEFAULT_EXECUTABLE_HEAP: bool = cfg!(feature = "executable_heap");
     /// The minimum G2H virtqueue descriptor count.
     const MIN_QUEUE_SIZE: usize = 2;
     /// The maximum G2H virtqueue descriptor count.
@@ -146,6 +149,7 @@ impl SandboxConfiguration {
             h2g_buffer_size: Self::DEFAULT_H2G_BUFFER_SIZE,
             g2h_pool_pages: Self::DEFAULT_G2H_POOL_PAGES,
             h2g_pool_pages: Self::DEFAULT_H2G_POOL_PAGES,
+            executable_heap: Self::DEFAULT_EXECUTABLE_HEAP,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
@@ -279,6 +283,19 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_scratch_size(&mut self, scratch_size: usize) {
         self.scratch_size = scratch_size;
+    }
+
+    /// Set whether guest heap pages are mapped executable at initialization.
+    ///
+    /// Initialized snapshots keep their setting. The guest controls its page
+    /// tables, so this permission is not a host security boundary.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_executable_heap(&mut self, executable: bool) {
+        self.executable_heap = executable;
+    }
+
+    pub(crate) fn get_executable_heap(&self) -> bool {
+        self.executable_heap
     }
 
     /// Sets the maximum log level for guest code execution.

@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 
 use arch::dispatch::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
@@ -113,6 +114,8 @@ pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
+
+pub(crate) static HEAP_EXECUTABLE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
@@ -251,7 +254,19 @@ core::arch::global_asm!(
 /// Architecture-nonspecific initialisation: set up the heap,
 /// coordinate some addresses and configuration with the host, and run
 /// user initialisation
-pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) -> u64 {
+///
+/// # Safety
+/// Call once with exclusive access to guest state. `args` must point to an aligned,
+/// initialized `StartupArgs` that stays valid until copied.
+pub(crate) unsafe extern "C" fn generic_init(
+    args: *const hyperlight_common::layout::StartupArgs,
+) -> u64 {
+    // SAFETY: the caller guarantees an aligned, initialized value at args.
+    let args = unsafe { args.read() };
+    HEAP_EXECUTABLE.store(args.heap_executable != 0, Ordering::Relaxed);
+    // Heap initialization faults into handlers that read this flag.
+    compiler_fence(Ordering::SeqCst);
+
     unsafe {
         #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
@@ -276,11 +291,11 @@ pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) 
 
     #[cfg(feature = "libc")]
     unsafe {
-        srand(_seed as u32);
+        srand(args.seed as u32);
     }
 
     unsafe {
-        OS_PAGE_SIZE = ops as u32;
+        OS_PAGE_SIZE = args.host_page_size as u32;
     }
 
     // Prepare transport before logging or guest initialization code can use it.
@@ -288,7 +303,7 @@ pub(crate) extern "C" fn generic_init(_seed: u64, ops: u64, max_log_level: u64) 
 
     // set up the logger
     let guest_log_level_filter =
-        GuestLogFilter::try_from(max_log_level).expect("Invalid log level");
+        GuestLogFilter::try_from(args.max_log_level).expect("Invalid log level");
     init_logger(guest_log_level_filter.into());
 
     // It is important that all the tracing events are produced after the tracing is initialized.

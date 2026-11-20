@@ -39,6 +39,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionTyp
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
+use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::{HandleOutbError, handle_outb};
 use crate::sandbox::snapshot::{NextAction, SnapshotMemoryBacking};
@@ -108,6 +109,25 @@ pub(super) fn get_guest_log_filter(guest_max_log_level: Option<LevelFilter>) -> 
     GuestLogFilter::from(guest_log_level_filter).into()
 }
 
+impl HyperlightVm {
+    fn write_startup_args(
+        &self,
+        seed: u64,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        config: &SandboxConfiguration,
+    ) -> Result<u64, InitializeError> {
+        let args = hyperlight_common::layout::StartupArgs {
+            seed,
+            host_page_size: self.page_size as u64,
+            max_log_level: get_guest_log_filter(config.get_max_guest_log_level()),
+            heap_executable: u64::from(config.get_executable_heap()),
+        };
+        mem_mgr
+            .write_startup_args(args)
+            .map_err(|error| InitializeError::WriteStartupArgs(Box::new(error)))
+    }
+}
+
 /// DispatchGuestCall error
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchGuestCallError {
@@ -164,6 +184,8 @@ impl DispatchGuestCallError {
 pub enum InitializeError {
     #[error("Failed to convert pointer: {0}")]
     ConvertPointer(String),
+    #[error("Failed to write guest startup arguments: {0}")]
+    WriteStartupArgs(Box<HyperlightError>),
     #[error("Failed to run vm: {0}")]
     Run(#[from] RunVmError),
     #[error("Failed to setup registers: {0}")]

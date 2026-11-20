@@ -9,6 +9,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
 use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
 use hyperlight_host::{HyperlightError, Sandbox, SandboxBuilder, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use serial_test::serial;
@@ -633,27 +634,117 @@ fn guard_page_check_2() {
 
 #[test]
 fn execute_on_heap() {
-    with_rust_sandbox(|mut sbox1| {
-        let result = sbox1.call::<String>("ExecuteOnHeap", ());
-
-        #[cfg(feature = "executable_heap")]
-        assert_eq!(
-            result.unwrap(),
-            "Executed on heap successfully",
-            "should execute successfully"
-        );
-
-        #[cfg(not(feature = "executable_heap"))]
-        assert!(
-            result.unwrap_err().to_string().contains(
-                #[cfg(target_arch = "x86_64")]
-                "PageFault",
-                #[cfg(target_arch = "aarch64")]
-                "Exception Syndrome: 0x86",
-            ),
-            "should get page fault"
-        );
+    with_rust_sandbox(|mut sandbox| {
+        assert_heap_execution(&mut sandbox, cfg!(feature = "executable_heap"));
     });
+}
+
+fn assert_heap_execution(sandbox: &mut Sandbox, executable: bool) {
+    let result = sandbox.call::<String>("ExecuteOnHeap", ());
+    if executable {
+        assert_eq!(result.unwrap(), "Executed on heap successfully");
+    } else {
+        let err = result.unwrap_err();
+        let HyperlightError::GuestAborted(code, message) = err else {
+            panic!("expected guest exception: {err:?}");
+        };
+        assert_eq!(code, ErrorCode::GuestError as u8, "{message}");
+
+        #[cfg(target_arch = "x86_64")]
+        let prefix = "Error code: 0x";
+        #[cfg(target_arch = "aarch64")]
+        let prefix = "Exception Syndrome: 0x";
+        let fault_code = message
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("missing fault code: {message}"));
+        let fault_code = u64::from_str_radix(fault_code, 16)
+            .unwrap_or_else(|err| panic!("invalid fault code: {err}: {message}"));
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(
+                message.starts_with("Exception: PageFault | "),
+                "expected page fault: {message}"
+            );
+            assert_eq!(
+                fault_code,
+                (1 << 4) | 1,
+                "expected instruction-fetch protection fault: {message}"
+            );
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            use hyperlight_common::arch::exn::{
+                Exception, InsnFault, InsnFaultKind, decode_syndrome,
+            };
+
+            assert!(
+                matches!(
+                    decode_syndrome(fault_code),
+                    Exception::InsnFault(InsnFault {
+                        from_lower_el: false,
+                        is_s1ptw: false,
+                        kind: InsnFaultKind::PermissionFault(_),
+                    })
+                ),
+                "expected instruction permission fault: {message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn executable_heap_runtime_setting() {
+    for executable in [true, false] {
+        with_rust_sandbox_from(
+            |builder| builder.executable_heap(executable),
+            |mut sandbox| assert_heap_execution(&mut sandbox, executable),
+        );
+    }
+}
+
+#[test]
+fn snapshot_keeps_executable_heap_setting() {
+    for executable in [true, false] {
+        let mut source = build_rust_sandbox(|builder| builder.executable_heap(executable));
+        let snapshot = source.snapshot().unwrap();
+
+        let mut restored = SandboxBuilder::from_snapshot(snapshot.clone())
+            .executable_heap(!executable)
+            .build()
+            .unwrap();
+        assert_heap_execution(&mut restored, executable);
+        drop(restored);
+        drop(source);
+
+        let mut target = build_rust_sandbox(|builder| builder.executable_heap(!executable));
+        target.restore(snapshot.clone()).unwrap();
+        assert_heap_execution(&mut target, executable);
+
+        target.recreate(snapshot).unwrap();
+        assert_heap_execution(&mut target, executable);
+    }
+}
+
+#[test]
+fn saved_snapshot_keeps_executable_heap_setting() {
+    for executable in [true, false] {
+        let mut source = build_rust_sandbox(|builder| builder.executable_heap(executable));
+        let snapshot = source.snapshot().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tag = OciTag::new("latest").unwrap();
+        snapshot.save(dir.path(), &tag).unwrap();
+        drop(source);
+        drop(snapshot);
+
+        let loaded = Arc::new(Snapshot::checked_load(dir.path(), tag).unwrap());
+        let mut restored = SandboxBuilder::from_snapshot(loaded)
+            .executable_heap(!executable)
+            .build()
+            .unwrap();
+        assert_heap_execution(&mut restored, executable);
+    }
 }
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow

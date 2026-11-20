@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
+#[cfg(test)]
 use tracing_core::LevelFilter;
 
 use super::*;
@@ -171,11 +172,12 @@ impl HyperlightVm {
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        guest_max_log_level: Option<LevelFilter>,
+        config: &SandboxConfiguration,
     ) -> std::result::Result<(), InitializeError> {
         let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
         };
+        let startup_args = self.write_startup_args(seed, mem_mgr, config)?;
 
         let regs = CommonRegisters {
             rip: initialise,
@@ -188,9 +190,7 @@ impl HyperlightVm {
             rsp: self.rsp_gva - 8,
 
             // function args
-            rdi: seed,
-            rsi: self.page_size as u64,
-            rdx: get_guest_log_filter(guest_max_log_level),
+            rdi: startup_args,
             rflags: 1 << 1,
 
             ..Default::default()
@@ -1491,7 +1491,8 @@ mod tests {
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
-        vm.initialise(seed, &mut hshm, &host_funcs, None).unwrap();
+        vm.initialise(seed, &mut hshm, &host_funcs, &config)
+            .unwrap();
 
         TestVmContext {
             vm,

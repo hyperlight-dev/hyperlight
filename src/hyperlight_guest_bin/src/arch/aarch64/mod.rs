@@ -55,17 +55,26 @@ unsafe fn init_vbar() {
 
 /// Machine-specific initialisation; calls [`crate::generic_init`]
 /// once VBAR and the main stack have been set up
+///
+/// # Safety
+/// Call once with exclusive access to guest state. `args` must point to an aligned,
+/// initialized `StartupArgs` that stays valid until `generic_init` copies it.
 #[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(seed: u64, ops: u64, max_log_level: u64) -> ! {
+pub unsafe extern "C" fn entrypoint(args: *const hyperlight_common::layout::StartupArgs) -> ! {
+    // SAFETY: the caller guarantees exclusive startup and valid arguments.
     unsafe {
         init_vbar();
         let stack_top = crate::init::init_stack();
-        pivot_stack(seed, ops, max_log_level, stack_top);
+        pivot_stack(args, stack_top);
     }
 }
 
 unsafe extern "C" {
-    unsafe fn pivot_stack(seed: u64, ops: u64, max_log_level: u64, stack_top: u64) -> !;
+    /// # Safety
+    /// `args` must satisfy [`crate::generic_init`]'s safety requirements.
+    /// `stack_top` must be 16-byte aligned with enough writable stack space below it.
+    unsafe fn pivot_stack(args: *const hyperlight_common::layout::StartupArgs, stack_top: u64)
+    -> !;
 }
 
 core::arch::global_asm!("
@@ -77,7 +86,7 @@ core::arch::global_asm!("
     msr SPSel, #1\n
     mov sp, x5\n
     msr SPSel, #0\n
-    mov sp, x3\n
+    mov sp, x1\n
     bl {generic_init}\n
     ldr x1, ={hlt_addr}\n
     str x0, [x1]\n

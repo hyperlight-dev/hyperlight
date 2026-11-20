@@ -18,7 +18,6 @@ use crate::hypervisor::LinuxInterruptHandle;
 use crate::hypervisor::WindowsInterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
-use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
 use crate::hypervisor::regs::{CommonRegisters, CommonSpecialRegisters};
 #[cfg(hvf)]
 use crate::hypervisor::virtual_machine::hvf::HvfVm;
@@ -112,15 +111,13 @@ impl HyperlightVm {
         seed: u64,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
-        guest_max_log_level: Option<tracing_core::LevelFilter>,
+        config: &SandboxConfiguration,
     ) -> Result<(), InitializeError> {
         let NextAction::Initialise(initialise) = self.next_action else {
             return Ok(());
         };
         let mut x: [u64; 31] = [0; 31];
-        x[0] = seed;
-        x[1] = self.page_size as u64;
-        x[2] = get_guest_log_filter(guest_max_log_level);
+        x[0] = self.write_startup_args(seed, mem_mgr, config)?;
         let regs = CommonRegisters {
             pc: initialise,
             sp: self.rsp_gva,

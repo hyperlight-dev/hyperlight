@@ -507,7 +507,8 @@ pub(crate) mod tests {
 
         let filename = dummy_guest_as_pathbuf();
 
-        let config: SandboxConfiguration = Default::default();
+        let mut config: SandboxConfiguration = Default::default();
+        config.set_max_guest_log_level(tracing_core::LevelFilter::ERROR);
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (mut mem_mgr, gshm) = sandbox.mgr.build().unwrap();
@@ -526,10 +527,9 @@ pub(crate) mod tests {
         // The dummy guest halts only when it receives these values.
         let seed = 1234567890u64;
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-        let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
         // Test the initialise method
-        vm.initialise(seed, &mut mem_mgr, &host_funcs, guest_max_log_level)
+        vm.initialise(seed, &mut mem_mgr, &host_funcs, &config)
             .unwrap();
 
         Ok(())

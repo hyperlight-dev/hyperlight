@@ -93,8 +93,13 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
 
 /// Machine-specific initialisation; calls [`crate::generic_init`]
 /// once stack, CoW, etc have been set up.
+///
+/// # Safety
+/// Call once with exclusive access to guest state. `args` must point to an aligned,
+/// initialized `StartupArgs` that stays valid until `generic_init` copies it.
 #[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(seed: u64, ops: u64, max_log_level: u64) {
+pub unsafe extern "C" fn entrypoint(args: *const hyperlight_common::layout::StartupArgs) {
+    // SAFETY: the caller guarantees exclusive startup and valid arguments.
     unsafe {
         // Allocate a VA for processor control structures which must
         // survive snapshotting at the same VA.
@@ -108,12 +113,16 @@ pub extern "C" fn entrypoint(seed: u64, ops: u64, max_log_level: u64) {
         // Architecture early init is complete! We pivot now to
         // executing on the main stack, and jump into generic
         // initialisation code in lib.rs
-        pivot_stack(seed, ops, max_log_level, stack_top);
+        pivot_stack(args, stack_top);
     }
 }
 
 unsafe extern "C" {
-    unsafe fn pivot_stack(seed: u64, ops: u64, max_log_level: u64, stack_top: u64) -> !;
+    /// # Safety
+    /// `args` must satisfy [`crate::generic_init`]'s safety requirements.
+    /// `stack_top` must be 16-byte aligned with enough writable stack space below it.
+    unsafe fn pivot_stack(args: *const hyperlight_common::layout::StartupArgs, stack_top: u64)
+    -> !;
 }
 
 // Mark this as the bottom-most frame for debuggers:
@@ -129,7 +138,7 @@ core::arch::global_asm!("
     pivot_stack:\n
     .cfi_startproc\n
     .cfi_undefined rip\n
-    mov rsp, rcx\n
+    mov rsp, rsi\n
     xor ebp, ebp\n
     call {generic_init}\n
     mov dx, {halt_port}\n

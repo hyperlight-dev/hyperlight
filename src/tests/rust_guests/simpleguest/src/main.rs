@@ -12,7 +12,6 @@ const MAX_BUFFER_SIZE: usize = 1024;
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -735,20 +734,34 @@ fn test_guest_panic(message: String) {
 
 #[guest_function("ExecuteOnHeap")]
 fn execute_on_heap() -> String {
+    #[cfg(target_arch = "x86_64")]
+    let code = [0x90u8, 0xC3];
+    #[cfg(target_arch = "aarch64")]
+    let code = [0x1fu8, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
+    let layout = Layout::from_size_align(16 * PAGE_SIZE, PAGE_SIZE).unwrap();
+    // SAFETY: the code fits within the live allocation and is cache-synced.
+    // NOP/RET preserves the registers required by the declared ABI.
     unsafe {
-        // NO-OP followed by RET
-        let mut heap_memory = Box::new(
-            #[cfg(target_arch = "x86_64")]
-            [0x90u8, 0xC3],
-            #[cfg(target_arch = "aarch64")]
-            [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6],
-        );
-        dicachesync(heap_memory.as_mut_ptr(), heap_memory.len());
-        let heap_fn: fn() = core::mem::transmute(Box::into_raw(heap_memory));
+        let allocation = alloc::alloc::alloc(layout);
+        if allocation.is_null() {
+            alloc::alloc::handle_alloc_error(layout);
+        }
+        // An unmapped page exercises first-touch permissions after restore.
+        let code_page = (0..16)
+            .map(|page| allocation.add(page * PAGE_SIZE))
+            .find(|page| {
+                hyperlight_guest_bin::paging::virt_to_phys(*page as u64)
+                    .next()
+                    .is_none()
+            })
+            .expect("heap execution test needs an untouched page");
+        code_page.copy_from_nonoverlapping(code.as_ptr(), code.len());
+        dicachesync(code_page, code.len());
+        let heap_fn: unsafe extern "C" fn() = core::mem::transmute(code_page);
         heap_fn();
-        black_box(heap_fn); // avoid optimization when running in release mode
+        black_box(heap_fn);
+        alloc::alloc::dealloc(allocation, layout);
     }
-    // will only reach this point if heap is executable
     String::from("Executed on heap successfully")
 }
 
