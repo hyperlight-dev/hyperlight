@@ -32,6 +32,28 @@ where
     Ok(val)
 }
 
+
+/// Call a host function and convert its response outside the transport borrow.
+pub fn call_host_function_async<T>(
+    function_name: &str,
+    parameters: Option<Vec<ParameterValue>>,
+    return_type: ReturnType,
+) -> impl Future<Output = Result<T>>
+where
+    T: TryFrom<ReturnValue>,
+{
+    async move {
+        let val =
+            transport::with_ctx(|ctx| ctx.call_host_function_async(function_name, parameters, return_type)).await?;
+
+        let Ok(val) = T::try_from(val) else {
+            bail!("G2H: host return value type mismatch");
+        };
+
+        Ok(val)
+    }
+}
+
 pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>
 where
     T: SupportedReturnType + TryFrom<ReturnValue>,

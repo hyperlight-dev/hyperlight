@@ -107,9 +107,9 @@ pub struct Sandbox {
     /// Configuration for [`recreate()`](Self::recreate). [`log_level()`](Self::log_level)
     /// updates its guest log level.
     config: crate::sandbox::SandboxConfiguration,
-    /// Pending host tasks, requested by the guest (or, in the future,
-    /// spawned by other host tasks)
-    tasks: Vec<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    // /// Pending host tasks, requested by the guest (or, in the future,
+    // /// spawned by other host tasks)
+    // tasks: Vec<Pin<Box<dyn Future<Output = ()> + Send>>>,
     /// Pending guest calls
     pending_guest_calls: BTreeMap<u32, PendingGuestCall>,
 }
@@ -249,7 +249,6 @@ impl Sandbox {
             transport_dirty,
             pt_root_finder: None,
             config,
-            tasks: Vec::new(),
             pending_guest_calls: BTreeMap::new(),
         }
     }
@@ -1095,14 +1094,13 @@ impl Sandbox {
         };
         let fut = fut(ch);
         let mut fut = core::pin::pin!(fut);
+        let mut tasks: Vec<Pin<Box<dyn Future<Output = ()>>>> = Vec::new();
         core::future::poll_fn(|cx| {
             use core::task::Poll;
             // If the future has completed, we are done
             if let Poll::Ready(ret) = sbsh.with(self, || fut.as_mut().poll(cx)) {
                 return Poll::Ready(ret);
             }
-            // TODO fix hack
-            let mut tasks = std::mem::replace(&mut self.tasks, Vec::new());
             // Check if we can make any more progress on host tasks
             //
             // This will include progressing any guest-initiation host
@@ -1114,7 +1112,6 @@ impl Sandbox {
                     Poll::Ready(()) => false,
                 }
             });
-            std::mem::replace(&mut self.tasks, tasks);
 
             // TODO: we could probably try harder to figure out if
             // there is any more that we could do on the host before
@@ -1131,7 +1128,9 @@ impl Sandbox {
                 &mut self.mem_mgr,
                 &self.host_funcs,
                 &mut self.pending_guest_calls,
-                None
+                None,
+                &mut tasks,
+                sbsh.clone(),
             ) {
                 Err(e) => return Poll::Ready(Err(HyperlightError::from(e).into())),
                 // if we did something for the guest, we should wake
@@ -1291,6 +1290,8 @@ impl Sandbox {
                     &sbox.host_funcs,
                     &mut sbox.pending_guest_calls,
                     Some(cid),
+                    &mut Vec::new(),
+                    hyperlight_common::access::SyncHandle::new(),
                 )? {
                     (_, Some(fcr)) => break fcr,
                     (true, _) => continue,
@@ -1351,6 +1352,8 @@ impl Sandbox {
             &self.host_funcs,
             &mut self.pending_guest_calls,
             None,
+            &mut Vec::new(),
+            hyperlight_common::access::SyncHandle::new(),
         )
             .inspect_err(|_| self.poison())?;
 
@@ -1365,6 +1368,8 @@ impl Sandbox {
                 &self.host_funcs,
                 &mut self.pending_guest_calls,
                 None,
+                &mut Vec::new(),
+                hyperlight_common::access::SyncHandle::new(),
             )
                 .inspect_err(|_| self.poison())?;
             if did_work {

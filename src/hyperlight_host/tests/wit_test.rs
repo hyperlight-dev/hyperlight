@@ -328,6 +328,13 @@ impl test::wit::HostResource<Negative> for Host {
     }
 }
 
+impl test::wit::Ast<Negative> for Host {
+    async fn das(slf: hyperlight_common::access::SyncHandle<Self>, x: String) -> String {
+        eprintln!("host das called {x}");
+        format!("host-{x}")
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl test::wit::TestImports<Negative> for Host {
     type Roundtrip = Self;
@@ -340,6 +347,10 @@ impl test::wit::TestImports<Negative> for Host {
     }
     fn now(&mut self) -> u64 {
         7
+    }
+    type Ast = Self;
+    fn ast(&mut self) -> &mut Self {
+        self
     }
 }
 
@@ -731,9 +742,10 @@ mod wit_test {
             let f1 = crate::test::wit::Ast::das(ch.clone(), "hi".to_string());
             let f2 = crate::test::wit::Ast::das(ch.clone(), "bye".to_string());
             assert!(f2.await.unwrap() == "bye");
-            assert!(f1.await.unwrap() == "hi");
+            assert!(f1.await.unwrap() == "host-hi");
             hyperlight_host::Result::Ok(())
-        }));
+        })).unwrap();
+        eprintln!("hi 6");
     }
 }
 

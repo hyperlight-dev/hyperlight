@@ -382,7 +382,7 @@ pub enum SuppressionKind {
 ///
 /// Tokens uniquely identify in-flight requests and are used to correlate
 /// requests with their responses.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Token {
     /// Monotonically increasing generation counter.
     pub seq: u32,

@@ -227,6 +227,124 @@ impl GuestContext {
         Ok(fcr.into_inner()?)
     }
 
+    /// Call a host function via the G2H virtqueue.
+    ///
+    /// Slot-aligned external values use a separate readable region. The same
+    /// chain carries bounded writable buffers for the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding, queue submission, host dispatch,
+    /// or response validation fails.
+    pub fn call_host_function_async(
+        &mut self,
+        function_name: &str,
+        parameters: Option<Vec<ParameterValue>>,
+        return_type: ReturnType,
+    ) -> impl Future<Output = Result<ReturnValue>> + use<> {
+        let mut cid_token = (|| {
+            let fc = FunctionCall::new(
+                function_name.into(),
+                parameters,
+                FunctionCallType::Host,
+                return_type,
+            );
+
+            let mut buffer = Vec::new();
+            let mut externals = ExternalValues::new();
+
+            // Encode control data separately from borrowed external byte values.
+            let control = fc
+                .encode(&mut buffer, &mut externals)
+                .with_context(|| "failed to encode host function call")?;
+
+            // Frame the request and include external values in its total length.
+            let cid = self.allocate_cid();
+            let msg = EncodedMessage::new(MsgKind::Request, cid, control, externals)
+                .context("G2H message length overflow")?;
+
+            let reply_cap = ReplyCapacity::for_return_type(return_type);
+
+            // Submit once more after forcing the host to drain on backpressure.
+            let token = match self.try_send(&msg, reply_cap) {
+                Ok(token) => token,
+                Err(error) if error.is_transient() => {
+                    self.g2h_producer.notify_backpressure();
+
+                    if let Err(error) = self.g2h_producer.reclaim() {
+                        bail!("G2H reclaim: {error}");
+                    }
+
+                    match self.try_send(&msg, reply_cap) {
+                        Ok(token) => token,
+                        Err(error) => bail!("G2H call retry: {error}"),
+                    }
+                }
+                Err(error) => {
+                    bail!("G2H call: {error}");
+                }
+            };
+
+            unsafe {
+                #[allow(static_mut_refs)]
+                (&mut crate::PENDING_HOST_CALLS)
+            }
+                .insert(token, (cid, PendingHostCall::Unpolled));
+
+            Ok((cid, token))
+        })();
+
+        use core::task::Poll;
+        use anyhow::anyhow;
+        use crate::PendingHostCall;
+        core::future::poll_fn(move |cx| {
+            let (cid, token) = match &mut cid_token {
+                Ok((cid, token)) => (*cid, *token),
+                Err(e) => {
+                    let e = core::mem::replace(e, anyhow!("error already returned").into());
+                    return Poll::Ready(Err(e));
+                    }
+            };
+            let pgh = unsafe {
+                #[allow(static_mut_refs)]
+                crate::PENDING_HOST_CALLS.entry(token)
+            };
+            let alloc::collections::btree_map::Entry::Occupied(mut oe) = pgh else {
+                // something very odd has happened here
+                return Poll::Ready(Err(anyhow!("impossible: token entry missing").into()));
+            };
+            let (cid, phc) = oe.get();
+            match phc {
+                PendingHostCall::Unpolled | PendingHostCall::Polled(_) => {
+                    *oe.get_mut() = (*cid, PendingHostCall::Polled(cx.waker().clone()));
+                    Poll::Pending
+                }
+                PendingHostCall::Completed(_) => {
+                    let (_, PendingHostCall::Completed(fcr)) = oe.remove() else {
+                        return Poll::Ready(Err(anyhow!("impossible: pgh not completed after completed check").into()));
+                    };
+                    let val = fcr
+                        .and_then(|fcr| fcr.into_inner()
+                            .map_err(|e| anyhow!("{e:?}").into()));
+                    Poll::Ready(val)
+                }
+            }
+        })
+
+        /*// Poll completions, skipping earlier one-way acknowledgements until
+        // the request reply is available.
+        let reply = self.recv_g2h_response_sync(token)?;
+
+        let segments = match reply {
+            UsedChain::Data(_, segments) => segments,
+            UsedChain::Ack(_) => bail!("G2H: response was ack-only"),
+        };
+
+        // Decode external ByteChunks without flattening their transport-backed
+        // segments.
+        let fcr = codec::decode_response(segments, cid)?;
+        Ok(fcr.into_inner()?)*/
+    }
 
     /// Receive and process guest-to-host response until a reply for a
     /// matching token is found
@@ -253,6 +371,31 @@ impl GuestContext {
                 }
             }
         }
+    }
+
+    pub fn recv_g2h_responses(&mut self) -> Result<()> {
+        while let Some(reply) = self.g2h_producer.poll()? {
+            let UsedChain::Data(token, segments) = reply else {
+                bail!("G2H host call response was ack-only")
+            };
+
+            let pending_host_calls = unsafe {
+                #[allow(static_mut_refs)]
+                &mut crate::PENDING_HOST_CALLS
+            };
+            let pending_entry = pending_host_calls.get_mut(&token)
+                .ok_or_else(|| anyhow::anyhow!("token entry missing"))?;
+
+            let fcr = codec::decode_response(segments, pending_entry.0)?;
+
+            use crate::PendingHostCall;
+            match core::mem::replace(&mut pending_entry.1, PendingHostCall::Completed(Ok(fcr))) {
+                PendingHostCall::Unpolled => {},
+                PendingHostCall::Polled(waker) => waker.wake(),
+                PendingHostCall::Completed(_) => bail!("Guest returned two results for the same function call"),
+            };
+        }
+        Ok(())
     }
 
     /// Receive one host-to-guest dispatch action.

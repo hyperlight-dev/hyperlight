@@ -21,6 +21,11 @@ pub trait Registerable {
         name: &str,
         hf: impl Into<HostFunction<Output, Args>>,
     ) -> Result<()>;
+    fn register_host_function_async<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: Arc<dyn Fn(Args) -> Box<dyn Future<Output = Result<Output>>> + Send + Sync + 'static>,
+    ) -> Result<()>;
 }
 impl Registerable for UninitializedSandbox {
     fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
@@ -39,6 +44,31 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
+        (*hfs).register_host_function(name.to_string(), entry);
+        Ok(())
+    }
+    fn register_host_function_async<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: Arc<dyn Fn(Args) -> Box<dyn Future<Output = Result<Output>>> + Send + Sync + 'static>,
+    ) -> Result<()> {
+        let entry = FunctionEntry {
+            function: TypeErasedHostFunction::Async(Box::new(move |args| {
+                let hf = hf.clone();
+                Box::new(async move {
+                    let args = Args::from_value(args)?;
+                    let mut hf = Box::into_pin(hf(args));
+                    Ok(<Output as SupportedReturnType>::into_value(hf.as_mut().await?))
+                })
+            })),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        let mut hfs = self
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
         (*hfs).register_host_function(name.to_string(), entry);
         Ok(())
     }
@@ -88,6 +118,36 @@ impl Registerable for crate::Sandbox {
         self.snapshot = None;
         Ok(())
     }
+    fn register_host_function_async<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: Arc<dyn Fn(Args) -> Box<dyn Future<Output = Result<Output>>> + Send + Sync + 'static>,
+    ) -> Result<()>  {
+        let entry = FunctionEntry {
+            function: TypeErasedHostFunction::Async(Box::new(move |args| {
+                let hf = hf.clone();
+                Box::new(async move {
+                    let args = Args::from_value(args)?;
+                    let mut hf = Box::into_pin(hf(args));
+                    Ok(<Output as SupportedReturnType>::into_value(hf.as_mut().await?))
+                })
+            })),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        let mut hfs = self
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+        (*hfs).register_host_function(name.to_string(), entry);
+
+        // Registration mutates the host-function set captured in
+        // snapshots. Invalidate the cached snapshot so the next
+        // `snapshot()` call reflects the updated registry.
+        self.snapshot = None;
+        Ok(())
+    }
 }
 
 impl Registerable for crate::HostFunctions {
@@ -105,6 +165,28 @@ impl Registerable for crate::HostFunctions {
         self.inner_mut()
             .register_host_function(name.to_string(), entry);
         Ok(())
+    }
+    fn register_host_function_async<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: Arc<dyn Fn(Args) -> Box<dyn Future<Output = Result<Output>>> + Send + Sync + 'static>,
+    ) -> Result<()>  {
+        let entry = FunctionEntry {
+            function: TypeErasedHostFunction::Async(Box::new(move |args| {
+                let hf = hf.clone();
+                Box::new(async move {
+                    let args = Args::from_value(args)?;
+                    let mut hf = Box::into_pin(hf(args));
+                    Ok(<Output as SupportedReturnType>::into_value(hf.as_mut().await?))
+                })
+            })),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        self.inner_mut()
+            .register_host_function(name.to_string(), entry);
+            Ok(())
     }
 }
 
@@ -143,8 +225,9 @@ where
     func: Arc<dyn Function<Output, Args, HyperlightError> + Send + Sync + 'static>,
 }
 
-pub(crate) struct TypeErasedHostFunction {
-    func: Box<dyn Fn(Vec<ParameterValue>) -> Result<ReturnValue> + Send + Sync + 'static>,
+pub(crate) enum TypeErasedHostFunction {
+    Sync(Box<dyn Fn(Vec<ParameterValue>) -> Result<ReturnValue> + Send + Sync + 'static>),
+    Async(Box<dyn Fn(Vec<ParameterValue>) -> Box<dyn Future<Output = Result<ReturnValue>>> + Send + Sync + 'static>),
 }
 
 impl<Args, Output> HostFunction<Output, Args>
@@ -160,7 +243,10 @@ where
 
 impl TypeErasedHostFunction {
     pub(crate) fn call(&self, args: Vec<ParameterValue>) -> Result<ReturnValue> {
-        (self.func)(args)
+        match self {
+            TypeErasedHostFunction::Sync(func) => func(args),
+            TypeErasedHostFunction::Async(func) => Err(HyperlightError::Error("async in sync path".to_string())),
+        }
     }
 }
 
@@ -192,12 +278,10 @@ where
     Output: SupportedReturnType,
 {
     fn from(func: HostFunction<Output, Args>) -> TypeErasedHostFunction {
-        TypeErasedHostFunction {
-            func: Box::new(move |args: Vec<ParameterValue>| {
-                let args = Args::from_value(args)?;
-                Ok(func.call(args)?.into_value())
-            }),
-        }
+        TypeErasedHostFunction::Sync(Box::new(move |args: Vec<ParameterValue>| {
+            let args = Args::from_value(args)?;
+            Ok(func.call(args)?.into_value())
+        }))
     }
 }
 

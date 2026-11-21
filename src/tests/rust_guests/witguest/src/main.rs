@@ -245,6 +245,8 @@ impl test::wit::Ast<Positive> for Guest {
     async fn das(slf: hyperlight_common::access::SyncHandle<Self>, foo: String) -> String {
         static HI_WAKER: Mutex<Option<core::task::Waker>> = Mutex::new(None);
         static BYE_WAS_CALLED: Mutex<bool> = Mutex::new(false);
+        let mut host = Host {};
+        let hsh = hyperlight_common::access::SyncHandle::new();
         if foo == "hi" {
             core::future::poll_fn(|cx| {
                 if *BYE_WAS_CALLED.lock() {
@@ -254,7 +256,9 @@ impl test::wit::Ast<Positive> for Guest {
                     core::task::Poll::Pending
                 }
             }).await;
-            foo
+            use core::future::Future;
+            let mut hf = core::pin::pin!(<Host as test::wit::Ast<Negative>>::das(hsh.clone(), foo));
+            core::future::poll_fn(|cx| hsh.with(&mut host, || hf.as_mut().poll(cx))).await
         } else {
             *BYE_WAS_CALLED.lock() = true;
             if let Some(ref waker) = *HI_WAKER.lock() {

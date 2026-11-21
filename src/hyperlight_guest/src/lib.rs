@@ -19,3 +19,10 @@ pub mod paging;
 pub mod prim_alloc;
 pub mod transport;
 pub mod types;
+
+pub enum PendingHostCall {
+    Unpolled,
+    Polled(core::task::Waker),
+    Completed(Result<hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult, error::HyperlightGuestError>),
+}
+pub static mut PENDING_HOST_CALLS: alloc::collections::BTreeMap<hyperlight_common::virtq::Token, (u32, PendingHostCall)> = alloc::collections::BTreeMap::new();

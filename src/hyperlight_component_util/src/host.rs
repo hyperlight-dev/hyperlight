@@ -311,21 +311,53 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
             } = get_self;
             let ret = format_ident!("ret");
             let marshal_result = emit_hl_marshal_result(s, ret.clone(), &ft.result);
-            quote! {
-                let #outer_id = #orig_id.clone();
-                let captured_rts = rts.clone();
-                sb.register_host_function(#hln, move |#(#pds),*| {
-                    let mut rts = captured_rts.lock()
-                        .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
-                    #inner_preamble
-                    let #ret = #callname(
-                        ::std::borrow::BorrowMut::<#type_inst>::borrow_mut(
-                            &mut #inner_id
-                        ),
-                        #(#pus),*
-                    );
-                    Ok(#marshal_result)
-                })?;
+            if ft.async_ {
+                quote! {
+                    let #outer_id = #orig_id.clone();
+                    sb.register_host_function_async(#hln, ::alloc::sync::Arc::new(move |#(#pds),*| {
+                        let sh = ::hyperlight_common::access::SyncHandle::new();
+                        let fut = #callname(
+                            sh.clone(),
+                            #(#pus),*
+                        );
+                        let #outer_id = #outer_id.clone();
+                        ::alloc::boxed::Box::new(async move {
+                            let mut fut = ::core::pin::pin!(fut);
+                            let #ret = ::core::future::poll_fn(|cx| {
+                                match (|| {
+                                    #inner_preamble
+                                    sh.with(::std::borrow::BorrowMut::<#type_inst>::borrow_mut(
+                                        &mut #inner_id
+                                    ), || {
+                                        ::hyperlight_host::Result::Ok(fut.as_mut().poll(cx))
+                                    })
+                                })() {
+                                    ::core::result::Result::Ok(::core::task::Poll::Pending) => ::core::task::Poll::Pending,
+                                    ::core::result::Result::Ok(::core::task::Poll::Ready(ret)) => ::core::task::Poll::Ready(::core::result::Result::Ok(ret)),
+                                    ::core::result::Result::Err(e) => ::core::task::Poll::Ready(::core::result::Result::Err(e)),
+                                }
+                            }).await?;
+                            ::core::result::Result::Ok(#marshal_result)
+                        })
+                    }))?;
+                }
+            } else {
+                quote! {
+                    let #outer_id = #orig_id.clone();
+                    let captured_rts = rts.clone();
+                    sb.register_host_function(#hln, move |#(#pds),*| {
+                        let mut rts = captured_rts.lock()
+                            .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
+                        #inner_preamble
+                        let #ret = #callname(
+                            ::std::borrow::BorrowMut::<#type_inst>::borrow_mut(
+                                &mut #inner_id
+                            ),
+                            #(#pus),*
+                        );
+                        Ok(#marshal_result)
+                    })?;
+                }
             }
         }
         ExternDesc::Type(_) => {

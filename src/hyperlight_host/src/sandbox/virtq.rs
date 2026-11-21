@@ -1,5 +1,6 @@
-use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use hyperlight_common::{flatbuffer_wrappers::{function_call::FunctionCallType, function_types::FunctionCallResult, guest_error::{ErrorCode, GuestError}}, transport::MsgKind, virtq::{MemOps, PolledChain, ReplyChain, VirtqConsumer}};
 
@@ -30,6 +31,8 @@ pub(crate) fn dispatch_guest_requests(
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
     pending_guest_calls: &mut BTreeMap<u32, PendingGuestCall>,
     waiting_for_sync_cid: Option<u32>,
+    tasks: &mut Vec<Pin<Box<dyn Future<Output = ()>>>>,
+    sbsh: hyperlight_common::access::SyncHandle<crate::sandbox::Sandbox>,
 ) -> Result<(bool, Option<FunctionCallResult>), GuestRequestError> {
     let max_recv_len = mem_mgr.layout.get_g2h_queue_dims().pool_len();
 
@@ -47,7 +50,7 @@ pub(crate) fn dispatch_guest_requests(
         })?;
 
         match maybe_next {
-            Some(chains) => match dispatch_guest_request(mem_mgr.execution_mode, host_funcs, consumer, pending_guest_calls, waiting_for_sync_cid, chains)? {
+            Some(chains) => match dispatch_guest_request(mem_mgr.execution_mode, host_funcs, consumer, pending_guest_calls, waiting_for_sync_cid, tasks, sbsh.clone(), chains)? {
                 // Return early if we got a sync call result
                 fcr@Some(_) => return Ok((true, fcr)),
                 _ => {},
@@ -65,6 +68,8 @@ fn dispatch_guest_request(
     consumer: &mut G2hConsumer,
     pending_guest_calls: &mut BTreeMap<u32, PendingGuestCall>,
     waiting_for_sync_cid: Option<u32>,
+    tasks: &mut Vec<Pin<Box<dyn Future<Output = ()>>>>,
+    sbsh: hyperlight_common::access::SyncHandle<crate::sandbox::Sandbox>,
     (request, reply): PolledChain<HostMemOps>,
 ) -> Result<Option<FunctionCallResult>, GuestRequestError> {
     let mut message = RecvMessage::new(request)
@@ -73,14 +78,17 @@ fn dispatch_guest_request(
     let mut sync_result = None;
 
     let resp = match message.kind() {
-        MsgKind::Request => handle_request(mode, host_funcs, &mut message, reply)?,
-        MsgKind::Log => handle_guest_log(&mut message, reply)?,
+        MsgKind::Request => handle_request(mode, host_funcs, tasks, sbsh, message, reply)?,
+        MsgKind::Log => {
+            let resp = handle_guest_log(&mut message, reply)?;
+            Some((message, resp))
+        },
         MsgKind::Response if let Some(cid) = waiting_for_sync_cid && message.cid() == cid => {
             let result = message
                 .decode_result()
                 .map_err(|error| GuestRequestError::ReadGuestFunctionCallResult(error.to_string()))?;
             sync_result = Some(result);
-            reply
+            Some((message, reply))
         },
         MsgKind::Response => {
             let result = message
@@ -93,7 +101,7 @@ fn dispatch_guest_request(
                 PendingGuestCall::Polled(waker) => waker.wake(),
                 PendingGuestCall::Completed(_) => return Err(GuestRequestError::ReadGuestFunctionCallResult("Guest returned two results for the same function call".to_string())),
             };
-            reply
+            Some((message, reply))
         }
 
         kind => {
@@ -103,9 +111,11 @@ fn dispatch_guest_request(
         }
     };
 
-    consumer
-        .complete(message.into_chain(), resp)
-        .map_err(|err| GuestRequestError::Complete(err.to_string()))?;
+    if let Some((message, resp)) = resp {
+        consumer
+            .complete(message.into_chain(), resp)
+            .map_err(|err| GuestRequestError::Complete(err.to_string()))?;
+    }
 
     Ok(sync_result)
 }
@@ -113,9 +123,11 @@ fn dispatch_guest_request(
 fn handle_request(
     mode: ExecutionMode,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    message: &mut RecvMessage,
+    tasks: &mut Vec<Pin<Box<dyn Future<Output = ()>>>>,
+    sbsh: hyperlight_common::access::SyncHandle<crate::sandbox::Sandbox>,
+    mut message: RecvMessage,
     reply: ReplyChain<HostMemOps>
-) -> Result<ReplyChain<HostMemOps>, GuestRequestError> {
+) -> Result<Option<(RecvMessage, ReplyChain<HostMemOps>)>, GuestRequestError> {
     if mode == ExecutionMode::Restricted{
         return Err(GuestRequestError::HostCallDuringCheckpoint);
     }
@@ -146,37 +158,89 @@ fn handle_request(
     let name = call.function_name;
     let args = call.parameters.unwrap_or_default();
 
-    let result = host_funcs
+    let hf = host_funcs
         .try_lock()
-        .map_err(|err| GuestRequestError::LockFailed(file!(), line!(), err.to_string()))?
-        .call_host_function(&name, args)
-        .map_err(|err| GuestError::new(ErrorCode::HostFunctionError, err.to_string()));
+        .map_err(|err| GuestRequestError::LockFailed(file!(), line!(), err.to_string()))?;
+    let hf = hf
+        .get_host_function(&name)
+        .map_err(|err| GuestRequestError::ReadHostFunctionCall(err.to_string()))?;
 
-    let result = FunctionCallResult::new(result);
-    let resp_capacity = resp.capacity();
+    use crate::func::host_functions::TypeErasedHostFunction;
+    match hf {
+        TypeErasedHostFunction::Sync(func) => {
+            let result = func(args)
+                .map_err(|err| GuestError::new(ErrorCode::HostFunctionError, err.to_string()));
+            let result = FunctionCallResult::new(result);
+            let resp_capacity = resp.capacity();
 
-    // Capacity is checked before writing, so an oversized result leaves the
-    // chain untouched and can be replaced with a bounded transport error.
-    if !virtq::try_write_response(&mut resp, cid, &result)
-        .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
-    {
-        let fallback = FunctionCallResult::new(Err(GuestError::new(
-            ErrorCode::HostFunctionError,
-            "Host response exceeds virtqueue capacity".into(),
-        )));
+            // Capacity is checked before writing, so an oversized result leaves the
+            // chain untouched and can be replaced with a bounded transport error.
+            if !virtq::try_write_response(&mut resp, cid, &result)
+                .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
+            {
+                let fallback = FunctionCallResult::new(Err(GuestError::new(
+                    ErrorCode::HostFunctionError,
+                    "Host response exceeds virtqueue capacity".into(),
+                )));
 
-        // The guest must receive a response for this correlation id. Failure
-        // to fit even this small error makes the transport unusable.
-        if !virtq::try_write_response(&mut resp, cid, &fallback)
-            .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
-        {
-            return Err(GuestRequestError::WriteHostFunctionResponse(format!(
-                "Writable response capacity {resp_capacity} cannot hold a transport error"
-            )));
+                // The guest must receive a response for this correlation id. Failure
+                // to fit even this small error makes the transport unusable.
+                if !virtq::try_write_response(&mut resp, cid, &fallback)
+                    .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
+                {
+                    return Err(GuestRequestError::WriteHostFunctionResponse(format!(
+                        "Writable response capacity {resp_capacity} cannot hold a transport error"
+                    )));
+                }
+            }
+
+            Ok(Some((message, resp.into())))
+        }
+        TypeErasedHostFunction::Async(func) => {
+            let hf = func(args);
+            tasks.push(Box::pin(async move {
+                let mut func = Box::into_pin(hf);
+                let result = func.as_mut().await
+                    .map_err(|err| GuestError::new(ErrorCode::HostFunctionError, err.to_string()));
+                let result = FunctionCallResult::new(result);
+                let resp_capacity = resp.capacity();
+
+                // todo: don't be silent here
+                let _err = (|| {
+                    // Capacity is checked before writing, so an oversized result leaves the
+                    // chain untouche dand can be replaced with a bounded transport error.
+                    if !virtq::try_write_response(&mut resp, cid, &result)
+                        .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
+                   {
+                       let fallback = FunctionCallResult::new(Err(GuestError::new(
+                           ErrorCode::HostFunctionError,
+                           "Host response exceeds virtqueue capacity".into(),
+                       )));
+
+                       // The guest must receive a response for this correlation id. Failure
+                       // to fit even this small error makes the transport unusable.
+                       if !virtq::try_write_response(&mut resp, cid, &fallback)
+                           .map_err(|err| GuestRequestError::WriteHostFunctionResponse(err.to_string()))?
+                        {
+                            return Err(GuestRequestError::WriteHostFunctionResponse(format!(
+                                "Writable response capacity {resp_capacity} cannot hold a transport error"
+                            )));
+                        }
+                   }
+
+                    sbsh.get(|sb| {
+                        let consumer = sb.mem_mgr.g2h_consumer.as_mut()
+                            .ok_or_else(|| GuestRequestError::Complete(format!("could not get consumer")))?;
+                        consumer
+                            .complete(message.into_chain(), resp)
+                            .map_err(|err| GuestRequestError::Complete(err.to_string()))?;
+                        Ok(())
+                    })
+                })();
+            }));
+            Ok(None)
         }
     }
-
-    Ok(resp.into())
 }
 
 fn handle_guest_log(

@@ -178,6 +178,14 @@ impl FunctionRegistry {
         self.call_host_func_impl(name, args)
     }
 
+    pub(super) fn get_host_function(&self, name: &str) -> Result<&TypeErasedHostFunction> {
+        let FunctionEntry { function, .. } = self
+            .functions_map
+            .get(name)
+            .ok_or_else(|| HostFunctionNotFound(name.to_string()))?;
+        Ok(function)
+    }
+
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn call_host_func_impl(&self, name: &str, args: Vec<ParameterValue>) -> Result<ReturnValue> {
         let FunctionEntry {

@@ -139,8 +139,11 @@ pub(crate) fn internal_dispatch_function() {
             self.made_progress.store(true, core::sync::atomic::Ordering::Relaxed);
         }
     }
+    // Since this is a different Waker than the last time we were in
+    // the guest, Waker::wake() calls by ctx.recv_g2h_responses() will
+    // be lost, so always assume we should poll our futures.
     let mpt = alloc::sync::Arc::new(MadeProgressTracker {
-        made_progress: core::sync::atomic::AtomicBool::new(false),
+        made_progress: core::sync::atomic::AtomicBool::new(true),
     });
     let waker: core::task::Waker = mpt.clone().into();
     let mut cx = core::task::Context::from_waker(&waker);
@@ -170,6 +173,8 @@ pub(crate) fn internal_dispatch_function() {
             // run the future dispatch loop at least once
             mpt.made_progress.store(true, core::sync::atomic::Ordering::Relaxed);
         }
+
+        transport::with_ctx(|ctx| ctx.recv_g2h_responses());
 
         if !mpt.made_progress.load(core::sync::atomic::Ordering::Relaxed) {
             // No new opportunities to do something have arisen since

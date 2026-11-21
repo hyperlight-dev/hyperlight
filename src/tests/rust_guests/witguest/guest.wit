@@ -17,6 +17,7 @@ world test {
   import roundtrip;
   import host-resource;
   import now: func() -> u64;
+  import ast;
   export roundtrip;
   export test-host-resource;
   export failable;

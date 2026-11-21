@@ -56,23 +56,35 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                     ResourceItemName::Static(mn) => quote! { #mn },
                 },
             };
-            let self_ = if ft.async_ {
-                quote! { slf: ::hyperlight_common::access::SyncHandle<Self> }
+            let decl = if ft.async_ {
+                quote! {
+                    async fn #n(slf: ::hyperlight_common::access::SyncHandle<Self>, #(#param_decls),*) -> #result_decl {
+                        let mut args = ::alloc::vec::Vec::new();
+                        #(#marshal)*
+                        let #ret = ::hyperlight_guest_bin::host_comm::call_host_function_async::<::alloc::vec::Vec<u8>>(
+                            #hln,
+                            Some(args),
+                            ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
+                        ).await;
+                        let ::core::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                        #[allow(clippy::unused_unit)]
+                        #unmarshal
+                    }
+                }
             } else {
-                quote! { &mut self }
-            };
-            let decl = quote! {
-                fn #n(#self_, #(#param_decls),*) -> #result_decl {
-                    let mut args = ::alloc::vec::Vec::new();
-                    #(#marshal)*
-                    let #ret = ::hyperlight_guest_bin::host_comm::call_host_function::<::alloc::vec::Vec<u8>>(
-                        #hln,
-                        Some(args),
-                        ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
-                    );
-                    let ::core::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
-                    #[allow(clippy::unused_unit)]
-                    #unmarshal
+                quote! {
+                    fn #n(&mut self, #(#param_decls),*) -> #result_decl {
+                        let mut args = ::alloc::vec::Vec::new();
+                        #(#marshal)*
+                        let #ret = ::hyperlight_guest_bin::host_comm::call_host_function::<::alloc::vec::Vec<u8>>(
+                            #hln,
+                            Some(args),
+                            ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
+                        );
+                        let ::core::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                        #[allow(clippy::unused_unit)]
+                        #unmarshal
+                    }
                 }
             };
             match fnname {

@@ -146,6 +146,8 @@ impl HyperlightVm {
                 host_funcs,
                 &mut std::collections::BTreeMap::new(),
                 None,
+                &mut Vec::new(),
+                hyperlight_common::access::SyncHandle::new(),
             )?;
             if !did_work { break; }
         }
