@@ -686,6 +686,16 @@ fn emit_extern_decl<'a, 'b, 'c>(
         ExternDesc::CoreModule(_) => panic!("core module (im/ex)ports are not supported"),
         ExternDesc::Func(ft) => {
             let mut s = s.push_origin(origin_was_export, ed.kebab_name);
+            let make_future_if_async = |toks| if ft.async_ {
+                quote! { impl core::future::Future<Output = #toks> }
+            } else {
+                toks
+            };
+            let self_ = if ft.async_ {
+                quote! { slf: ::hyperlight_common::access::SyncHandle<Self> }
+            } else {
+                quote! { &mut self }
+            };
             match kebab_to_fn(ed.kebab_name) {
                 FnName::Plain(n) => {
                     let params = ft
@@ -694,8 +704,9 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .map(|p| emit_func_param(&mut s, p))
                         .collect::<Vec<_>>();
                     let result = emit_func_result(&mut s, &ft.result);
+                    let result = make_future_if_async(result);
                     quote! {
-                        fn #n(&mut self, #(#params),*) -> #result;
+                        fn #n(#self_, #(#params),*) -> #result;
                     }
                 }
                 FnName::Associated(r, n) => {
@@ -710,20 +721,23 @@ fn emit_extern_decl<'a, 'b, 'c>(
                         .collect::<Vec<_>>();
                     match n {
                         ResourceItemName::Constructor => {
+                            let result = make_future_if_async(quote! { Self::T });
                             sv.cur_trait().items.extend(quote! {
-                                fn new(&mut self, #(#params),*) -> Self::T;
+                                fn new(#self_, #(#params),*) -> #result;
                             });
                         }
                         ResourceItemName::Method(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = make_future_if_async(result);
                             sv.cur_trait().items.extend(quote! {
-                                fn #n(&mut self, #(#params),*) -> #result;
+                                fn #n(#self_, #(#params),*) -> #result;
                             });
                         }
                         ResourceItemName::Static(n) => {
                             let result = emit_func_result(&mut sv, &ft.result);
+                            let result = make_future_if_async(result);
                             sv.cur_trait().items.extend(quote! {
-                                fn #n(&mut self, #(#params),*) -> #result;
+                                fn #n(#self_, #(#params),*) -> #result;
                             });
                         }
                     }

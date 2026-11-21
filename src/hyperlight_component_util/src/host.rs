@@ -42,26 +42,82 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         .map(|p| emit_hl_marshal_param(s, kebab_to_var(p.name.name), &p.ty))
                         .collect::<Vec<_>>();
                     let unmarshal = emit_hl_unmarshal_result(s, ret.clone(), &ft.result);
-                    quote! {
-                        fn #n(&mut self, #(#param_decls),*) -> #result_decl {
-                            let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
-                            let marshalled = {
+                    if ft.async_ {
+                        quote! {
+                            // TODO: it would be nice if the sync part
+                            // of this (to just shove something in the
+                            // queue if there is space for it) could
+                            // happen synchronously, making it harder
+                            // to accidentally deadlock by waiting for
+                            // a guest function call that is waiting
+                            // for another guest function call which
+                            // we have started but never polled
+                            async fn #n(slf: ::hyperlight_common::access::SyncHandle<Self>, #(#param_decls),*) -> #result_decl {
+                                // TODO: properly support resources in
+                                // arguments and return values for
+                                // async functions. There is a
+                                // significant problem here, which is
+                                // that the way we do resources in the
+                                // sync case depends on the guarantee
+                                // that the LentResourceGuard will
+                                // have its destructor run, which we
+                                // provide in that case by
+                                // accumulating the guards in (a vec
+                                // on) the stack frame of a function
+                                // call call, which provides the
+                                // relevant guarantee. There is
+                                // unfortunately no reasonable
+                                // equivalent when we actually do need
+                                // the borrow held across an await
+                                // point, as here, so the API cannot
+                                // be quite as nice as the old one. It
+                                // may ultimately be necessary for the
+                                // host to pass ownership of any
+                                // resource objects it is interested
+                                // in to the sandbox executor, with a
+                                // way to attempt to get them back if
+                                // they are no longer in use in the
+                                // future. It might also be possible
+                                // to fall back to simply directly
+                                // exposing the indices as wasmtime
+                                // does.
+                                let marshalled = {
+                                    slf.get(|slf| {
+                                        #[allow(clippy::unused_unit)]
+                                        (#(#marshal,)*)
+                                    })
+                                };
+                                let ch = slf.get(|slf| slf.sb.as_async().map(|x| x.clone()))?;
+                                let #ret: ::std::vec::Vec::<u8> = <S as ::hyperlight_host::sandbox::Callable>::call_async::<::std::vec::Vec::<u8>>(&ch,
+                                    #hln,
+                                    marshalled,
+                                ).await?;
+                                #[allow(clippy::unused_unit)]
+                                ::std::result::Result::Ok(#unmarshal)
+                            }
+                        }
+                    } else {
+                        quote! {
+                            fn #n(&mut self, #(#param_decls),*) -> #result_decl {
+                                let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
+                                let marshalled = {
+                                    let mut rts = self.rt
+                                    .lock()
+                                        .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
+                                    #[allow(clippy::unused_unit)]
+                                    (#(#marshal,)*)
+                                };
+                                let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(self.sb.as_sync()?,
+                                    #hln,
+                                    marshalled,
+                                )?;
+                                #[allow(clippy::unused_unit)]
                                 let mut rts = self.rt
                                     .lock()
                                     .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
                                 #[allow(clippy::unused_unit)]
-                                (#(#marshal,)*)
-                            };
-                            let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
-                                #hln,
-                                marshalled,
-                            )?;
-                            #[allow(clippy::unused_unit)]
-                            let mut rts = self.rt
-                                .lock()
-                                .map_err(<::hyperlight_host::error::HyperlightError as From<_>>::from)?;
-                            #[allow(clippy::unused_unit)]
-                            ::std::result::Result::Ok(#unmarshal)
+                                ::std::result::Result::Ok(#unmarshal)
+                            }
                         }
                     }
                 }
@@ -394,8 +450,26 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         .collect::<Vec<_>>();
 
     s.root_mod.items.extend(quote! {
+        pub enum SyncOrAsync<S, A> {
+            Sync(S),
+            Async(A),
+        }
+        impl<S, A> SyncOrAsync<S, A> {
+            pub fn as_sync(&mut self) -> ::hyperlight_host::Result<&mut S> {
+                match self {
+                    SyncOrAsync::Sync(s) => ::core::result::Result::Ok(s),
+                    _ => ::core::result::Result::Err(::hyperlight_host::error::HyperlightError::Error("expected sync found async".to_string())),
+                }
+            }
+            pub fn as_async(&mut self) -> ::hyperlight_host::Result<&mut A> {
+                match self {
+                    SyncOrAsync::Async(a) => ::core::result::Result::Ok(a),
+                    _ => ::core::result::Result::Err(::hyperlight_host::error::HyperlightError::Error("expected async found sync".to_string())),
+                }
+            }
+        }
         pub struct #wrapper_name<T: #ns::#import_trait<::hyperlight_common::component::Negative>, S: ::hyperlight_host::sandbox::Callable> {
-            pub(crate) sb: S,
+            pub(crate) sb: SyncOrAsync<S, S::AsyncHandle>,
             pub(crate) rt: ::std::sync::Arc<::std::sync::Mutex<#rtsid<T>>>,
         }
         pub(crate) fn register_host_functions<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send + 'static, S: ::hyperlight_host::func::Registerable>(sb: &mut S, i: I) -> <::hyperlight_common::component::Positive as ::hyperlight_common::component::Positivity>::CallResult<::std::sync::Arc<::std::sync::Mutex<#rtsid<I>>>> {
@@ -407,13 +481,28 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
         impl<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send, S: ::hyperlight_host::sandbox::Callable> #ns::#export_trait<::hyperlight_common::component::Positive, I> for #wrapper_name<I, S> {
             #(#exports)*
         }
+        impl<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send, S: ::hyperlight_host::sandbox::Callable> #wrapper_name<I, S> {
+            pub async fn block_on<'a, R, E: From<::hyperlight_host::error::HyperlightError>, FR: Future<Output = core::result::Result<R, E>> + 'a>(&mut self, fut: impl FnOnce(::hyperlight_common::access::SyncHandle<Self>) -> FR) -> core::result::Result<R, E> {
+                let sh = ::hyperlight_common::access::SyncHandle::new();
+                let rt = self.rt.clone();
+                self.sb.as_sync()?.block_on(|ch| async move {
+                    let mut fut = ::core::pin::pin!(fut(sh.clone()));
+                    ::std::future::poll_fn(|cx|
+                        sh.with(&mut Self {
+                            sb: SyncOrAsync::Async(ch.clone()),
+                            rt: rt.clone(),
+                        }, || fut.as_mut().poll(cx))
+                    ).await
+                }).await
+            }
+        }
         impl #ns::#r#trait<::hyperlight_common::component::Positive> for ::hyperlight_host::sandbox::UninitializedSandbox {
             type Exports<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::Sandbox>;
             fn instantiate<I: #ns::#import_trait<::hyperlight_common::component::Negative> + ::std::marker::Send + 'static>(mut self, i: I) -> <::hyperlight_common::component::Positive as ::hyperlight_common::component::Positivity>::CallResult<Self::Exports<I>> {
                 let rts = register_host_functions(&mut self, i)?;
                 let sb = self.evolve()?;
                 Ok(#wrapper_name {
-                    sb,
+                    sb: SyncOrAsync::Sync(sb),
                     rt: rts,
                 })
             }

@@ -109,6 +109,7 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 serde_json = "1.0"
 hyperlight-component-macro = { workspace = true }
 libtest-mimic = "0.8.2"
+futures = "0.3.34"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.62", features = [

@@ -88,6 +88,9 @@ fn emit_extern_decl<'b>(s: &mut S<'_, 'b>, ed: &ExternDecl<'b>, top: bool) -> Re
 }
 
 fn visit_func<'b>(s: &mut S<'_, 'b>, f: &Func<'b>) -> Result<(), Error> {
+    if f.async_ {
+        panic!("async functions not supported in C#");
+    }
     for p in &f.params {
         visit_value(s, &p.ty)?;
     }

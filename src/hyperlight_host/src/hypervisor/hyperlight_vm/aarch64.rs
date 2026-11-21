@@ -144,6 +144,7 @@ impl HyperlightVm {
             let (did_work, _) = crate::sandbox::virtq::dispatch_guest_requests(
                 mem_mgr,
                 host_funcs,
+                &mut std::collections::BTreeMap::new(),
                 None,
             )?;
             if !did_work { break; }

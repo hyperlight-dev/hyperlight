@@ -114,8 +114,18 @@ pub(crate) static HEAP_ALLOCATOR: GuestHeap = GuestHeap::new(Manual);
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap = ProfiledLockedHeap(GuestHeap::new(Manual));
 
-pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
+#[derive(Clone, Copy)]
+pub(crate) enum MaybeAsyncGuestFunc {
+    Sync(GuestFunc),
+    Async(AsyncGuestFunc),
+}
+pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<MaybeAsyncGuestFunc> =
     GuestFunctionRegister::new();
+
+// TODO: get rid of the double-indirection using PinVec or similar
+// TODO: consider getting rid of the extra Box by implementing the only
+// future actually used as a structure manually
+pub(crate) static mut RUNNING_FUTURES: alloc::vec::Vec<core::pin::Pin<alloc::boxed::Box<dyn Future<Output = ()>>>> = alloc::vec::Vec::new();
 
 const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
 
@@ -390,4 +400,4 @@ pub mod __private {
 #[cfg(feature = "macros")]
 pub use hyperlight_guest_macro::{dispatch, guest_function, host_function, main};
 
-pub use crate::guest_function::definition::GuestFunc;
+pub use crate::guest_function::definition::{AsyncGuestFunc, GuestFunc};

@@ -65,7 +65,7 @@ fn call_names(source: &str, call: &str) -> Vec<String> {
 
 #[test]
 fn wire_names_match_rust_host_bindings() {
-    let rust = util::read_wit_type(util::WitSource::Wit(GUEST_WIT.into()), None, |kebab, ct| {
+    let rust = util::read_wit_type(util::WitSource::Wit(GUEST_WIT.into()), Some("test-sync-only".to_string()), |kebab, ct| {
         emit::run_state(false, false, |s| {
             rtypes::emit_toplevel(s, &kebab, ct);
             host::emit_toplevel(s, &kebab, ct);
@@ -74,7 +74,7 @@ fn wire_names_match_rust_host_bindings() {
     let mut rust_names = BTreeSet::new();
     string_literals(rust, &mut rust_names);
 
-    let cs = generate_from_path(&PathBuf::from(GUEST_WIT), None, "Test").unwrap();
+    let cs = generate_from_path(&PathBuf::from(GUEST_WIT), Some("test-sync-only"), "Test").unwrap();
     let cs_names = call_names(&cs, "_caller.Call(")
         .into_iter()
         .chain(call_names(&cs, "registry.Register("))

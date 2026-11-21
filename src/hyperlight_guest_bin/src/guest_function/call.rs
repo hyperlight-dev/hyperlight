@@ -29,7 +29,7 @@ fn guest_dispatch_function_default(function_call: FunctionCall) -> Result<Return
 }
 
 #[instrument(skip_all, level = "Info")]
-pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnValue> {
+pub(crate) fn call_guest_function(cid: u32, function_call: FunctionCall) -> Result<()> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
         return Err(HyperlightGuestError::new(
@@ -58,7 +58,33 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnV
         // Verify that the function call has the correct parameter types and length.
         registered_function_definition.verify_parameters(&function_call_parameter_types)?;
 
-        (registered_function_definition.function_pointer)(function_call)
+        match registered_function_definition.function_pointer {
+            crate::MaybeAsyncGuestFunc::Sync(sf) => {
+                let result = (sf)(function_call)
+                    .map_err(|err| GuestError::new(err.kind, err.message));
+                transport::with_ctx(|ctx| {
+                    ctx.send_h2g_result(cid, FunctionCallResult::new(result))
+                        .expect("Failed to send function call result");
+                })
+            },
+            crate::MaybeAsyncGuestFunc::Async(af) => {
+                // This is currently safe, because we are single
+                // threaded, but we should find a better way to do
+                // this.
+                unsafe {
+                    #[allow(static_mut_refs)]
+                    (&mut crate::RUNNING_FUTURES).push(alloc::boxed::Box::pin(async move {
+                        let fc = alloc::boxed::Box::into_pin(af(function_call));
+                        let result = fc.await
+                            .map_err(|err| GuestError::new(err.kind, err.message));
+                        transport::with_ctx(|ctx| {
+                            ctx.send_h2g_result(cid, FunctionCallResult::new(result))
+                                .expect("Failed to send function call result");
+                        })
+                    }));
+                }
+            },
+        }
     } else {
         // The given function is not registered. The guest should implement a function called
         // guest_dispatch_function to handle this.
@@ -66,8 +92,15 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<ReturnV
             fn guest_dispatch_function(function_call: FunctionCall) -> Result<ReturnValue>;
         }
 
-        unsafe { guest_dispatch_function(function_call) }
+        let result = unsafe { guest_dispatch_function(function_call) }
+            .map_err(|err| GuestError::new(err.kind, err.message));
+        transport::with_ctx(|ctx| {
+            ctx.send_h2g_result(cid, FunctionCallResult::new(result))
+                .expect("Failed to send function call result");
+        })
     }
+
+    Ok(())
 }
 
 // This function only runs one iteration of the dispatch loop. The
@@ -96,20 +129,70 @@ pub(crate) fn internal_dispatch_function() {
         tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
     });
 
-    let dispatch = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
-        .expect("H2G dispatch deserialization failed");
-
-    let result = match dispatch {
-        DispatchAction::Call(cid, fc) => {
-            // Reseed the libc PRNG if requested by the host.
-            #[cfg(feature = "libc")]
-            crate::refresh_libc_rng();
-
-            let res = call_guest_function(fc).map_err(|err| GuestError::new(err.kind, err.message));
-            Some((cid, FunctionCallResult::new(res)))
-        }
-        DispatchAction::SnapshotCheckpoint => None,
+    // TODO: consider using a Waker per running future to avoid
+    // spurious wakeups
+    struct MadeProgressTracker {
+        made_progress: core::sync::atomic::AtomicBool,
     };
+    impl alloc::task::Wake for MadeProgressTracker {
+        fn wake(self: alloc::sync::Arc<Self>) {
+            self.made_progress.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let mpt = alloc::sync::Arc::new(MadeProgressTracker {
+        made_progress: core::sync::atomic::AtomicBool::new(false),
+    });
+    let waker: core::task::Waker = mpt.clone().into();
+    let mut cx = core::task::Context::from_waker(&waker);
+    loop {
+
+        if let Some(dispatch) = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
+            .expect("H2G dispatch deserialization failed")
+        {
+            match dispatch {
+                DispatchAction::Call(cid, fc) => {
+                    // Reseed the libc PRNG if requested by the host.
+                    #[cfg(feature = "libc")]
+                    crate::refresh_libc_rng();
+
+                    let res = call_guest_function(cid, fc)
+                        .map_err(|err| GuestError::new(err.kind, err.message));
+                }
+                DispatchAction::SnapshotCheckpoint => {
+                    // SAFETY: Host chain accesses are complete. The checkpoint protocol
+                    // keeps consumers stopped until the host resets them.
+                    unsafe { transport::prepare_snapshot() }
+                        .expect("Failed to prepare transport for snapshot");
+                }
+            }
+            // Regardless of whether or not an existing future was
+            // woken, new ones may have been enqueued, so we need to
+            // run the future dispatch loop at least once
+            mpt.made_progress.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+
+        if !mpt.made_progress.load(core::sync::atomic::Ordering::Relaxed) {
+            // No new opportunities to do something have arisen since
+            // the last time we were here, so there is nothing more
+            // that we could possibly want to do in the guest
+            break;
+        }
+
+        // Make as much progress on futures as possible
+        mpt.made_progress.store(false, core::sync::atomic::Ordering::Relaxed);
+        unsafe {
+            // This is currently safe, because we are single
+            // threaded, but we should find a better way to do
+            // this.
+            #[allow(static_mut_refs)]
+            (&mut crate::RUNNING_FUTURES).retain_mut(|future| {
+                match future.as_mut().poll(&mut cx) {
+                    core::task::Poll::Pending => true,
+                    core::task::Poll::Ready(()) => false,
+                }
+            });
+        }
+    }
 
     // All this tracing logic shall be done right before the call to `hlt` which is done after this
     // function returns
@@ -128,18 +211,5 @@ pub(crate) fn internal_dispatch_function() {
         // Ensure that any tracing output during the call is flushed to
         // the host, if necessary.
         hyperlight_guest_tracing::flush();
-    }
-
-    match result {
-        Some((cid, result)) => transport::with_ctx(|ctx| {
-            ctx.send_h2g_result(cid, result)
-                .expect("Failed to send function call result");
-        }),
-        None => {
-            // SAFETY: Host chain accesses are complete. The checkpoint protocol
-            // keeps consumers stopped until the host resets them.
-            unsafe { transport::prepare_snapshot() }
-                .expect("Failed to prepare transport for snapshot");
-        }
     }
 }

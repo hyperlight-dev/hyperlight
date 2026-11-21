@@ -10,7 +10,7 @@ extern crate hyperlight_guest;
 
 use alloc::string::String;
 
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 mod bindings;
 use bindings::*;
@@ -241,6 +241,33 @@ impl test::wit::Failable<Positive> for Guest {
     }
 }
 
+impl test::wit::Ast<Positive> for Guest {
+    async fn das(slf: hyperlight_common::access::SyncHandle<Self>, foo: String) -> String {
+        static HI_WAKER: Mutex<Option<core::task::Waker>> = Mutex::new(None);
+        static BYE_WAS_CALLED: Mutex<bool> = Mutex::new(false);
+        if foo == "hi" {
+            core::future::poll_fn(|cx| {
+                if *BYE_WAS_CALLED.lock() {
+                    core::task::Poll::Ready(())
+                } else {
+                    *HI_WAKER.lock() = Some(cx.waker().clone());
+                    core::task::Poll::Pending
+                }
+            }).await;
+            foo
+        } else {
+            *BYE_WAS_CALLED.lock() = true;
+            if let Some(ref waker) = *HI_WAKER.lock() {
+                waker.wake_by_ref();
+            }
+            foo
+        }
+    }
+    /*async fn das(&mut self, foo: String) -> String {
+        foo
+    }*/
+}
+
 #[allow(refining_impl_trait)]
 impl test::wit::TestExports<Positive, Host> for Guest {
     type Roundtrip = Self;
@@ -268,6 +295,10 @@ impl test::wit::TestExports<Positive, Host> for Guest {
             <Host as test::wit::TestImports<Negative>>::now(&mut Host {})
         ))
     }
+    type Ast = Self;
+    fn ast(&mut self) -> &mut Self {
+        self
+    }
 }
 
 impl Extra<Positive> for Guest {
@@ -276,15 +307,20 @@ impl Extra<Positive> for Guest {
     }
 }
 
-static GUEST_STATE: Mutex<Guest> = Mutex::new(Guest {
+static GUEST_STATE: RwLock<Guest> = RwLock::new(Guest {
     host_resource: None,
 });
 
 impl bindings::Guest for Guest {
     fn with_guest_state<R, F: FnOnce(&mut Self) -> R>(f: F) -> R {
-        let mut g = GUEST_STATE.lock();
+        let mut g = GUEST_STATE.write();
         f(&mut g)
     }
+    /*async fn with_async_guest_state<R: core::future::Future, F: for<'a> FnOnce(&'a Self) -> R>(f: F) -> R::Output {
+        let mut g = GUEST_STATE.read();
+        let pinned: core::pin::Pin<&mut R> = core::pin::pin!(f(&g));
+        pinned.await
+    }*/
 }
 
 #[no_mangle]

@@ -6,7 +6,7 @@ use alloc::string::String;
 
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 
-use super::definition::{GuestFunc, GuestFunctionDefinition};
+use super::definition::{AsyncGuestFunc, GuestFunc, GuestFunctionDefinition};
 use crate::REGISTERED_GUEST_FUNCTIONS;
 use crate::guest_function::definition::AsGuestFunctionDefinition;
 
@@ -51,7 +51,7 @@ impl<F: Copy> GuestFunctionRegister<F> {
     }
 }
 
-impl GuestFunctionRegister<GuestFunc> {
+impl GuestFunctionRegister<crate::MaybeAsyncGuestFunc> {
     pub fn register_fn<Output, Args>(
         &mut self,
         name: impl Into<String>,
@@ -61,7 +61,7 @@ impl GuestFunctionRegister<GuestFunc> {
         Output: SupportedReturnType,
     {
         let gfd = f.as_guest_function_definition(name);
-        self.register(gfd);
+        self.register(gfd.map(crate::MaybeAsyncGuestFunc::Sync));
     }
 }
 
@@ -71,7 +71,17 @@ pub fn register_function(function_definition: GuestFunctionDefinition<GuestFunc>
         // should find a better way to do this, see issue #808
         #[allow(static_mut_refs)]
         let gfd = &mut REGISTERED_GUEST_FUNCTIONS;
-        gfd.register(function_definition);
+        gfd.register(function_definition.map(crate::MaybeAsyncGuestFunc::Sync));
+    }
+}
+
+pub fn register_function_async(function_definition: GuestFunctionDefinition<AsyncGuestFunc>) {
+    unsafe {
+        // This is currently safe, because we are single threaded, but we
+        // should find a better way to do this, see issue #808
+        #[allow(static_mut_refs)]
+        let gfd = &mut REGISTERED_GUEST_FUNCTIONS;
+        gfd.register(function_definition.map(crate::MaybeAsyncGuestFunc::Async));
     }
 }
 

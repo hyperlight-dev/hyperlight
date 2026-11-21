@@ -432,10 +432,8 @@ impl<'p, 'a> Ctx<'p, 'a> {
     }
 
     fn elab_func<'c>(&'c mut self, ft: &ComponentFuncType<'a>) -> Result<Func<'a>, Error<'a>> {
-        if ft.async_ {
-            panic!("async not yet supported")
-        }
         Ok(Func {
+            async_: ft.async_,
             params: ft
                 .params
                 .iter()

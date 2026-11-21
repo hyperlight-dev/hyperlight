@@ -191,8 +191,8 @@ impl Trait {
     }
     /// Build a token stream for this entire trait definition
     pub fn into_tokens(&mut self, n: Ident) -> TokenStream {
-        let trait_colon = if !self.supertraits.is_empty() {
-            quote! { : }
+        let trait_plus = if !self.supertraits.is_empty() || true {
+            quote! { + }
         } else {
             quote! {}
         };
@@ -206,7 +206,7 @@ impl Trait {
         let tvs = self.tv_toks();
         let items = &self.items;
         quote! {
-            pub trait #n #tvs #trait_colon #(#supertraits)+* { #items }
+            pub trait #n #tvs : Sized #trait_plus #(#supertraits)+* { #items }
         }
     }
 }
@@ -1013,6 +1013,7 @@ mod tests {
         ExternDecl {
             kebab_name,
             desc: ExternDesc::Func(crate::etypes::Func {
+                async_: false,
                 params: Vec::new(),
                 result: None,
             }),

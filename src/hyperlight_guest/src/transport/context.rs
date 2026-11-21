@@ -259,13 +259,13 @@ impl GuestContext {
     ///
     /// External `ByteChunks` retain their owner-backed H2G slots. Contiguous
     /// `VecBytes` values copy directly into their final `Vec<u8>`.
-    pub fn recv_h2g_dispatch(&mut self) -> Result<DispatchAction> {
+    pub fn recv_h2g_dispatch(&mut self) -> Result<Option<DispatchAction>> {
         self.g2h_producer
             .reclaim()
             .with_context(|| "G2H completion reclaim failed")?;
 
         let Some(used) = self.h2g_producer.poll()? else {
-            bail!("H2G: expected a guest function call buffer");
+            return Ok(None);
         };
 
         let mut payload = match used {
@@ -284,7 +284,7 @@ impl GuestContext {
 
         match header.kind {
             MsgKind::SnapshotCheckpoint => {
-                return Ok(DispatchAction::SnapshotCheckpoint);
+                return Ok(Some(DispatchAction::SnapshotCheckpoint));
             }
             MsgKind::Request if header.cid != 0 => {}
             _ => bail!("H2G buffer has invalid request framing"),
@@ -323,7 +323,7 @@ impl GuestContext {
         }
 
         let call = codec::decode_request(header.control_len, payload)?;
-        Ok(DispatchAction::Call(header.cid, call))
+        Ok(Some(DispatchAction::Call(header.cid, call)))
     }
 
     /// Return a guest-function result and replenish H2G receive buffers.

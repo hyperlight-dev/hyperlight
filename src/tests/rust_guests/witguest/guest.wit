@@ -1,6 +1,6 @@
 package test:wit;
 
-world test {
+world test-sync-only {
   import roundtrip;
   import host-resource;
   import now: func() -> u64;
@@ -12,6 +12,21 @@ world test {
     ping: func(x: u8) -> u8;
   }
 }
+
+world test {
+  import roundtrip;
+  import host-resource;
+  import now: func() -> u64;
+  export roundtrip;
+  export test-host-resource;
+  export failable;
+  export run: func(input: string) -> result<string, string>;
+  export extra: interface {
+    ping: func(x: u8) -> u8;
+  }
+  export ast;
+}
+
 
 interface roundtrip {
   roundtrip-bool: func(x: bool) -> bool;
@@ -127,3 +142,8 @@ interface test-host-resource {
 interface failable {
   will-trap: func() -> string;
 }
+
+interface ast {
+  das: async func(foo: string) -> string;
+}
+

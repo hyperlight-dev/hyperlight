@@ -128,6 +128,7 @@ pub type Result<'a> = Option<Value<'a>>;
 /// functype_e in the specification
 #[derive(Debug, Clone)]
 pub struct Func<'a> {
+    pub async_: bool,
     pub params: Vec<Param<'a>>,
     pub result: Result<'a>,
 }

@@ -376,14 +376,14 @@ mod wit_test {
                 .unwrap(),
             "before snapshot"
         );
-        let snapshot = source.sb.snapshot().unwrap();
+        let snapshot = source.sb.as_sync().unwrap().snapshot().unwrap();
 
         let mut rust_target = sb_from_guest(simple_guest_as_pathbuf());
         assert_eq!(
-            rust_target.sb.call::<i32>("AddToStatic", 17i32).unwrap(),
+            rust_target.sb.as_sync().unwrap().call::<i32>("AddToStatic", 17i32).unwrap(),
             17
         );
-        rust_target.sb.restore(snapshot.clone()).unwrap();
+        rust_target.sb.as_sync().unwrap().restore(snapshot.clone()).unwrap();
         assert_eq!(
             rust_target
                 .roundtrip()
@@ -392,7 +392,7 @@ mod wit_test {
             "restored over Rust"
         );
         assert!(matches!(
-            rust_target.sb.call::<i32>("GetStatic", ()),
+            rust_target.sb.as_sync().unwrap().call::<i32>("GetStatic", ()),
             Err(HyperlightError::GuestError(
                 ErrorCode::GuestFunctionNotFound,
                 name
@@ -401,10 +401,10 @@ mod wit_test {
 
         let mut c_target = sb_from_guest(c_simple_guest_as_pathbuf());
         assert_eq!(
-            c_target.sb.call::<i32>("StackAllocate", 256i32).unwrap(),
+            c_target.sb.as_sync().unwrap().call::<i32>("StackAllocate", 256i32).unwrap(),
             256
         );
-        c_target.sb.restore(snapshot).unwrap();
+        c_target.sb.as_sync().unwrap().restore(snapshot).unwrap();
         assert_eq!(
             c_target
                 .roundtrip()
@@ -413,7 +413,7 @@ mod wit_test {
             "restored over C"
         );
         assert!(matches!(
-            c_target.sb.call::<i32>("StackAllocate", 512i32),
+            c_target.sb.as_sync().unwrap().call::<i32>("StackAllocate", 512i32),
             Err(HyperlightError::GuestError(
                 ErrorCode::GuestFunctionNotFound,
                 name
@@ -439,8 +439,8 @@ mod wit_test {
                 .unwrap(),
             "WIT before Rust"
         );
-        rust_target.sb.restore(rust_snapshot).unwrap();
-        assert_eq!(rust_target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+        rust_target.sb.as_sync().unwrap().restore(rust_snapshot).unwrap();
+        assert_eq!(rust_target.sb.as_sync().unwrap().call::<i32>("GetStatic", ()).unwrap(), 42);
 
         let mut c_source =
             UninitializedSandbox::new(GuestBinary::FilePath(c_simple_guest_as_pathbuf()), None)
@@ -458,9 +458,9 @@ mod wit_test {
                 .unwrap(),
             "WIT before C"
         );
-        c_target.sb.restore(c_snapshot).unwrap();
+        c_target.sb.as_sync().unwrap().restore(c_snapshot).unwrap();
         assert_eq!(
-            c_target.sb.call::<i32>("StackAllocate", 512i32).unwrap(),
+            c_target.sb.as_sync().unwrap().call::<i32>("StackAllocate", 512i32).unwrap(),
             512
         );
     }
@@ -483,22 +483,22 @@ mod wit_test {
                 .unwrap(),
             "WIT source"
         );
-        let wit_snapshot = wit_source.sb.snapshot().unwrap();
+        let wit_snapshot = wit_source.sb.as_sync().unwrap().snapshot().unwrap();
 
         let mut target = sb_from_guest(c_simple_guest_as_pathbuf());
-        assert_eq!(target.sb.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
+        assert_eq!(target.sb.as_sync().unwrap().call::<i32>("StackAllocate", 256i32).unwrap(), 256);
 
-        target.sb.restore(rust_snapshot).unwrap();
-        assert_eq!(target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+        target.sb.as_sync().unwrap().restore(rust_snapshot).unwrap();
+        assert_eq!(target.sb.as_sync().unwrap().call::<i32>("GetStatic", ()).unwrap(), 42);
         assert!(matches!(
-            target.sb.call::<i32>("StackAllocate", 512i32),
+            target.sb.as_sync().unwrap().call::<i32>("StackAllocate", 512i32),
             Err(HyperlightError::GuestError(
                 ErrorCode::GuestFunctionNotFound,
                 name
             )) if name == "StackAllocate"
         ));
 
-        target.sb.restore(wit_snapshot).unwrap();
+        target.sb.as_sync().unwrap().restore(wit_snapshot).unwrap();
         assert_eq!(
             target
                 .roundtrip()
@@ -507,7 +507,7 @@ mod wit_test {
             "WIT restored"
         );
         assert!(matches!(
-            target.sb.call::<i32>("GetStatic", ()),
+            target.sb.as_sync().unwrap().call::<i32>("GetStatic", ()),
             Err(HyperlightError::GuestError(
                 ErrorCode::GuestFunctionNotFound,
                 name
@@ -722,6 +722,18 @@ mod wit_test {
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
+    }
+
+    #[test]
+    fn test_async_guest_call() {
+        let mut sb = sb();
+        futures::executor::block_on(sb.block_on(|ch| async move {
+            let f1 = crate::test::wit::Ast::das(ch.clone(), "hi".to_string());
+            let f2 = crate::test::wit::Ast::das(ch.clone(), "bye".to_string());
+            assert!(f2.await.unwrap() == "bye");
+            assert!(f1.await.unwrap() == "hi");
+            hyperlight_host::Result::Ok(())
+        }));
     }
 }
 

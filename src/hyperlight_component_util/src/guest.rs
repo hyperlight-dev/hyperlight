@@ -56,8 +56,13 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                     ResourceItemName::Static(mn) => quote! { #mn },
                 },
             };
+            let self_ = if ft.async_ {
+                quote! { slf: ::hyperlight_common::access::SyncHandle<Self> }
+            } else {
+                quote! { &mut self }
+            };
             let decl = quote! {
-                fn #n(&mut self, #(#param_decls),*) -> #result_decl {
+                fn #n(#self_, #(#param_decls),*) -> #result_decl {
                     let mut args = ::alloc::vec::Vec::new();
                     #(#marshal)*
                     let #ret = ::hyperlight_guest_bin::host_comm::call_host_function::<::alloc::vec::Vec<u8>>(
@@ -153,8 +158,8 @@ fn emit_import_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
 /// Emit (via returning) code to register this particular extern
 /// definition with Hyperlight as a callable function.
 fn emit_export_extern_decl<'a, 'b, 'c>(
-    s: &'c mut State<'a, 'b>,
-    path: Vec<String>,
+    mut s: &'c mut State<'a, 'b>,
+    path: Vec<WitName>,
     ed: &'c ExternDecl<'b>,
 ) -> TokenStream {
     match &ed.desc {
@@ -178,8 +183,9 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                 .unzip::<_, _, Vec<_>, Vec<_>>();
             let get_instance = path
                 .iter()
-                .map(|export| {
-                    let n = kebab_to_getter(split_wit_name(export).name);
+                .skip(1)
+                .map(|wn| {
+                    let n = kebab_to_getter(wn.name);
                     // TODO: Check that name resolution here works
                     // properly with nested instances (not yet supported
                     // in WIT, so we need to use a raw component type to
@@ -190,19 +196,93 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                     }
                 })
                 .collect::<Vec<_>>();
+            let export_trait = kebab_to_exports_name(&path[0].name);
+            let export_trait_ns = path[0].namespace_path();
+            let export_trait_ref = quote! { #export_trait_ns::#export_trait<::hyperlight_common::component::Positive, Host> };
+            let (get_type, _) = path
+                .iter()
+                .skip(1)
+                .fold((quote! { T }, export_trait_ref), |(inner_type, inner_trait_ref), wn| {
+                    // todo: dedup with similar logic in host.rs
+                    let trait_path = wn
+                        .namespace_idents()
+                        .iter()
+                        .chain(&[kebab_to_type(wn.name)])
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let trait_ref =
+                        rtypes::trait_ref(&mut s, rtypes::EmitPositivity::Opposite, true, &trait_path);
+                    let n = kebab_to_type(wn.name);
+                    // TODO: Check that name resolution here works
+                    // properly with nested instances (not yet supported
+                    // in WIT, so we need to use a raw component type to
+                    // check)
+                    (quote! {
+                        <#inner_type as #inner_trait_ref>::#n
+                    }, trait_ref)
+                });
+            let real_result_type = rtypes::emit_func_result(s, &ft.result);
             let ret = format_ident!("ret");
             let marshal_result = emit_hl_marshal_result(s, ret.clone(), &ft.result);
             let trait_path = s.cur_trait_path();
+            if ft.async_ {
+                return quote! {
+                    fn #n<T: Guest>(fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> alloc::boxed::Box<dyn core::future::Future<Output = ::hyperlight_guest::error::Result<::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue>>> {
+                        struct GuestFunctionFuture<T: Guest, F: ::core::future::Future> {
+                            // todo: remove the need for the extra Pin<Box<>>
+                            future: ::core::pin::Pin<::alloc::boxed::Box<F>>,
+                            handle: ::hyperlight_common::access::SyncHandle<#get_type>,
+                        }
+                        impl<T: Guest, F: ::core::future::Future<Output = #real_result_type>> ::core::future::Future for GuestFunctionFuture<T, F> {
+                            type Output = ::hyperlight_guest::error::Result<::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue>;
+                            fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+                                <T as Guest>::with_guest_state(|state| {
+                                    #(#get_instance)*
+                                    let slf = &mut *self;
+                                    slf.handle.with(state, || {
+                                        match slf.future.as_mut().poll(cx) {
+                                            core::task::Poll::Ready(#ret) => {
+                                                core::task::Poll::Ready(::core::result::Result::Ok(::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue::VecBytes(#marshal_result)))
+                                            },
+                                            core::task::Poll::Pending => core::task::Poll::Pending,
+                                        }
+                                    })
+                                })
+                            }
+                        }
+                        let sync_handle: ::hyperlight_common::access::SyncHandle<#get_type> = ::hyperlight_common::access::SyncHandle::new();
+                        #(#pds)*
+                        ::alloc::boxed::Box::new(GuestFunctionFuture::<T, _> {
+                            future: ::alloc::boxed::Box::into_pin(::alloc::boxed::Box::new(#trait_path::#n(sync_handle.clone(), #(#pus,)*))),
+                            handle: sync_handle,
+                        })
+                    }
+                    ::hyperlight_guest_bin::guest_function::register::register_function_async(
+                        ::hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition::new(
+                            ::alloc::string::ToString::to_string(#fname),
+                            ::alloc::vec![#(#pts),*],
+                            ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
+                            #n::<T>
+                        )
+                    );
+                };
+            }
+
+            let (async_, await_, register_function, with_guest_state) = if ft.async_ {
+                (quote! { async }, quote! { .await }, quote! { register_function_async }, quote! { with_async_guest_state })
+            } else {
+                (quote! { }, quote! { }, quote! { register_function }, quote! { with_guest_state})
+            };
             quote! {
-                fn #n<T: Guest>(fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue> {
-                    <T as Guest>::with_guest_state(|state| {
+                #async_ fn #n<T: Guest>(fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue> {
+                    <T as Guest>::#with_guest_state(#async_ |state| {
                         #(#pds)*
                         #(#get_instance)*
-                        let #ret = #trait_path::#n(state, #(#pus,)*);
+                        let #ret = #trait_path::#n(state, #(#pus,)*) #await_;
                         ::core::result::Result::Ok(::hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue::VecBytes(#marshal_result))
-                    })
+                    }) #await_
                 }
-                ::hyperlight_guest_bin::guest_function::register::register_function(
+                ::hyperlight_guest_bin::guest_function::register::#register_function(
                     ::hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition::new(
                         ::alloc::string::ToString::to_string(#fname),
                         ::alloc::vec![#(#pts),*],
@@ -219,7 +299,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
         ExternDesc::Instance(it) => {
             let wn = split_wit_name(ed.kebab_name);
             let mut path = path.clone();
-            path.push(ed.kebab_name.to_string());
+            path.push(wn.clone());
             emit_export_instance(s, wn.clone(), path, it)
         }
         ExternDesc::Component(_) => {
@@ -238,7 +318,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
 fn emit_export_instance<'a, 'b, 'c>(
     s: &'c mut State<'a, 'b>,
     wn: WitName,
-    path: Vec<String>,
+    path: Vec<WitName>,
     it: &'c Instance<'b>,
 ) -> TokenStream {
     let mut s = s.with_instance(&wn);
@@ -318,7 +398,7 @@ fn emit_component<'a, 'b, 'c>(
         .unqualified
         .exports
         .iter()
-        .map(|ed| emit_export_extern_decl(&mut s, Vec::new(), ed))
+        .map(|ed| emit_export_extern_decl(&mut s, vec![wn.clone()], ed))
         .collect::<Vec<_>>();
 
     s.root_mod.items.extend(quote! {
@@ -354,11 +434,13 @@ pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Comp
         /// Because Hyperlight guest functions can't close over any
         /// state, this function is used on each guest call to acquire
         /// any state that the guest functions might need.
-        pub trait Guest: #ns::#export_trait<::hyperlight_common::component::Positive, Host> {
+        pub trait Guest: #ns::#export_trait<::hyperlight_common::component::Positive, Host> + 'static {
             fn with_guest_state<R, F: FnOnce(&mut Self) -> R>(f: F) -> R;
+            //async fn with_async_guest_state<R: ::core::future::Future, F: for<'a> FnOnce(&'a Self) -> R>(f: F) -> R::Output;
         }
         /// Register all guest functions.
         pub fn hyperlight_guest_init<T: Guest>() {
+            //let GUEST: ::hyperlight_common::access::SyncHandle<T> = ::hyperlight_common::access::SyncHandle::<T>::new();
             #tokens
         }
     });

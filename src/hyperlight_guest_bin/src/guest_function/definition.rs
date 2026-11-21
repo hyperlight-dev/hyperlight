@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -17,6 +18,9 @@ use hyperlight_guest::error::{HyperlightGuestError, Result};
 /// The function pointer type for Rust guest functions.
 pub type GuestFunc = fn(FunctionCall) -> Result<ReturnValue>;
 
+/// The function pointer type for async Rust guest functions.
+pub type AsyncGuestFunc = fn(FunctionCall) -> Box<dyn Future<Output = Result<ReturnValue>>>;
+
 /// The definition of a function exposed from the guest to the host.
 ///
 /// The type parameter `F` is the function pointer type. For Rust guests this
@@ -32,6 +36,17 @@ pub struct GuestFunctionDefinition<F: Copy> {
     /// The function pointer to the guest function.
     pub function_pointer: F,
 }
+impl<F: Copy> GuestFunctionDefinition<F> {
+    pub(crate) fn map<G: Copy>(self, f: impl FnOnce(F) -> G) -> GuestFunctionDefinition<G> {
+        GuestFunctionDefinition {
+            function_name: self.function_name,
+            parameter_types: self.parameter_types,
+            return_type: self.return_type,
+            function_pointer: f(self.function_pointer),
+        }
+    }
+}
+
 
 /// Trait for functions that can be converted to a [`GuestFunc`].
 #[doc(hidden)]

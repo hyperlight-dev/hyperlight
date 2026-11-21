@@ -133,6 +133,7 @@ where
 
     fn func(&self, ft: &Func<'a>) -> Result<Func<'a>, Self::Error> {
         Ok(Func {
+            async_: ft.async_,
             params: self.params(&ft.params)?,
             result: self.result(&ft.result)?,
         })

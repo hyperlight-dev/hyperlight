@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
 
 use hyperlight_common::{flatbuffer_wrappers::{function_call::FunctionCallType, function_types::FunctionCallResult, guest_error::{ErrorCode, GuestError}}, transport::MsgKind, virtq::{MemOps, PolledChain, ReplyChain, VirtqConsumer}};
 
 use crate::{mem::{mgr::{ExecutionMode, SandboxMemoryManager}, shared_mem::HostSharedMemory, virtq::{self, G2hConsumer, RecvMessage, mem::HostMemOps}}, sandbox::host_funcs::FunctionRegistry};
+use super::initialized::PendingGuestCall;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 
@@ -26,6 +28,7 @@ pub enum GuestRequestError {
 pub(crate) fn dispatch_guest_requests(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
+    pending_guest_calls: &mut BTreeMap<u32, PendingGuestCall>,
     waiting_for_sync_cid: Option<u32>,
 ) -> Result<(bool, Option<FunctionCallResult>), GuestRequestError> {
     let max_recv_len = mem_mgr.layout.get_g2h_queue_dims().pool_len();
@@ -38,14 +41,13 @@ pub(crate) fn dispatch_guest_requests(
 
     let mut has_done_work = false;
 
-    // Drain entries, processing logs, until we find one call.
     loop {
         let maybe_next = consumer.poll(max_recv_len).map_err(|error| {
             GuestRequestError::ReadHostFunctionCall(format!("G2H poll failed: {error}"))
         })?;
 
         match maybe_next {
-            Some(chains) => match dispatch_guest_request(mem_mgr.execution_mode, host_funcs, consumer, waiting_for_sync_cid, chains)? {
+            Some(chains) => match dispatch_guest_request(mem_mgr.execution_mode, host_funcs, consumer, pending_guest_calls, waiting_for_sync_cid, chains)? {
                 // Return early if we got a sync call result
                 fcr@Some(_) => return Ok((true, fcr)),
                 _ => {},
@@ -61,6 +63,7 @@ fn dispatch_guest_request(
     mode: ExecutionMode,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
     consumer: &mut G2hConsumer,
+    pending_guest_calls: &mut BTreeMap<u32, PendingGuestCall>,
     waiting_for_sync_cid: Option<u32>,
     (request, reply): PolledChain<HostMemOps>,
 ) -> Result<Option<FunctionCallResult>, GuestRequestError> {
@@ -72,16 +75,24 @@ fn dispatch_guest_request(
     let resp = match message.kind() {
         MsgKind::Request => handle_request(mode, host_funcs, &mut message, reply)?,
         MsgKind::Log => handle_guest_log(&mut message, reply)?,
-        MsgKind::Response if let Some(cid) = waiting_for_sync_cid => {
-            if message.cid() != cid {
-                return Err(GuestRequestError::ReadGuestFunctionCallResult(
-                    "G2H guest function result correlation ID mismatch".into(),
-                ));
-            }
+        MsgKind::Response if let Some(cid) = waiting_for_sync_cid && message.cid() == cid => {
             let result = message
                 .decode_result()
                 .map_err(|error| GuestRequestError::ReadGuestFunctionCallResult(error.to_string()))?;
             sync_result = Some(result);
+            reply
+        },
+        MsgKind::Response => {
+            let result = message
+                .decode_result()
+                .map_err(|error| GuestRequestError::ReadGuestFunctionCallResult(error.to_string()))?;
+            let pending_entry = pending_guest_calls.get_mut(&message.cid())
+                .ok_or_else(|| GuestRequestError::ReadHostFunctionCall("cid entry missing".to_string()))?;
+            match core::mem::replace(pending_entry, PendingGuestCall::Completed(Ok(result))) {
+                PendingGuestCall::Unpolled => {},
+                PendingGuestCall::Polled(waker) => waker.wake(),
+                PendingGuestCall::Completed(_) => return Err(GuestRequestError::ReadGuestFunctionCallResult("Guest returned two results for the same function call".to_string())),
+            };
             reply
         }
 
