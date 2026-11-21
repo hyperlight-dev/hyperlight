@@ -66,7 +66,7 @@ pub fn set_global_context(context: GuestContext) {
     *GLOBAL_CONTEXT.0.borrow_mut() = Some(context);
 }
 
-/// Prepare pool aliases before dispatch, logging, or tracing.
+/// Reconstruct generation ownership before dispatch, logging, or tracing.
 #[inline]
 pub fn maybe_refresh() {
     with_ctx(GuestContext::maybe_refresh);

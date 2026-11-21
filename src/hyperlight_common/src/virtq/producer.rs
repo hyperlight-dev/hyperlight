@@ -183,7 +183,7 @@ impl<M> InflightTable<M> {
 /// Dropping a producer does not stop its peer, so inflight owners are
 /// deliberately leaked to avoid freeing buffers the peer may still use.
 /// Drain completions for all submitted chains, or stop the peer and call
-/// [`reset`](Self::reset), before dropping the producer.
+/// [`retire`](Self::retire) to release its queue-owned allocations.
 ///
 /// # Example
 ///
@@ -316,6 +316,11 @@ where
     /// Borrow the backend used for ring access and new chains.
     pub fn memory(&self) -> &M {
         self.inner.mem()
+    }
+
+    /// Ring geometry independent of its current cursors.
+    pub fn layout(&self) -> Layout {
+        self.inner.layout()
     }
 
     /// Reclaim scratch slots held by retained views without changing in-flight chains.
@@ -515,6 +520,29 @@ where
         self.inner.reset()?;
         self.next_token = 0;
 
+        self.release_inflight()
+    }
+
+    /// Release queue-owned allocations without accessing shared memory.
+    ///
+    /// Returned payload views keep their original leases. Buffered completions
+    /// must be drained before retirement.
+    ///
+    /// # Safety
+    ///
+    /// All consumer-side chain handles must be dropped. No peer may access
+    /// this producer's allocations again. Surviving pool handles must not
+    /// allocate into backing owned by another producer.
+    pub unsafe fn retire(mut self) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        self.release_inflight()
+    }
+
+    /// Release in-flight owners after the caller has stopped their peer.
+    fn release_inflight(&mut self) -> Result<(), VirtqError> {
         let mut maybe_err = None;
 
         while let Some(inflight) = self.inflight.pop() {
@@ -1757,6 +1785,67 @@ mod tests {
         assert_eq!(producer.poll().unwrap().unwrap().token(), token);
         assert_eq!(producer.pool().num_free(), 3);
         assert_eq!(producer.num_free(), ring.len());
+    }
+
+    #[test]
+    fn retirement_preserves_new_generation_requests_and_leases() {
+        let ring = make_ring(4);
+        let mem = FaultMem::new(ring.mem());
+        let slots = SlotLayout::new(ring.layout().dev_evt_addr() + 0x100, 64, 3).unwrap();
+        let old_pool = SlotPool::new(slots).unwrap();
+        let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(64).unwrap());
+        let notif = TestNotifier::new();
+
+        let mut old =
+            VirtqProducer::new(ring.layout(), mem.clone(), notif.clone(), old_pool.clone());
+
+        let chain = old.chain().writable(64).build().unwrap();
+        old.submit(chain).unwrap();
+
+        let info = BootstrapInfo::prefilled(ring.layout(), old_pool.layout()).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notif.clone());
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"next generation").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        // SAFETY: The old peer has no handles. The retained lease has no views.
+        // Only this consumer has accessed the fresh bootstrap.
+        let mut producer =
+            unsafe { VirtqProducer::from_bootstrap(info, mem.clone(), notif) }.unwrap();
+
+        let mut before = vec![0; Layout::query_size(ring.len())];
+        let table_addr = ring.layout().desc_table_addr();
+        mem.read(table_addr, &mut before).unwrap();
+        mem.fail_write_at(0);
+
+        // SAFETY: The old queue has no consumer handles or future peer accesses.
+        // The retained lease can only return its slot to the old pool.
+        unsafe { old.retire() }.unwrap();
+
+        let mut after = vec![0; before.len()];
+        mem.read(table_addr, &mut after).unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(old_pool.num_live(), 1);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        drop(retained);
+        assert_eq!(old_pool.num_live(), 0);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        let received = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(received.as_ref(), b"next generation");
+        drop(received);
+        assert_eq!(producer.pool().num_free(), 1);
+
+        // SAFETY: The consumer has no live handles and stays stopped.
+        unsafe { producer.retire() }.unwrap();
     }
 
     #[test]

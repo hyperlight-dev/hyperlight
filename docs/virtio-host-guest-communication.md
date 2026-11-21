@@ -404,8 +404,9 @@ Each completed `GuestMapping` owns a separate page-aligned range. Mapping occurs
 when the guest receives the buffer. Capture, restore, and cloning preserve its
 pointer and contents.
 
-Retained aliases reach captured memory after restore. The first transport
-entry swaps allocators that hold retained slots, preserving posted reservations.
+Capture installs independent backing for retained aliases in the source sandbox
+and in restored sandboxes. The first transport entry in each generation
+reconstructs both producers and their pool bookkeeping.
 Retained leases keep their original pools, so their release cannot free slots
 in the new pool.
 Retained values keep their aliases until their final owner drops. Reusing
@@ -423,15 +424,15 @@ lengths as untrusted.
   size before the host writes to them.
 * G2H control and external values are copied into host owned storage before
   host code receives them.
-* Capture and load require the canonical transport state described below.
+* Loaded ring images must match the deterministic bootstrap state described below.
 
 ## Snapshot checkpoint
 
 The transport arena lives in scratch and is not captured as ordinary guest
 memory. Guest producer and pool bookkeeping is normal guest state, while ring
-and pool bytes live in scratch. Snapshot capture needs a canonical transport
-state. Retained aliases map live payload pages outside the scratch map, so
-capture copies them as ordinary memory.
+and pool bytes live in scratch. Capture prepares deterministic bootstrap images
+without reading the live rings. Retained aliases map live payload pages outside
+the scratch map, so capture copies them as ordinary memory.
 
 `Sandbox` tracks whether queue traffic occurred after the last
 canonical boundary. A cached or clean snapshot needs no VM entry. A dirty
@@ -451,28 +452,30 @@ snapshot uses this flow:
   |<------------------------------------| halt
   | reset both consumers                |
   | require CheckpointComplete          |
-  | read and validate ring images       |
+  | prepare bootstrap images            |
   | capture memory                      |
+  | install captured memory             |
+  | install bootstrap rings             |
+  | attach fresh host consumers         |
 ```
 
 Checkpoint preparation keeps retained leases and aliases intact without
-payload copying. Capture leaves the source queues and allocator ready for
-continued use, including when memory capture fails.
+payload copying. Bootstrap images stay separate from live scratch until memory
+capture succeeds. A failed memory capture leaves the source transport usable.
 
-The canonical state is:
+The bootstrap state is:
 
 * G2H is empty at cursor zero.
-* H2G starts at cursor zero with one writable descriptor per free slot,
-  bounded by queue size. Each descriptor names a distinct, configured-size
-  slot aligned relative to the pool start. Available descriptors form a prefix
-  followed by zeroed descriptors.
-* Guest producer and pool bookkeeping matches the rings and current leases.
-* Driver and device event suppression is normalized.
+* H2G starts at cursor zero with one writable descriptor per configured pool
+  slot, bounded by queue size. Descriptor IDs and buffer addresses follow
+  fresh allocation order. Unposted descriptors are zero.
+* Driver and device notifications are enabled at offset zero.
 * Host consumers start at cursor zero.
 
-The snapshot stores normal guest memory plus the two canonical ring images.
-Construction and loading validate the ring images against the finalized
-layout. The layout and copied ring images remain immutable.
+The snapshot stores normal guest memory plus the two generated ring images.
+Loading requires an exact match to the shared initializer for the finalized
+layout. Partial prefill and reordered IDs or buffers are rejected.
+The layout and ring images remain immutable.
 The OCI representation places ring images in the
 [transport layer](./snapshot-oci-format.md). Retained payloads use the ordinary
 memory layer through their aliases. The mailbox and host consumer cursors are
@@ -480,8 +483,8 @@ not stored.
 
 ### Restore
 
-Capture and load validate ring lengths and canonical transport state against
-the layout. Load also checks the scratch size the transport blob records.
+Load validates ring lengths and bootstrap state against the layout. It also
+checks the scratch size the transport blob records.
 Admitted images and their layout remain immutable.
 
 Transport admission precedes changes to sandbox status, the cached snapshot,
@@ -489,27 +492,32 @@ and memory mappings.
 
 Restore writes the arena GPA metadata, a `CheckpointComplete` mailbox value,
 and both ring images into fresh scratch. It attaches new host consumers at
-cursor zero. Normal guest memory restores the matching producers, pools,
-leases, and aliases.
+cursor zero. Normal guest memory restores the captured producers, pools,
+leases, and aliases. The producers and pools are replaced on
+the first entry in the new generation.
 Initialized `restore` and `from_snapshot` are ready for the first H2G request
 before guest entry. Pre-initialization snapshots use normal guest startup.
 
-The first request after restore must fit the H2G capacity posted at checkpoint.
-Retained buffers can reduce this prefill if their leases still belong to the
-current pool generation. Buffers from retired generations do not consume current
-pool slots. Framing, slot rounding, ring size, and the external-byte control
-reserve still apply.
+The first request can use the full configured H2G bootstrap capacity, regardless
+of retained buffers. Framing, slot rounding, ring size, and the external-byte
+control reserve still apply.
 
-The first transport entry after restore recycles slots held by captured
-leases. Posted chains keep their reservations, preserving the submitted
-request. Descriptors and cursors stay unchanged. Retained aliases keep their
-captured mappings without payload copying.
+Guest entry uses `VirtqProducer::from_bootstrap` for both queues before logging
+or receiving. `BootstrapInfo` holds a `PoolLayout` and an initial posted count.
+`SlotPool::layout()` supplies geometry independent of live allocations.
+Reconstruction uses bootstrap capacities, not consumer-written lengths.
+Host completions and payloads stay untouched. Old producers release their
+queue-owned records without accessing the rings. Retained aliases keep their
+captured mappings and original leases.
 
-Source continuation keeps the pool instances and live scratch leases intact.
-Checkpointing alone does not detach retained payloads from scratch.
+Successful capture installs the same bootstrap in the source sandbox, including
+when scratch size stays the same. Source continuation uses the same generation
+transition as restore and cloning. Ordinary entries within a generation keep
+their active queues.
 
-Result completion prefills free H2G slots. This requires no preparatory guest
-entry or application warmup for the checkpoint-posted capacity.
+Result completion prefills free H2G slots. Retention within a generation still
+occupies pool slots. Full bootstrap capacity requires no preparatory guest entry
+or application warmup after capture or restore.
 
 ## Transport mailbox
 

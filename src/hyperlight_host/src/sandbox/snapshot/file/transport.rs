@@ -141,11 +141,10 @@ mod tests {
     use super::*;
     use crate::mem::virtq::tests::{TestCase, memory_layout};
 
-    /// Capture canonical rings for transport framing tests.
+    /// Build bootstrap images for transport framing tests.
     fn transport_snapshot() -> (SandboxMemoryLayout, VirtqSnapshot) {
-        let case = TestCase::new();
         let layout = memory_layout();
-        let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+        let snapshot = VirtqSnapshot::bootstrap(&layout).unwrap();
         (layout, snapshot)
     }
 
@@ -328,7 +327,7 @@ mod tests {
     fn transport_blob_rejects_h2g_buffer_addresses() {
         let case = TestCase::new();
         let layout = memory_layout();
-        let snapshot = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+        let snapshot = VirtqSnapshot::bootstrap(&layout).unwrap();
 
         let mut bytes = encode(&layout, &snapshot).unwrap();
         let addr_offset = HEADER_LEN + snapshot.g2h_ring().len() + Descriptor::ADDR_OFFSET;
@@ -341,7 +340,7 @@ mod tests {
         let msg = err.to_string();
 
         assert!(msg.contains("invalid canonical H2G image"), "{msg}");
-        assert!(err.to_string().contains("buffer"), "{err}");
+        assert!(msg.contains("does not match bootstrap"), "{err}");
 
         let duplicate_addr = case.h2g_desc(1).addr;
         bytes[addr_offset..addr_offset + size_of::<u64>()]
@@ -351,6 +350,6 @@ mod tests {
         let msg = err.to_string();
 
         assert!(msg.contains("invalid canonical H2G image"), "{msg}");
-        assert!(msg.contains("buffer"), "{err}");
+        assert!(msg.contains("does not match bootstrap"), "{err}");
     }
 }

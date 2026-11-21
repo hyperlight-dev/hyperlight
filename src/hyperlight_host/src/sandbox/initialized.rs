@@ -2194,7 +2194,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_reject_noncanonical_transport_after_checkpoint() {
+    fn snapshots_generate_bootstrap_independently_of_live_rings() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
@@ -2210,19 +2210,10 @@ mod tests {
 
         sandbox.mem_mgr.scratch_mem.write::<u64>(offset, 1).unwrap();
 
-        let Err(error) = sandbox.snapshot() else {
-            panic!("expected invalid canonical transport");
-        };
+        sandbox.snapshot().unwrap();
+        assert_eq!(sandbox.mem_mgr.snapshot_count, generation + 1);
+        assert!(sandbox.snapshot.is_some());
 
-        assert!(
-            error.to_string().contains("invalid canonical G2H image"),
-            "{error}"
-        );
-        assert_eq!(sandbox.mem_mgr.snapshot_count, generation);
-        assert!(sandbox.snapshot.is_none());
-
-        // Restore the canonical descriptor before continuing the source.
-        sandbox.mem_mgr.scratch_mem.write::<u64>(offset, 0).unwrap();
         let expected = vec![0x5a; 2 * hyperlight_common::vmem::PAGE_SIZE + 137];
         let actual: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
         assert_eq!(actual, expected);
@@ -2353,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_restore_is_ready_for_first_request() {
+    fn retained_capture_is_ready_for_first_request() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
@@ -2365,33 +2356,68 @@ mod tests {
             .unwrap();
         sandbox.checkpoint_transport_for_snapshot().unwrap();
         let source_root = sandbox.vm.get_root_pt().unwrap();
-        let snapshot = sandbox.snapshot().unwrap();
+        sandbox.snapshot().unwrap();
         assert_eq!(sandbox.vm.get_root_pt().unwrap(), source_root);
 
-        sandbox.restore(snapshot.clone()).unwrap();
+        let expected = vec![0x3c; 24 * 1024];
+        let actual: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(actual, expected);
+
+        let retained: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(retained.concat(), vec![0x5a; 6 * 1024]);
+        assert_eq!(
+            sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+            6 * 1024
+        );
+    }
+
+    #[test]
+    fn retained_restore_is_ready_for_first_request() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        sandbox
+            .call::<i32>(
+                "RetainGuestByteChunks",
+                vec![Bytes::from(vec![0x5a; 6 * 1024])],
+            )
+            .unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+        sandbox.restore(snapshot).unwrap();
+
+        let expected = vec![0x3c; 24 * 1024];
+        let actual: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(actual, expected);
+
+        let retained: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(retained.concat(), vec![0x5a; 6 * 1024]);
+        assert_eq!(
+            sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+            6 * 1024
+        );
+    }
+
+    #[test]
+    fn retained_clone_is_ready_for_first_request() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        sandbox
+            .call::<i32>(
+                "RetainGuestByteChunks",
+                vec![Bytes::from(vec![0x5a; 6 * 1024])],
+            )
+            .unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
         let mut clone =
             Sandbox::from_snapshot(snapshot, crate::HostFunctions::default(), None).unwrap();
-        let expected = vec![0x3c; 3 * hyperlight_common::vmem::PAGE_SIZE + 117];
-        let call = FunctionCall::new(
-            "EchoGuestVecBytes".into(),
-            Some(vec![ParameterValue::VecBytes(expected.clone())]),
-            FunctionCallType::Guest,
-            Vec::<u8>::TYPE,
-        );
 
-        for restored in [&mut sandbox, &mut clone] {
-            restored.transport_dirty = true;
-            let cid = restored.mem_mgr.write_guest_function_call(&call).unwrap();
-            restored.dispatch_guest_call().unwrap();
-            let value = restored
-                .mem_mgr
-                .read_h2g_result_from_g2h(cid)
-                .unwrap()
-                .into_inner()
-                .unwrap();
-            assert_eq!(Vec::<u8>::from_value(value).unwrap(), expected);
-        }
+        let expected = vec![0x3c; 24 * 1024];
+        let actual: Vec<u8> = clone.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(actual, expected);
 
+        let retained: Vec<Bytes> = clone.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(retained.concat(), vec![0x5a; 6 * 1024]);
         assert_eq!(
             clone.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
             6 * 1024
@@ -6310,7 +6336,7 @@ mod tests {
         }
 
         #[test]
-        fn rejects_noncanonical_transport_snapshot() {
+        fn cloning_uses_generated_bootstrap_images() {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 1i32).unwrap();
 
@@ -6328,11 +6354,9 @@ mod tests {
                 .write::<u64>(ring_offset, 1)
                 .unwrap();
 
-            let Err(err) = sbox.snapshot() else {
-                panic!("noncanonical transport must fail snapshot creation");
-            };
-
-            assert!(err.to_string().contains("invalid canonical G2H image"));
+            let snapshot = sbox.snapshot().unwrap();
+            let mut clone = SandboxBuilder::from_snapshot(snapshot).build().unwrap();
+            assert_eq!(clone.call::<i32>("GetStatic", ()).unwrap(), 1);
         }
 
         #[test]

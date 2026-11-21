@@ -16,8 +16,8 @@ use hyperlight_common::transport::{
     EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind,
 };
 use hyperlight_common::virtq::{
-    AllocError, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier, QueueStats, SendChain,
-    SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    AllocError, BootstrapInfo, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier,
+    QueueStats, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
 };
 use hyperlight_common::vmem::PAGE_SIZE;
 
@@ -371,10 +371,10 @@ impl GuestContext {
         Ok(())
     }
 
-    /// Reclaim retained scratch slots after restore without changing the rings.
+    /// Reconstruct transport ownership for the host's current generation.
     ///
-    /// Retained owners keep their captured aliases. Posted chains keep their
-    /// scratch reservations, including a request written before guest entry.
+    /// Retained owners keep captured aliases and old pool leases. The fresh
+    /// producers preserve requests written by the host before guest entry.
     pub fn maybe_refresh(&mut self) {
         // SAFETY: Construction requires initialized guest scratch metadata.
         let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
@@ -383,15 +383,33 @@ impl GuestContext {
             return;
         }
 
-        // SAFETY: Restore gives retained views independent captured backing.
-        // Only posted chains access scratch. Guest entry excludes peer access.
+        let g2h = &self.g2h_producer;
+        let g2h_info =
+            BootstrapInfo::empty(g2h.layout(), g2h.pool().layout()).expect("invalid G2H bootstrap");
+
+        let h2g = &self.h2g_producer;
+        let h2g_info = BootstrapInfo::prefilled(h2g.layout(), h2g.pool().layout())
+            .expect("invalid H2G bootstrap");
+
+        // SAFETY: The host installed the matching bootstrap before this entry.
+        // Retained views have independent captured backing. No producer has run.
+        let (g2h, h2g) = unsafe {
+            let g2h = VirtqProducer::from_bootstrap(g2h_info, *g2h.memory(), OutbNotifier)
+                .expect("G2H ownership reconstruction failed");
+            let h2g = VirtqProducer::from_bootstrap(h2g_info, *h2g.memory(), NoopNotifier)
+                .expect("H2G ownership reconstruction failed");
+
+            (g2h, h2g)
+        };
+
+        let old_g2h = core::mem::replace(&mut self.g2h_producer, g2h);
+        let old_h2g = core::mem::replace(&mut self.h2g_producer, h2g);
+
+        // SAFETY: The host discarded the old queues with no live chain handles.
+        // Old pools only release leases. New producers own the scratch slots.
         unsafe {
-            self.g2h_producer
-                .reclaim_slots()
-                .expect("G2H pool recovery failed");
-            self.h2g_producer
-                .reclaim_slots()
-                .expect("H2G pool recovery failed");
+            old_g2h.retire().expect("G2H retirement failed");
+            old_h2g.retire().expect("H2G retirement failed");
         }
 
         self.generation = generation;

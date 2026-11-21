@@ -74,6 +74,42 @@ fn retained_initial_data_survives_snapshots() {
     assert_eq!(actual.concat(), expected);
 }
 
+#[test]
+fn retained_h2g_bootstrap_survives_oci_round_trip() {
+    use hyperlight_common::flatbuffer_wrappers::function_types::Bytes;
+
+    let mut sandbox = create_test_sandbox();
+    sandbox
+        .call::<i32>(
+            "RetainGuestByteChunks",
+            vec![Bytes::from(vec![0x5a; 6 * 1024])],
+        )
+        .unwrap();
+
+    let snapshot = sandbox.snapshot().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+
+    snapshot.save(dir.path(), &tag).unwrap();
+    drop(sandbox);
+    drop(snapshot);
+
+    let loaded = Arc::new(Snapshot::checked_load(dir.path(), tag).unwrap());
+    let mut restored = SandboxBuilder::from_snapshot(loaded).build().unwrap();
+
+    let length: i32 = restored
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x3c; 24 * 1024])])
+        .unwrap();
+
+    assert_eq!(length, 24 * 1024);
+
+    let retained: Vec<Bytes> = restored.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(retained.concat(), vec![0x5a; 6 * 1024]);
+
+    let res = restored.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+    assert_eq!(res, 6 * 1024);
+}
+
 fn random_sequence(sandbox: &mut Sandbox) -> [i32; 4] {
     std::array::from_fn(|_| sandbox.call("NextRandom", ()).unwrap())
 }
@@ -336,7 +372,7 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
         manifest["artifactType"],
         "application/vnd.hyperlight.snapshot.config.v6+json"
     );
-    assert_eq!(config["abi_version"], 11);
+    assert_eq!(config["abi_version"], 12);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
     assert_eq!(layers.len(), blobs.len() + 1);
     for (index, blob) in blobs.iter().enumerate() {

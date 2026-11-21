@@ -992,10 +992,10 @@ fn retained_byte_chunks_survive_pool_swap() {
     sandbox.restore(snapshot).unwrap();
 
     let actual: i32 = sandbox
-        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 24 * 1024])])
         .unwrap();
 
-    assert_eq!(actual, 12288);
+    assert_eq!(actual, 24 * 1024);
 
     let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
     assert_eq!(actual.concat(), expected);
@@ -1008,10 +1008,10 @@ fn retained_byte_chunks_survive_pool_swap() {
     sandbox.restore(snapshot).unwrap();
 
     let actual: i32 = sandbox
-        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 24 * 1024])])
         .unwrap();
 
-    assert_eq!(actual, 12288);
+    assert_eq!(actual, 24 * 1024);
 
     let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
     assert_eq!(actual.concat(), expected);

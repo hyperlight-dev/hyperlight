@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
+use std::assert_matches;
+
 use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
     DescFlags, Descriptor, MemOps, RingError, SlotLayout, SlotPool, VirtqError, VirtqProducer,
@@ -50,6 +52,8 @@ impl TestCase {
         }
 
         batch.finish_without_notify();
+        // SAFETY: No consumer or payload views exist. The pool is only fixture setup.
+        unsafe { producer.retire() }.unwrap();
         write_published_arena_gpa(&scratch, arena.base_addr()).unwrap();
 
         Self {
@@ -121,6 +125,20 @@ fn write_desc(mem: &HostMemOps, layout: VirtqLayout, index: u16, desc: Descripto
     .unwrap();
 }
 
+/// Read live rings to exercise snapshot-image admission.
+fn read_snapshot(
+    layout: &SandboxMemoryLayout,
+    scratch: &HostSharedMemory,
+) -> Result<VirtqSnapshot> {
+    let (g2h_offset, h2g_offset) = ring_offsets(layout);
+    let mut g2h = vec![0; layout.get_g2h_queue_dims().ring_len()];
+    let mut h2g = vec![0; layout.get_h2g_queue_dims().ring_len()];
+    scratch.copy_to_slice(&mut g2h, g2h_offset)?;
+    scratch.copy_to_slice(&mut h2g, h2g_offset)?;
+
+    VirtqSnapshot::new(layout, g2h, h2g)
+}
+
 #[test]
 fn snapshots_and_restores_rings() {
     let case = TestCase::new();
@@ -134,7 +152,8 @@ fn snapshots_and_restores_rings() {
         .copy_from_slice(&[0x5a; 16], spare_offset)
         .unwrap();
 
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+    let captured = VirtqSnapshot::bootstrap(&layout).unwrap();
+    assert_eq!(read_snapshot(&layout, &case.scratch).unwrap(), captured);
     let restored = host_scratch();
     let allocator = layout.get_pt_base_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
@@ -146,7 +165,7 @@ fn snapshots_and_restores_rings() {
     restored.copy_from_slice(cp, mbx_offset).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
-    let restored_snapshot = VirtqSnapshot::capture(&layout, &restored).unwrap();
+    let restored_snapshot = read_snapshot(&layout, &restored).unwrap();
     let restored_mem = HostMemOps::new(&restored);
     let mut pool_bytes = [0; 16];
     restored_mem
@@ -176,17 +195,14 @@ fn snapshots_and_restores_rings() {
 
     drop((g2h, h2g));
     captured.restore(&layout, &restored).unwrap();
-    assert_eq!(
-        VirtqSnapshot::capture(&layout, &restored).unwrap(),
-        captured
-    );
+    assert_eq!(read_snapshot(&layout, &restored).unwrap(), captured);
 }
 
 #[test]
 fn rejects_snapshot_geometry_mismatches() {
     let case = TestCase::new();
     let layout = memory_layout();
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+    let captured = read_snapshot(&layout, &case.scratch).unwrap();
     let g2h = captured.g2h_ring();
     let h2g = captured.h2g_ring();
 
@@ -205,7 +221,7 @@ fn rejects_noncanonical_snapshot_images() {
     case.mem
         .write(case.g2h_layout.desc_table_addr(), &[1])
         .unwrap();
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
+    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
     assert!(error.to_string().contains("invalid canonical G2H image"));
 
     case.mem
@@ -214,7 +230,7 @@ fn rejects_noncanonical_snapshot_images() {
     case.mem
         .write(case.h2g_layout.drv_evt_addr(), &[1])
         .unwrap();
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
+    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
     assert!(error.to_string().contains("invalid canonical H2G image"));
 }
 
@@ -235,7 +251,7 @@ fn rejects_h2g_snapshot_buffer_attributes() {
             ..original
         };
         case.set_h2g_desc(0, desc);
-        assert!(VirtqSnapshot::capture(&layout, &case.scratch).is_err());
+        assert_matches!(read_snapshot(&layout, &case.scratch), Err(_));
     }
 }
 
@@ -251,13 +267,15 @@ fn rejects_h2g_snapshot_duplicate_slots() {
     second.addr = first.addr;
     case.set_h2g_desc(1, second);
 
-    let error = VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("descriptor 1 buffer"), "{error}");
+    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("does not match bootstrap"),
+        "{error}"
+    );
 }
 
-/// Slot alignment is relative to the pool, and free-list order may vary.
 #[test]
-fn accepts_h2g_snapshot_slot_permutations() {
+fn rejects_h2g_snapshot_slot_permutations() {
     let case = TestCase::new();
     let mut first = case.h2g_desc(0);
     let mut second = case.h2g_desc(1);
@@ -268,7 +286,28 @@ fn accepts_h2g_snapshot_slot_permutations() {
     case.set_h2g_desc(0, first);
     case.set_h2g_desc(1, second);
 
-    VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap();
+    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("does not match bootstrap"),
+        "{error}"
+    );
+}
+
+#[test]
+fn rejects_h2g_snapshot_id_permutations() {
+    let case = TestCase::new();
+    let mut first = case.h2g_desc(0);
+    let mut second = case.h2g_desc(1);
+
+    std::mem::swap(&mut first.id, &mut second.id);
+    case.set_h2g_desc(0, first);
+    case.set_h2g_desc(1, second);
+
+    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("does not match bootstrap"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -282,9 +321,9 @@ fn rejects_h2g_snapshot_chain_shape() {
     case.set_h2g_desc(0, head);
     case.set_h2g_desc(1, tail);
 
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
+    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
     assert!(
-        error.to_string().contains("must contain one descriptor"),
+        error.to_string().contains("does not match bootstrap"),
         "{error}"
     );
 }
@@ -327,7 +366,7 @@ fn payload_bounds_are_checked_on_use() {
     let case = TestCase::new();
     let layout = memory_layout();
     let end = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE) + SCRATCH_SIZE as u64;
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+    let captured = VirtqSnapshot::bootstrap(&layout).unwrap();
     let restored = host_scratch();
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
     let mem = HostMemOps::new(&restored);
@@ -372,24 +411,25 @@ fn malformed_descriptors_fail_when_polled() {
 }
 
 #[test]
-fn restores_partially_prefilled_h2g_ring() {
-    for prefill in 0..=4 {
-        let case = TestCase::new();
+fn rejects_partially_prefilled_h2g_snapshot() {
+    let case = TestCase::new();
+    case.set_h2g_desc(3, Descriptor::new(0, 0, 0, DescFlags::empty()));
 
-        for index in prefill..4 {
-            case.set_h2g_desc(index, Descriptor::new(0, 0, 0, DescFlags::empty()));
-        }
+    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("does not match bootstrap"),
+        "{error}"
+    );
+}
 
-        let layout = memory_layout();
-        let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-        let restored = host_scratch();
-        let (_, mut consumer) = captured.restore(&layout, &restored).unwrap();
+#[test]
+fn rejects_empty_h2g_snapshot() {
+    let case = TestCase::new();
+    case.h2g_layout.initialize(&case.mem).unwrap();
 
-        for _ in 0..prefill {
-            let (request, reply) = consumer.poll(0).unwrap().unwrap();
-            consumer.complete(request, reply).unwrap();
-        }
-
-        assert!(consumer.poll(0).unwrap().is_none());
-    }
+    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
+    assert!(
+        error.to_string().contains("does not match bootstrap"),
+        "{error}"
+    );
 }

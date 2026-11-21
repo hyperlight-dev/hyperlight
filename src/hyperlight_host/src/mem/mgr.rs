@@ -680,8 +680,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         host_functions: HostFunctionDetails,
         scratch_size: usize,
     ) -> Result<Snapshot> {
+        let target = self.layout.with_scratch_size(scratch_size)?;
         let virtq = match (&self.g2h_consumer, &self.h2g_consumer) {
-            (Some(_), Some(_)) => Some(VirtqSnapshot::capture(&self.layout, &self.scratch_mem)?),
+            (Some(_), Some(_)) => Some(VirtqSnapshot::bootstrap(&target)?),
             (None, None) => None,
             _ => return Err(new_error!("virtqueue consumer ownership is incomplete")),
         };
@@ -970,7 +971,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
     }
 
-    /// Installs memory produced by a capture without restoring runtime state.
+    /// Install captured memory and fresh transport ownership.
     ///
     /// A capture with another scratch size moves the scratch base and page
     /// tables. It gets new scratch, which the caller maps.
@@ -987,11 +988,21 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.set_guest_requests(requests)?;
             return Ok(memory);
         }
+
+        let virtq = snapshot
+            .virtq()
+            .ok_or_else(|| new_error!("running snapshot has no canonical transport state"))?;
+
         let used_scratch_end = self.used_scratch_end_gpa()?;
         let gsnapshot = self.replace_snapshot_memory(snapshot)?;
+
+        self.g2h_consumer = None;
+        self.h2g_consumer = None;
         self.apply_snapshot_metadata(snapshot);
         self.update_snapshot_scratch_bookkeeping()?;
         self.zero_freed_scratch(used_scratch_end)?;
+        self.restore_virtq(virtq)?;
+
         Ok((gsnapshot, None))
     }
 
@@ -1581,7 +1592,7 @@ mod tests {
         let case = TestCase::new();
         let mut mgr = manager(&case);
         mgr.g2h_consumer = Some(case.g2h_consumer());
-        let captured = VirtqSnapshot::capture(&mgr.layout, &mgr.scratch_mem).unwrap();
+        let captured = VirtqSnapshot::bootstrap(&mgr.layout).unwrap();
         assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 1);
 
         mgr.g2h_consumer = None;

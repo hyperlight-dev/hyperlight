@@ -872,6 +872,16 @@ impl<M: MemOps> RingProducer<M> {
         self.desc_table.len()
     }
 
+    /// Ring geometry independent of its current cursors.
+    pub(crate) fn layout(&self) -> Layout {
+        Layout {
+            desc_table_addr: self.desc_table.base_addr(),
+            desc_table_len: self.desc_table.len() as u16,
+            drv_evt_addr: self.drv_evt_addr,
+            dev_evt_addr: self.dev_evt_addr,
+        }
+    }
+
     /// Get memory accessor reference
     #[inline]
     pub fn mem(&self) -> &M {
