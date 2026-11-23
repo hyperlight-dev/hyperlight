@@ -11,15 +11,30 @@ use hyperlight_common::vmem;
 pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     let addr = crate::layout::allocator_gva();
     let nbytes = n * vmem::PAGE_SIZE as u64;
-    let mut prev_base: u64 = 0;
+    let prev_base: u64;
+    // SAFETY: The caller guarantees initialized allocator state with a writable, aligned counter.
     unsafe {
-        // todo: actually check for FEAT_LSE presence.
+        #[cfg(target_feature = "lse")]
         core::arch::asm!("
             ldadd {nbytes}, {prev_base}, [{addr}]
         ",
             addr = in(reg) addr,
             nbytes = in(reg) nbytes,
             prev_base = out(reg) prev_base,
+        );
+        #[cfg(not(target_feature = "lse"))]
+        core::arch::asm!("
+            2:
+            ldxr {prev_base}, [{addr}]
+            add {next}, {prev_base}, {nbytes}
+            stxr {status:w}, {next}, [{addr}]
+            cbnz {status:w}, 2b
+        ",
+            addr = in(reg) addr,
+            nbytes = in(reg) nbytes,
+            prev_base = out(reg) prev_base,
+            next = out(reg) _,
+            status = out(reg) _,
         );
     }
     let limit = crate::layout::allocator_limit_gpa();
