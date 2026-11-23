@@ -1064,23 +1064,28 @@ fn interrupt_random_kill_stress_test() {
     use hyperlight_host::sandbox::snapshot::Snapshot;
     use tracing::{error, trace};
 
+    // MSHV restore holds both old and replacement partitions.
     #[cfg(target_arch = "aarch64")]
-    const POOL_SIZE: usize = 64;
+    let pool_size: usize = if hyperlight_host::__private::is_mshv() {
+        16
+    } else {
+        64
+    };
     #[cfg(not(target_arch = "aarch64"))]
-    const POOL_SIZE: usize = 100;
+    let pool_size: usize = 100;
     const NUM_THREADS: usize = 100;
     const ITERATIONS_PER_THREAD: usize = 500;
     const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
     const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
 
-    println!("Creating pool of {} sandboxes...", POOL_SIZE);
-    let mut sandbox_pool: Vec<SandboxWithSnapshot> = Vec::with_capacity(POOL_SIZE);
-    for i in 0..POOL_SIZE {
+    println!("Creating pool of {} sandboxes...", pool_size);
+    let mut sandbox_pool: Vec<SandboxWithSnapshot> = Vec::with_capacity(pool_size);
+    for i in 0..pool_size {
         let mut sandbox = new_rust_sandbox();
         // Create a snapshot for this sandbox
         let snapshot = sandbox.snapshot().unwrap();
         if (i + 1) % 10 == 0 {
-            println!("Created {}/{} sandboxes", i + 1, POOL_SIZE);
+            println!("Created {}/{} sandboxes", i + 1, pool_size);
         }
         sandbox_pool.push(SandboxWithSnapshot { sandbox, snapshot });
     }
@@ -1515,12 +1520,18 @@ fn interrupt_infinite_loop_stress_test() {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    const NUM_THREADS: usize = 50;
+    // MSHV restore needs a second partition per worker. WHP resets in place.
+    let num_threads: usize =
+        if cfg!(target_arch = "aarch64") && hyperlight_host::__private::is_mshv() {
+            16
+        } else {
+            50
+        };
     const ITERATIONS_PER_THREAD: usize = 500;
 
     let mut handles = vec![];
 
-    for i in 0..NUM_THREADS {
+    for i in 0..num_threads {
         handles.push(thread::spawn(move || {
             // Create a barrier for 2 threads:
             // 1. The guest (executing a host function)
@@ -1600,16 +1611,19 @@ fn interrupt_infinite_moving_loop_stress_test() {
     use std::sync::Arc;
     use std::thread;
 
-    // ARM64 WHP partitions include GICv3 state, limiting practical partition
-    // concurrency. Each thread creates two partitions.
+    // Each worker holds two partitions. Leave headroom for MSHV restore.
     #[cfg(target_arch = "aarch64")]
-    const NUM_THREADS: usize = 32;
+    let num_threads: usize = if hyperlight_host::__private::is_mshv() {
+        8
+    } else {
+        32
+    };
     #[cfg(not(target_arch = "aarch64"))]
-    const NUM_THREADS: usize = 200;
+    let num_threads: usize = 200;
 
     let mut handles = vec![];
 
-    for _ in 0..NUM_THREADS {
+    for _ in 0..num_threads {
         handles.push(thread::spawn(move || {
             let entered_guest = Arc::new(AtomicBool::new(false));
             let entered_guest_clone = entered_guest.clone();
