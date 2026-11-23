@@ -1,4 +1,4 @@
-target
-corpus
-artifacts
-coverage
+corpus/
+artifacts/
+coverage/
+*.log
