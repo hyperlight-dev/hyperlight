@@ -83,10 +83,9 @@ impl SnapshotOptions {
     ///
     /// A size larger than the maximum memory size (`MemoryRequestTooBig`),
     /// too small for the transport (`MemoryRequestTooSmall`), or not a
-    /// whole number of host pages is rejected before the guest is entered.
+    /// whole number of host pages is rejected before memory capture.
     /// Room for the page tables depends on the guest's mappings and is
-    /// checked when the snapshot is built, after a pending transport
-    /// checkpoint has run in the guest: a size without it fails then, with
+    /// checked when the snapshot is built. A size without that room fails with
     /// `MemoryRequestTooSmall`. A larger size whose scratch window would
     /// cover a guest mapping below the current one fails then too. Both
     /// failures leave the sandbox usable. Whether guest function calls fit

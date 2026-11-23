@@ -61,7 +61,9 @@ message header. Earlier snapshots must be regenerated.
 
 ABI 12 stores deterministic queue bootstrap images. Capture and restore install
 empty G2H and fully prefilled H2G rings. Guest entry reconstructs ownership
-without changing host-written data. Earlier snapshots must be regenerated.
+without changing host-written data. The mailbox reports initialization readiness.
+Snapshot capture runs on the host while the guest is stopped. Earlier snapshots
+must be regenerated.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.

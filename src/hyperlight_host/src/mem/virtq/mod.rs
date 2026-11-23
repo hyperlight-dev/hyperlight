@@ -130,13 +130,13 @@ impl VirtqSnapshot {
     ) -> Result<(G2hConsumer, H2gConsumer)> {
         let (g2h_offset, h2g_offset) = ring_offsets(layout);
         let mbx_offset = layout.mbx_scratch_offset();
-        let cp = MailboxValue::CheckpointComplete.as_bytes();
+        let status = MailboxValue::InitComplete.as_bytes();
 
         write_published_arena_gpa(scratch_mem, layout.get_transport_arena().base_addr())?;
 
         scratch_mem.copy_from_slice(&self.g2h_ring, g2h_offset)?;
         scratch_mem.copy_from_slice(&self.h2g_ring, h2g_offset)?;
-        scratch_mem.copy_from_slice(cp, mbx_offset)?;
+        scratch_mem.copy_from_slice(status, mbx_offset)?;
         create_consumers(layout, scratch_mem)
     }
 

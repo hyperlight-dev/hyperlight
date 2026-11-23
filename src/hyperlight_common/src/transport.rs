@@ -31,8 +31,6 @@ pub enum MsgKind {
     Cancel = 0x05,
     /// A guest log message (GuestLogData payload follows).
     Log = 0x06,
-    /// Internal request to prepare canonical transport state for snapshotting.
-    SnapshotCheckpoint = 0x07,
 }
 
 impl TryFrom<u8> for MsgKind {
@@ -46,7 +44,6 @@ impl TryFrom<u8> for MsgKind {
             0x04 => Ok(Self::StreamEnd),
             0x05 => Ok(Self::Cancel),
             0x06 => Ok(Self::Log),
-            0x07 => Ok(Self::SnapshotCheckpoint),
             other => Err(other),
         }
     }
@@ -56,10 +53,10 @@ impl TryFrom<u8> for MsgKind {
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::CheckedBitPattern, bytemuck::NoUninit)]
 pub enum MailboxValue {
-    /// Guest preparation is outstanding.
-    CheckpointPending = 0,
-    /// Both queues are reset and free H2G slots are prefilled.
-    CheckpointComplete = 1,
+    /// Guest initialization is outstanding.
+    InitPending = 0,
+    /// Guest initialization has completed.
+    InitComplete = 1,
 }
 
 impl MailboxValue {
@@ -79,8 +76,8 @@ impl TryFrom<u64> for MailboxValue {
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Self::CheckpointPending),
-            1 => Ok(Self::CheckpointComplete),
+            0 => Ok(Self::InitPending),
+            1 => Ok(Self::InitComplete),
             other => Err(other),
         }
     }
@@ -157,19 +154,6 @@ impl<'a> EncodedMessage<'a> {
             externals,
             total_len,
         })
-    }
-
-    // Build a snapshot checkpoint message with no payload.
-    pub fn new_snapshot_cp() -> Self {
-        let total_len = MsgHeader::SIZE;
-        let externals = ExternalValues::new();
-
-        Self {
-            header: MsgHeader::new(MsgKind::SnapshotCheckpoint, 0, 0, 0),
-            control: &[],
-            externals,
-            total_len,
-        }
     }
 
     /// Borrow the complete wire message as a zero-copy byte cursor.
@@ -460,8 +444,8 @@ mod tests {
     #[test]
     fn mailbox_value_wire_contract() {
         for (value, raw) in [
-            (MailboxValue::CheckpointPending, 0u64),
-            (MailboxValue::CheckpointComplete, 1),
+            (MailboxValue::InitPending, 0u64),
+            (MailboxValue::InitComplete, 1),
         ] {
             assert_eq!(value.raw(), raw);
             assert_eq!(value.as_bytes(), raw.to_ne_bytes());

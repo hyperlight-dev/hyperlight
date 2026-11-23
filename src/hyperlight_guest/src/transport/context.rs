@@ -55,8 +55,7 @@ type H2gProducer = VirtqProducer<GuestMemOps, NoopNotifier>;
 pub enum DispatchAction {
     /// Invoke one guest function and return its correlation ID.
     Call(u32, FunctionCall),
-    /// Prepare canonical transport state for snapshot capture.
-    SnapshotCheckpoint,
+    // TODO: Add Progress for task and stream rounds.
 }
 
 /// Configuration for one queue passed to [`GuestContext::new`].
@@ -110,7 +109,7 @@ pub struct GuestContext {
 }
 
 impl GuestContext {
-    /// Create a new context with G2H and H2G queues.
+    /// Initialize G2H and H2G queues and post receive buffers.
     ///
     /// # Safety
     ///
@@ -119,8 +118,9 @@ impl GuestContext {
     /// at `mbx_gva`. The mailbox must lie in scratch, disjoint from both queues
     /// and pools. Both rings and pools must lie in the transport arena, which
     /// starts at the G2H ring and ends below the reserved scratch-top pages,
-    /// with the pools after the rings. Scratch must remain mapped while the
-    /// context or any returned buffer views exist.
+    /// with the pools after the rings. Host consumers must be at their initial
+    /// cursors. Scratch must remain mapped while the context or any returned
+    /// buffer views exist.
     pub unsafe fn new(g2h: QueueConfig, h2g: QueueConfig, mbx_gva: u64) -> Result<Self> {
         // SAFETY: Generation has been initialized by host.
         let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
@@ -133,6 +133,9 @@ impl GuestContext {
         // SAFETY: The caller owns the pool's scratch pages.
         let mem = unsafe { pool_mem(&g2h_pool, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize G2H pool access")?;
+        g2h.layout
+            .initialize(&mem)
+            .with_context(|| "failed to initialize G2H ring")?;
         let g2h_producer = VirtqProducer::new(g2h.layout, mem, OutbNotifier, g2h_pool);
 
         let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
@@ -140,6 +143,9 @@ impl GuestContext {
         // SAFETY: The caller owns this disjoint pool.
         let mem = unsafe { pool_mem(&h2g_pool, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize H2G pool access")?;
+        h2g.layout
+            .initialize(&mem)
+            .with_context(|| "failed to initialize H2G ring")?;
         // H2G prefill supplies writable buffers for host-initiated messages.
         let h2g_producer = VirtqProducer::new(h2g.layout, mem, NoopNotifier, h2g_pool);
 
@@ -265,12 +271,8 @@ impl GuestContext {
             bail!("H2G buffer has an invalid message header");
         };
 
-        match header.kind {
-            MsgKind::SnapshotCheckpoint => {
-                return Ok(DispatchAction::SnapshotCheckpoint);
-            }
-            MsgKind::Request if header.cid != 0 => {}
-            _ => bail!("H2G buffer has invalid request framing"),
+        if header.kind != MsgKind::Request || header.cid == 0 {
+            bail!("H2G buffer has invalid request framing");
         }
 
         let payload_len =
@@ -334,41 +336,11 @@ impl GuestContext {
         self.prefill_h2g()
     }
 
-    /// Reset stopped queues while retained values keep their pool slots.
-    ///
-    /// The mailbox is complete only after free H2G slots are prefilled.
-    ///
-    /// # Safety
-    ///
-    /// All host consumer chain handles must be dropped.
-    /// Both consumers must stay stopped until they are reset or replaced.
-    pub unsafe fn prepare_snapshot(&mut self) -> Result<()> {
-        let pending = MailboxValue::CheckpointPending.raw();
-        // SAFETY: The host has initialized the mailbox.
-        unsafe { (self.mbx_gva as *mut u64).write_volatile(pending) };
-
-        // Read all acks from host
-        self.g2h_producer
-            .reclaim()
-            .with_context(|| "G2H snapshot reclaim failed")?;
-
-        // SAFETY: The caller keeps host consumers quiescent until reset or replacement.
-        unsafe {
-            self.g2h_producer
-                .reset()
-                .with_context(|| "G2H snapshot reset failed")?;
-            self.h2g_producer
-                .reset()
-                .with_context(|| "H2G snapshot reset failed")?;
-        }
-
-        self.prefill_h2g()?;
-
-        let compl = MailboxValue::CheckpointComplete.raw();
-        // SAFETY: The host has initialized the writable mailbox.
-        unsafe { (self.mbx_gva as *mut u64).write_volatile(compl) };
-
-        Ok(())
+    /// Publish successful guest initialization at the startup halt.
+    pub fn complete_initialization(&mut self) {
+        let status = MailboxValue::InitComplete.raw();
+        // SAFETY: Construction requires an exclusively owned, mapped mailbox.
+        unsafe { (self.mbx_gva as *mut u64).write_volatile(status) };
     }
 
     /// Reconstruct transport ownership for the host's current generation.

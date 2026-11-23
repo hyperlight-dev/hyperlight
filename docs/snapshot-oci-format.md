@@ -49,7 +49,7 @@ Four blob kinds per tag:
   binary image of the canonical G2H and H2G rings. Loading checks ring
   sizes and canonical state against the config.
 
-The runtime queue protocol and canonical checkpoint are described in
+The runtime queue protocol and snapshot bootstrap state are described in
 [Virtqueue host and guest communication](./virtio-host-guest-communication.md).
 
 Manifest layers are ordered data, then transport.

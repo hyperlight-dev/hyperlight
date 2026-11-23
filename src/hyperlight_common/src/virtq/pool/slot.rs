@@ -246,18 +246,6 @@ impl Tier {
         Ok(())
     }
 
-    /// Keep one queue-owned slot unavailable for a pool swap.
-    fn reserve_addr(&mut self, addr: u64) -> Result<(), AllocError> {
-        let slot = self.slot_of(addr)?;
-
-        if self.allocated.contains(slot) {
-            return Err(AllocError::InvalidArg);
-        }
-
-        self.allocated.insert(slot);
-        Ok(())
-    }
-
     /// Populate the free list from the allocation bitmap.
     fn rebuild_free(&mut self) {
         self.free.clear();
@@ -408,33 +396,6 @@ pub struct SlotPool {
 }
 
 impl SlotPool {
-    /// Whether both handles share allocation state.
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-
-    /// Create allocation state for a pool swap with the supplied live slots reserved.
-    ///
-    /// Invalid or duplicate reservations leave this pool unchanged.
-    pub(crate) fn swap(&self, reserved: impl Iterator<Item = u64>) -> Result<Self, AllocError> {
-        let current = self.inner.borrow();
-        let mut inner = Inner::new(current.layout())?;
-
-        for addr in reserved {
-            // this address is a valid allocation in the current pool
-            current.allocation_len(addr)?;
-            if let Some(lower) = &mut inner.lower
-                && lower.contains(addr)
-            {
-                lower.reserve_addr(addr)?;
-            } else {
-                inner.upper.reserve_addr(addr)?;
-            }
-        }
-
-        Ok(Self::from_inner(inner))
-    }
-
     /// Create a single-tier recycling pool from exact slot placement.
     pub fn new(layout: SlotLayout) -> Result<Self, AllocError> {
         Self::from_layout(PoolLayout::single(layout))

@@ -16,7 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   atomically repair mismatched contents.
 * **Breaking:** Snapshots use ABI 12. Guests must be rebuilt and existing
   snapshots regenerated. Capture and restore provide full H2G bootstrap
-  capacity before guest entry, independent of retained buffers.
+  capacity before guest entry, independent of retained buffers. Snapshot
+  capture runs on the host while the guest is stopped.
+  The checkpoint request, `prepare_snapshot`, and
+  `VirtqProducer::reclaim_slots` APIs are removed.
 * `Snapshot::save` no longer synchronously flushes files to stable storage.
   Callers requiring power-loss durability must sync the snapshot files and
   directory hierarchy themselves after saving.

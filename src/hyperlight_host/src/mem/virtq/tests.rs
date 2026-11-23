@@ -159,10 +159,10 @@ fn snapshots_and_restores_rings() {
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
     let mbx_offset = layout.mbx_scratch_offset();
-    let cp = MailboxValue::CheckpointPending.as_bytes();
+    let status = MailboxValue::InitPending.as_bytes();
 
     restored.write::<u64>(allocator_offset, allocator).unwrap();
-    restored.copy_from_slice(cp, mbx_offset).unwrap();
+    restored.copy_from_slice(status, mbx_offset).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
     let restored_snapshot = read_snapshot(&layout, &restored).unwrap();
@@ -186,7 +186,7 @@ fn snapshots_and_restores_rings() {
     let mbx = restored.read::<u64>(mbx_offset).unwrap();
     assert_eq!(
         MailboxValue::try_from(mbx).unwrap(),
-        MailboxValue::CheckpointComplete
+        MailboxValue::InitComplete
     );
 
     assert!(g2h.poll(0).unwrap().is_none());

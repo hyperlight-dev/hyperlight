@@ -22,7 +22,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::{ExecutionMode, SandboxMemoryManager};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
@@ -89,8 +89,6 @@ pub struct Sandbox {
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     pub(crate) snapshot: Option<Arc<Snapshot>>,
-    /// Whether the transport needs a checkpoint before snapshot capture.
-    transport_dirty: bool,
     /// Optional callback to discover page table roots from guest memory.
     /// Given (snapshot_mem, scratch_mem, cr3), returns a list of root GPAs.
     /// If not set, only CR3 is used as the single root.
@@ -163,16 +161,12 @@ impl Sandbox {
         vm: HyperlightVm,
         config: crate::sandbox::SandboxConfiguration,
     ) -> Sandbox {
-        // Initialization can log or call the host before the first guest call.
-        let transport_dirty = matches!(mgr.next_action, super::snapshot::NextAction::Initialise(_));
-
         Self {
             status: SandboxStatus::Ready,
             host_funcs,
             mem_mgr: mgr,
             vm,
             snapshot: None,
-            transport_dirty,
             pt_root_finder: None,
             config,
         }
@@ -339,7 +333,7 @@ impl Sandbox {
             snapshot.next_action(),
             super::snapshot::NextAction::Initialise(_)
         ) {
-            hshm.finish_snapshot_checkpoint()?;
+            hshm.require_initialization_complete()?;
         }
 
         if matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_)) {
@@ -492,7 +486,6 @@ impl Sandbox {
             return self.capture_snapshot(scratch_size);
         }
 
-        // Reject a bad size before the capture enters the guest.
         self.mem_mgr.layout.with_scratch_size(scratch_size)?;
         self.capture_snapshot(scratch_size)
     }
@@ -500,9 +493,7 @@ impl Sandbox {
     /// Capture a snapshot whose scratch has `scratch_size` bytes. The sandbox
     /// continues from it.
     fn capture_snapshot(&mut self, scratch_size: usize) -> Result<Arc<Snapshot>> {
-        if self.transport_dirty {
-            self.checkpoint_transport_for_snapshot()?;
-        }
+        self.mem_mgr.abort_buffer.clear();
 
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
@@ -587,18 +578,6 @@ impl Sandbox {
 
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
-    }
-
-    fn checkpoint_transport_for_snapshot(&mut self) -> Result<()> {
-        self.with_guest_execution(|sbox| {
-            sbox.mem_mgr.begin_snapshot_checkpoint()?;
-            sbox.dispatch_guest_call_restricted()?;
-
-            sbox.mem_mgr.finish_snapshot_checkpoint()?;
-
-            sbox.transport_dirty = false;
-            Ok(())
-        })
     }
 
     fn remove_dynamic_mappings(&mut self) -> Result<()> {
@@ -801,7 +780,6 @@ impl Sandbox {
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
-        self.transport_dirty = false;
 
         // Clear poison state when successfully restoring from snapshot.
         //
@@ -1141,8 +1119,6 @@ impl Sandbox {
     ) -> Result<ReturnValue> {
         self.check_ready()?;
         self.with_guest_execution(|sbox| {
-            sbox.transport_dirty = true;
-
             let fc = FunctionCall::new(
                 function_name.to_string(),
                 Some(args),
@@ -1198,15 +1174,6 @@ impl Sandbox {
                 }
                 error
             })
-    }
-
-    /// Dispatch in restricted mode, then restore the previous mode.
-    fn dispatch_guest_call_restricted(&mut self) -> Result<()> {
-        let mode = std::mem::replace(&mut self.mem_mgr.execution_mode, ExecutionMode::Restricted);
-        let res = self.dispatch_guest_call();
-        self.mem_mgr.execution_mode = mode;
-
-        res
     }
 
     /// Returns a handle for interrupting guest execution.
@@ -1451,10 +1418,9 @@ fn warn_on_layout_override(
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
-    use std::thread;
+    use std::{assert_matches, thread};
 
     use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
-    use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_common::func::{Bytes, SupportedReturnType};
     use hyperlight_testing::sandbox_sizes::{
@@ -1467,7 +1433,6 @@ mod tests {
     #[cfg(not(gdb))]
     use crate::hypervisor::hyperlight_vm::test_support::VmOperation;
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-    use crate::mem::mgr::ExecutionMode;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::{Snapshot, SnapshotOptions};
@@ -1555,14 +1520,10 @@ mod tests {
             sbox.snapshot_with_options(&scratch(32 << 30)),
             Err(HyperlightError::MemoryRequestTooBig(..))
         ));
-        // Rejected sizes do not enter the guest: a pending transport
-        // checkpoint, which a capture would run, is still pending.
         let echo: String = sbox.call("Echo", "still".to_string()).unwrap();
         assert_eq!(echo, "still");
-        assert!(sbox.transport_dirty);
         assert!(sbox.snapshot_with_options(&scratch(4096)).is_err());
         assert!(sbox.snapshot_with_options(&scratch(32 << 30)).is_err());
-        assert!(sbox.transport_dirty);
 
         // A size with room for the transport but not the page tables fails
         // when the snapshot is built, and leaves the sandbox usable.
@@ -1716,7 +1677,6 @@ mod tests {
             // After the churn the sandbox can still resize, back to 8 MiB,
             // and hold chunks there.
             let back = sbox.snapshot_with_options(&scratch(8 << 20)).unwrap();
-            assert!(!sbox.transport_dirty);
             sbox.restore(back).unwrap();
             assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 8 << 20);
             let last = chunks(seed + 0x21);
@@ -2166,31 +2126,49 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_checkpoint_only_dirty_transport() {
+    fn snapshots_cache_until_guest_state_changes() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
 
-        assert!(sandbox.transport_dirty);
         let initial = sandbox.snapshot().unwrap();
-        assert!(!sandbox.transport_dirty);
 
-        let restored = SandboxBuilder::from_snapshot(initial).build().unwrap();
-        assert!(!restored.transport_dirty);
+        sandbox.restore(initial.clone()).unwrap();
+        assert!(Arc::ptr_eq(&initial, &sandbox.snapshot().unwrap()));
 
         sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
-        assert!(sandbox.transport_dirty);
 
         let first = sandbox.snapshot().unwrap();
-        assert!(!sandbox.transport_dirty);
+        assert!(!Arc::ptr_eq(&initial, &first));
+
         let cached = sandbox.snapshot().unwrap();
         assert!(Arc::ptr_eq(&first, &cached));
-        assert!(!sandbox.transport_dirty);
 
         sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
-        assert!(sandbox.transport_dirty);
-        sandbox.snapshot().unwrap();
-        assert!(!sandbox.transport_dirty);
+
+        let next = sandbox.snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 10);
+    }
+
+    #[test]
+    #[cfg(not(gdb))]
+    fn snapshot_capture_does_not_enter_guest() {
+        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .build()
+            .unwrap();
+        sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
+
+        let fault_plan = sandbox.vm.inject_vm_faults([VmOperation::RunVcpu]);
+        let snapshot = sandbox.snapshot().unwrap();
+        assert!(!fault_plan.is_consumed());
+        assert_eq!(sandbox.status(), SandboxStatus::Ready);
+
+        assert!(sandbox.call::<i32>("GetStatic", ()).is_err());
+        assert!(fault_plan.is_consumed());
+
+        let mut clone = SandboxBuilder::from_snapshot(snapshot).build().unwrap();
+        assert_eq!(clone.call::<i32>("GetStatic", ()).unwrap(), 42);
     }
 
     #[test]
@@ -2198,9 +2176,6 @@ mod tests {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
-
-        sandbox.checkpoint_transport_for_snapshot().unwrap();
-        sandbox.snapshot = None;
 
         let generation = sandbox.mem_mgr.snapshot_count;
         let ring = sandbox.mem_mgr.layout.get_transport_arena().g2h_ring_addr();
@@ -2220,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_checkpoint_ignores_idle_cancellation() {
+    fn snapshot_ignores_idle_cancellation() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
@@ -2230,13 +2205,12 @@ mod tests {
 
         sandbox.snapshot().unwrap();
         assert_eq!(sandbox.status(), SandboxStatus::Ready);
-        assert!(!sandbox.transport_dirty);
         assert!(!sandbox.interrupt_handle().kill());
         assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 5);
     }
 
     #[test]
-    fn snapshot_checkpoint_clears_partial_abort_bytes() {
+    fn snapshot_clears_partial_abort_bytes() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
             .unwrap();
@@ -2251,45 +2225,6 @@ mod tests {
     }
 
     #[test]
-    fn restricted_dispatch_rejects_host_calls() {
-        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            .build()
-            .unwrap();
-
-        let call = FunctionCall::new(
-            "PrintOutput".into(),
-            Some(vec![ParameterValue::String("checkpoint".into())]),
-            FunctionCallType::Guest,
-            i32::TYPE,
-        );
-        sandbox.mem_mgr.write_guest_function_call(&call).unwrap();
-
-        let error = sandbox.dispatch_guest_call_restricted().unwrap_err();
-
-        assert!(
-            error.to_string().contains("during a snapshot checkpoint"),
-            "{error}"
-        );
-        assert_eq!(sandbox.status(), SandboxStatus::Poisoned);
-        assert_eq!(sandbox.mem_mgr.execution_mode, ExecutionMode::Unrestricted);
-    }
-
-    #[test]
-    fn restore_resets_execution_mode() {
-        let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
-            .build()
-            .unwrap();
-
-        let snapshot = sandbox.snapshot().unwrap();
-        sandbox.mem_mgr.execution_mode = ExecutionMode::Restricted;
-        sandbox.restore(snapshot).unwrap();
-
-        sandbox
-            .call::<i32>("PrintOutput", "restored".to_string())
-            .unwrap();
-    }
-
-    #[test]
     fn guest_execution_preserves_pre_entry_cancellation() {
         let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
             .build()
@@ -2299,13 +2234,15 @@ mod tests {
 
         let error = sandbox
             .with_guest_execution(|sandbox| {
-                sandbox.mem_mgr.begin_snapshot_checkpoint()?;
+                let call =
+                    FunctionCall::new("GetStatic".into(), None, FunctionCallType::Guest, i32::TYPE);
+                sandbox.mem_mgr.write_guest_function_call(&call)?;
                 assert!(!sandbox.interrupt_handle().kill());
                 sandbox.dispatch_guest_call()
             })
             .unwrap_err();
 
-        assert!(matches!(error, HyperlightError::ExecutionCanceledByHost()));
+        assert_matches!(error, HyperlightError::ExecutionCanceledByHost());
         assert_eq!(sandbox.status(), SandboxStatus::Poisoned);
         assert!(sandbox.mem_mgr.abort_buffer.is_empty());
     }
@@ -2331,7 +2268,6 @@ mod tests {
 
             let snapshot = sandbox.snapshot().unwrap();
             assert!(!sandbox.status().is_poisoned());
-            assert!(!sandbox.transport_dirty);
             assert!(sandbox.mem_mgr.abort_buffer.is_empty());
 
             assert_eq!(sandbox.call::<i32>(release, ()).unwrap(), retained_len);
@@ -2339,7 +2275,6 @@ mod tests {
             sandbox.restore(snapshot).unwrap();
             assert_eq!(sandbox.call::<i32>(release, ()).unwrap(), retained_len);
             sandbox.snapshot().unwrap();
-            assert!(!sandbox.transport_dirty);
         }
     }
 
@@ -2354,7 +2289,6 @@ mod tests {
                 vec![Bytes::from(vec![0x5a; 6 * 1024])],
             )
             .unwrap();
-        sandbox.checkpoint_transport_for_snapshot().unwrap();
         let source_root = sandbox.vm.get_root_pt().unwrap();
         sandbox.snapshot().unwrap();
         assert_eq!(sandbox.vm.get_root_pt().unwrap(), source_root);
@@ -3329,7 +3263,6 @@ mod tests {
                     .evolve()
                     .unwrap();
                 sandbox.call::<i32>("AddToStatic", 42i32).unwrap();
-                sandbox.checkpoint_transport_for_snapshot().unwrap();
                 let mut options = SnapshotOptions::default();
                 if resize {
                     options = scratch(sandbox.mem_mgr.layout.get_scratch_size() * 2);
@@ -6339,9 +6272,6 @@ mod tests {
         fn cloning_uses_generated_bootstrap_images() {
             let mut sbox = make_sandbox();
             sbox.call::<i32>("AddToStatic", 1i32).unwrap();
-
-            // Checkpointing repairs the rings, so inject corruption afterward.
-            sbox.checkpoint_transport_for_snapshot().unwrap();
 
             let layout = &sbox.mem_mgr.layout;
             let scratch_base = layout::scratch_base_gpa(layout.get_scratch_size());

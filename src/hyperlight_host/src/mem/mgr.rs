@@ -347,15 +347,6 @@ impl<'a> GuestVirtualMemoryReader<'a> {
     }
 }
 
-/// Guest operations the host accepts during a VM entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionMode {
-    /// Guest initialization and guest function calls.
-    Unrestricted,
-    /// Snapshot checkpoint preparation. Host function calls are rejected.
-    Restricted,
-}
-
 /// Scratch-top slots the host writes and the guest applies and clears on its
 /// next entry.
 const GUEST_REQUEST_OFFSETS: [u64; 2] = [
@@ -381,8 +372,6 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) original_entrypoint: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
-    /// Guest operations the host accepts during the current VM entry.
-    pub(crate) execution_mode: ExecutionMode,
     /// Generation counter: how many snapshots have been taken from
     /// this sandbox's execution path from init to here. Incremented
     /// on each `snapshot` call; on `restore_snapshot` we inherit the
@@ -406,7 +395,6 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer.clone(),
-            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -552,7 +540,6 @@ where
             next_action,
             original_entrypoint: 0,
             abort_buffer: Vec::new(),
-            execution_mode: ExecutionMode::Unrestricted,
             snapshot_count: 0,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -607,7 +594,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: self.abort_buffer,
-            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -620,7 +606,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             next_action: self.next_action,
             original_entrypoint: self.original_entrypoint,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
-            execution_mode: self.execution_mode,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
             h2g_consumer: None,
@@ -629,10 +614,10 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         host_mgr.update_scratch_bookkeeping()?;
 
         if matches!(host_mgr.next_action, NextAction::Initialise(_)) {
-            let cp = MailboxValue::CheckpointPending.as_bytes();
+            let status = MailboxValue::InitPending.as_bytes();
             let mbx = host_mgr.layout.mbx_scratch_offset();
 
-            host_mgr.scratch_mem.copy_from_slice(cp, mbx)?;
+            host_mgr.scratch_mem.copy_from_slice(status, mbx)?;
             host_mgr.create_virtq_consumers()?;
         }
 
@@ -907,43 +892,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
     }
 
-    /// Publish an internal request for guest-side snapshot canonicalization.
-    ///
-    /// The pending marker distinguishes a completed checkpoint from an early halt.
-    pub(crate) fn begin_snapshot_checkpoint(&mut self) -> Result<()> {
-        let offset = self.layout.mbx_scratch_offset();
-        let cp = MailboxValue::CheckpointPending.as_bytes();
-        self.scratch_mem.copy_from_slice(cp, offset)?;
-
-        let message = EncodedMessage::new_snapshot_cp();
-        self.write_h2g_message(&message)
-    }
-
-    /// Reset consumers and require the guest's completion status.
-    pub(crate) fn finish_snapshot_checkpoint(&mut self) -> Result<()> {
-        let Some(g2h) = self.g2h_consumer.as_mut() else {
-            return Err(new_error!("G2H consumer is not attached"));
-        };
-
-        let Some(h2g) = self.h2g_consumer.as_mut() else {
-            return Err(new_error!("H2G consumer is not attached"));
-        };
-
-        g2h.reset()?;
-        h2g.reset()?;
-
+    /// Require successful guest initialization at the startup halt.
+    pub(crate) fn require_initialization_complete(&self) -> Result<()> {
         let status = self
             .scratch_mem
             .read::<u64>(self.layout.mbx_scratch_offset())
             .map_err(|error| HyperlightError::TransportError(error.to_string()))?;
 
         match MailboxValue::try_from(status) {
-            Ok(MailboxValue::CheckpointComplete) => Ok(()),
-            Ok(MailboxValue::CheckpointPending) => Err(HyperlightError::TransportError(
-                "Guest did not publish snapshot checkpoint status".into(),
+            Ok(MailboxValue::InitComplete) => Ok(()),
+            Ok(MailboxValue::InitPending) => Err(HyperlightError::TransportError(
+                "Guest did not complete initialization".into(),
             )),
             Err(_) => Err(HyperlightError::TransportError(format!(
-                "Guest published invalid snapshot checkpoint status {status:#x}"
+                "Guest published invalid initialization status {status:#x}"
             ))),
         }
     }
@@ -1057,10 +1019,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.g2h_consumer = None;
         self.h2g_consumer = None;
-        self.execution_mode = ExecutionMode::Unrestricted;
-
-        // A panic during restricted dispatch can skip the mode reset.
-        self.execution_mode = ExecutionMode::Unrestricted;
 
         let gsnapshot = self.replace_snapshot_memory(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
@@ -1085,7 +1043,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.restore_virtq(virtq)?;
         } else if matches!(snapshot.next_action(), NextAction::Initialise(_)) {
             self.scratch_mem.copy_from_slice(
-                MailboxValue::CheckpointPending.as_bytes(),
+                MailboxValue::InitPending.as_bytes(),
                 self.layout.mbx_scratch_offset(),
             )?;
             self.create_virtq_consumers()?;
@@ -1317,12 +1275,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_common::transport::MsgHeader;
-    use hyperlight_common::virtq::DescFlags;
+    use hyperlight_common::virtq::{DescFlags, SlotLayout, SlotPool, VirtqProducer};
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::sandbox_sizes::{
@@ -1337,6 +1296,7 @@ mod tests {
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::MemoryRegionType;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
+    use crate::mem::virtq::HostNotifier;
     use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, SCRATCH_SIZE, TestCase, memory_layout};
     use crate::sandbox::SandboxConfiguration;
     #[cfg(target_arch = "x86_64")]
@@ -1487,73 +1447,72 @@ mod tests {
     }
 
     #[test]
-    fn writes_header_only_snapshot_checkpoint() {
+    fn incomplete_initialization_is_fatal() {
         let case = TestCase::new();
-        let mut mgr = manager(&case);
-        let buffer = case.h2g_desc(0).addr;
+        let mgr = manager(&case);
 
-        let mbx = mgr.layout.mbx_scratch_offset();
-        let cp = MailboxValue::CheckpointComplete.as_bytes();
+        let error = mgr.require_initialization_complete().unwrap_err();
 
-        mgr.scratch_mem.copy_from_slice(cp, mbx).unwrap();
-        mgr.begin_snapshot_checkpoint().unwrap();
-
-        let wire = case.h2g_buffer(0, buffer);
-        let header = MsgHeader::from_bytes(&wire).unwrap();
-
-        assert_eq!(wire.len(), MsgHeader::SIZE);
-        assert_eq!(header.kind, MsgKind::SnapshotCheckpoint);
-        assert_eq!(header.cid, 0);
-        assert_eq!(header.payload_len, 0);
-        assert_eq!(mgr.next_guest_cid, 1);
-
-        assert_eq!(
-            MailboxValue::try_from(mgr.scratch_mem.read::<u64>(mbx).unwrap()).unwrap(),
-            MailboxValue::CheckpointPending
-        );
-    }
-
-    #[test]
-    fn incomplete_snapshot_checkpoint_is_fatal() {
-        let case = TestCase::new();
-        let mut mgr = manager(&case);
-        mgr.g2h_consumer = Some(case.g2h_consumer());
-        mgr.begin_snapshot_checkpoint().unwrap();
-
-        let error = mgr.finish_snapshot_checkpoint().unwrap_err();
-
-        assert!(matches!(error, HyperlightError::TransportError(_)));
+        assert_matches!(error, HyperlightError::TransportError(_));
         assert!(error.is_poison_error());
     }
 
     #[test]
-    fn reads_completed_snapshot_checkpoint_status() {
+    fn initialization_status_preserves_consumer_cursors() {
         let case = TestCase::new();
         let mut mgr = manager(&case);
         mgr.g2h_consumer = Some(case.g2h_consumer());
-        mgr.begin_snapshot_checkpoint().unwrap();
+        mgr.write_guest_function_call(&h2g_call(0)).unwrap();
+
+        let pool = SlotPool::new(SlotLayout::new(case.g2h_pool_base, 64, 1).unwrap()).unwrap();
+        let mut producer =
+            VirtqProducer::new(case.g2h_layout, case.mem.clone(), HostNotifier, pool);
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let consumer = mgr.g2h_consumer.as_mut().unwrap();
+        let (recv, reply) = consumer.poll(0).unwrap().unwrap();
+        consumer.complete(recv, reply).unwrap();
+        let g2h_avail = consumer.avail_cursor();
+        let g2h_used = consumer.used_cursor();
+        assert_ne!(g2h_avail.head(), 0);
+
+        let consumer = mgr.h2g_consumer.as_ref().unwrap();
+        let h2g_avail = consumer.avail_cursor();
+        let h2g_used = consumer.used_cursor();
+        assert_ne!(h2g_avail.head(), 0);
+
         let mbx = mgr.layout.mbx_scratch_offset();
         mgr.scratch_mem
-            .copy_from_slice(MailboxValue::CheckpointComplete.as_bytes(), mbx)
+            .copy_from_slice(MailboxValue::InitComplete.as_bytes(), mbx)
             .unwrap();
 
-        mgr.finish_snapshot_checkpoint().unwrap();
+        mgr.require_initialization_complete().unwrap();
+
+        let consumer = mgr.g2h_consumer.as_ref().unwrap();
+        assert_eq!(consumer.avail_cursor(), g2h_avail);
+        assert_eq!(consumer.used_cursor(), g2h_used);
+
         let consumer = mgr.h2g_consumer.as_ref().unwrap();
-        assert_eq!(consumer.avail_cursor().head(), 0);
-        assert_eq!(consumer.used_cursor().head(), 0);
+        assert_eq!(consumer.avail_cursor(), h2g_avail);
+        assert_eq!(consumer.used_cursor(), h2g_used);
+        assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
+
+        // SAFETY: All G2H chains are complete and the consumer is stopped.
+        unsafe { producer.retire() }.unwrap();
     }
 
     #[test]
-    fn invalid_checkpoint_status_is_fatal() {
+    fn invalid_initialization_status_is_fatal() {
         for status in [2, 3, 0xa000, u64::MAX - 1, u64::MAX] {
             let queue = TestCase::new();
             let mut mgr = manager(&queue);
             mgr.g2h_consumer = Some(queue.g2h_consumer());
             let mbx = mgr.layout.mbx_scratch_offset();
             mgr.scratch_mem.write::<u64>(mbx, status).unwrap();
-            let error = mgr.finish_snapshot_checkpoint().unwrap_err();
+            let error = mgr.require_initialization_complete().unwrap_err();
 
-            assert!(matches!(error, HyperlightError::TransportError(_)));
+            assert_matches!(error, HyperlightError::TransportError(_));
             assert!(error.is_poison_error(), "{error}");
         }
     }
