@@ -61,6 +61,7 @@
 //! - **DESC**: Notify only when a specific descriptor index is reached
 //! ```
 
+#[cfg(any(test, feature = "fuzzing"))]
 pub mod canonical;
 
 use core::fmt;
@@ -73,7 +74,7 @@ use thiserror::Error;
 
 use super::desc::{DescFlags, DescTable, Descriptor};
 use super::event::{EventFlags, EventSuppression};
-use super::{BootstrapInfo, Layout, MemOps};
+use super::{Layout, MemOps};
 
 /// A single buffer element in a scatter-gather list.
 ///
@@ -544,16 +545,6 @@ pub struct RingProducer<M> {
 impl<M: MemOps> RingProducer<M> {
     /// Create a new producer from a memory layout and accessor.
     pub fn new(layout: Layout, mem: M) -> Self {
-        Self::with_inflight(layout, mem, 0)
-    }
-
-    /// Reconstruct private state for a bootstrapped ring without accessing shared memory.
-    pub fn from_bootstrap(info: BootstrapInfo, mem: M) -> Self {
-        Self::with_inflight(info.layout(), mem, info.avail())
-    }
-
-    /// Create private bookkeeping for initially posted single-buffer chains.
-    fn with_inflight(layout: Layout, mem: M, posted: u16) -> Self {
         let size = usize::from(layout.desc_table_len());
         let raw = layout.desc_table_addr();
 
@@ -574,7 +565,7 @@ impl<M: MemOps> RingProducer<M> {
             dev_evt_addr: layout.dev_evt_addr(),
         };
 
-        producer.refresh(posted);
+        producer.refresh(0);
         producer
     }
 
@@ -1006,7 +997,8 @@ impl<M: MemOps> RingProducer<M> {
     /// Returns [`RingError::MemError`] if descriptor or event normalization
     /// cannot be written to shared memory. Local bookkeeping remains unchanged
     /// on error.
-    pub fn reset(&mut self) -> Result<(), RingError> {
+    #[cfg(test)]
+    pub(crate) fn reset(&mut self) -> Result<(), RingError> {
         let table_addr = self.desc_table.base_addr();
 
         self.desc_table
@@ -1563,7 +1555,7 @@ pub(crate) mod tests {
     use super::super::align_up;
     use super::*;
     use crate::virtq::event::EventSuppression;
-    use crate::virtq::{BufferLease, BufferMap, PoolLayout, SlotLayout};
+    use crate::virtq::{BootstrapInfo, BufferLease, BufferMap, PoolLayout, SlotLayout};
 
     /// Test MemOps implementation that maintains pointer provenance.
     ///
@@ -3589,7 +3581,8 @@ pub(crate) mod tests {
         mem.fail_write_at(0);
 
         producer.refresh(info.avail());
-        let fresh = RingProducer::from_bootstrap(info, ring.mem());
+        let mut fresh = RingProducer::new(ring.layout(), ring.mem());
+        fresh.refresh(info.avail());
 
         assert_eq!(producer.id_free.as_ptr(), id_free);
         assert_eq!(producer.id_num.as_ptr(), id_num);

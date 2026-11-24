@@ -21,8 +21,7 @@ pub(crate) mod tests;
 pub(crate) use codec::{RecvMessage, try_write_response};
 use hyperlight_common::transport::MailboxValue;
 use hyperlight_common::virtq::{
-    BootstrapInfo, Layout as VirtqLayout, Notifier, PoolLayout, QueueStats, SlotLayout,
-    VirtqConsumer,
+    BootstrapInfo, Layout as VirtqLayout, Notifier, QueueStats, VirtqConsumer, h2g_pool_layout,
 };
 use mem::{HostMemOps, ImageMem};
 
@@ -61,7 +60,7 @@ pub(crate) fn create_consumers(
     Ok((g2h, h2g))
 }
 
-/// Validated ring images excluded from ordinary snapshot pages.
+/// Bootstrap ring images cached outside ordinary snapshot pages.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
     /// Guest-to-host ring bytes.
@@ -71,18 +70,6 @@ pub(crate) struct VirtqSnapshot {
 }
 
 impl VirtqSnapshot {
-    /// Validate decoded rings against the final transport geometry.
-    pub(crate) fn new(
-        layout: &SandboxMemoryLayout,
-        g2h_ring: Vec<u8>,
-        h2g_ring: Vec<u8>,
-    ) -> Result<Self> {
-        let snapshot = Self { g2h_ring, h2g_ring };
-
-        snapshot.validate(layout)?;
-        Ok(snapshot)
-    }
-
     /// Build bootstrap images without accessing live guest memory.
     pub(crate) fn bootstrap(layout: &SandboxMemoryLayout) -> Result<Self> {
         let (g2h, h2g) = ring_layouts(layout)?;
@@ -90,14 +77,14 @@ impl VirtqSnapshot {
         let buffer_size = layout.get_h2g_buffer_size();
 
         let (_, _, _, pool_offset, _) = layout.get_transport_arena().to_offsets();
-        let slots = SlotLayout::new(
+        let pool = h2g_pool_layout(
             g2h.desc_table_addr() + pool_offset as u64,
+            h2g_dims.pool_pages().get(),
             buffer_size,
-            h2g_dims.pool_len() / buffer_size,
         )
         .map_err(|error| new_error!("invalid H2G bootstrap pool: {error}"))?;
 
-        let info = BootstrapInfo::prefilled(h2g, PoolLayout::single(slots))
+        let info = BootstrapInfo::prefilled(h2g, pool)
             .map_err(|error| new_error!("invalid H2G bootstrap: {error}"))?;
 
         let mut g2h_ring = vec![0; layout.get_g2h_queue_dims().ring_len()];
@@ -110,16 +97,6 @@ impl VirtqSnapshot {
             .map_err(|error| new_error!("H2G bootstrap initialization failed: {error}"))?;
 
         Ok(Self { g2h_ring, h2g_ring })
-    }
-
-    /// Canonical guest-to-host ring bytes.
-    pub(crate) fn g2h_ring(&self) -> &[u8] {
-        &self.g2h_ring
-    }
-
-    /// Canonical host-to-guest ring bytes.
-    pub(crate) fn h2g_ring(&self) -> &[u8] {
-        &self.h2g_ring
     }
 
     /// Restore these rings using the owning snapshot's transport layout.
@@ -138,33 +115,6 @@ impl VirtqSnapshot {
         scratch_mem.copy_from_slice(&self.h2g_ring, h2g_offset)?;
         scratch_mem.copy_from_slice(status, mbx_offset)?;
         create_consumers(layout, scratch_mem)
-    }
-
-    /// Require the descriptor order, prefill depth, and events used by adoption.
-    fn validate(&self, layout: &SandboxMemoryLayout) -> Result<()> {
-        if self.g2h_ring.len() != layout.get_g2h_queue_dims().ring_len()
-            || self.h2g_ring.len() != layout.get_h2g_queue_dims().ring_len()
-        {
-            return Err(new_error!(
-                "virtqueue snapshot ring lengths do not match layout"
-            ));
-        }
-
-        let expected = Self::bootstrap(layout)?;
-
-        if self.g2h_ring != expected.g2h_ring {
-            return Err(new_error!(
-                "invalid canonical G2H image: does not match bootstrap"
-            ));
-        }
-
-        if self.h2g_ring != expected.h2g_ring {
-            return Err(new_error!(
-                "invalid canonical H2G image: does not match bootstrap"
-            ));
-        }
-
-        Ok(())
     }
 }
 

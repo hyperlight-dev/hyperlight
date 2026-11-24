@@ -161,9 +161,9 @@ struct SnapshotState {
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
 
-    /// Validated ring images omitted from ordinary snapshot pages.
+    /// Bootstrap ring images cached outside ordinary snapshot pages.
     ///
-    /// Construction and loading validate these images against `layout`.
+    /// Construction and loading generate these images from `layout`.
     /// Both the images and layout remain immutable afterwards.
     virtq: Option<VirtqSnapshot>,
 }
@@ -694,7 +694,7 @@ impl Snapshot {
     // the sandbox vm itself (which modifies it as it receives
     // requests from the sandbox).
     #[allow(clippy::too_many_arguments)]
-    /// Capture memory with optional validated transport images.
+    /// Capture memory with optional bootstrap images.
     ///
     /// `layout` is the sandbox's own: the live page tables and scratch are
     /// read with it. The snapshot's page tables are built for

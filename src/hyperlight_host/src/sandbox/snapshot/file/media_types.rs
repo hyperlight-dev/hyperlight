@@ -20,9 +20,6 @@ pub(in crate::sandbox::snapshot) const MT_CONFIG_CURRENT: &str = MT_CONFIG_V6;
 pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_V2: &str =
     "application/vnd.hyperlight.snapshot.memory.v2";
 pub(in crate::sandbox::snapshot) const MT_SNAPSHOT_CURRENT: &str = MT_SNAPSHOT_V2;
-pub(in crate::sandbox::snapshot) const MT_TRANSPORT_V1: &str =
-    "application/vnd.hyperlight.snapshot.transport.v1";
-pub(in crate::sandbox::snapshot) const MT_TRANSPORT_CURRENT: &str = MT_TRANSPORT_V1;
 
 /// ABI version for the snapshot memory blob. Bumped when the
 /// host-guest contract for the snapshot bytes changes. See

@@ -167,7 +167,7 @@ impl CpuVendor {
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
-/// data, page-table and transport layers and everything the loader needs
+/// data and page-table layers and everything the loader needs
 /// to reconstruct a runnable `Snapshot`.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

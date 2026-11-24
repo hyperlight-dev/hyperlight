@@ -18,6 +18,7 @@ use hyperlight_common::transport::{
 use hyperlight_common::virtq::{
     AllocError, BootstrapInfo, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier,
     QueueStats, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
+    h2g_pool_layout,
 };
 use hyperlight_common::vmem::PAGE_SIZE;
 
@@ -138,8 +139,10 @@ impl GuestContext {
             .with_context(|| "failed to initialize G2H ring")?;
         let g2h_producer = VirtqProducer::new(g2h.layout, mem, OutbNotifier, g2h_pool);
 
-        let h2g_pool = h2g_pool(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
-            .with_context(|| "failed to create H2G slot pool")?;
+        let h2g_layout = h2g_pool_layout(h2g.pool_gva, h2g.pool_pages, h2g.buffer_size)
+            .with_context(|| "invalid H2G pool geometry")?;
+        let h2g_pool =
+            SlotPool::from_layout(h2g_layout).with_context(|| "failed to create H2G slot pool")?;
         // SAFETY: The caller owns this disjoint pool.
         let mem = unsafe { pool_mem(&h2g_pool, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize H2G pool access")?;
@@ -364,8 +367,8 @@ impl GuestContext {
             .expect("invalid H2G bootstrap");
 
         // SAFETY: The host discarded the old queues and installed the matching
-        // bootstrap with no live chain handles. No producer has run. Retained
-        // views have captured backing and old pool handles only release leases.
+        // bootstrap with no live chain handles or builders. No producer has run.
+        // Retained views have captured backing and old pool handles only release leases.
         unsafe {
             self.g2h_producer
                 .refresh(g2h_info)
@@ -563,18 +566,6 @@ unsafe fn pool_mem(
     unsafe { Ok(GuestMemOps::new(arena_gva, end)) }
 }
 
-/// Build the uniform H2G pool.
-///
-/// Each slot becomes one independent preposted receive buffer.
-fn h2g_pool(base: u64, pages: usize, buffer_size: usize) -> result::Result<SlotPool, AllocError> {
-    if buffer_size == 0 {
-        return Err(AllocError::InvalidArg);
-    }
-    let count = pool_len(pages)? / buffer_size;
-    let layout = SlotLayout::new(base, buffer_size, count)?;
-    SlotPool::new(layout)
-}
-
 /// Build the tiered G2H pool.
 ///
 /// One page of 256-byte slots serves small control and log messages without
@@ -612,7 +603,9 @@ mod tests {
         let page = PAGE_SIZE as u64;
         let arena = limit - 8 * page;
         let scratch = arena - 16 * page;
-        let pool = |base, pages| h2g_pool(base, pages, 256).unwrap();
+        let pool = |base, pages| {
+            SlotPool::from_layout(h2g_pool_layout(base, pages, 256).unwrap()).unwrap()
+        };
         // SAFETY: only bounds are computed. No memory is touched.
         unsafe {
             assert!(pool_mem(&pool(arena + 4 * page, 4), arena, scratch).is_ok());

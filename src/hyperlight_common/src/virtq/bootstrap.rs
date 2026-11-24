@@ -5,7 +5,10 @@
 
 use bytemuck::Zeroable;
 
-use super::{DescFlags, Descriptor, Layout, MemOps, PoolLayout, RingError, SlotPool, ring};
+use super::{
+    AllocError, DescFlags, Descriptor, Layout, MemOps, PoolLayout, RingError, SlotLayout, SlotPool,
+    ring,
+};
 
 /// Ring and pool geometry for empty or prefilled producer reconstruction.
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +99,24 @@ impl BootstrapInfo {
     }
 }
 
+/// Uniform H2G receive slots in the host-assigned pool.
+pub fn h2g_pool_layout(
+    base: u64,
+    pages: usize,
+    buffer_size: usize,
+) -> Result<PoolLayout, AllocError> {
+    if buffer_size == 0 {
+        return Err(AllocError::InvalidArg);
+    }
+
+    let len = pages
+        .checked_mul(crate::vmem::PAGE_SIZE)
+        .ok_or(AllocError::Overflow)?;
+
+    let slots = SlotLayout::new(base, buffer_size, len / buffer_size)?;
+    Ok(PoolLayout::single(slots))
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
@@ -104,6 +125,37 @@ mod tests {
     use crate::virtq::canonical::validate_canon_image;
     use crate::virtq::ring::tests::{FaultMem, make_consumer, make_producer, make_ring};
     use crate::virtq::{MemOp, RingProducer, SlotLayout};
+
+    #[test]
+    fn h2g_pool_uses_only_complete_slots() {
+        let layout = h2g_pool_layout(0x1000, 3, 3000).unwrap();
+        let pool = SlotPool::from_layout(layout).unwrap();
+
+        assert_eq!(pool.num_free(), 4);
+        assert_eq!(pool.byte_len(), 12_000);
+        assert_eq!(pool.alloc(3000).unwrap().addr, 0x1000 + 9000);
+    }
+
+    #[test]
+    fn h2g_pool_rejects_zero_buffer_size() {
+        assert_matches!(h2g_pool_layout(0x1000, 1, 0), Err(AllocError::InvalidArg));
+    }
+
+    #[test]
+    fn h2g_pool_rejects_undersized_backing() {
+        assert_matches!(
+            h2g_pool_layout(0x1000, 1, crate::vmem::PAGE_SIZE + 1),
+            Err(AllocError::EmptyRegion)
+        );
+    }
+
+    #[test]
+    fn h2g_pool_rejects_size_overflow() {
+        assert_matches!(
+            h2g_pool_layout(0, usize::MAX, 64),
+            Err(AllocError::Overflow)
+        );
+    }
 
     #[test]
     fn bootstrap_matches_fresh_pool_submissions() {
@@ -173,7 +225,8 @@ mod tests {
         let mut fresh = make_consumer(&ring);
         assert_matches!(fresh.poll_available(), Err(RingError::WouldBlock));
 
-        let mut restored = RingProducer::from_bootstrap(info, ring.mem());
+        let mut restored = RingProducer::new(ring.layout(), ring.mem());
+        restored.refresh(info.avail());
 
         let id = restored.submit_one(0x1000, 64, false).unwrap();
         let (received_id, _) = fresh.poll_available().unwrap();

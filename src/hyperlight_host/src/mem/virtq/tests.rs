@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-use std::assert_matches;
-
 use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
-    DescFlags, Descriptor, MemOps, RingError, SlotLayout, SlotPool, VirtqError, VirtqProducer,
+    DescFlags, Descriptor, MemOps, RingError, RingProducer, SlotLayout, SlotPool, VirtqError,
 };
 
 use super::mem::HostMemOps;
@@ -43,17 +41,15 @@ impl TestCase {
             SlotLayout::new(h2g_pool_base, buffer_size, h2g_prefill_descs).unwrap();
         let h2g_pool = SlotPool::new(h2g_pool_layout).unwrap();
 
-        let mut producer = VirtqProducer::new(h2g_layout, mem.clone(), HostNotifier, h2g_pool);
-        let mut batch = producer.batch();
+        let mut producer = RingProducer::new(h2g_layout, mem.clone());
 
         for _ in 0..h2g_prefill_descs {
-            let chain = batch.chain().writable(buffer_size).build().unwrap();
-            batch.submit(chain).unwrap();
+            let allocation = h2g_pool.alloc(buffer_size).unwrap();
+            producer
+                .submit_one(allocation.addr, allocation.len, true)
+                .unwrap();
         }
 
-        batch.finish_without_notify();
-        // SAFETY: No consumer or payload views exist. The pool is only fixture setup.
-        unsafe { producer.retire() }.unwrap();
         write_published_arena_gpa(&scratch, arena.base_addr()).unwrap();
 
         Self {
@@ -125,7 +121,7 @@ fn write_desc(mem: &HostMemOps, layout: VirtqLayout, index: u16, desc: Descripto
     .unwrap();
 }
 
-/// Read live rings to exercise snapshot-image admission.
+/// Read live rings for comparison with bootstrap images.
 fn read_snapshot(
     layout: &SandboxMemoryLayout,
     scratch: &HostSharedMemory,
@@ -136,7 +132,10 @@ fn read_snapshot(
     scratch.copy_to_slice(&mut g2h, g2h_offset)?;
     scratch.copy_to_slice(&mut h2g, h2g_offset)?;
 
-    VirtqSnapshot::new(layout, g2h, h2g)
+    Ok(VirtqSnapshot {
+        g2h_ring: g2h,
+        h2g_ring: h2g,
+    })
 }
 
 #[test]
@@ -199,136 +198,6 @@ fn snapshots_and_restores_rings() {
 }
 
 #[test]
-fn rejects_snapshot_geometry_mismatches() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let captured = read_snapshot(&layout, &case.scratch).unwrap();
-    let g2h = captured.g2h_ring();
-    let h2g = captured.h2g_ring();
-
-    for (g2h_len, h2g_len) in [(g2h.len() - 1, h2g.len()), (g2h.len(), h2g.len() - 1)] {
-        assert!(
-            VirtqSnapshot::new(&layout, g2h[..g2h_len].to_vec(), h2g[..h2g_len].to_vec()).is_err()
-        );
-    }
-}
-
-#[test]
-fn rejects_noncanonical_snapshot_images() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-
-    case.mem
-        .write(case.g2h_layout.desc_table_addr(), &[1])
-        .unwrap();
-    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("invalid canonical G2H image"));
-
-    case.mem
-        .write(case.g2h_layout.desc_table_addr(), &[0])
-        .unwrap();
-    case.mem
-        .write(case.h2g_layout.drv_evt_addr(), &[1])
-        .unwrap();
-    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("invalid canonical H2G image"));
-}
-
-#[test]
-fn rejects_h2g_snapshot_buffer_attributes() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let original = case.h2g_desc(0);
-
-    for (len, flags) in [
-        (original.len, original.flags & !DescFlags::WRITE.bits()),
-        (original.len - 1, original.flags),
-        (original.len + 1, original.flags),
-    ] {
-        let desc = Descriptor {
-            len,
-            flags,
-            ..original
-        };
-        case.set_h2g_desc(0, desc);
-        assert_matches!(read_snapshot(&layout, &case.scratch), Err(_));
-    }
-}
-
-/// Distinct descriptor IDs do not imply distinct receive slots.
-#[test]
-fn rejects_h2g_snapshot_duplicate_slots() {
-    let case = TestCase::new();
-    let first = case.h2g_desc(0);
-    let mut second = case.h2g_desc(1);
-
-    assert_ne!(first.id, second.id);
-
-    second.addr = first.addr;
-    case.set_h2g_desc(1, second);
-
-    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
-}
-
-#[test]
-fn rejects_h2g_snapshot_slot_permutations() {
-    let case = TestCase::new();
-    let mut first = case.h2g_desc(0);
-    let mut second = case.h2g_desc(1);
-
-    assert!(!case.h2g_pool_base.is_multiple_of(H2G_BUFFER_SIZE as u64));
-
-    std::mem::swap(&mut first.addr, &mut second.addr);
-    case.set_h2g_desc(0, first);
-    case.set_h2g_desc(1, second);
-
-    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
-}
-
-#[test]
-fn rejects_h2g_snapshot_id_permutations() {
-    let case = TestCase::new();
-    let mut first = case.h2g_desc(0);
-    let mut second = case.h2g_desc(1);
-
-    std::mem::swap(&mut first.id, &mut second.id);
-    case.set_h2g_desc(0, first);
-    case.set_h2g_desc(1, second);
-
-    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
-}
-
-#[test]
-fn rejects_h2g_snapshot_chain_shape() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let mut head = case.h2g_desc(0);
-    let mut tail = case.h2g_desc(1);
-    head.flags |= DescFlags::NEXT.bits();
-    tail.id = head.id;
-    case.set_h2g_desc(0, head);
-    case.set_h2g_desc(1, tail);
-
-    let error = read_snapshot(&layout, &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
-}
-
-#[test]
 fn uses_scratch_payloads_outside_pools() {
     let case = TestCase::new();
     // General scratch, below the arena: the allocator's first free page.
@@ -360,7 +229,7 @@ fn uses_scratch_payloads_outside_pools() {
     assert_eq!(bytes, [4, 5, 6]);
 }
 
-/// Snapshot admission does not replace checks after the guest resumes.
+/// Guest-written descriptors are checked on use after restore.
 #[test]
 fn payload_bounds_are_checked_on_use() {
     let case = TestCase::new();
@@ -408,28 +277,4 @@ fn malformed_descriptors_fail_when_polled() {
         h2g.poll(0),
         Err(VirtqError::RingError(RingError::BadChain))
     ));
-}
-
-#[test]
-fn rejects_partially_prefilled_h2g_snapshot() {
-    let case = TestCase::new();
-    case.set_h2g_desc(3, Descriptor::new(0, 0, 0, DescFlags::empty()));
-
-    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
-}
-
-#[test]
-fn rejects_empty_h2g_snapshot() {
-    let case = TestCase::new();
-    case.h2g_layout.initialize(&case.mem).unwrap();
-
-    let error = read_snapshot(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("does not match bootstrap"),
-        "{error}"
-    );
 }

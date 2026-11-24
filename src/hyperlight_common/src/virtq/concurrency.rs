@@ -50,6 +50,7 @@ use loom::thread;
 
 use super::*;
 use crate::virtq::desc::Descriptor;
+use crate::virtq::test_utils::refresh_empty;
 
 #[derive(Debug)]
 pub struct MemErr;
@@ -600,7 +601,7 @@ fn virtq_event_suppression_reconfig() {
             t_cons.join().unwrap();
 
             // SAFETY: The consumer thread has exited without polling any chains.
-            unsafe { prod.reset() }.unwrap();
+            unsafe { refresh_empty(&mut prod) };
         });
 
         t_prod.join().unwrap();

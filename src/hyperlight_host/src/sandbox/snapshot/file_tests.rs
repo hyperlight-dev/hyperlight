@@ -189,25 +189,6 @@ fn find_snapshot_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
     oci_dir.join("blobs").join("sha256").join(snap_digest)
 }
 
-/// Locate the transport (last layer) blob inside `oci_dir`.
-fn find_transport_blob(oci_dir: &std::path::Path) -> std::path::PathBuf {
-    let index: Value =
-        serde_json::from_slice(&std::fs::read(oci_dir.join("index.json")).unwrap()).unwrap();
-    let manifest_digest = index["manifests"][0]["digest"]
-        .as_str()
-        .unwrap()
-        .strip_prefix("sha256:")
-        .unwrap();
-    let manifest_path = oci_dir.join("blobs").join("sha256").join(manifest_digest);
-    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    let transport_digest = manifest["layers"].as_array().unwrap().last().unwrap()["digest"]
-        .as_str()
-        .unwrap()
-        .strip_prefix("sha256:")
-        .unwrap();
-    oci_dir.join("blobs").join("sha256").join(transport_digest)
-}
-
 // In-memory `from_snapshot` round-trips.
 
 #[test]
@@ -374,7 +355,8 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     );
     assert_eq!(config["abi_version"], 12);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
-    assert_eq!(layers.len(), blobs.len() + 1);
+    assert_eq!(layers.len(), blobs.len());
+
     for (index, blob) in blobs.iter().enumerate() {
         assert_eq!(
             layers[index]["mediaType"],
@@ -393,11 +375,6 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
         blobs[page_table_layer],
         snapshot.snapshot_memory().page_table_blob()
     ));
-    assert_eq!(
-        layers[blobs.len()]["mediaType"],
-        super::file::MT_TRANSPORT_V1
-    );
-
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
     assert_eq!(
         loaded.snapshot_memory().layers().len(),
@@ -468,15 +445,13 @@ fn layered_snapshot_recapture_round_trip() {
         serde_json::from_slice(&std::fs::read(manifest_path(&path)).unwrap()).unwrap();
     let layers = manifest["layers"].as_array().unwrap();
     let data_layers = snapshot.state.memory.layers().len();
-    // The data layers, then a blob with only page tables, then transport.
-    assert_eq!(layers.len(), data_layers + 2);
-    for layer in &layers[..data_layers + 1] {
+    // The data layers, then a blob with only page tables.
+    assert_eq!(layers.len(), data_layers + 1);
+
+    for layer in layers {
         assert_eq!(layer["mediaType"], super::file::MT_SNAPSHOT_V2);
     }
-    assert_eq!(
-        layers[data_layers + 1]["mediaType"],
-        super::file::MT_TRANSPORT_V1
-    );
+
     let loaded = Snapshot::checked_load(&path, OciTag::new("latest").unwrap()).unwrap();
     assert_eq!(loaded.snapshot_memory().layers().len(), data_layers);
     let mut sandbox =
@@ -907,18 +882,16 @@ fn restore_missing_transport_preserves_target() {
 }
 
 #[test]
-fn load_noncanonical_transport_preserves_target() {
-    // Give an empty G2H ring a nonzero descriptor.
+fn load_invalid_transport_layout_preserves_target() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snap");
     let tag = OciTag::new("latest").unwrap();
     snapshot.save(&path, &tag).unwrap();
 
-    let transport_path = find_transport_blob(&path);
-    let mut bytes = std::fs::read(&transport_path).unwrap();
-    bytes[40] = 1;
-    std::fs::write(&transport_path, bytes).unwrap();
+    rewrite_config(&path, |cfg| {
+        cfg["layout"]["h2g_queue_size"] = Value::from(3);
+    });
 
     // Seed guest state and read the mapped file before caching the snapshot.
     let file = tempfile::NamedTempFile::new().unwrap();
@@ -944,7 +917,9 @@ fn load_noncanonical_transport_preserves_target() {
         .unwrap_err();
 
     assert!(
-        error.to_string().contains("invalid canonical G2H image"),
+        error
+            .to_string()
+            .contains("h2g_queue_size (3) is not a valid transport value"),
         "{error}"
     );
     assert!(target.status().is_ready());
@@ -1164,6 +1139,25 @@ fn abi_version_mismatch_rejected() {
         "expected ABI version mismatch, got: {}",
         msg
     );
+}
+
+#[test]
+fn abi_mismatch_precedes_layer_validation() {
+    let (_dir, path) = save_for_mutation();
+    rewrite_config(&path, |cfg| {
+        cfg["abi_version"] = Value::from(11);
+    });
+    rewrite_manifest(&path, |manifest| {
+        let mut transport = manifest["layers"][0].clone();
+        transport["mediaType"] = Value::from("application/vnd.hyperlight.snapshot.transport.v1");
+        manifest["layers"].as_array_mut().unwrap().push(transport);
+    });
+
+    let error = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(error, "snapshot ABI version mismatch");
 }
 
 #[test]
@@ -1874,7 +1868,7 @@ fn save_shares_blobs_across_tags_with_identical_content() {
         .collect();
     assert_eq!(
         blobs.len(),
-        snap.snapshot_memory().blobs().count() + 3,
+        snap.snapshot_memory().blobs().count() + 2,
         "expected deduped blobs, got {:?}",
         blobs
     );
@@ -2037,46 +2031,6 @@ fn checked_load_rejects_snapshot_blob_byte_mutation() {
     );
 }
 
-#[test]
-fn checked_load_rejects_transport_blob_byte_mutation() {
-    let snapshot = create_snapshot();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("snap");
-    snapshot
-        .save(&path, &OciTag::new("latest").unwrap())
-        .unwrap();
-
-    let transport_path = find_transport_blob(&path);
-    let mut bytes = std::fs::read(&transport_path).unwrap();
-    let mid = bytes.len() / 2;
-    bytes[mid] ^= 0xFF;
-    std::fs::write(&transport_path, bytes).unwrap();
-
-    let err = unwrap_err_snapshot(Snapshot::checked_load(
-        &path,
-        OciTag::new("latest").unwrap(),
-    ));
-    assert_err_contains(err, "digest");
-}
-
-#[test]
-fn unchecked_load_rejects_noncanonical_transport() {
-    let snapshot = create_snapshot();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("snap");
-    snapshot
-        .save(&path, &OciTag::new("latest").unwrap())
-        .unwrap();
-
-    let transport_path = find_transport_blob(&path);
-    let mut bytes = std::fs::read(&transport_path).unwrap();
-    *bytes.last_mut().unwrap() ^= 1;
-    std::fs::write(&transport_path, bytes).unwrap();
-
-    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
-    assert_err_contains(error, "invalid canonical H2G image");
-}
-
 /// Config-blob byte mutation must be caught by digest verification
 /// before any structural validator runs.
 #[test]
@@ -2223,37 +2177,27 @@ fn layered_oci_rejects_missing_descriptor() {
         &path,
         OciTag::new("latest").unwrap(),
     ));
-    assert_err_contains(err, "snapshot layers and one transport layer");
+    assert_err_contains(err, "snapshot layers, found");
 }
 
 #[test]
 fn layered_oci_rejects_wrong_descriptor_media() {
-    for (media_type, expected_error) in [
-        (
-            super::file::MT_SNAPSHOT_V2,
-            "unexpected snapshot layer media type",
-        ),
-        (
-            super::file::MT_TRANSPORT_V1,
-            "unexpected transport layer media type",
-        ),
-    ] {
-        let (_dir, path) = save_for_mutation();
-        rewrite_manifest(&path, |manifest| {
-            let descriptor = manifest["layers"]
-                .as_array_mut()
-                .unwrap()
-                .iter_mut()
-                .find(|descriptor| descriptor["mediaType"] == media_type)
-                .unwrap();
-            descriptor["mediaType"] = Value::from("application/vnd.example.other");
-        });
-        let err = unwrap_err_snapshot(Snapshot::checked_load(
-            &path,
-            OciTag::new("latest").unwrap(),
-        ));
-        assert_err_contains(err, expected_error);
-    }
+    let (_dir, path) = save_for_mutation();
+    make_layered_layout(&path, true);
+    rewrite_manifest(&path, |manifest| {
+        let descriptor = manifest["layers"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap();
+        descriptor["mediaType"] = Value::from("application/vnd.example.other");
+    });
+
+    let err = unwrap_err_snapshot(Snapshot::checked_load(
+        &path,
+        OciTag::new("latest").unwrap(),
+    ));
+    assert_err_contains(err, "unexpected snapshot layer media type");
 }
 
 #[test]
@@ -2600,20 +2544,6 @@ fn unknown_snapshot_layer_media_type_rejected() {
     assert_err_contains(err, "snapshot layer media type");
 }
 
-#[test]
-fn unknown_transport_layer_media_type_rejected() {
-    let (_dir, path) = save_for_mutation();
-    rewrite_manifest(&path, |m| {
-        let descriptor = m["layers"].as_array_mut().unwrap().last_mut().unwrap();
-        descriptor["mediaType"] = Value::from("application/vnd.example.unknown.v1");
-    });
-    let err = unwrap_err_snapshot(Snapshot::checked_load(
-        &path,
-        OciTag::new("latest").unwrap(),
-    ));
-    assert_err_contains(err, "transport layer media type");
-}
-
 /// Annotations injected by third-party tools (cosign, ORAS, build
 /// pipelines) must not break load. The OCI envelope around
 /// `OciSnapshotConfig` is parsed via `oci-spec`'s lenient types.
@@ -2678,23 +2608,6 @@ fn config_blob_size_descriptor_mismatch_rejected() {
         OciTag::new("latest").unwrap(),
     ));
     assert_err_contains(err, "config blob size mismatch");
-}
-
-#[test]
-fn transport_blob_size_descriptor_mismatch_rejected() {
-    let (_dir, path) = save_for_mutation();
-    rewrite_manifest(&path, |manifest| {
-        let descriptor = manifest["layers"]
-            .as_array_mut()
-            .unwrap()
-            .last_mut()
-            .unwrap();
-        let size = descriptor["size"].as_u64().unwrap();
-        descriptor["size"] = Value::from(size + 1);
-    });
-
-    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
-    assert_err_contains(error, "transport blob size mismatch");
 }
 
 /// `load` reaches the config JSON parser. The digest path
@@ -3212,44 +3125,6 @@ fn config_blob_too_large_rejected() {
 }
 
 #[test]
-fn transport_blob_at_size_limit_reaches_decoder() {
-    let (_dir, path) = save_for_mutation();
-    let transport_path = find_transport_blob(&path);
-    let bytes = vec![0; 2 * 1024 * 1024];
-    std::fs::write(transport_path, &bytes).unwrap();
-    rewrite_manifest(&path, |manifest| {
-        let descriptor = manifest["layers"]
-            .as_array_mut()
-            .unwrap()
-            .last_mut()
-            .unwrap();
-        descriptor["size"] = Value::from(bytes.len() as u64);
-    });
-
-    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
-    assert_err_contains(error, "snapshot transport magic is invalid");
-}
-
-#[test]
-fn transport_blob_too_large_rejected() {
-    let (_dir, path) = save_for_mutation();
-    let transport_path = find_transport_blob(&path);
-    let bytes = vec![0; 2 * 1024 * 1024 + 1];
-    std::fs::write(transport_path, &bytes).unwrap();
-    rewrite_manifest(&path, |manifest| {
-        let descriptor = manifest["layers"]
-            .as_array_mut()
-            .unwrap()
-            .last_mut()
-            .unwrap();
-        descriptor["size"] = Value::from(bytes.len() as u64);
-    });
-
-    let error = unwrap_err_snapshot(Snapshot::load(&path, OciTag::new("latest").unwrap()));
-    assert_err_contains(error, "exceeds maximum allowed 2097152 bytes");
-}
-
-#[test]
 fn oci_layout_too_large_rejected() {
     let (_dir, path) = save_for_mutation();
     let huge = vec![b'a'; 1024 * 1024 + 16];
@@ -3597,6 +3472,14 @@ fn round_trip_preserves_transport_layout() {
     assert_eq!(loaded.layout().get_g2h_pool_pages(), 16);
     assert_eq!(loaded.layout().get_h2g_pool_pages(), 6);
     assert_eq!(loaded.layout().get_transport_arena(), expected);
+
+    let mut restored = SandboxBuilder::from_snapshot(Arc::new(loaded))
+        .build()
+        .unwrap();
+    assert_eq!(
+        restored.call::<String>("Echo", payload.clone()).unwrap(),
+        payload
+    );
 }
 
 #[test]

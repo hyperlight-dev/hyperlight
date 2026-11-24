@@ -418,7 +418,7 @@ lengths as untrusted.
   size before the host writes to them.
 * G2H control and external values are copied into host owned storage before
   host code receives them.
-* Loaded ring images must match the deterministic bootstrap state described below.
+* Snapshot ring images are generated from validated transport geometry.
 
 ## Snapshot capture
 
@@ -454,23 +454,17 @@ The bootstrap state is:
 * Driver and device notifications are enabled at offset zero.
 * Host consumers start at cursor zero.
 
-The snapshot stores normal guest memory plus the two generated ring images.
-Loading requires an exact match to the shared initializer for the finalized
-layout. Partial prefill and reordered IDs or buffers are rejected.
-The layout and ring images remain immutable.
-The OCI representation places ring images in the
-[transport layer](./snapshot-oci-format.md). Retained payloads use the ordinary
-memory layer through their aliases. The mailbox and host consumer cursors are
-not stored.
+The snapshot caches normal guest memory and the two generated ring images.
+The [OCI representation](./snapshot-oci-format.md) stores transport geometry
+in the config. Loading regenerates ring images from the validated layout.
+The layout and cached images remain immutable.
+Retained payloads use ordinary memory layers through their aliases.
+The mailbox and host consumer cursors are not stored.
 
 ### Restore
 
-Load validates ring lengths and bootstrap state against the layout. It also
-checks the scratch size the transport blob records.
-Admitted images and their layout remain immutable.
-
-Transport admission precedes changes to sandbox status, the cached snapshot,
-and memory mappings.
+Layout validation and bootstrap generation precede changes to sandbox status,
+the cached snapshot, and memory mappings.
 
 Restore writes the arena GPA metadata, an `InitComplete` mailbox value,
 and both ring images into fresh scratch. It attaches new host consumers at
@@ -487,9 +481,12 @@ control reserve still apply.
 Guest entry uses `VirtqProducer::refresh` for both queues before
 logging or receiving. `BootstrapInfo` holds a `PoolLayout` and an initial posted count.
 `SlotPool::layout()` supplies geometry independent of live allocations.
+Host and guest share H2G slot geometry through `h2g_pool_layout`.
 Reconstruction uses bootstrap capacities, not consumer-written lengths.
+Each reserved slot must match its bootstrap address and capacity.
 Host completions and payloads stay untouched. Producers prepare fresh pool
 reservations and private table capacity before releasing old queue-owned records.
+Old builders and unsubmitted chains must be gone before refresh.
 Retained aliases keep their captured mappings and original leases.
 Guest execution cannot resume if either producer refresh fails.
 

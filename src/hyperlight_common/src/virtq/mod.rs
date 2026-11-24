@@ -561,6 +561,29 @@ pub(crate) mod test_utils {
 
         (producer, consumer, notifier)
     }
+
+    /// Complete available chains and drain producer completions.
+    pub(crate) fn complete_avail<M: BufferMap + Clone, N: Notifier>(
+        producer: &mut VirtqProducer<M, N>,
+        consumer: &mut TestConsumer,
+    ) {
+        while let Some((recv, reply)) = consumer.poll(usize::MAX).unwrap() {
+            consumer.complete(recv, reply).unwrap();
+        }
+
+        producer.drain(drop).unwrap();
+    }
+
+    /// Initialize an empty generation for a stopped producer.
+    pub(crate) unsafe fn refresh_empty<M: MemOps + Clone, N: Notifier>(
+        producer: &mut VirtqProducer<M, N>,
+    ) {
+        let info = BootstrapInfo::empty(producer.layout(), producer.pool().layout()).unwrap();
+        info.initialize(producer.memory()).unwrap();
+
+        // SAFETY: Initialization supplies the matching bootstrap. The caller owns the old state.
+        unsafe { producer.refresh(info) }.unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -722,8 +745,8 @@ mod tests {
         assert_eq!(notifier.count.load(Ordering::Relaxed), 1);
         assert!(notifier.last_num_inflight.load(Ordering::Relaxed) > 0);
 
-        // SAFETY: No consumer is attached to this ring.
-        unsafe { producer.reset() }.unwrap();
+        let mut consumer = VirtqConsumer::new(layout, ring.mem(), TestNotifier::new());
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
@@ -950,8 +973,7 @@ mod tests {
         // Ring should have space now
         send_readonly(&mut producer, b"e");
 
-        // SAFETY: The consumer completed all handles and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]

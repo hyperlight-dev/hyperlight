@@ -1281,7 +1281,7 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCallType;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_common::transport::MsgHeader;
-    use hyperlight_common::virtq::{DescFlags, SlotLayout, SlotPool, VirtqProducer};
+    use hyperlight_common::virtq::{DescFlags, RingProducer};
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
     #[cfg(target_arch = "x86_64")]
     use hyperlight_testing::sandbox_sizes::{
@@ -1296,7 +1296,6 @@ mod tests {
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::MemoryRegionType;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
-    use crate::mem::virtq::HostNotifier;
     use crate::mem::virtq::tests::{H2G_BUFFER_SIZE, SCRATCH_SIZE, TestCase, memory_layout};
     use crate::sandbox::SandboxConfiguration;
     #[cfg(target_arch = "x86_64")]
@@ -1464,11 +1463,8 @@ mod tests {
         mgr.g2h_consumer = Some(case.g2h_consumer());
         mgr.write_guest_function_call(&h2g_call(0)).unwrap();
 
-        let pool = SlotPool::new(SlotLayout::new(case.g2h_pool_base, 64, 1).unwrap()).unwrap();
-        let mut producer =
-            VirtqProducer::new(case.g2h_layout, case.mem.clone(), HostNotifier, pool);
-        let chain = producer.chain().writable(64).build().unwrap();
-        producer.submit(chain).unwrap();
+        let mut producer = RingProducer::new(case.g2h_layout, case.mem.clone());
+        producer.submit_one(case.g2h_pool_base, 64, true).unwrap();
 
         let consumer = mgr.g2h_consumer.as_mut().unwrap();
         let (recv, reply) = consumer.poll(0).unwrap().unwrap();
@@ -1498,8 +1494,7 @@ mod tests {
         assert_eq!(consumer.used_cursor(), h2g_used);
         assert_eq!(mgr.write_guest_function_call(&h2g_call(0)).unwrap(), 2);
 
-        // SAFETY: All G2H chains are complete and the consumer is stopped.
-        unsafe { producer.retire() }.unwrap();
+        assert_matches!(producer.poll_used(), Ok(_));
     }
 
     #[test]
