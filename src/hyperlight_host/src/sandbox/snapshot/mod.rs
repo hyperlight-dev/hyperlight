@@ -479,13 +479,14 @@ fn packed_data_len(page_count: usize, host_page_size: usize) -> Result<usize> {
 fn first_fit_blob_gpa(
     data_len: usize,
     layers: &[Arc<SnapshotBlob>],
+    minimum_gpa: u64,
     scratch_base: u64,
 ) -> Option<u64> {
     if data_len == 0 {
         return None;
     }
     let data_len = u64::try_from(data_len).ok()?;
-    let mut candidate = SandboxMemoryLayout::BASE_ADDRESS as u64;
+    let mut candidate = minimum_gpa;
     for range in layers.iter().map(|layer| layer.gpa_range()) {
         let end = candidate.checked_add(data_len)?;
         if end <= range.start {
@@ -844,7 +845,13 @@ impl Snapshot {
             None
         } else {
             Some(
-                first_fit_blob_gpa(data_len, &layers, target_scratch_gpa).ok_or_else(|| {
+                first_fit_blob_gpa(
+                    data_len,
+                    &layers,
+                    SandboxMemoryLayout::BASE_ADDRESS as u64,
+                    target_scratch_gpa,
+                )
+                .ok_or_else(|| {
                     crate::new_error!("snapshot has no address space for a new layer")
                 })?,
             )
@@ -1291,20 +1298,20 @@ mod tests {
         let scratch_base = base + 2 * PAGE_SIZE as u64;
 
         // An empty delta needs no address.
-        assert_eq!(super::first_fit_blob_gpa(0, &[], scratch_base), None);
+        assert_eq!(super::first_fit_blob_gpa(0, &[], base, scratch_base), None);
         // With nothing to reuse the delta lands at the base.
         assert_eq!(
-            super::first_fit_blob_gpa(PAGE_SIZE, &[], scratch_base),
+            super::first_fit_blob_gpa(PAGE_SIZE, &[], base, scratch_base),
             Some(base)
         );
         // Exactly filling the space below scratch is allowed.
         assert_eq!(
-            super::first_fit_blob_gpa(2 * PAGE_SIZE, &[], scratch_base),
+            super::first_fit_blob_gpa(2 * PAGE_SIZE, &[], base, scratch_base),
             Some(base)
         );
         // One page more is not.
         assert_eq!(
-            super::first_fit_blob_gpa(3 * PAGE_SIZE, &[], scratch_base),
+            super::first_fit_blob_gpa(3 * PAGE_SIZE, &[], base, scratch_base),
             None
         );
     }

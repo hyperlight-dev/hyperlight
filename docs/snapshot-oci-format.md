@@ -17,6 +17,10 @@ loaded base works too. The base must have the same memory layout.
 Compaction leaves its inputs unchanged and preserves execution state, metadata,
 transport state, page-table topology, and cached hashes of retained layers.
 Repacked memory gets a fresh hash on its first ordinary save.
+Packed layers are placed to preserve the loader's guest-code GPA-span bound
+without keeping unused code bytes. If retained base layers alone fall short
+and all live pages are already retained, one zero-filled host page supplies
+the required span.
 It does not change the file format:
 save and restore the result normally. Saving includes every required blob,
 including preserved base blobs; omitting or sharing those blobs during transport

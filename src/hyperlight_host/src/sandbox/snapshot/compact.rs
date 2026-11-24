@@ -15,8 +15,9 @@ impl Snapshot {
     ///
     /// Base layers are matched by GPA, geometry, and complete blob contents,
     /// not pointer identity, so a separately loaded base can be used. Unused
-    /// layers and unreferenced pages in merged layers are discarded. Retained
-    /// base layers are kept whole.
+    /// layers and unreferenced pages in merged layers are discarded, except
+    /// for minimal padding required by the snapshot format. Retained base
+    /// layers are kept whole.
     ///
     /// Registers, metadata, transport state, generation, and page-table roots
     /// are preserved. The result uses the existing snapshot file format.
@@ -90,12 +91,29 @@ impl Snapshot {
             .collect();
         let alignment = host_page_size();
         let data_len = packed_data_len(pages.len(), alignment)?;
+        let base_gpa = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let required_memory_size = self.state.layout.get_memory_size()?;
+        let preserves_span = layers
+            .last()
+            .is_some_and(|layer| layer.gpa_range().end - base_gpa >= required_memory_size as u64);
+        // The loader requires the GPA span to cover the original code region.
+        // Place packed data high enough without retaining unused code bytes.
+        let data_len = if !preserves_span && data_len == 0 {
+            alignment
+        } else {
+            data_len
+        };
+        let minimum_gpa = if preserves_span {
+            base_gpa
+        } else {
+            base_gpa + required_memory_size.saturating_sub(data_len) as u64
+        };
         let scratch_base = scratch_base_gpa(self.state.layout.get_scratch_size());
         let new_gpa = if data_len == 0 {
             None
         } else {
             Some(
-                first_fit_blob_gpa(data_len, &layers, scratch_base)
+                first_fit_blob_gpa(data_len, &layers, minimum_gpa, scratch_base)
                     .ok_or_else(|| crate::new_error!("no address space for compacted memory"))?,
             )
         };
@@ -122,10 +140,13 @@ impl Snapshot {
                     "compaction source is not snapshot memory"
                 ));
             };
-            memory.layers()[index].memory().copy_to_slice(
-                &mut allocation.as_mut_slice()[copy.destination],
-                copy.backing.offset,
-            )?;
+            let source = memory.layers()[index]
+                .memory()
+                .as_slice()
+                .get(copy.backing.offset..)
+                .and_then(|source| source.get(..copy.destination.len()))
+                .ok_or_else(|| crate::new_error!("compaction source range is out of bounds"))?;
+            allocation.copy_from_slice(source, copy.destination.start)?;
         }
         allocation.copy_from_slice(&page_tables, data_len)?;
         let blob = Arc::new(SnapshotBlob::new(
@@ -283,6 +304,46 @@ mod tests {
             assert_eq!(compacted.snapshot_generation(), 7);
         }
         assert_eq!(original.state.memory.layers().len(), 3);
+    }
+
+    #[test]
+    fn compact_preserves_sparse_code_span_with_and_without_base_layers() {
+        let mut original = layered_snapshot();
+        let alignment = host_page_size();
+        original.state = Arc::new(SnapshotState {
+            layout: SandboxMemoryLayout::new(SandboxConfiguration::default(), 10 * alignment)
+                .unwrap(),
+            ..(*original.state).clone()
+        });
+        for preserve in [false, true] {
+            let compacted = original.compact(preserve.then_some(&original)).unwrap();
+            let memory = &compacted.state.memory;
+            assert_eq!(memory.layers().len(), if preserve { 3 } else { 1 });
+            assert!(memory.gpa_span_len() >= 10 * alignment);
+            assert!(
+                memory
+                    .layers()
+                    .iter()
+                    .map(|layer| layer.data_len())
+                    .sum::<usize>()
+                    < 10 * alignment
+            );
+            if preserve {
+                for (actual, expected) in memory.layers()[..2]
+                    .iter()
+                    .zip(original.state.memory.layers())
+                {
+                    assert!(Arc::ptr_eq(actual, expected));
+                }
+                let padding = memory.layers().last().unwrap();
+                assert_eq!(padding.data_len(), alignment);
+                assert!(
+                    padding.memory().as_slice()[..alignment]
+                        .iter()
+                        .all(|byte| *byte == 0)
+                );
+            }
+        }
     }
 
     #[test]
