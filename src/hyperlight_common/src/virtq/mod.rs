@@ -260,7 +260,7 @@ impl From<AllocError> for VirtqError {
 /// 1. Descriptor table: `num_descs` × 16 bytes, aligned to 16 bytes
 /// 2. Driver event suppression: 4 bytes, aligned to 4 bytes
 /// 3. Device event suppression: 4 bytes, aligned to 4 bytes
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
     /// Packed ring descriptor table base in shared memory.
     desc_table_addr: u64,

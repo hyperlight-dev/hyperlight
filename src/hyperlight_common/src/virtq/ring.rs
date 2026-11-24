@@ -544,55 +544,37 @@ pub struct RingProducer<M> {
 impl<M: MemOps> RingProducer<M> {
     /// Create a new producer from a memory layout and accessor.
     pub fn new(layout: Layout, mem: M) -> Self {
-        let len = layout.desc_table_len();
-        let size = usize::from(len);
+        Self::with_inflight(layout, mem, 0)
+    }
+
+    /// Reconstruct private state for a bootstrapped ring without accessing shared memory.
+    pub fn from_bootstrap(info: BootstrapInfo, mem: M) -> Self {
+        Self::with_inflight(info.layout(), mem, info.avail())
+    }
+
+    /// Create private bookkeeping for initially posted single-buffer chains.
+    fn with_inflight(layout: Layout, mem: M, posted: u16) -> Self {
+        let size = usize::from(layout.desc_table_len());
         let raw = layout.desc_table_addr();
 
         // SAFETY: Layout fields are private and from_base validates ring geometry.
         let table = unsafe { DescTable::from_raw_parts(raw, size) };
         let cursor = RingCursor::new(size);
 
-        const DEFAULT_LEN: usize = DescTable::default_len();
-        let mut id_free = SmallVec::<[_; DEFAULT_LEN]>::with_capacity(size);
-        id_free.extend((0..len).rev().filter_map(|index| id_for(len, index)));
-        let id_num = SmallVec::<[_; DEFAULT_LEN]>::from_elem(0, size);
-
-        // Notification enabled by default
-        let event_flags_shadow = EventFlags::ENABLE;
-
-        Self {
+        let mut producer = Self {
             mem,
             avail_cursor: cursor,
             used_cursor: cursor,
             num_free: size,
             desc_table: table,
-            id_free,
-            id_num,
-            event_flags_shadow,
+            id_free: SmallVec::with_capacity(size),
+            id_num: SmallVec::with_capacity(size),
+            event_flags_shadow: EventFlags::ENABLE,
             drv_evt_addr: layout.drv_evt_addr(),
             dev_evt_addr: layout.dev_evt_addr(),
-        }
-    }
+        };
 
-    /// Reconstruct private state for a bootstrapped ring without accessing shared memory.
-    ///
-    /// No producer may have run since initialization. The consumer may already
-    /// have completed buffers, which remain pending at the initial used cursor.
-    pub fn from_bootstrap(info: BootstrapInfo, mem: M) -> Self {
-        let layout = info.layout();
-        let mut producer = Self::new(layout, mem);
-
-        let avail = info.avail();
-        let free = producer.len() - usize::from(avail);
-
-        producer.avail_cursor.advance_by(avail);
-        producer.num_free = free;
-
-        for &id in &producer.id_free[free..] {
-            producer.id_num[usize::from(id)] = 1;
-        }
-
-        producer.id_free.truncate(free);
+        producer.refresh(posted);
         producer
     }
 
@@ -1026,7 +1008,6 @@ impl<M: MemOps> RingProducer<M> {
     /// on error.
     pub fn reset(&mut self) -> Result<(), RingError> {
         let table_addr = self.desc_table.base_addr();
-        let size = self.desc_table.len();
 
         self.desc_table
             .clear(&self.mem)
@@ -1035,15 +1016,32 @@ impl<M: MemOps> RingProducer<M> {
         EventSuppression::clear(&self.mem, self.drv_evt_addr)
             .map_err(|_| RingError::mem_err(MemOp::WriteEvent, self.drv_evt_addr))?;
 
-        self.avail_cursor.reset();
-        self.used_cursor.reset();
-
-        self.num_free = size;
-        self.id_free.clear();
-        self.id_free.extend(0..size as u16);
-        self.id_num.iter_mut().for_each(|n| *n = 0);
-        self.event_flags_shadow = EventFlags::ENABLE;
+        self.refresh(0);
         Ok(())
+    }
+
+    /// Rebuild private cursors and IDs without accessing shared memory.
+    pub(crate) fn refresh(&mut self, posted: u16) {
+        let size = self.len();
+        let len = size as u16;
+
+        debug_assert!(posted <= len);
+
+        let free = size - usize::from(posted);
+        self.avail_cursor.reset();
+        self.avail_cursor.advance_by(posted);
+        self.used_cursor.reset();
+        self.num_free = free;
+
+        self.id_free.clear();
+        self.id_free
+            .extend((posted..len).rev().filter_map(|i| id_for(len, i)));
+
+        self.id_num.clear();
+        self.id_num.resize(free, 0);
+        self.id_num.resize(size, 1);
+
+        self.event_flags_shadow = EventFlags::ENABLE;
     }
 }
 
@@ -1565,7 +1563,7 @@ pub(crate) mod tests {
     use super::super::align_up;
     use super::*;
     use crate::virtq::event::EventSuppression;
-    use crate::virtq::{BufferLease, BufferMap};
+    use crate::virtq::{BufferLease, BufferMap, PoolLayout, SlotLayout};
 
     /// Test MemOps implementation that maintains pointer provenance.
     ///
@@ -3574,6 +3572,33 @@ pub(crate) mod tests {
         cursor.reset();
         assert_eq!(cursor.head(), 0);
         assert!(cursor.wrap());
+    }
+
+    #[test]
+    fn bootstrap_refresh_reuses_id_storage_without_writing_shared_memory() {
+        let ring = make_ring(DescTable::default_len() * 2);
+        let mem = FaultMem::new(ring.mem());
+        let mut producer = RingProducer::new(ring.layout(), mem.clone());
+        producer.submit_one(0x1000, 64, false).unwrap();
+
+        let id_free = producer.id_free.as_ptr();
+        let id_num = producer.id_num.as_ptr();
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 3).unwrap();
+        let info = BootstrapInfo::prefilled(ring.layout(), PoolLayout::single(slots)).unwrap();
+        info.initialize(&mem).unwrap();
+        mem.fail_write_at(0);
+
+        producer.refresh(info.avail());
+        let fresh = RingProducer::from_bootstrap(info, ring.mem());
+
+        assert_eq!(producer.id_free.as_ptr(), id_free);
+        assert_eq!(producer.id_num.as_ptr(), id_num);
+        assert_eq!(producer.id_free, fresh.id_free);
+        assert_eq!(producer.id_num, fresh.id_num);
+        assert_eq!(producer.avail_cursor, fresh.avail_cursor);
+        assert_eq!(producer.used_cursor, fresh.used_cursor);
+        assert_eq!(producer.event_flags_shadow, fresh.event_flags_shadow);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -399,7 +399,8 @@ pointer and contents.
 
 Capture installs independent backing for retained aliases in the source sandbox
 and in restored sandboxes. The first transport entry in each generation
-reconstructs both producers and their pool bookkeeping.
+refreshes both producers in place. Private bookkeeping storage is reused with
+fresh pools.
 Retained leases keep their original pools, so their release cannot free slots
 in the new pool.
 Retained values keep their aliases until their final owner drops. Reusing
@@ -474,8 +475,8 @@ and memory mappings.
 Restore writes the arena GPA metadata, an `InitComplete` mailbox value,
 and both ring images into fresh scratch. It attaches new host consumers at
 cursor zero. Normal guest memory restores the captured producers, pools,
-leases, and aliases. The producers and pools are replaced on
-the first entry in the new generation.
+leases, and aliases. The first entry in the new generation refreshes producer
+bookkeeping in place with fresh pools.
 Initialized `restore` and `from_snapshot` are ready for the first H2G request
 before guest entry. Pre-initialization snapshots use normal guest startup.
 
@@ -483,13 +484,14 @@ The first request can use the full configured H2G bootstrap capacity, regardless
 of retained buffers. Framing, slot rounding, ring size, and the external-byte
 control reserve still apply.
 
-Guest entry uses `VirtqProducer::from_bootstrap` for both queues before logging
-or receiving. `BootstrapInfo` holds a `PoolLayout` and an initial posted count.
+Guest entry uses `VirtqProducer::refresh` for both queues before
+logging or receiving. `BootstrapInfo` holds a `PoolLayout` and an initial posted count.
 `SlotPool::layout()` supplies geometry independent of live allocations.
 Reconstruction uses bootstrap capacities, not consumer-written lengths.
-Host completions and payloads stay untouched. Old producers release their
-queue-owned records without accessing the rings. Retained aliases keep their
-captured mappings and original leases.
+Host completions and payloads stay untouched. Producers prepare fresh pool
+reservations and private table capacity before releasing old queue-owned records.
+Retained aliases keep their captured mappings and original leases.
+Guest execution cannot resume if either producer refresh fails.
 
 Successful capture installs the same bootstrap in the source sandbox, including
 when scratch size stays the same. Source continuation uses the same generation

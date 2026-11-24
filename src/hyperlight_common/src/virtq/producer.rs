@@ -255,57 +255,29 @@ where
         mem: M,
         notifier: N,
     ) -> Result<Self, VirtqError> {
-        let avail = info.avail();
-
         let desc_count = info.layout().desc_table_len() as usize;
-        let mut inflight = InflightTable::with_capacity(desc_count, avail as usize)?;
-
+        let inflight = InflightTable::with_capacity(desc_count, usize::from(info.avail()))?;
         let pool = SlotPool::from_layout(info.pool_layout())?;
 
-        // Finish fallible reservations before creating non-dropping owners.
-        for index in 0..avail {
+        for index in 0..info.avail() {
             let desc = info.desc_at(index);
             pool.alloc(desc.len as usize)?;
         }
 
-        for index in 0..avail {
-            let desc = info.desc_at(index);
-
-            let token = Token {
-                seq: u32::from(index),
-                id: desc.id,
-            };
-
-            let buffers = smallvec![BufferEntry {
-                addr: desc.addr,
-                capacity: desc.len,
-                written: 0,
-            }];
-
-            let chain = OwnedChain {
-                mem: mem.clone(),
-                pool: pool.clone(),
-                buffers,
-                readable: 0,
-            };
-
-            inflight.insert(Inflight {
-                token,
-                chain: ManuallyDrop::new(chain),
-            });
-        }
-
-        let next_token = u32::from(avail);
         let inner = RingProducer::from_bootstrap(info, mem);
+        let next_token = u32::from(info.avail());
 
-        Ok(Self {
+        let mut producer = Self {
             inner,
             notifier,
             pool,
             inflight,
             next_token,
             pending: VecDeque::new(),
-        })
+        };
+
+        producer.restore_inflight(info);
+        Ok(producer)
     }
 
     /// Borrow the pool used for new chains.
@@ -499,6 +471,83 @@ where
         }
 
         self.release_inflight()
+    }
+
+    /// Rebuild private state in place without accessing shared memory.
+    ///
+    /// Requires matching geometry and no buffered completions. Prepares resources
+    /// before retiring old owners. Retirement errors require discarding the producer.
+    ///
+    /// # Safety
+    ///
+    /// The old peer must have no live chain handles or future accesses. No producer
+    /// may have used the matching bootstrap. Pool backing must be exclusive.
+    /// Retained views need independent backing. Old pool handles must not allocate.
+    /// Resume only after success.
+    pub unsafe fn refresh(&mut self, info: BootstrapInfo) -> Result<(), VirtqError> {
+        if !self.pending.is_empty() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        // Check that the ring and pool layouts match the bootstrap info.
+        if self.layout() != info.layout() || self.pool.layout() != info.pool_layout() {
+            return Err(VirtqError::InvalidState);
+        }
+
+        let posted = usize::from(info.avail());
+        let inf_cnt = posted.saturating_sub(self.inflight.live.len());
+
+        self.inflight
+            .live
+            .try_reserve_exact(inf_cnt)
+            .map_err(|_| VirtqError::Bookkeeping)?;
+
+        let pool = SlotPool::from_layout(info.pool_layout())?;
+
+        for index in 0..info.avail() {
+            let desc = info.desc_at(index);
+            pool.alloc(desc.len as usize)?;
+        }
+
+        self.pool = pool;
+        self.next_token = u32::from(info.avail());
+
+        self.release_inflight()?;
+        self.restore_inflight(info);
+        // Rebuild the ring's private state as well
+        self.inner.refresh(info.avail());
+
+        Ok(())
+    }
+
+    /// Install in-flight owners for the prepared pool's posted slots.
+    fn restore_inflight(&mut self, info: BootstrapInfo) {
+        for index in 0..info.avail() {
+            let desc = info.desc_at(index);
+
+            let token = Token {
+                seq: u32::from(index),
+                id: desc.id,
+            };
+
+            let buffers = smallvec![BufferEntry {
+                addr: desc.addr,
+                capacity: desc.len,
+                written: 0,
+            }];
+
+            let chain = OwnedChain {
+                mem: self.memory().clone(),
+                pool: self.pool.clone(),
+                buffers,
+                readable: 0,
+            };
+
+            self.inflight.insert(Inflight {
+                token,
+                chain: ManuallyDrop::new(chain),
+            });
+        }
     }
 
     /// Release in-flight owners after the caller has stopped their peer.
@@ -1279,6 +1328,7 @@ fn checked_descriptor_len(len: usize) -> Result<u32, VirtqError> {
 mod tests {
     use alloc::rc::Rc;
     use alloc::sync::Arc;
+    use core::num::NonZeroU16;
     use core::sync::atomic::Ordering;
     use std::assert_matches;
 
@@ -1453,7 +1503,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_bootstrap_preserves_events_and_reconstructs_both_pool_tiers() {
+    fn empty_bootstrap_refresh_reuses_bookkeeping_and_preserves_events() {
         let ring = make_ring(4);
         let mem = FaultMem::new(ring.mem());
         let lower = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
@@ -1461,6 +1511,18 @@ mod tests {
         let old_pool = SlotPool::new_tiered(lower, upper).unwrap();
         let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(32).unwrap());
         let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(
+            ring.layout(),
+            mem.clone(),
+            notifier.clone(),
+            old_pool.clone(),
+        );
+        let chain = producer.chain().readable(32).writable(96).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let by_id = producer.inflight.by_id.as_ptr();
+        let live = producer.inflight.live.as_ptr();
+        let notifications = notifier.notification_count();
         let info = BootstrapInfo::empty(ring.layout(), old_pool.layout()).unwrap();
         info.initialize(&mem).unwrap();
 
@@ -1474,10 +1536,9 @@ mod tests {
             .unwrap();
         mem.fail_write_at(0);
 
-        // SAFETY: Only the consumer has accessed the matching bootstrap.
-        // The old lease has no views and only releases old pool bookkeeping.
-        let mut producer =
-            unsafe { VirtqProducer::from_bootstrap(info, mem.clone(), notifier.clone()) }.unwrap();
+        // SAFETY: The old peer has no handles. The retained lease has no views.
+        // Only the new consumer has accessed the matching bootstrap.
+        unsafe { producer.refresh(info) }.unwrap();
 
         let mut after = vec![0; before.len()];
         mem.read(ring.layout().desc_table_addr(), &mut after)
@@ -1485,7 +1546,9 @@ mod tests {
 
         assert_eq!(before, after);
         assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
-        assert_eq!(notifier.notification_count(), 0);
+        assert_eq!(notifier.notification_count(), notifications);
+        assert_eq!(producer.inflight.by_id.as_ptr(), by_id);
+        assert_eq!(producer.inflight.live.as_ptr(), live);
         assert_eq!(producer.num_inflight(), 0);
         assert_eq!(producer.num_free(), ring.len());
         assert_eq!(producer.pool().num_free_lower(), 2);
@@ -1504,7 +1567,7 @@ mod tests {
 
         let token = producer.submit(chain).unwrap();
         assert_eq!(token.seq, 0);
-        assert_eq!(notifier.notification_count(), 0);
+        assert_eq!(notifier.notification_count(), notifications);
 
         let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
             panic!("expected writable buffer");
@@ -1805,6 +1868,186 @@ mod tests {
         assert_eq!(producer.pool().num_free(), 1);
 
         // SAFETY: The consumer has no live handles and stays stopped.
+        unsafe { producer.retire() }.unwrap();
+    }
+
+    #[test]
+    fn prefilled_bootstrap_refresh_reuses_bookkeeping_and_preserves_requests() {
+        let ring = make_ring(4);
+        let mem = FaultMem::new(ring.mem());
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 3).unwrap();
+        let old_pool = SlotPool::new(slots).unwrap();
+        let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(64).unwrap());
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(
+            ring.layout(),
+            mem.clone(),
+            notifier.clone(),
+            old_pool.clone(),
+        );
+        producer.inflight.live.try_reserve_exact(3).unwrap();
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notifier.clone());
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+        drop(producer.poll().unwrap().unwrap());
+        drop(consumer);
+
+        let by_id = producer.inflight.by_id.as_ptr();
+        let live = producer.inflight.live.as_ptr();
+        let live_capacity = producer.inflight.live.capacity();
+        let info = BootstrapInfo::prefilled(ring.layout(), old_pool.layout()).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notifier.clone());
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"next generation").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let notifications = notifier.notification_count();
+        let mut before = vec![0; Layout::query_size(ring.len())];
+        mem.read(ring.layout().desc_table_addr(), &mut before)
+            .unwrap();
+        mem.fail_write_at(0);
+
+        // SAFETY: The old peer is gone. The retained lease has no views.
+        // Only the new consumer has accessed the matching bootstrap.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        let mut after = vec![0; before.len()];
+        mem.read(ring.layout().desc_table_addr(), &mut after)
+            .unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(notifier.notification_count(), notifications);
+        assert_eq!(producer.inflight.by_id.as_ptr(), by_id);
+        assert_eq!(producer.inflight.live.as_ptr(), live);
+        assert_eq!(producer.inflight.live.capacity(), live_capacity);
+        assert_eq!(old_pool.num_live(), 1);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        drop(retained);
+        assert_eq!(old_pool.num_live(), 0);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        let received = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(received.as_ref(), b"next generation");
+        drop(received);
+
+        mem.allow_writes();
+        let chain = producer.chain().writable(64).build().unwrap();
+        let token = producer.submit(chain).unwrap();
+        assert_eq!(token.seq, 3);
+
+        // SAFETY: The consumer has no live handles and stays stopped.
+        unsafe { producer.retire() }.unwrap();
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_buffered_completion() {
+        let ring = make_ring(4);
+        let backing = Rc::new(ring.mem());
+        let mem = CopyingMem(&backing);
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let pool = SlotPool::new(slots).unwrap();
+        let info = BootstrapInfo::empty(ring.layout(), pool.layout()).unwrap();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), mem.clone(), TestNotifier::new(), pool);
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem.clone(), TestNotifier::new());
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"buffered").unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.reclaim().unwrap();
+        drop(consumer);
+        info.initialize(&mem).unwrap();
+
+        // SAFETY: The old peer is gone. CopyingMem gives buffered data independent
+        // backing, and no producer has accessed the matching bootstrap.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        let buffered = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(buffered.as_ref(), b"buffered");
+        drop(buffered);
+
+        // SAFETY: The peer remains stopped and the matching bootstrap is untouched.
+        unsafe { producer.refresh(info) }.unwrap();
+        assert_matches!(producer.poll(), Ok(None));
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_changed_ring_layout() {
+        let ring = make_ring(4);
+        let (mut producer, _consumer, _) = make_test_producer(&ring);
+        let chain = producer.chain().readable(16).build().unwrap();
+        producer.submit(chain).unwrap();
+        let pool = producer.pool().clone();
+        // SAFETY: The smaller ring fits within the existing aligned ring storage.
+        let layout = unsafe {
+            Layout::from_base(ring.layout().desc_table_addr(), NonZeroU16::new(2).unwrap())
+        }
+        .unwrap();
+        let info = BootstrapInfo::empty(layout, pool.layout()).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        // SAFETY: The old peer has no handles or future accesses. The matching
+        // bootstrap owns the pool storage and has had no producer activity.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        assert_eq!(producer.layout(), ring.layout());
+        assert_eq!(producer.num_inflight(), 1);
+        assert_eq!(pool.num_live(), 1);
+
+        // SAFETY: The peer remains stopped with no live handles.
+        unsafe { producer.retire() }.unwrap();
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_changed_pool_layout() {
+        let ring = make_ring(4);
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), ring.mem(), TestNotifier::new(), pool.clone());
+        let chain = producer.chain().readable(16).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let changed = SlotLayout::new(slots.base_addr(), 64, 3).unwrap();
+        let info = BootstrapInfo::empty(ring.layout(), PoolLayout::single(changed)).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        // SAFETY: No peer has accessed either generation. The matching bootstrap
+        // owns the pool storage and has had no producer activity.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        assert_eq!(producer.pool().layout(), pool.layout());
+        assert_eq!(producer.num_inflight(), 1);
+        assert_eq!(pool.num_live(), 1);
+
+        // SAFETY: The peer has no live handles or future accesses.
         unsafe { producer.retire() }.unwrap();
     }
 

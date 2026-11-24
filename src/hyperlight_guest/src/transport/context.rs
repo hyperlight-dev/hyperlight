@@ -345,8 +345,8 @@ impl GuestContext {
 
     /// Reconstruct transport ownership for the host's current generation.
     ///
-    /// Retained owners keep captured aliases and old pool leases. The fresh
-    /// producers preserve requests written by the host before guest entry.
+    /// Retained owners keep captured aliases and old pool leases. Private storage
+    /// is reused without touching requests written by the host before guest entry.
     pub fn maybe_refresh(&mut self) {
         // SAFETY: Construction requires initialized guest scratch metadata.
         let generation = unsafe { layout::snapshot_generation_gva().read_volatile() };
@@ -363,25 +363,16 @@ impl GuestContext {
         let h2g_info = BootstrapInfo::prefilled(h2g.layout(), h2g.pool().layout())
             .expect("invalid H2G bootstrap");
 
-        // SAFETY: The host installed the matching bootstrap before this entry.
-        // Retained views have independent captured backing. No producer has run.
-        let (g2h, h2g) = unsafe {
-            let g2h = VirtqProducer::from_bootstrap(g2h_info, *g2h.memory(), OutbNotifier)
-                .expect("G2H ownership reconstruction failed");
-            let h2g = VirtqProducer::from_bootstrap(h2g_info, *h2g.memory(), NoopNotifier)
-                .expect("H2G ownership reconstruction failed");
-
-            (g2h, h2g)
-        };
-
-        let old_g2h = core::mem::replace(&mut self.g2h_producer, g2h);
-        let old_h2g = core::mem::replace(&mut self.h2g_producer, h2g);
-
-        // SAFETY: The host discarded the old queues with no live chain handles.
-        // Old pools only release leases. New producers own the scratch slots.
+        // SAFETY: The host discarded the old queues and installed the matching
+        // bootstrap with no live chain handles. No producer has run. Retained
+        // views have captured backing and old pool handles only release leases.
         unsafe {
-            old_g2h.retire().expect("G2H retirement failed");
-            old_h2g.retire().expect("H2G retirement failed");
+            self.g2h_producer
+                .refresh(g2h_info)
+                .expect("G2H ownership reconstruction failed");
+            self.h2g_producer
+                .refresh(h2g_info)
+                .expect("H2G ownership reconstruction failed");
         }
 
         self.generation = generation;
