@@ -167,9 +167,11 @@ return value or the guest function's parameter decides:
 * `Vec<u8>` copies the data into guest memory and releases the transport
   buffers at once.
 
-Retained buffers keep their pool slots, which reduces the capacity left for
-later calls. Size the pool listed above for the retained data plus normal
-traffic. See
+Retained buffers keep their pool slots. Retained host function replies reduce
+the G2H capacity left for later calls. Size `g2h_pool_pages` for the retained
+data plus normal traffic. Retained guest function arguments hold H2G slots. The
+guest posts free slots in their place, and adds slots on scratch pages when none
+are free. Leave room for them in `SandboxBuilder::scratch_size`. See
 [Capacity and latency](./virtio-host-guest-communication.md#capacity-and-latency).
 
 ### Troubleshooting

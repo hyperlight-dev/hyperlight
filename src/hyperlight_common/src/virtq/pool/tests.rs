@@ -14,6 +14,12 @@ fn make_tiered_slot_pool(lower_count: usize, upper_count: usize) -> SlotPool {
     SlotPool::new_tiered(lower, upper).unwrap()
 }
 
+/// Add slots to a pool without a producer.
+fn add_slots(pool: &SlotPool, base_addr: u64, count: usize) -> Result<(), AllocError> {
+    // SAFETY: Without a producer, nothing accesses the slots' memory.
+    unsafe { pool.add_slots(base_addr, count) }
+}
+
 #[test]
 fn test_slot_pool_preserves_exact_base() {
     let layout = SlotLayout::new(0x80001, 4096, 2).unwrap();
@@ -414,4 +420,217 @@ fn test_slot_pool_dealloc_order_independent_of_alloc_order() {
     orig_addrs.sort();
 
     assert_eq!(realloc_addrs, orig_addrs);
+}
+
+#[test]
+fn test_extra_slots_serve_requests_after_the_layout() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 2).unwrap();
+
+    let layout_slot = pool.alloc(4096).unwrap();
+    assert_eq!(layout_slot.addr, 0x80000);
+
+    let first = pool.alloc(1).unwrap();
+    let second = pool.alloc(4096).unwrap();
+    assert_eq!(first.len, 4096);
+    assert_eq!(second.len, 4096);
+
+    let mut extra = [first.addr, second.addr];
+    extra.sort();
+    assert_eq!(extra, [0x10000, 0x11000]);
+    assert!(matches!(pool.alloc(4096), Err(AllocError::NoSpace)));
+}
+
+#[test]
+fn test_extra_slots_do_not_mask_request_errors() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 1).unwrap();
+
+    assert!(matches!(pool.alloc(0), Err(AllocError::InvalidArg)));
+    assert!(matches!(pool.alloc(4097), Err(AllocError::OutOfMemory)));
+    assert_eq!(pool.num_free(), 2);
+}
+
+#[test]
+fn test_extra_slots_are_reused_after_free() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 1).unwrap();
+    let _layout_slot = pool.alloc(4096).unwrap();
+
+    let extra = pool.alloc(4096).unwrap();
+    assert_eq!(pool.allocation_len(extra.addr).unwrap(), 4096);
+
+    pool.dealloc(extra.addr).unwrap();
+    assert!(matches!(
+        pool.allocation_len(extra.addr),
+        Err(AllocError::InvalidFree(0x10000, 0))
+    ));
+    assert_eq!(pool.alloc(4096).unwrap().addr, extra.addr);
+}
+
+#[test]
+fn test_extra_slots_reject_double_free() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 1).unwrap();
+    let _layout_slot = pool.alloc(4096).unwrap();
+
+    let extra = pool.alloc(4096).unwrap();
+    pool.dealloc(extra.addr).unwrap();
+
+    assert!(matches!(
+        pool.dealloc(extra.addr),
+        Err(AllocError::InvalidFree(0x10000, 0))
+    ));
+    assert_eq!(pool.num_free(), 1);
+}
+
+#[test]
+fn test_extra_slots_reject_unknown_addresses() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 2).unwrap();
+    let _layout_slot = pool.alloc(4096).unwrap();
+    let _first = pool.alloc(4096).unwrap();
+    let _second = pool.alloc(4096).unwrap();
+
+    assert!(matches!(
+        pool.dealloc(0x10001),
+        Err(AllocError::InvalidFree(0x10001, 0))
+    ));
+    assert!(matches!(
+        pool.dealloc(0x12000),
+        Err(AllocError::InvalidFree(0x12000, 0))
+    ));
+    assert!(matches!(
+        pool.allocation_len(0x10001),
+        Err(AllocError::InvalidFree(0x10001, 0))
+    ));
+    assert_eq!(pool.num_live(), 3);
+}
+
+#[test]
+fn test_add_slots_rejects_tier_overlap() {
+    // The lower tier spans 0x80000..0x80200, and the upper 0x90000..0x92000.
+    let pool = make_tiered_slot_pool(2, 2);
+
+    assert!(matches!(
+        add_slots(&pool, 0x7f001, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert!(matches!(
+        add_slots(&pool, 0x91fff, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert_eq!(pool.count(), 4);
+
+    add_slots(&pool, 0x7f000, 1).unwrap();
+    add_slots(&pool, 0x80200, 1).unwrap();
+    add_slots(&pool, 0x92000, 1).unwrap();
+    assert_eq!(pool.count(), 7);
+}
+
+#[test]
+fn test_add_slots_rejects_extra_overlap() {
+    let pool = make_slot_pool(1, 4096);
+    add_slots(&pool, 0x10000, 2).unwrap();
+
+    assert!(matches!(
+        add_slots(&pool, 0x11000, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert!(matches!(
+        add_slots(&pool, 0xf001, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert!(matches!(
+        add_slots(&pool, 0x11fff, 1),
+        Err(AllocError::InvalidArg)
+    ));
+    assert!(matches!(
+        add_slots(&pool, 0x8000, 16),
+        Err(AllocError::InvalidArg)
+    ));
+    assert_eq!(pool.count(), 3);
+
+    add_slots(&pool, 0xf000, 1).unwrap();
+    add_slots(&pool, 0x12000, 1).unwrap();
+    assert_eq!(pool.count(), 5);
+}
+
+#[test]
+fn test_add_slots_rejects_zero_slots() {
+    let pool = make_slot_pool(1, 4096);
+
+    assert!(matches!(
+        add_slots(&pool, 0x10000, 0),
+        Err(AllocError::EmptyRegion)
+    ));
+    assert_eq!(pool.count(), 1);
+}
+
+#[test]
+fn test_add_slots_rejects_overflowing_range() {
+    let pool = make_slot_pool(1, 4096);
+
+    assert!(matches!(
+        add_slots(&pool, u64::MAX - 4095, 1),
+        Err(AllocError::Overflow)
+    ));
+    assert_eq!(pool.count(), 1);
+
+    add_slots(&pool, u64::MAX - 4096, 1).unwrap();
+    assert_eq!(pool.count(), 2);
+}
+
+#[test]
+fn test_extra_slots_leave_the_layout_unchanged() {
+    let pool = make_tiered_slot_pool(1, 1);
+    let layout = pool.layout();
+
+    add_slots(&pool, 0x10000, 2).unwrap();
+
+    assert_eq!(pool.layout(), layout);
+    assert_eq!(pool.base_addr(), 0x80000);
+    assert_eq!(pool.byte_len(), 0x11000);
+}
+
+#[test]
+fn test_extra_slots_extend_counts_and_indices() {
+    let pool = make_tiered_slot_pool(1, 1);
+    add_slots(&pool, 0x12000, 1).unwrap();
+    add_slots(&pool, 0x10000, 1).unwrap();
+
+    assert_eq!(pool.count(), 4);
+    assert_eq!(pool.num_free(), 4);
+    assert_eq!(pool.num_free_upper(), 3);
+    assert_eq!(pool.slot_addr(2), Some(0x10000));
+    assert_eq!(pool.slot_addr(3), Some(0x12000));
+    assert_eq!(pool.slot_addr(4), None);
+
+    let lower = pool.alloc(128).unwrap();
+    let upper = pool.alloc(4096).unwrap();
+    let first = pool.alloc(4096).unwrap();
+    let second = pool.alloc(4096).unwrap();
+
+    assert_eq!(pool.num_live(), 4);
+    assert_eq!(pool.num_free_upper(), 0);
+    assert_eq!(
+        pool.live_addrs(),
+        [lower.addr, upper.addr, 0x10000, 0x12000]
+    );
+
+    pool.dealloc(first.addr).unwrap();
+    pool.dealloc(second.addr).unwrap();
+    assert_eq!(pool.num_free_upper(), 2);
+}
+
+#[test]
+fn test_extra_slots_keep_max_free_slot_size_upper() {
+    let pool = make_tiered_slot_pool(1, 1);
+    add_slots(&pool, 0x10000, 1).unwrap();
+    let _upper = pool.alloc(4096).unwrap();
+
+    assert_eq!(pool.max_free_slot_size(), Some(4096));
+
+    let _extra = pool.alloc(4096).unwrap();
+    assert_eq!(pool.max_free_slot_size(), Some(256));
 }

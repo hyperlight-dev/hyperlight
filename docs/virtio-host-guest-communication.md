@@ -77,7 +77,9 @@ when constructing rings and pools. Descriptor buffer addresses are GVAs.
 ### Buffer pools
 
 * **H2G** provides equal-sized buffers for host requests. The guest makes
-  them available before it knows the next message size.
+  them available before it knows the next message size. Retained buffers
+  grow the pool below the arena, as [Extra H2G slots](#extra-h2g-slots)
+  describes.
 * **G2H** allocates buffers for guest requests, results, and logs. Small
   control messages can use 256-byte buffers, leaving larger buffers free
   for data.
@@ -156,6 +158,13 @@ reclaimed. The second row adds that work without carrying more data.
 
 Larger buffers reduce chunking, but each small message occupies more space.
 Measure the mix of message sizes your application actually uses.
+
+Retained buffers keep their whole slots, whatever the size of their values.
+Retained G2H replies hold G2H slots, so size `g2h_pool_pages` for them plus
+normal traffic. Retained H2G buffers hold H2G slots. The guest posts free slots
+in their place, adds slots on scratch pages when none are free, and aborts when
+scratch runs out. Leave room in `scratch_size` for the most H2G buffers
+retained at once. See [Extra H2G slots](#extra-h2g-slots).
 
 ### Initialization
 
@@ -398,7 +407,8 @@ Guest `SlotPool` instances own all transport buffers. Pool clones share one
 allocation bitmap with each producer.
 Each producer pairs its backend with that pool. Completion leases carry the
 original slot addresses and full capacities. Backing owns alias allocation and
-paging. The backend holds only the transport arena's bounds.
+paging. Each backend holds only memory bounds. They cover the transport arena,
+and for H2G the extra slots below it.
 Guest completion mapping checks those bounds. Allocation ownership and
 initialized lengths follow the `BufferMap` safety contract.
 
@@ -406,16 +416,36 @@ initialized lengths follow the `BufferMap` safety contract.
  Free -> allocated -> published -> completed -> owner-backed Bytes -> Free
 ```
 
-Some stages are skipped by one-way messages. Final ownership matters for
-external `ByteChunks`:
+Some stages are skipped by one-way messages.
 
 * H2G `ByteChunks` can retain host written receive slots after a guest function
-  returns.
+  returns. The guest posts other slots in their place.
+* The guest copies stream DATA records of up to 128 bytes. Larger records keep
+  their H2G slots until the last chunk drops, even after the reader returns credit.
 * G2H host responses can become owner-backed guest `Bytes`.
 * `VecBytes` values copy into a contiguous `Vec<u8>`.
 * Multiple `Bytes` clones or slices backed by one owner keep one slot live.
 * The final owner unmaps its alias and returns the virtual range for reuse.
   Its lease releases the slot in its original pool.
+
+### Extra H2G slots
+
+Each guest entry ends with as many H2G buffers posted as at bootstrap.
+Retained buffers keep their slots. When too few slots are free, the guest takes
+pages from the scratch allocator and adds slots on them. The host keeps full
+H2G capacity whatever the guest retains.
+
+Freed extra slots return to the pool. Their pages stay allocated until capture
+or restore resets the scratch allocator, so scratch growth follows the most
+buffers retained at once. A guest that runs out of scratch aborts with
+`MallocFailed`, which poisons the sandbox.
+
+The scratch allocator hands out pages upward from its next free page and stops
+at the arena. Extra slots therefore lie between the next free page at
+generation start and the arena. The H2G backend's bounds start at that page.
+Each generation rebuilds the pool from its layout, without extra slots, and
+reads the next free page again. Retained aliases keep captured backing, so new
+extra slots cannot overlap them.
 
 ### Retained virtual addresses
 
@@ -532,9 +562,9 @@ when scratch size stays the same. Source continuation uses the same generation
 transition as restore and cloning. Ordinary entries within a generation keep
 their active queues.
 
-Result completion prefills free H2G slots. Retention within a generation still
-occupies pool slots. Full bootstrap capacity requires no preparatory guest entry
-or application warmup after capture or restore.
+Full bootstrap capacity requires no preparatory guest entry or application
+warmup after capture or restore. Each guest entry ends with that capacity
+posted again, as [Extra H2G slots](#extra-h2g-slots) describes.
 
 ## Transport mailbox
 

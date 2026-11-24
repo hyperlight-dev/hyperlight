@@ -17,8 +17,8 @@ use super::backing;
 // Mark types not [`Send`]
 type NotThreadSafe = PhantomData<*mut ()>;
 
-/// Memory access bounded to a range of scratch: the transport arena, for
-/// the producers.
+/// Memory access bounded to a range of scratch: the transport arena, and for
+/// H2G the scratch pages below it that hold extra slots.
 ///
 /// Copies reject buffers that overlap the accessed range.
 #[derive(Clone, Copy, Debug)]
@@ -33,8 +33,7 @@ pub(crate) struct GuestMemOps {
 pub struct GuestMemError;
 
 impl GuestMemOps {
-    /// Bind memory access to `[start, end)`, a live part of
-    /// scratch (the transport arena, for the producers).
+    /// Bind memory access to `[start, end)`, a live part of scratch.
     ///
     /// # Safety
     ///

@@ -5,6 +5,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::ops::Range;
 use core::result;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -28,7 +29,7 @@ use hyperlight_common::vmem::PAGE_SIZE;
 use super::{GuestMemOps, codec};
 use crate::error::{GuestErrorContext, Result};
 use crate::exit::out32;
-use crate::{bail, ensure, layout, task};
+use crate::{bail, ensure, layout, paging, prim_alloc, task};
 
 /// Exits to the host to process available virtqueue work.
 #[derive(Clone, Copy)]
@@ -144,7 +145,7 @@ impl GuestContext {
         let arena_gva = g2h.layout.desc_table_addr();
         let scratch_gva = layout::scratch_base_gva();
         // SAFETY: The caller owns the pool's scratch pages.
-        let mem = unsafe { pool_mem(&g2h_pool, arena_gva, scratch_gva) }
+        let mem = unsafe { pool_mem(&g2h_pool, arena_gva, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize G2H pool access")?;
         g2h.layout
             .initialize(&mem)
@@ -155,8 +156,9 @@ impl GuestContext {
             .with_context(|| "invalid H2G pool geometry")?;
         let h2g_pool =
             SlotPool::from_layout(h2g_layout).with_context(|| "failed to create H2G slot pool")?;
+        let floor_gva = scratch_floor_gva()?;
         // SAFETY: The caller owns this disjoint pool.
-        let mem = unsafe { pool_mem(&h2g_pool, arena_gva, scratch_gva) }
+        let mem = unsafe { pool_mem(&h2g_pool, floor_gva, arena_gva, scratch_gva) }
             .with_context(|| "failed to initialize H2G pool access")?;
         h2g.layout
             .initialize(&mem)
@@ -547,15 +549,24 @@ impl GuestContext {
         let h2g_info = BootstrapInfo::prefilled(h2g.layout(), h2g.pool().layout())
             .expect("invalid H2G bootstrap");
 
-        // SAFETY: The host discarded the old queues and installed the matching
-        // bootstrap with no live chain handles or builders. No producer has run.
-        // Retained views have captured backing and old pool handles only release leases.
+        // New extra slots lie above the reset scratch allocator's floor.
+        let floor_gva = scratch_floor_gva().expect("invalid scratch allocator");
+        let arena_gva = g2h.layout().desc_table_addr();
+        let scratch_gva = layout::scratch_base_gva();
+
+        // SAFETY: The context owns the pool's scratch pages.
+        let h2g_mem = unsafe { pool_mem(h2g.pool(), floor_gva, arena_gva, scratch_gva) }
+            .expect("invalid H2G pool placement");
+
+        // SAFETY: The host replaced the queues with the matching bootstrap and no live chain
+        // handles or builders. No producer has run. Retained views have captured backing and
+        // old pools only release leases. h2g_mem covers the new H2G ring and pool.
         unsafe {
             self.g2h_producer
                 .refresh(g2h_info)
                 .expect("G2H ownership reconstruction failed");
             self.h2g_producer
-                .refresh(h2g_info)
+                .refresh_with_memory(h2g_info, h2g_mem)
                 .expect("H2G ownership reconstruction failed");
         }
 
@@ -575,29 +586,62 @@ impl GuestContext {
         self.send_g2h_oneshot(&message)
     }
 
-    /// Publish one writable H2G chain for each currently free slot.
+    /// Keep the bootstrap count of writable H2G buffers posted.
+    ///
+    /// Guest code can retain H2G buffers past its turn, such as `ByteChunks` arguments. Their
+    /// slots stay allocated until the last view drops, so the pool grows on fresh scratch pages
+    /// and the host keeps its receive capacity.
     fn prefill_h2g(&mut self) -> Result<()> {
+        let producer = &self.h2g_producer;
+
+        let ring_len = usize::from(producer.layout().desc_table_len());
+        let target = producer.pool().layout().slot_count().min(ring_len);
+
+        let refill = target.saturating_sub(producer.num_inflight());
+        let free = producer.pool().num_free();
+
+        if free < refill {
+            self.add_h2g_slots(refill - free)?;
+        }
+
         let mut batch = self.h2g_producer.batch();
 
-        loop {
+        for _ in 0..refill {
             let chain = match batch.chain().writable(self.h2g_slot_size).build() {
                 Ok(chain) => chain,
-                Err(error) if error.is_transient() => {
-                    batch.finish_without_notify();
-                    return Ok(());
-                }
                 Err(error) => bail!("H2G prefill build: {error}"),
             };
 
-            match batch.submit(chain) {
-                Ok(_) => {}
-                Err(error) if error.is_transient() => {
-                    batch.finish_without_notify();
-                    return Ok(());
-                }
-                Err(error) => bail!("H2G prefill submit: {error}"),
+            if let Err(error) = batch.submit(chain) {
+                bail!("H2G prefill submit: {error}");
             }
         }
+
+        batch.finish_without_notify();
+        Ok(())
+    }
+
+    /// Add at least `count` H2G slots on fresh scratch pages.
+    ///
+    /// The slots stay in the pool until the next generation resets the scratch allocator. Running
+    /// out of scratch aborts the guest.
+    fn add_h2g_slots(&self, count: usize) -> Result<()> {
+        let size = self.h2g_slot_size;
+
+        let pages = count
+            .checked_mul(size)
+            .context("H2G slot growth overflow")?
+            .div_ceil(PAGE_SIZE);
+
+        // SAFETY: Construction requires initialized guest scratch metadata.
+        let gpa = unsafe { prim_alloc::alloc_phys_pages(pages as u64) };
+        let gva = paging::phys_to_virt(gpa).context("scratch page lies below scratch")?;
+
+        let pool = self.h2g_producer.pool();
+        // SAFETY: The allocator hands these pages out once per generation, which the producer
+        // does not outlive. Its backend binds them from the generation's scratch floor.
+        unsafe { pool.add_slots(gva as u64, pages * PAGE_SIZE / size) }
+            .context("failed to add H2G slots")
     }
 
     /// Submit a one-way G2H message without polling its acknowledgement.
@@ -725,38 +769,70 @@ fn pool_len(pages: usize) -> result::Result<usize, AllocError> {
         .ok_or(AllocError::Overflow)
 }
 
-/// Validate pool placement and bind access to the arena up to the pool's end.
+/// GVA of the scratch allocator's next free page.
 ///
-/// The bounds start at the arena, whose address does not depend on the
-/// scratch size. The pools follow the rings, so a producer's rings and pool
-/// lie in [arena, end of its pool). That range must start in scratch above
-/// `scratch_gva`, where the copied page tables sit, and end below the guard
-/// page under the reserved scratch-top pages.
+/// The bump allocator never frees within a generation, so pages it hands out later lie between
+/// this floor and the transport arena.
+fn scratch_floor_gva() -> Result<u64> {
+    // SAFETY: Construction requires initialized guest scratch metadata.
+    let gpa = unsafe { layout::allocator_gva().read_volatile() };
+    let gva = paging::phys_to_virt(gpa).context("scratch allocator lies below scratch")?;
+    Ok(gva as u64)
+}
+
+/// Validate pool placement and return the range its backend binds.
 ///
-/// # Safety
+/// The arena's address does not depend on the scratch size. The pools follow
+/// the rings, so a producer's rings and pool lie in [arena, end of its pool).
+/// The range runs from `start_gva` to the pool's end. It must start in scratch
+/// above `scratch_gva`, where the copied page tables sit, at or below the arena.
+/// It ends below the guard page under the reserved scratch-top pages.
 ///
-/// Run on the initialized guest vCPU and own the pool's scratch.
-unsafe fn pool_mem(
+/// G2H starts at the arena. H2G starts at the scratch allocator's floor, so it
+/// also covers the slots `add_h2g_slots` adds from later pages. That range
+/// holds pages the producer does not own, and the producer touches only its
+/// rings and slots.
+fn pool_range(
     pool: &SlotPool,
+    start_gva: u64,
     arena_gva: u64,
     scratch_gva: u64,
-) -> result::Result<GuestMemOps, AllocError> {
+) -> result::Result<Range<u64>, AllocError> {
     let limit = scratch_transport_end_gva();
+    let page = PAGE_SIZE as u64;
 
     let base = pool.base_addr();
     let end = base + pool.byte_len() as u64;
 
-    if !arena_gva.is_multiple_of(PAGE_SIZE as u64)
-        || arena_gva <= scratch_gva
-        || !base.is_multiple_of(PAGE_SIZE as u64)
+    if !start_gva.is_multiple_of(page)
+        || !arena_gva.is_multiple_of(page)
+        || !base.is_multiple_of(page)
+        || start_gva <= scratch_gva
+        || start_gva > arena_gva
         || base < arena_gva
         || end > limit
     {
         return Err(AllocError::InvalidArg);
     }
 
-    // SAFETY: The validated pool lies in the arena on the serialized guest vCPU.
-    unsafe { Ok(GuestMemOps::new(arena_gva, end)) }
+    Ok(start_gva..end)
+}
+
+/// Bind access to the range [`pool_range`] validates.
+///
+/// # Safety
+///
+/// Run on the initialized guest vCPU and own the pool's scratch.
+unsafe fn pool_mem(
+    pool: &SlotPool,
+    start_gva: u64,
+    arena_gva: u64,
+    scratch_gva: u64,
+) -> result::Result<GuestMemOps, AllocError> {
+    let range = pool_range(pool, start_gva, arena_gva, scratch_gva)?;
+
+    // SAFETY: The validated range lies in live scratch on the serialized guest vCPU.
+    unsafe { Ok(GuestMemOps::new(range.start, range.end)) }
 }
 
 /// Build the tiered G2H pool.
@@ -791,7 +867,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pool_mem_binds_the_arena_below_the_reserved_top() {
+    fn pool_range_binds_the_arena_below_the_reserved_top() {
         let limit = scratch_transport_end_gva();
         let page = PAGE_SIZE as u64;
         let arena = limit - 8 * page;
@@ -799,18 +875,36 @@ mod tests {
         let pool = |base, pages| {
             SlotPool::from_layout(h2g_pool_layout(base, pages, 256).unwrap()).unwrap()
         };
-        // SAFETY: only bounds are computed. No memory is touched.
-        unsafe {
-            assert!(pool_mem(&pool(arena + 4 * page, 4), arena, scratch).is_ok());
-            // Into the guard page or the reserved pages.
-            assert!(pool_mem(&pool(arena + 4 * page, 5), arena, scratch).is_err());
-            // Below the arena.
-            assert!(pool_mem(&pool(arena - page, 1), arena, scratch).is_err());
-            // An arena below scratch, at its base, or not page aligned.
-            assert!(pool_mem(&pool(arena + 4 * page, 4), 0, scratch).is_err());
-            assert!(pool_mem(&pool(arena + 4 * page, 4), scratch, scratch).is_err());
-            assert!(pool_mem(&pool(arena + 4 * page, 4), arena + 8, scratch).is_err());
-        }
+
+        let range = pool_range(&pool(arena + 4 * page, 4), arena, arena, scratch);
+        assert_eq!(range.unwrap(), arena..limit);
+        // Into the guard page or the reserved pages.
+        assert!(pool_range(&pool(arena + 4 * page, 5), arena, arena, scratch).is_err());
+        // Below the arena.
+        assert!(pool_range(&pool(arena - page, 1), arena, arena, scratch).is_err());
+        // An arena below scratch, at its base, or not page aligned.
+        assert!(pool_range(&pool(arena + 4 * page, 4), 0, 0, scratch).is_err());
+        assert!(pool_range(&pool(arena + 4 * page, 4), scratch, scratch, scratch).is_err());
+        assert!(pool_range(&pool(arena + 4 * page, 4), arena, arena + 8, scratch).is_err());
+    }
+
+    #[test]
+    fn pool_range_starts_between_scratch_and_the_arena() {
+        let limit = scratch_transport_end_gva();
+        let page = PAGE_SIZE as u64;
+        let arena = limit - 8 * page;
+        let scratch = arena - 16 * page;
+        // The pool ends a page below the limit, so the range ends with it.
+        let layout = h2g_pool_layout(arena + 4 * page, 3, 256).unwrap();
+        let pool = SlotPool::from_layout(layout).unwrap();
+        let start = scratch + page;
+
+        let range = pool_range(&pool, start, arena, scratch);
+        assert_eq!(range.unwrap(), start..limit - page);
+        // At the scratch base, above the arena, or not page aligned.
+        assert!(pool_range(&pool, scratch, arena, scratch).is_err());
+        assert!(pool_range(&pool, arena + page, arena, scratch).is_err());
+        assert!(pool_range(&pool, start + 8, arena, scratch).is_err());
     }
 
     fn encoded_message(external: &[u8]) -> EncodedMessage<'_> {

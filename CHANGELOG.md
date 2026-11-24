@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Guest and host functions return tuples of 2 to 32 values, such as a stream with a future of its outcome. An element is any built-in return type except `()` and tuples. A result moves at most `MAX_TRANSFERS` readers.
 * Add virtqueue `ChainBuilder::keep_free(n)`. `build` leaves `n` ring descriptors and pool slots free for later single-slot chains, or reports `Backpressure`.
 * Add virtqueue `SlotPool::max_free_slot_size()`, the size of the largest free slot.
+* Add virtqueue `SlotPool::add_slots(base_addr, count)`, an unsafe method that grows the upper tier with slots outside the pool's layout.
 
 ### Changed
 * `hyperlight-host` requires Rust 1.95.
@@ -45,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `Sandbox::snapshot` and `snapshot_with_options` fail with `HyperlightError::StreamsActive` while cross-boundary streams or guest tasks are live, and leave the sandbox unchanged. Guest initialization that leaves either live fails sandbox creation.
 * A guest function call fails with `HyperlightError::GuestError` and leaves the sandbox usable when its result exceeds the G2H virtqueue capacity, or when its returned stream reader cannot move to the host.
 * Restoring, recreating, or dropping a sandbox fails host readers of guest streams with `StreamError::Aborted` after their buffered bytes, unless the stream already ended.
+* Guest code that retains H2G buffers, such as `ByteChunks` arguments, leaves the host's H2G capacity intact. The guest posts a free slot in place of each retained buffer, adds slots on scratch pages when none are free, and aborts when scratch runs out.
+* Guest stream reads use H2G slots directly for DATA records larger than 128 bytes.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.

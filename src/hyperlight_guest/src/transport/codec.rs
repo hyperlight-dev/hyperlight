@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, FunctionCallResult};
-use hyperlight_common::stream::Mux;
+use hyperlight_common::stream::{GOOD_COPY_LEN, Mux};
 use hyperlight_common::transport::{MsgHeader, MsgKind};
 use hyperlight_common::virtq::Segments;
 
@@ -56,31 +56,27 @@ pub(super) fn decode_response(
 }
 
 /// Apply one H2G `Stream` message payload to `mux`.
-///
-/// DATA is copied to the heap, so its H2G slots can be reposted while readers hold the bytes.
 pub(super) fn recv_stream(control_len: u32, segments: Segments, mux: &mut Mux) -> Result<()> {
     let (control, payloads) = decode_payload(control_len, segments)?;
 
-    mux.recv_records(&control, &mut CopyingSource(payloads))
+    mux.recv_records(&control, &mut StreamSource(payloads))
         .with_context(|| "invalid H2G stream message")
 }
 
-/// Supplies external values as heap copies of transport-backed segments.
-///
-/// TODO: Remove this once the transport can support external values without copying.
-struct CopyingSource(Segments);
+/// Copies small DATA records so they do not pin a slot. Larger records keep their slot owners.
+struct StreamSource(Segments);
 
-impl ExternalValueSource for CopyingSource {
+impl ExternalValueSource for StreamSource {
     fn take_bytes(&mut self, length: usize) -> anyhow::Result<Vec<u8>> {
         self.0.take_bytes(length)
     }
 
     fn take_chunks(&mut self, length: usize) -> anyhow::Result<Vec<Bytes>> {
-        if length == 0 {
-            return Ok(Vec::new());
+        if (1..=GOOD_COPY_LEN).contains(&length) {
+            return Ok(vec![Bytes::from(self.0.take_bytes(length)?)]);
         }
 
-        Ok(vec![Bytes::from(self.0.take_bytes(length)?)])
+        self.0.take_chunks(length)
     }
 
     fn finish(&mut self) -> anyhow::Result<()> {
@@ -286,7 +282,7 @@ mod tests {
 
     #[cfg(feature = "streams")]
     #[test]
-    fn stream_data_is_copied_out_of_transport_storage() {
+    fn only_large_stream_records_pin_a_shared_slot() {
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
 
@@ -299,13 +295,26 @@ mod tests {
         let mut buffer = Vec::new();
         let mut cx = Context::from_waker(Waker::noop());
 
-        let (reader, mut writer) = stream::new::<u8>();
-        let written = pin!(writer.write(b"data")).poll(&mut cx);
-        assert!(matches!(written, Poll::Ready(Ok(4))));
+        let small_data = [0x5a; GOOD_COPY_LEN];
+        let large_data = [0xa5; GOOD_COPY_LEN + 1];
+        let (small, mut small_writer) = stream::new::<u8>();
+        let (large, mut large_writer) = stream::new::<u8>();
+
+        assert_eq!(
+            pin!(small_writer.write(&small_data)).poll(&mut cx),
+            Poll::Ready(Ok(small_data.len()))
+        );
+        assert_eq!(
+            pin!(large_writer.write(&large_data)).poll(&mut cx),
+            Poll::Ready(Ok(large_data.len()))
+        );
 
         let call = FunctionCall::new(
             "read".into(),
-            Some(vec![ParameterValue::StreamReader(reader)]),
+            Some(vec![
+                ParameterValue::StreamReader(small),
+                ParameterValue::StreamReader(large),
+            ]),
             FunctionCallType::Guest,
             ReturnType::Void,
         );
@@ -313,29 +322,46 @@ mod tests {
         let pending = PendingMessage::new_call(call, 1, &mut host).unwrap();
         let msg = pending.encode(&mut buffer).unwrap();
         let segments = Segments::single(Bytes::copy_from_slice(msg.control()));
-        let call = decode_request(msg.header().control_len, segments, &mut guest).unwrap();
+        let mut call = decode_request(msg.header().control_len, segments, &mut guest).unwrap();
 
         drop(msg);
         pending.settle(Ok(())).unwrap();
 
-        let Some(ParameterValue::StreamReader(mut reader)) = call.parameters.unwrap().pop() else {
-            panic!("expected a reader parameter");
+        let Some(
+            [
+                ParameterValue::StreamReader(small),
+                ParameterValue::StreamReader(large),
+            ],
+        ) = call.parameters.as_deref_mut()
+        else {
+            panic!("expected two reader parameters");
         };
 
         let pending = PendingMessage::next_stream(&mut host, 4096).unwrap();
         let msg = pending.encode(&mut buffer).unwrap();
-        let external: Vec<u8> = msg.external_chunks().flatten().copied().collect();
-        let external = Bytes::from(external);
-        let external_ptr = external.as_ptr();
-        let segments = Segments::new([Bytes::copy_from_slice(msg.control()), external]);
+        let mut slot = msg.control().to_vec();
 
+        for chunk in msg.external_chunks() {
+            slot.extend_from_slice(chunk);
+        }
+
+        let slot = Bytes::from(slot);
+        let segments = Segments::single(slot.clone());
         recv_stream(msg.header().control_len, segments, &mut guest).unwrap();
 
-        let Poll::Ready(Ok(Some(chunk))) = pin!(reader.read_chunk()).poll(&mut cx) else {
-            panic!("expected a DATA chunk");
+        let Poll::Ready(Ok(Some(small))) = pin!(small.read_chunk()).poll(&mut cx) else {
+            panic!("expected the small DATA record");
         };
 
-        assert_eq!(chunk.as_ref(), b"data");
-        assert_ne!(chunk.as_ptr(), external_ptr);
+        let Poll::Ready(Ok(Some(large))) = pin!(large.read_chunk()).poll(&mut cx) else {
+            panic!("expected the large DATA record");
+        };
+
+        assert_eq!(large.as_ref(), large_data);
+        assert!(slot.as_ptr_range().contains(&large.as_ptr()));
+        drop(large);
+
+        assert!(slot.is_unique());
+        assert_eq!(small.as_ref(), small_data);
     }
 }

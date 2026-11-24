@@ -249,7 +249,6 @@ where
     /// The builder captures the current free-descriptor budget.
     /// Submission checks capacity again.
     pub fn chain(&self) -> ChainBuilder<M> {
-        // TODO: Support owned refill buffers outside the fixed slot pool.
         ChainBuilder::new(
             self.inner.mem().clone(),
             self.pool.clone(),
@@ -388,6 +387,37 @@ where
     /// Retained views need independent backing. Old pool handles must not allocate.
     /// Resume only after success.
     pub unsafe fn refresh(&mut self, info: BootstrapInfo) -> Result<(), VirtqError> {
+        // SAFETY: The caller guarantees the bootstrap and old-owner preconditions.
+        unsafe { self.refresh_inner(info, None) }
+    }
+
+    /// Refresh private state in place with a new memory backend.
+    ///
+    /// Reconstructed chains and the ring use `mem`. Retained owners are unchanged.
+    ///
+    /// # Safety
+    ///
+    /// The requirements of [`Self::refresh`] apply. `mem` must address the
+    /// bootstrapped ring and pool described by `info`.
+    pub unsafe fn refresh_with_memory(
+        &mut self,
+        info: BootstrapInfo,
+        mem: M,
+    ) -> Result<(), VirtqError> {
+        // SAFETY: The caller guarantees the bootstrap, old owners, and backend match.
+        unsafe { self.refresh_inner(info, Some(mem)) }
+    }
+
+    /// Rebuild private state and optionally replace the memory backend.
+    ///
+    /// # Safety
+    ///
+    /// See [`Self::refresh`] and [`Self::refresh_with_memory`].
+    unsafe fn refresh_inner(
+        &mut self,
+        info: BootstrapInfo,
+        mem: Option<M>,
+    ) -> Result<(), VirtqError> {
         if !self.pending.is_empty() {
             return Err(VirtqError::InvalidState);
         }
@@ -420,6 +450,11 @@ where
         self.next_token = u32::from(info.avail());
 
         self.release_inflight()?;
+
+        if let Some(mem) = mem {
+            self.inner.set_mem(mem);
+        }
+
         self.restore_inflight(info);
         // Rebuild the ring's private state as well
         self.inner.refresh(info.avail());
@@ -1752,14 +1787,14 @@ mod tests {
     #[test]
     fn prefilled_bootstrap_refresh_reuses_bookkeeping_and_preserves_requests() {
         let ring = make_ring(4);
-        let mem = FaultMem::new(ring.mem());
+        let old_mem = FaultMem::new(ring.mem());
         let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 3).unwrap();
         let old_pool = SlotPool::new(slots).unwrap();
         let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(64).unwrap());
         let notifier = TestNotifier::new();
         let mut producer = VirtqProducer::new(
             ring.layout(),
-            mem.clone(),
+            old_mem.clone(),
             notifier.clone(),
             old_pool.clone(),
         );
@@ -1780,6 +1815,7 @@ mod tests {
         let live = producer.inflight.live.as_ptr();
         let live_capacity = producer.inflight.live.capacity();
         let info = BootstrapInfo::prefilled(ring.layout(), old_pool.layout()).unwrap();
+        let mem = FaultMem::new(ring.mem());
         info.initialize(&mem).unwrap();
 
         let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notifier.clone());
@@ -1795,10 +1831,12 @@ mod tests {
         mem.read(ring.layout().desc_table_addr(), &mut before)
             .unwrap();
         mem.fail_write_at(0);
+        old_mem.fail_write_at(0);
+        old_mem.deny_views();
 
         // SAFETY: The old peer is gone. The retained lease has no views.
-        // Only the new consumer has accessed the matching bootstrap.
-        unsafe { producer.refresh(info) }.unwrap();
+        // Only the new consumer has accessed the matching bootstrap in `mem`.
+        unsafe { producer.refresh_with_memory(info, mem.clone()) }.unwrap();
 
         let mut after = vec![0; before.len()];
         mem.read(ring.layout().desc_table_addr(), &mut after)
@@ -1806,6 +1844,7 @@ mod tests {
 
         assert_eq!(before, after);
         assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(old_mem.0.writes.load(Ordering::Relaxed), 0);
         assert_eq!(notifier.notification_count(), notifications);
         assert_eq!(producer.inflight.by_id.as_ptr(), by_id);
         assert_eq!(producer.inflight.live.as_ptr(), live);

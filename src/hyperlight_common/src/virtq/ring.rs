@@ -861,6 +861,11 @@ impl<M: MemOps> RingProducer<M> {
         &self.mem
     }
 
+    /// Use `mem` for subsequent ring operations.
+    pub(super) fn set_mem(&mut self, mem: M) {
+        self.mem = mem;
+    }
+
     /// Get descriptor table reference
     #[inline]
     pub fn desc_table(&self) -> &DescTable {

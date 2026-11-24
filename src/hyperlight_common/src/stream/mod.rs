@@ -40,6 +40,8 @@ pub const MAX_TRANSFERS: usize = 16;
 pub const DEFAULT_WINDOW: NonZeroU32 = NonZeroU32::new(16384).unwrap();
 /// Bytes copied by one copy write.
 pub const MAX_COPY_WRITE: usize = 65536;
+/// Largest DATA record the guest copies out of an H2G slot.
+pub const GOOD_COPY_LEN: usize = 128;
 
 /// Transfer metadata prepared for one message.
 pub(crate) type Transfers = SmallVec<[Transfer; 4]>;
