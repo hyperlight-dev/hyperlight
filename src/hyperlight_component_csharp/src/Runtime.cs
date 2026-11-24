@@ -354,16 +354,23 @@ namespace Hyperlight.Component
 
     /// <summary>
     /// Host objects of one resource type that the guest refers to by
-    /// handle. A handle is an index into the table.
+    /// handle. Handles are never reused, so a stale handle cannot reach a
+    /// later object.
     /// </summary>
     public sealed class ResourceTable<T> where T : class
     {
-        private readonly List<Entry> _entries = new();
+        private readonly Dictionary<uint, (T Value, bool Lent)> _entries = new();
+        private uint _next;
 
-        private sealed class Entry
+        internal int Count
         {
-            public T? Value;
-            public bool Lent;
+            get
+            {
+                lock (_entries)
+                {
+                    return _entries.Count;
+                }
+            }
         }
 
         /// <summary>
@@ -391,7 +398,7 @@ namespace Hyperlight.Component
         {
             lock (_entries)
             {
-                _entries[(int)handle].Value = null;
+                _entries.Remove(handle);
             }
         }
 
@@ -401,13 +408,12 @@ namespace Hyperlight.Component
             lock (_entries)
             {
                 var entry = Get(handle);
-                if (entry.Lent || entry.Value is null)
+                if (entry.Lent)
                 {
                     throw new WireFormatException($"resource handle {handle} is not owned");
                 }
-                var value = entry.Value;
-                entry.Value = null;
-                return value;
+                _entries.Remove(handle);
+                return entry.Value;
             }
         }
 
@@ -416,7 +422,7 @@ namespace Hyperlight.Component
         {
             lock (_entries)
             {
-                return Get(handle).Value ?? throw new WireFormatException($"resource handle {handle} is not valid");
+                return Get(handle).Value;
             }
         }
 
@@ -425,14 +431,16 @@ namespace Hyperlight.Component
             ArgumentNullException.ThrowIfNull(value);
             lock (_entries)
             {
-                _entries.Add(new Entry { Value = value, Lent = lent });
-                return checked((uint)(_entries.Count - 1));
+                var handle = _next;
+                _next = checked(_next + 1);
+                _entries.Add(handle, (value, lent));
+                return handle;
             }
         }
 
-        private Entry Get(uint handle) =>
-            handle < (uint)_entries.Count
-                ? _entries[(int)handle]
+        private (T Value, bool Lent) Get(uint handle) =>
+            _entries.TryGetValue(handle, out var entry)
+                ? entry
                 : throw new WireFormatException($"invalid resource handle {handle}");
     }
 
