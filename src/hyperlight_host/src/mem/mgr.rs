@@ -374,7 +374,7 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) abort_buffer: Vec<u8>,
     /// Generation counter: how many snapshots have been taken from
     /// this sandbox's execution path from init to here. Incremented
-    /// on each `snapshot` call; on `restore_snapshot` we inherit the
+    /// on each `snapshot` call; on restore we inherit the
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
@@ -562,7 +562,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
         mgr.original_entrypoint = s.original_entrypoint();
         // Inherit the snapshot's generation number for the same
-        // reason `restore_snapshot` does: the guest-visible counter
+        // reason snapshot restore does: the guest-visible counter
         // reflects "which snapshot is the sandbox currently a clone
         // of", not "how many snapshots this partition has taken".
         mgr.snapshot_count = s.snapshot_generation();
@@ -933,22 +933,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.original_entrypoint = snapshot.original_entrypoint();
     }
 
-    /// Install captured memory and fresh transport ownership.
-    ///
-    /// A capture with another scratch size moves the scratch base and page
-    /// tables. It gets new scratch, which the caller maps.
+    /// Install same-size captured memory and fresh transport ownership.
     pub(crate) fn install_captured_snapshot(
         &mut self,
         snapshot: &Snapshot,
-    ) -> Result<(
-        SnapshotMemoryBacking<GuestSharedMemory>,
-        Option<GuestSharedMemory>,
-    )> {
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
         if snapshot.layout().get_scratch_size() != self.scratch_mem.mem_size() {
-            let requests = self.guest_requests()?;
-            let memory = self.restore_snapshot(snapshot)?;
-            self.set_guest_requests(requests)?;
-            return Ok(memory);
+            return Err(new_error!(
+                "captured snapshot scratch size does not match the allocation"
+            ));
         }
 
         let virtq = snapshot
@@ -965,7 +958,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.zero_freed_scratch(used_scratch_end)?;
         self.restore_virtq(virtq)?;
 
-        Ok((gsnapshot, None))
+        Ok(gsnapshot)
     }
 
     /// The end of the scratch the guest has allocated: its allocator's next
@@ -1001,17 +994,12 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Restore base memory after the caller checks snapshot compatibility.
-    pub(crate) fn restore_snapshot(
+    /// Transport consumers stay detached until `finish_restore` rebuilds them.
+    pub(crate) fn begin_restore(
         &mut self,
         snapshot: &Snapshot,
-    ) -> Result<(
-        SnapshotMemoryBacking<GuestSharedMemory>,
-        Option<GuestSharedMemory>,
-    )> {
-        let virtq = snapshot.virtq();
-
-        if virtq.is_none() && matches!(snapshot.next_action(), NextAction::Call(_)) {
+    ) -> Result<SnapshotMemoryBacking<GuestSharedMemory>> {
+        if snapshot.virtq().is_none() && matches!(snapshot.next_action(), NextAction::Call(_)) {
             return Err(new_error!(
                 "running snapshot has no canonical transport state"
             ));
@@ -1020,26 +1008,19 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.g2h_consumer = None;
         self.h2g_consumer = None;
 
-        let gsnapshot = self.replace_snapshot_memory(snapshot)?;
-        let new_scratch_size = snapshot.layout().get_scratch_size();
-        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
-            // zero_or_replace picks the fastest zeroing strategy for
-            // the current platform (see SharedMemory::zero_or_replace).
-            self.scratch_mem.zero_or_replace()?
-        } else {
-            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
-            let (hscratch, gscratch) = new_scratch_mem.build();
-            // Even though this destroys the reference to the host
-            // side of the old scratch mapping, the VM should still
-            // own the reference to the guest side of the old scratch
-            // mapping, so it won't actually be deallocated until it
-            // has been unmapped from the VM.
-            self.scratch_mem = hscratch;
-            Some(gscratch)
-        };
+        self.replace_snapshot_memory(snapshot)
+    }
+
+    /// Scratch must be cleared and mapped at the snapshot's size.
+    pub(crate) fn finish_restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if snapshot.layout().get_scratch_size() != self.scratch_mem.mem_size() {
+            return Err(new_error!(
+                "snapshot scratch size does not match the allocation"
+            ));
+        }
         self.apply_snapshot_metadata(snapshot);
         self.update_scratch_bookkeeping()?;
-        if let Some(virtq) = virtq {
+        if let Some(virtq) = snapshot.virtq() {
             self.restore_virtq(virtq)?;
         } else if matches!(snapshot.next_action(), NextAction::Initialise(_)) {
             self.scratch_mem.copy_from_slice(
@@ -1048,7 +1029,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             )?;
             self.create_virtq_consumers()?;
         }
-        Ok((gsnapshot, gscratch))
+        Ok(())
     }
 
     #[inline]
@@ -1060,7 +1041,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .map_err(From::from)
     }
 
-    fn guest_requests(&self) -> Result<[u64; 2]> {
+    pub(crate) fn guest_requests(&self) -> Result<[u64; 2]> {
         let scratch_size = self.scratch_mem.mem_size();
         let mut values = [0; 2];
         for (value, offset) in values.iter_mut().zip(GUEST_REQUEST_OFFSETS) {
@@ -1071,7 +1052,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(values)
     }
 
-    fn set_guest_requests(&mut self, values: [u64; 2]) -> Result<()> {
+    pub(crate) fn set_guest_requests(&mut self, values: [u64; 2]) -> Result<()> {
         for (value, offset) in values.into_iter().zip(GUEST_REQUEST_OFFSETS) {
             self.update_scratch_bookkeeping_item(offset, value)?;
         }

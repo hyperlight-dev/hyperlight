@@ -82,8 +82,8 @@ impl GuestBinary {
 impl UninitializedSandbox {
     // Creates a new uninitialized sandbox from a pre-built snapshot.
     // Note that since memory configuration is part of the snapshot the only configuration
-    // that can be changed (from the original snapshot) is the configuration defines the behaviour of
-    // `InterruptHandler` on Linux.
+    // that can be changed (from the original snapshot) is the memory reset strategy and the
+    // configuration that defines the behaviour of `InterruptHandler` on Linux.
     //
     // This is ok for now as this is not a public function
     fn from_snapshot(snapshot: Arc<Snapshot>, cfg: Option<SandboxConfiguration>) -> Result<Self> {

@@ -21,14 +21,19 @@ use super::snapshot::{Snapshot, SnapshotOptions};
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::HypervisorType;
+use crate::hypervisor::virtual_machine::get_available_hypervisor;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
+#[cfg(kvm)]
+use crate::mem::shared_mem::SharedMemoryError;
+use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
 use crate::sandbox::snapshot::SnapshotMemoryBacking;
-use crate::{HyperlightError, Result, log_then_return};
+use crate::{HyperlightError, MemoryResetStrategy, Result, log_then_return};
 
 /// The lifecycle state of a [`Sandbox`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,11 +319,11 @@ impl Sandbox {
 
         let page_size = u32::try_from(page_size::get())? as usize;
 
-        #[cfg(target_os = "linux")]
-        crate::signal_handlers::setup_signal_handlers(&config)?;
-
         let mut vm =
             set_up_hypervisor_partition(gshm, &config, stack_top_gva, page_size, load_info)?;
+
+        #[cfg(target_os = "linux")]
+        crate::signal_handlers::setup_signal_handlers(&config)?;
 
         let seed = {
             let mut rng = rand::rng();
@@ -550,25 +555,10 @@ impl Sandbox {
             self.snapshot = None;
             return Err(error);
         }
-        let (snapshot_mem, scratch_mem) = match self.mem_mgr.install_captured_snapshot(&snapshot) {
-            Ok(memory) => memory,
-            Err(error) => {
-                self.status = SandboxStatus::Unrecoverable;
-                self.snapshot = None;
-                return Err(error);
-            }
-        };
-        if let Err(error) = self.vm.update_snapshot_mapping(snapshot_mem) {
+        if let Err(error) = self.install_captured_snapshot(&snapshot) {
             self.status = SandboxStatus::Unrecoverable;
             self.snapshot = None;
-            return Err(HyperlightVmError::UpdateRegion(error).into());
-        }
-        if let Some(scratch_mem) = scratch_mem
-            && let Err(error) = self.vm.update_scratch_mapping(scratch_mem)
-        {
-            self.status = SandboxStatus::Unrecoverable;
-            self.snapshot = None;
-            return Err(HyperlightVmError::UpdateRegion(error).into());
+            return Err(error);
         }
         if let Err(error) = self.vm.apply_sregs(snapshot.root_pt_gpa(), &sregs) {
             self.status = SandboxStatus::Poisoned;
@@ -578,6 +568,20 @@ impl Sandbox {
 
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    fn install_captured_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if snapshot.layout().get_scratch_size() == self.mem_mgr.scratch_mem.mem_size() {
+            let memory = self.mem_mgr.install_captured_snapshot(snapshot)?;
+            self.vm
+                .update_snapshot_mapping(memory)
+                .map_err(HyperlightVmError::UpdateRegion)?;
+            Ok(())
+        } else {
+            let requests = self.mem_mgr.guest_requests()?;
+            self.restore_memory_and_mappings(snapshot)?;
+            self.mem_mgr.set_guest_requests(requests)
+        }
     }
 
     fn remove_dynamic_mappings(&mut self) -> Result<()> {
@@ -591,15 +595,56 @@ impl Sandbox {
     }
 
     fn restore_memory_and_mappings(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let (snapshot_mem, scratch_mem) = self.mem_mgr.restore_snapshot(snapshot)?;
+        let snapshot_mem = self.mem_mgr.begin_restore(snapshot)?;
         self.vm
             .update_snapshot_mapping(snapshot_mem)
             .map_err(HyperlightVmError::UpdateRegion)?;
-        if let Some(scratch_mem) = scratch_mem {
-            self.vm
-                .update_scratch_mapping(scratch_mem)
-                .map_err(HyperlightVmError::UpdateRegion)?;
+        self.reset_scratch(snapshot.layout().get_scratch_size())?;
+        self.mem_mgr.finish_restore(snapshot)
+    }
+
+    fn reset_scratch(&mut self, size: usize) -> Result<()> {
+        let hypervisor = get_available_hypervisor().ok_or(HyperlightError::NoHypervisorFound())?;
+        let requested = self.config.get_memory_reset_strategy();
+        let strategy = hypervisor.resolve_memory_reset_strategy(requested)?;
+
+        if size != self.mem_mgr.scratch_mem.mem_size() {
+            return self.replace_scratch(size);
         }
+
+        match strategy {
+            MemoryResetStrategy::ZeroInPlace => {
+                self.mem_mgr.scratch_mem.zero_in_place()?;
+            }
+            #[cfg(kvm)]
+            MemoryResetStrategy::Discard if hypervisor == HypervisorType::Kvm => {
+                match self.mem_mgr.scratch_mem.discard_pages() {
+                    Err(SharedMemoryError::MadviseFailed(error))
+                        if requested == MemoryResetStrategy::PlatformDefault =>
+                    {
+                        tracing::warn!(%error, "KVM scratch discard failed, zeroing in place");
+                        self.mem_mgr.scratch_mem.zero_in_place()?;
+                    }
+                    result => result?,
+                }
+            }
+            MemoryResetStrategy::Discard => self.replace_scratch(size)?,
+            MemoryResetStrategy::PlatformDefault => {
+                let error = crate::new_error!("Backend {hypervisor:?} resolved to PlatformDefault");
+                tracing::error!(%error);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn replace_scratch(&mut self, size: usize) -> Result<()> {
+        let memory = ExclusiveSharedMemory::new(size)?;
+        let (host, guest) = memory.build();
+        self.vm
+            .update_scratch_mapping(guest)
+            .map_err(HyperlightVmError::UpdateRegion)?;
+        self.mem_mgr.scratch_mem = host;
         Ok(())
     }
 
@@ -1437,8 +1482,8 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::{Snapshot, SnapshotOptions};
     use crate::{
-        GuestBinary, HyperlightError, Result, Sandbox, SandboxBuilder, SandboxStatus,
-        UninitializedSandbox,
+        GuestBinary, HyperlightError, MemoryResetStrategy, Result, Sandbox, SandboxBuilder,
+        SandboxStatus, UninitializedSandbox,
     };
 
     #[test]
@@ -1458,6 +1503,18 @@ mod tests {
 
     fn scratch(scratch_size: usize) -> SnapshotOptions {
         SnapshotOptions::default().scratch_size(scratch_size)
+    }
+
+    fn free_scratch_page(sandbox: &Sandbox) -> (u64, usize) {
+        let gpa = sandbox.mem_mgr.layout.get_transport_arena().base_addr()
+            - hyperlight_common::vmem::PAGE_SIZE as u64;
+        assert!(
+            gpa >= sandbox.mem_mgr.first_free_scratch_gpa()
+                + sandbox.mem_mgr.scratch_allocated_bytes().unwrap()
+        );
+        let base =
+            hyperlight_common::layout::scratch_base_gpa(sandbox.mem_mgr.scratch_mem.mem_size());
+        (gpa, usize::try_from(gpa - base).unwrap())
     }
 
     fn assert_virtq_attached(sbox: &Sandbox) {
@@ -1893,6 +1950,7 @@ mod tests {
             .scratch_size(8 << 20)
             .build()
             .unwrap();
+        let scratch_base = sandbox.mem_mgr.scratch_mem.base_addr();
         let fault_plan = sandbox
             .vm
             .inject_vm_faults([VmOperation::Map(MemoryRegionType::Scratch)]);
@@ -1904,6 +1962,7 @@ mod tests {
 
         assert!(matches!(error, HyperlightError::HyperlightVmError(_)));
         assert!(fault_plan.is_consumed());
+        assert_eq!(sandbox.mem_mgr.scratch_mem.base_addr(), scratch_base);
         assert_eq!(sandbox.status(), SandboxStatus::Unrecoverable);
     }
 
@@ -2123,6 +2182,209 @@ mod tests {
         sbox.restore(snapshot).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
+    }
+
+    #[test]
+    fn memory_reset_strategy_controls_restores() {
+        use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+        fn check_restore(
+            sandbox: &mut Sandbox,
+            snapshot: &Arc<Snapshot>,
+            strategy: MemoryResetStrategy,
+        ) {
+            sandbox.call::<i32>("AddToStatic", 5i32).unwrap();
+            sandbox
+                .call::<()>("AllocAndWritePattern", 32u64 << 10)
+                .unwrap();
+            let base = sandbox.mem_mgr.scratch_mem.base_addr();
+            let size = sandbox.mem_mgr.scratch_mem.mem_size();
+            let (marker_gpa, marker_offset) = free_scratch_page(sandbox);
+            sandbox
+                .mem_mgr
+                .scratch_mem
+                .write(marker_offset, u64::MAX)
+                .unwrap();
+            let bytes = sandbox
+                .call::<Vec<u8>>("ReadMappedBuffer", (marker_gpa, 8u64, true))
+                .unwrap();
+            assert_eq!(bytes, [0xff; 8]);
+
+            sandbox.restore(snapshot.clone()).unwrap();
+
+            let same_size = size == snapshot.layout().get_scratch_size();
+            if same_size
+                && (strategy == MemoryResetStrategy::ZeroInPlace || !cfg!(target_os = "windows"))
+            {
+                assert_eq!(sandbox.mem_mgr.scratch_mem.base_addr(), base);
+            } else {
+                assert_ne!(sandbox.mem_mgr.scratch_mem.base_addr(), base);
+            }
+            let (restored_gpa, restored_offset) = free_scratch_page(sandbox);
+            assert_eq!(restored_gpa, marker_gpa);
+            let bytes = sandbox
+                .call::<Vec<u8>>("ReadMappedBuffer", (marker_gpa, 8u64, true))
+                .unwrap();
+            assert_eq!(bytes, [0; 8]);
+            assert_eq!(
+                sandbox
+                    .mem_mgr
+                    .scratch_mem
+                    .read::<u64>(restored_offset)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+            assert_eq!(sandbox.config.get_memory_reset_strategy(), strategy);
+        }
+
+        let supports_discard = match get_available_hypervisor().unwrap() {
+            #[cfg(kvm)]
+            HypervisorType::Kvm => true,
+            #[cfg(mshv3)]
+            HypervisorType::Mshv => false,
+            #[cfg(target_os = "windows")]
+            HypervisorType::Whp => true,
+            #[cfg(hvf)]
+            HypervisorType::Hvf => false,
+        };
+        for strategy in [
+            MemoryResetStrategy::PlatformDefault,
+            MemoryResetStrategy::ZeroInPlace,
+            MemoryResetStrategy::Discard,
+        ] {
+            let result = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .scratch_size(2 << 20)
+                .memory_reset_strategy(strategy)
+                .build();
+            if strategy == MemoryResetStrategy::Discard && !supports_discard {
+                assert!(matches!(
+                    result,
+                    Err(HyperlightError::UnsupportedMemoryResetStrategy {
+                        strategy: MemoryResetStrategy::Discard,
+                        ..
+                    })
+                ));
+                let snapshot = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                    .build()
+                    .unwrap()
+                    .snapshot()
+                    .unwrap();
+                assert!(matches!(
+                    SandboxBuilder::from_snapshot(snapshot)
+                        .memory_reset_strategy(strategy)
+                        .build(),
+                    Err(HyperlightError::UnsupportedMemoryResetStrategy {
+                        strategy: MemoryResetStrategy::Discard,
+                        ..
+                    })
+                ));
+                continue;
+            }
+            let mut sandbox = result.unwrap();
+            let small = sandbox.snapshot().unwrap();
+            check_restore(&mut sandbox, &small, strategy);
+
+            let large = sandbox.snapshot_with_options(&scratch(4 << 20)).unwrap();
+            check_restore(&mut sandbox, &large, strategy);
+            check_restore(&mut sandbox, &small, strategy);
+            check_restore(&mut sandbox, &small, strategy);
+            check_restore(&mut sandbox, &large, strategy);
+
+            sandbox.recreate(large.clone()).unwrap();
+            check_restore(&mut sandbox, &large, strategy);
+            drop(sandbox);
+
+            let destination_strategy =
+                if strategy == MemoryResetStrategy::ZeroInPlace && supports_discard {
+                    MemoryResetStrategy::Discard
+                } else {
+                    MemoryResetStrategy::ZeroInPlace
+                };
+            let mut destination = SandboxBuilder::from_snapshot(small.clone())
+                .memory_reset_strategy(destination_strategy)
+                .build()
+                .unwrap();
+            check_restore(&mut destination, &small, destination_strategy);
+        }
+    }
+
+    #[test]
+    #[cfg(kvm)]
+    fn locked_scratch_preserves_default_reset_fallback() {
+        use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+        use crate::mem::shared_mem::SharedMemoryError;
+
+        if !matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
+            return;
+        }
+        for strategy in [
+            MemoryResetStrategy::PlatformDefault,
+            MemoryResetStrategy::ZeroInPlace,
+            MemoryResetStrategy::Discard,
+        ] {
+            let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                .scratch_size(2 << 20)
+                .memory_reset_strategy(strategy)
+                .build()
+                .unwrap();
+            let snapshot = sandbox.snapshot().unwrap();
+            let (gpa, offset) = free_scratch_page(&sandbox);
+            sandbox.mem_mgr.scratch_mem.write(offset, u64::MAX).unwrap();
+            let address = (sandbox.mem_mgr.scratch_mem.base_addr() + offset) as *const libc::c_void;
+            let length = page_size::get();
+            // SAFETY: The page lies within the sandbox's live scratch allocation.
+            if unsafe { libc::mlock(address, length) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM | libc::ENOMEM | libc::EAGAIN)
+                ) {
+                    tracing::warn!(%error, "Skipping locked scratch test: mlock unavailable");
+                    return;
+                }
+                panic!("mlock failed: {error}");
+            }
+
+            let result = sandbox.restore(snapshot);
+            // SAFETY: Equal-size KVM resets keep this scratch allocation mapped.
+            assert_eq!(unsafe { libc::munlock(address, length) }, 0);
+
+            if strategy == MemoryResetStrategy::Discard {
+                assert!(matches!(
+                    result,
+                    Err(HyperlightError::SharedMemory(SharedMemoryError::MadviseFailed(error)))
+                        if error.raw_os_error() == Some(libc::EINVAL)
+                ));
+                assert_eq!(sandbox.status(), SandboxStatus::Unrecoverable);
+            } else {
+                result.unwrap();
+                assert_eq!(sandbox.status(), SandboxStatus::Ready);
+                assert_eq!(
+                    sandbox
+                        .call::<Vec<u8>>("ReadMappedBuffer", (gpa, 8u64, true))
+                        .unwrap(),
+                    [0; 8]
+                );
+                assert_eq!(sandbox.mem_mgr.scratch_mem.read::<u64>(offset).unwrap(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_hypervisor_preserves_vm_creation_error() {
+        use crate::hypervisor::hyperlight_vm::{CreateHyperlightVmError, HyperlightVmError};
+        use crate::hypervisor::virtual_machine::get_available_hypervisor;
+
+        if get_available_hypervisor().is_some() {
+            return;
+        }
+        assert!(matches!(
+            SandboxBuilder::from_file(simple_guest_as_pathbuf()).build(),
+            Err(HyperlightError::HyperlightVmError(
+                HyperlightVmError::Create(CreateHyperlightVmError::NoHypervisorFound)
+            ))
+        ));
     }
 
     #[test]

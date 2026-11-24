@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use tracing::{Span, instrument};
 
+use crate::MemoryResetStrategy;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebugError;
 use crate::hypervisor::regs::{
@@ -107,6 +108,44 @@ pub(crate) enum HypervisorType {
 
     #[cfg(hvf)]
     Hvf,
+}
+
+impl HypervisorType {
+    pub(crate) fn resolve_memory_reset_strategy(
+        self,
+        requested: MemoryResetStrategy,
+    ) -> crate::Result<MemoryResetStrategy> {
+        use MemoryResetStrategy::*;
+
+        let (default, supported, hypervisor): (
+            MemoryResetStrategy,
+            &[MemoryResetStrategy],
+            &'static str,
+        ) = match self {
+            #[cfg(kvm)]
+            Self::Kvm => (Discard, &[ZeroInPlace, Discard], "Kvm"),
+            #[cfg(mshv3)]
+            Self::Mshv => (ZeroInPlace, &[ZeroInPlace], "Mshv"),
+            #[cfg(target_os = "windows")]
+            Self::Whp => (Discard, &[ZeroInPlace, Discard], "Whp"),
+            #[cfg(hvf)]
+            Self::Hvf => (ZeroInPlace, &[ZeroInPlace], "Hvf"),
+        };
+
+        let strategy = match requested {
+            PlatformDefault => default,
+            strategy => strategy,
+        };
+        if !supported.contains(&strategy) {
+            let error = crate::HyperlightError::UnsupportedMemoryResetStrategy {
+                strategy: requested,
+                hypervisor,
+            };
+            tracing::error!(%error);
+            return Err(error);
+        }
+        Ok(strategy)
+    }
 }
 
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
@@ -656,6 +695,27 @@ pub(crate) fn hyperv_msr_reset_indices(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(any(mshv3, hvf))]
+    fn rejects_unsupported_memory_reset_strategy() {
+        use super::HypervisorType;
+        use crate::MemoryResetStrategy;
+
+        #[cfg(mshv3)]
+        let hypervisor = HypervisorType::Mshv;
+        #[cfg(hvf)]
+        let hypervisor = HypervisorType::Hvf;
+        let error = hypervisor
+            .resolve_memory_reset_strategy(MemoryResetStrategy::Discard)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::HyperlightError::UnsupportedMemoryResetStrategy {
+                strategy: MemoryResetStrategy::Discard,
+                ..
+            }
+        ));
+    }
 
     #[test]
     // TODO: add support for testing on WHP

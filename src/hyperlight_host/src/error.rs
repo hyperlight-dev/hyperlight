@@ -17,6 +17,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::virtq::VirtqError;
 use thiserror::Error;
 
+use crate::MemoryResetStrategy;
 use crate::hypervisor::hyperlight_vm::HyperlightVmError;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
@@ -150,6 +151,15 @@ pub enum HyperlightError {
     /// No Hypervisor was found for Sandbox.
     #[error("No Hypervisor was found for Sandbox")]
     NoHypervisorFound(),
+
+    /// The selected backend cannot use the requested memory reset strategy.
+    #[error("Memory reset strategy {strategy:?} is not supported by {hypervisor}")]
+    UnsupportedMemoryResetStrategy {
+        /// Requested strategy.
+        strategy: MemoryResetStrategy,
+        /// Selected backend.
+        hypervisor: &'static str,
+    },
 
     /// Restore_state called with no valid snapshot
     #[error("Restore_state called with no valid snapshot")]
@@ -362,6 +372,7 @@ impl HyperlightError {
             | HyperlightError::UnexpectedNoOfArguments(_, _)
             | HyperlightError::UnexpectedParameterValueType(_, _)
             | HyperlightError::UnexpectedReturnValueType(_, _)
+            | HyperlightError::UnsupportedMemoryResetStrategy { .. }
             | HyperlightError::UnrecoverableSandbox
             | HyperlightError::UTF8StringConversionFailure(_)
             | HyperlightError::SharedMemory(_) => false,

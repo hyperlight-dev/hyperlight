@@ -1512,7 +1512,9 @@ mod tests {
                 if mapping.virt_base == base + PAGE_SIZE as u64
         )));
 
-        manager.restore_snapshot(&snapshot).unwrap();
+        manager.begin_restore(&snapshot).unwrap();
+        manager.scratch_mem.zero_in_place().unwrap();
+        manager.finish_restore(&snapshot).unwrap();
         manager
             .with_guest_memory(&[], |memory| {
                 for (root, gva, expected) in [
@@ -1635,7 +1637,9 @@ mod tests {
         .unwrap();
 
         // Restore snapshot A
-        mgr.restore_snapshot(&snapshot_a).unwrap();
+        mgr.begin_restore(&snapshot_a).unwrap();
+        mgr.scratch_mem.zero_in_place().unwrap();
+        mgr.finish_restore(&snapshot_a).unwrap();
         let mut restored = vec![0u8; pattern_a.len()];
         mgr.shared_mem
             .read_snapshot_gpa(SandboxMemoryLayout::BASE_ADDRESS as u64, &mut restored)
@@ -1643,7 +1647,9 @@ mod tests {
         assert_eq!(restored, pattern_a);
 
         // Restore snapshot B
-        mgr.restore_snapshot(&snapshot_b).unwrap();
+        mgr.begin_restore(&snapshot_b).unwrap();
+        mgr.scratch_mem.zero_in_place().unwrap();
+        mgr.finish_restore(&snapshot_b).unwrap();
         restored.fill(0);
         mgr.shared_mem
             .read_snapshot_gpa(SandboxMemoryLayout::BASE_ADDRESS as u64, &mut restored)
