@@ -8,6 +8,21 @@ Only a snapshot taken after the guest has run can be persisted. Such a
 snapshot carries the captured vCPU registers needed to resume a call.
 `Snapshot::save` rejects a pre-init snapshot.
 
+`Snapshot::compact(None)` packs live memory pages into a single layer.
+`Snapshot::compact(Some(&base))` retains referenced immutable layers identical
+to the base and packs other live pages into at most one new layer. Base matching
+uses the layer's address, geometry, and complete blob contents, so a separately
+loaded base works too. The base must have the same memory layout.
+
+Compaction leaves its inputs unchanged and preserves execution state, metadata,
+transport state, page-table topology, and cached hashes of retained layers.
+Repacked memory gets a fresh hash on its first ordinary save.
+It does not change the file format:
+save and restore the result normally. Saving includes every required blob,
+including preserved base blobs; omitting or sharing those blobs during transport
+is the caller's responsibility. Compaction copies live non-base pages and is
+explicit rather than automatically performed on every snapshot.
+
 [OCI Image Layout]: https://github.com/opencontainers/image-spec/blob/main/image-layout.md
 
 ## Directory layout

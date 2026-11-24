@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 The Hyperlight Authors.
 
+mod compact;
 mod file;
 mod file_tests;
 pub(crate) mod memory;
@@ -107,6 +108,7 @@ pub struct Snapshot {
 }
 
 /// Immutable sandbox state held by a snapshot.
+#[derive(Clone)]
 struct SnapshotState {
     /// Layout object for the sandbox. TODO: get rid of this and
     /// replace with something saner and set up from the guest (early
@@ -1424,6 +1426,7 @@ mod tests {
         let layout = SandboxMemoryLayout::new(cfg, 4096).unwrap();
         let pt_base = layout.get_pt_base_gpa();
         let base = SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let data_base = base + (8 * page_size::get()) as u64;
         let pt_buf = GuestPageTableBuffer::new(pt_base as usize);
         let first_root = pt_buf.initial_root();
         // SAFETY: The local buffer owns its page tables and has no concurrent access.
@@ -1438,7 +1441,7 @@ mod tests {
             vmem::map(
                 &pt_buf,
                 Mapping {
-                    phys_base: base,
+                    phys_base: data_base,
                     virt_base: base,
                     len: PAGE_SIZE as u64,
                     kind,
@@ -1448,7 +1451,7 @@ mod tests {
             vmem::map(
                 &pt_buf,
                 Mapping {
-                    phys_base: base + PAGE_SIZE as u64,
+                    phys_base: data_base + PAGE_SIZE as u64,
                     virt_base: base + PAGE_SIZE as u64,
                     len: PAGE_SIZE as u64,
                     kind,
@@ -1466,7 +1469,7 @@ mod tests {
         let memory = super::memory::tests::flat_memory(
             &bytes,
             &page_tables,
-            base,
+            data_base,
             hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size()),
         );
         let manager = SandboxMemoryManager::new(
@@ -1513,26 +1516,29 @@ mod tests {
                 if mapping.virt_base == base + PAGE_SIZE as u64
         )));
 
-        manager.restore_snapshot(&snapshot).unwrap();
-        manager
-            .with_guest_memory(&[], |memory| {
-                for (root, gva, expected) in [
-                    (rebuilt_first_root, base, 0x11),
-                    (rebuilt_second_root, base + PAGE_SIZE as u64, 0x22),
-                ] {
-                    let reader = super::PageTableReader::new(memory, root);
-                    // SAFETY: The reader borrows the stopped manager's mapped memory.
-                    let mapping = unsafe { vmem::virt_to_phys(&reader, gva, 1) }
-                        .next()
-                        .unwrap();
-                    let gpa = mapping.phys_base + gva - mapping.virt_base;
-                    let mut byte = [0u8; 1];
-                    memory.read(gpa, &mut byte).unwrap();
-                    assert_eq!(byte, [expected]);
-                }
-                Ok(())
-            })
-            .unwrap();
+        let compacted = snapshot.compact(None).unwrap();
+        for snapshot in [&snapshot, compacted.as_ref()] {
+            manager.restore_snapshot(snapshot).unwrap();
+            manager
+                .with_guest_memory(&[], |memory| {
+                    for (root, gva, expected) in [
+                        (rebuilt_first_root, base, 0x11),
+                        (rebuilt_second_root, base + PAGE_SIZE as u64, 0x22),
+                    ] {
+                        let reader = super::PageTableReader::new(memory, root);
+                        // SAFETY: The reader borrows the stopped manager's mapped memory.
+                        let mapping = unsafe { vmem::virt_to_phys(&reader, gva, 1) }
+                            .next()
+                            .unwrap();
+                        let gpa = mapping.phys_base + gva - mapping.virt_base;
+                        let mut byte = [0u8; 1];
+                        memory.read(gpa, &mut byte).unwrap();
+                        assert_eq!(byte, [expected]);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

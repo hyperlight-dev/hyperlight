@@ -55,7 +55,7 @@ use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) struct SandboxMemoryLayout {
     /// The size of the guest code section.
     code_size: usize,

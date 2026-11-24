@@ -63,7 +63,7 @@ pub(crate) fn create_consumers(
 }
 
 /// Validated ring images excluded from ordinary snapshot pages.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VirtqSnapshot {
     /// Guest-to-host ring bytes.
     g2h_ring: Vec<u8>,
