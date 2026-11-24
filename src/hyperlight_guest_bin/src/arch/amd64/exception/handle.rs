@@ -53,7 +53,7 @@ pub type ExceptionHandler = fn(
 /// # Safety
 /// `gva` must be in the stack or heap range and must not be mapped. No
 /// other page table operation may run concurrently.
-unsafe fn handle_stack_or_heap_pagefault(gva: u64, executable: bool) {
+unsafe fn handle_stack_or_heap_pagefault(gva: u64) {
     // SAFETY: the scratch allocator is set up before any exception can
     // occur, and the masked address is page aligned. The caller upholds
     // the rest of the `map_region` contract.
@@ -66,7 +66,7 @@ unsafe fn handle_stack_or_heap_pagefault(gva: u64, executable: bool) {
             MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
-                executable,
+                executable: false,
             }),
         );
         // This is mapping an entry for the first time, so we don't
@@ -129,16 +129,13 @@ fn try_handle_internal_pagefault(
             // ensured by our stack probing discipline?
             // SAFETY: the fault is not-present in the stack region,
             // and exception handling is the only page table writer.
-            unsafe { handle_stack_or_heap_pagefault(gva, false) };
+            unsafe { handle_stack_or_heap_pagefault(gva) };
             return true;
         }
         if (HEAP_GVA_START..HEAP_GVA_END).contains(&gva) {
-            // SAFETY: the host writes the scratch-top metadata before entry.
-            let executable =
-                unsafe { hyperlight_guest::layout::heap_executable_gva().read_volatile() } != 0;
             // SAFETY: the fault is not-present in the heap region, and
             // exception handling is the only page table writer.
-            unsafe { handle_stack_or_heap_pagefault(gva, executable) };
+            unsafe { handle_stack_or_heap_pagefault(gva) };
             return true;
         }
     }

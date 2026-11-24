@@ -299,9 +299,6 @@ test-isolated target=default-target features="" :
 
 # runs integration tests
 test-integration target=default-target features="" runner="test":
-    @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
-    {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
-
     @# run component-util unit tests and the integration tests that exercise WIT input codegen
     {{ cargo-cmd }} test -p hyperlight-component-util --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib --test wasmtime_guest_codegen
     {{ cargo-cmd }} test -p hyperlight-component-csharp --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
@@ -399,7 +396,6 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features executable_heap  {{ target-triple-flag }}
 
 fmt-check: (ensure-nightly-fmt)
     cargo +{{nightly-toolchain}} fmt --all -- --check
@@ -622,9 +618,6 @@ coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
     cargo +{{nightly-toolchain}} test -p hyperlight-host --lib -- sandbox::initialized::tests::from_snapshot::max_guest_log_level_can_be_enabled_after_off_init --exact --ignored
     cargo +{{nightly-toolchain}} test -p hyperlight-host --test integration_test -- log_message --exact --ignored
     cargo +{{nightly-toolchain}} test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact
-
-    # integration test with executable_heap feature
-    cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features -F executable_heap,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --test integration_test -- execute_on_heap
 
     # crashdump tests + example
     cargo +{{nightly-toolchain}} test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump

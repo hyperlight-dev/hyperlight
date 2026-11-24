@@ -40,6 +40,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `UninitializedSandbox::new` takes a `GuestBinary`.
 * Remove Git details from build logs. These were not shipped on crates.io.
 * Remove the `print_debug` feature and `hyperlight_host::debug!`. Use `tracing::debug!` instead.
+* Breaking: Remove the `executable_heap` feature. To run code from the guest
+  heap, write it, then map its pages executable with
+  `hyperlight_guest_bin::paging::modify_mapping`. Flush them with
+  `paging::barrier::downgrade_in_place`. On aarch64, also sync the instruction
+  cache before running the code.
 
 ## [v0.19.0] - 2026-11-04
 

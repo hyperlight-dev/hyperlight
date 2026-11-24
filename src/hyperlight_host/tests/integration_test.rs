@@ -635,15 +635,6 @@ fn guard_page_check_2() {
 fn execute_on_heap() {
     with_rust_sandbox(|mut sbox1| {
         let result = sbox1.call::<String>("ExecuteOnHeap", ());
-
-        #[cfg(feature = "executable_heap")]
-        assert_eq!(
-            result.unwrap(),
-            "Executed on heap successfully",
-            "should execute successfully"
-        );
-
-        #[cfg(not(feature = "executable_heap"))]
         assert!(
             result.unwrap_err().to_string().contains(
                 #[cfg(target_arch = "x86_64")]
@@ -653,6 +644,14 @@ fn execute_on_heap() {
             ),
             "should get page fault"
         );
+    });
+}
+
+#[test]
+fn execute_on_heap_after_mapping() {
+    with_rust_sandbox(|mut sbox| {
+        let result = sbox.call::<String>("ExecuteOnHeapAfterMapping", ());
+        assert_eq!(result.unwrap(), "Executed on heap successfully");
     });
 }
 
