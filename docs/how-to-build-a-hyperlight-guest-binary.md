@@ -26,6 +26,29 @@ only a host crate.
 The rest of this document explains what the generated guest contains and how to
 build one by hand.
 
+## Raspberry Pi 4 and ARM64 CPUs without LSE
+
+The default ARM64 guest target requires ARMv8.1 LSE atomics. The Pi 4's
+Cortex-A72 does not support them. Disable LSE for the guest and its dependencies:
+
+```sh
+RUSTFLAGS="-C target-feature=-lse" cargo hyperlight build
+```
+
+To build this repository's Rust and C test guests on ARM64:
+
+```sh
+RUSTFLAGS="-C target-feature=-lse" just guests
+just test
+```
+
+The physical-page allocator uses an exclusive load/store retry loop when LSE
+is disabled. Default builds keep the LSE instruction. The loop can cost more
+under contention. The host does not need this flag.
+
+The Pi needs a 64-bit Linux kernel with readable and writable `/dev/kvm`.
+Use a 64-bit userspace or a 64-bit build environment.
+
 ## Rust guest binary
 
 ### Minimal guest
