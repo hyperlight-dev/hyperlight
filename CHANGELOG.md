@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 
 ### Changed
+* `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their
   contents. Callers must keep blobs immutable. Use the new
@@ -48,7 +49,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `hyperlight-component-csharp` crate for generating C# host bindings from WIT worlds by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
 
 ### Changed
-* `hyperlight-host` requires Rust 1.95.
 
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
 
