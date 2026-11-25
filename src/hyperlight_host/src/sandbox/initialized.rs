@@ -1597,9 +1597,9 @@ mod tests {
             let assert_rejected = |sandbox: &mut Sandbox| {
                 let scratch_size = sandbox.mem_mgr.layout.get_scratch_size();
                 for options in [SnapshotOptions::default(), scratch(scratch_size * 2)] {
-                    let error = sandbox.snapshot_with_options(&options).unwrap_err();
-                    assert!(matches!(error, HyperlightError::Error(message)
-                            if message == "Cannot snapshot a sandbox configured for debugging"));
+                    assert!(matches!(sandbox.snapshot_with_options(&options),
+                            Err(HyperlightError::Error(message))
+                                if message == "Cannot snapshot a sandbox configured for debugging"));
                     assert_eq!(sandbox.status(), SandboxStatus::Ready);
                     assert_eq!(sandbox.mem_mgr.layout.get_scratch_size(), scratch_size);
                 }
