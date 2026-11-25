@@ -134,6 +134,141 @@ fn create_snapshot() -> Arc<Snapshot> {
     sbox.snapshot().unwrap()
 }
 
+#[test]
+fn compact_sparse_memory_round_trips_with_both_loaders() {
+    let original = create_snapshot();
+    let memory = original.snapshot_memory();
+    let mut page_tables = memory.page_table_bytes().to_vec();
+    let mut live_gpa = None;
+    for bytes in page_tables.as_chunks_mut::<{ super::PTE_SIZE }>().0 {
+        let entry = super::vmem::PageTableEntry::from_le_bytes(*bytes);
+        let gpa = entry & super::vmem::PTE_ADDR_MASK;
+        if entry & super::vmem::PAGE_PRESENT != 0
+            && memory.resolve(gpa, super::PAGE_SIZE).is_some()
+            && *live_gpa.get_or_insert(gpa) != gpa
+        {
+            *bytes = (entry & !super::vmem::PAGE_PRESENT).to_le_bytes();
+        }
+    }
+    let live_gpa = live_gpa.unwrap();
+    let (layer, offset) = memory.resolve(live_gpa, super::PAGE_SIZE).unwrap();
+    let expected = &memory.layers()[layer].memory().as_slice()[offset..offset + super::PAGE_SIZE];
+    let sparse = Snapshot {
+        state: Arc::new(super::SnapshotState {
+            memory: Arc::new(
+                SnapshotMemory::new(
+                    memory.layers().to_vec().into_boxed_slice(),
+                    super::memory::tests::page_tables_from_bytes(&page_tables),
+                )
+                .unwrap(),
+            ),
+            ..(*original.state).clone()
+        }),
+        metadata: original.metadata.clone(),
+    };
+    let compacted = sparse.compact(None).unwrap();
+    let layer = &compacted.snapshot_memory().layers()[0];
+    assert_eq!(layer.data_len(), super::memory::host_page_size());
+    assert!(layer.data_len() < sparse.state.layout.get_memory_size().unwrap());
+    let directory = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("sparse").unwrap();
+    compacted.save(directory.path(), &tag).unwrap();
+    for checked in [false, true] {
+        let loaded = if checked {
+            Snapshot::checked_load(directory.path(), tag.clone())
+        } else {
+            Snapshot::load(directory.path(), tag.clone())
+        }
+        .unwrap();
+        assert_eq!(loaded.snapshot_memory().layers().len(), 1);
+        assert_eq!(
+            &loaded.snapshot_memory().layers()[0].memory().as_slice()[..super::PAGE_SIZE],
+            expected
+        );
+    }
+}
+
+#[test]
+fn compact_round_trip_preserves_base_blobs_and_execution_state() {
+    let mut sandbox = create_test_sandbox();
+    let base = sandbox.snapshot().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("base").unwrap();
+    base.save(directory.path(), &tag).unwrap();
+    let loaded_base = Snapshot::checked_load(directory.path(), tag).unwrap();
+
+    for preserve in [false, true] {
+        sandbox.restore(base.clone()).unwrap();
+        let mut last = base.clone();
+        for value in 1..=35 {
+            assert_eq!(sandbox.call::<i32>("AddToStatic", 1i32).unwrap(), value);
+            let captured = sandbox
+                .snapshot()
+                .unwrap()
+                .with_metadata("compact-test", &value)
+                .unwrap();
+            let compacted = captured.compact(preserve.then_some(&loaded_base)).unwrap();
+            let limit = if preserve {
+                base.snapshot_memory().layers().len() + 1
+            } else {
+                1
+            };
+            assert!(compacted.snapshot_memory().layers().len() <= limit);
+            assert_eq!(
+                compacted.snapshot_generation(),
+                captured.snapshot_generation()
+            );
+            assert_eq!(compacted.virtq(), captured.virtq());
+            assert_eq!(
+                serde_json::to_value(compacted.sregs()).unwrap(),
+                serde_json::to_value(captured.sregs()).unwrap()
+            );
+            assert_eq!(
+                compacted.metadata::<i32>("compact-test").unwrap(),
+                Some(value)
+            );
+            // Debug gdb builds copy all pages, so an identical base blob need not survive.
+            #[cfg(not(unshared_snapshot_mem))]
+            if preserve && value == 1 {
+                let blobs: Vec<_> = compacted.snapshot_memory().blobs().collect();
+                assert!(blobs.iter().any(|blob| blob.sha256.get().is_some()));
+                let uncached_bytes: usize = blobs
+                    .iter()
+                    .filter(|blob| blob.sha256.get().is_none())
+                    .map(|blob| blob.memory().as_slice().len())
+                    .sum();
+                let before = super::file::test_hashed_bytes();
+                compacted
+                    .save(directory.path(), &OciTag::new("compacted-cache").unwrap())
+                    .unwrap();
+                let hashed_bytes = super::file::test_hashed_bytes() - before;
+                assert!(hashed_bytes >= uncached_bytes);
+                assert!(hashed_bytes < uncached_bytes + 64 * 1024);
+            }
+            sandbox.restore(compacted.clone()).unwrap();
+            last = compacted;
+        }
+        #[cfg(not(unshared_snapshot_mem))]
+        if preserve {
+            assert!(last.snapshot_memory().layers().iter().any(|layer| {
+                loaded_base.snapshot_memory().layers().iter().any(|base| {
+                    Arc::ptr_eq(layer, base)
+                        || (layer.gpa_start() == base.gpa_start()
+                            && layer.memory().as_slice() == base.memory().as_slice())
+                })
+            }));
+        }
+        let output = tempfile::tempdir().unwrap();
+        let tag = OciTag::new("compacted").unwrap();
+        last.save(output.path(), &tag).unwrap();
+        let loaded = Arc::new(Snapshot::checked_load(output.path(), tag).unwrap());
+        assert_eq!(loaded.snapshot_generation(), last.snapshot_generation());
+        let mut restored = SandboxBuilder::from_snapshot(loaded).build().unwrap();
+        assert_eq!(restored.call::<i32>("GetStatic", ()).unwrap(), 35);
+        assert_eq!(restored.call::<i32>("AddToStatic", 1i32).unwrap(), 36);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct TestMetadata {
     format_version: u32,
