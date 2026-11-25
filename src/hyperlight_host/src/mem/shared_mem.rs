@@ -36,6 +36,12 @@ use crate::log_then_return;
 
 type Result<T> = core::result::Result<T, SharedMemoryError>;
 
+/// KVM and MSHV map guest memory with 2 MiB pages only when the host backs
+/// it with huge pages and its host and guest addresses are equal modulo this
+/// size.
+#[cfg(unix)]
+pub(crate) const GUEST_MEMORY_ALIGNMENT: usize = 0x20_0000;
+
 /// This is just an alias for std::backtrace::Backtrace that we
 /// introduce to stop thiserror from using its backtrace
 /// functionality, which depends on nightly APIs.
@@ -225,8 +231,15 @@ impl_atomic_access!(std::sync::atomic::AtomicUsize, usize);
 /// Send or Sync, since it doesn't ensure any particular synchronization.
 #[derive(Debug)]
 pub struct HostMapping {
+    /// Owns the whole reservation and unmaps it on drop.
     #[cfg(not(target_os = "windows"))]
-    mmap: Mmap,
+    _reservation: Mmap,
+    /// Start of the guarded range inside `_reservation`.
+    #[cfg(not(target_os = "windows"))]
+    base: *mut u8,
+    /// Length of the guarded range, including both guard pages.
+    #[cfg(not(target_os = "windows"))]
+    len: usize,
     #[cfg(target_os = "windows")]
     mapping: WindowsMapping,
 }
@@ -268,7 +281,7 @@ impl HostMapping {
     pub(crate) fn ptr(&self) -> *mut u8 {
         #[cfg(not(target_os = "windows"))]
         {
-            self.mmap.base as *mut u8
+            self.base
         }
         #[cfg(target_os = "windows")]
         match &self.mapping {
@@ -281,7 +294,7 @@ impl HostMapping {
     pub(crate) fn size(&self) -> usize {
         #[cfg(not(target_os = "windows"))]
         {
-            self.mmap.len
+            self.len
         }
         #[cfg(target_os = "windows")]
         match &self.mapping {
@@ -709,6 +722,32 @@ impl ExclusiveSharedMemory {
     #[cfg(unix)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
+        Self::new_with_offset(min_size_bytes, None)
+    }
+
+    /// Like [`Self::new`], but [`SharedMemory::base_addr`] equals `gpa` modulo
+    /// [`GUEST_MEMORY_ALIGNMENT`] when `min_size_bytes` is at least that size
+    /// and `gpa` is host-page aligned.
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn new_for_gpa(min_size_bytes: usize, gpa: u64) -> Result<Self> {
+        let gpa = gpa as usize;
+        if min_size_bytes < GUEST_MEMORY_ALIGNMENT || !gpa.is_multiple_of(page_size::get()) {
+            return Self::new(min_size_bytes);
+        }
+        Self::new_with_offset(min_size_bytes, Some(gpa % GUEST_MEMORY_ALIGNMENT))
+    }
+
+    /// Like [`Self::new`]. Only Linux hosts align the memory.
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    pub(crate) fn new_for_gpa(min_size_bytes: usize, _gpa: u64) -> Result<Self> {
+        Self::new(min_size_bytes)
+    }
+
+    /// Allocates the region. With `offset`, the usable memory's address
+    /// equals `offset` modulo [`GUEST_MEMORY_ALIGNMENT`].
+    #[cfg(unix)]
+    fn new_with_offset(min_size_bytes: usize, offset: Option<usize>) -> Result<Self> {
         use libc::{
             MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, c_int, mmap, off_t,
             size_t,
@@ -725,10 +764,17 @@ impl ExclusiveSharedMemory {
         #[cfg(miri)]
         let flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
+        // Reserve one alignment unit more than needed. The unused ends become
+        // part of the guard pages.
+        let reserve_size = match offset {
+            Some(_) => total_size + GUEST_MEMORY_ALIGNMENT,
+            None => total_size,
+        };
+
         let addr = unsafe {
             mmap(
                 null_mut(),
-                total_size as size_t,
+                reserve_size as size_t,
                 PROT_READ | PROT_WRITE,
                 flags,
                 -1 as c_int,
@@ -742,13 +788,28 @@ impl ExclusiveSharedMemory {
         }
         let mmap = Mmap {
             base: addr,
-            len: total_size,
+            len: reserve_size,
         };
+        let head = match offset {
+            Some(offset) => {
+                let usable = addr as usize + page_size::get();
+                (offset + GUEST_MEMORY_ALIGNMENT - usable % GUEST_MEMORY_ALIGNMENT)
+                    % GUEST_MEMORY_ALIGNMENT
+            }
+            None => 0,
+        };
+        // SAFETY: `head <= reserve_size - total_size`, so the result is inside
+        // the reservation.
+        let base = unsafe { addr.byte_add(head) };
 
-        // protect the guard pages
+        // protect the guard pages and the unused ends of the reservation
+        // SAFETY: Both ranges lie inside the reservation `mmap` owns. The first
+        // ends at the usable start, the second ends at `addr + reserve_size`.
+        // Both start page aligned because `addr` and `offset` are.
         #[cfg(not(miri))]
         {
-            let res = unsafe { mprotect(mmap.base, page_size::get(), PROT_NONE) };
+            let page = page_size::get();
+            let res = unsafe { mprotect(addr, head + page, PROT_NONE) };
             if res != 0 {
                 return Err(SharedMemoryError::MprotectFailed(
                     Error::last_os_error().raw_os_error(),
@@ -756,8 +817,8 @@ impl ExclusiveSharedMemory {
             }
             let res = unsafe {
                 mprotect(
-                    (mmap.base as *const u8).add(total_size - page_size::get()) as *mut c_void,
-                    page_size::get(),
+                    base.byte_add(total_size - page),
+                    reserve_size - head - total_size + page,
                     PROT_NONE,
                 )
             };
@@ -778,7 +839,11 @@ impl ExclusiveSharedMemory {
             // type does have Send and Sync manually impl'd, the Arc
             // is not pointless as the lint suggests.
             #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping { mmap }),
+            region: Arc::new(HostMapping {
+                _reservation: mmap,
+                base: base as *mut u8,
+                len: total_size,
+            }),
         })
     }
 
@@ -1759,7 +1824,11 @@ impl ReadonlySharedMemory {
         //    anonymous reservation, so no extra `mprotect` is needed.
 
         #[allow(clippy::arc_with_non_send_sync)]
-        Ok(Arc::new(HostMapping { mmap: reservation }))
+        Ok(Arc::new(HostMapping {
+            base: reservation.base as *mut u8,
+            len: total_size,
+            _reservation: reservation,
+        }))
     }
 
     /// Windows: reserve `[guard][blob][guard]` as one
@@ -1952,6 +2021,46 @@ mod tests {
 
         assert!(hshm.fill(0, 0, mem_size + 1).is_err());
         assert!(hshm.fill(0, mem_size, 1).is_err());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", not(miri)))]
+    fn new_for_gpa_matches_gpa_offset() {
+        use super::GUEST_MEMORY_ALIGNMENT;
+
+        let page = page_size::get();
+        let pid = std::process::id().try_into().unwrap();
+        for offset in [
+            0,
+            page,
+            GUEST_MEMORY_ALIGNMENT - 4 * page,
+            GUEST_MEMORY_ALIGNMENT - page,
+        ] {
+            for size in [
+                GUEST_MEMORY_ALIGNMENT,
+                3 * GUEST_MEMORY_ALIGNMENT + page,
+                4 * GUEST_MEMORY_ALIGNMENT,
+            ] {
+                let gpa = (1u64 << 36) + offset as u64;
+                let mut eshm = ExclusiveSharedMemory::new_for_gpa(size, gpa).unwrap();
+                let base = eshm.base_addr();
+                assert_eq!(base % GUEST_MEMORY_ALIGNMENT, offset, "size {size:#x}");
+                assert_eq!(eshm.mem_size(), size);
+                eshm.as_mut_slice()[0] = 1;
+                eshm.as_mut_slice()[size - 1] = 2;
+                let maps = proc_maps::get_process_maps(pid).unwrap();
+                let guarded = |addr: usize| {
+                    maps.iter().any(|m| {
+                        (m.start()..m.start() + m.size()).contains(&addr)
+                            && !m.is_read()
+                            && !m.is_write()
+                            && !m.is_exec()
+                    })
+                };
+                assert!(guarded(base - 1));
+                assert!(guarded(base + size));
+            }
+        }
     }
 
     /// Verify that `bounds_check!` rejects offset + size combinations that

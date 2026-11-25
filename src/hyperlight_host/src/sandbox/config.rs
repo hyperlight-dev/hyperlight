@@ -275,7 +275,8 @@ impl SandboxConfiguration {
     }
 
     /// Set how much writable memory to offer the guest. Scratch backs the
-    /// guest heap and stack.
+    /// guest heap and stack. On x86-64, a multiple of 2 MiB may let MSHV
+    /// fault in guest memory faster.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_scratch_size(&mut self, scratch_size: usize) {
         self.scratch_size = scratch_size;
