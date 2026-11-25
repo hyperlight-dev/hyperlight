@@ -23,10 +23,6 @@ exceptions through HVC. Guest binaries must retain the
 `hyperlight_debug_vectors` symbol so the host can install these vectors before
 the initial debug stop. Watchpoints are not advertised.
 
-ARM64 snapshots reject installed software breakpoints, including those added
-during checkpointing. Restoring a poisoned sandbox discards its software
-breakpoint state and restores clean snapshot memory.
-
 ## Expected behavior
 
 Below is a list describing some cases of expected behavior from a gdb debug 
@@ -187,6 +183,24 @@ Software breakpoints replace one instruction with a four-byte `BRK`. GDB
 controls breakpoint removal and reinsertion when stepping over that instruction.
 Hyperlight handles the breakpoint packets and enables CPU single-step for a
 step request. It does not predict the next instruction address.
+
+### Windows ARM64 WHP exception forwarding
+
+The host installs the guest's debug exception vectors before the initial stop.
+A breakpoint or single-step exception saves the interrupted PC and PSTATE in
+`ELR_EL1` and `SPSR_EL1`. The vector forwards the exception through
+`HVC #0x485a`. WHP classifies `ESR_EL1` and exposes the interrupted registers
+to GDB. Register writes update that saved context. Resuming returns through
+`ERET` to the guest instruction.
+
+Debugger memory writes also synchronize the guest instruction cache. A host
+cache flush does not invalidate the vCPU's instruction cache. WHP reserves a
+read-execute page at guest physical address `0x1000` containing
+`DSB ISH; IC IALLU; DSB ISH; ISB; HVC #0x4858`. The host saves PC, PSTATE,
+`SCTLR_EL1`, and `MDSCR_EL1`, disables translation and single-step, and runs
+this code at EL1. It checks the exit's HVC immediate and PC before restoring
+the saved registers. The page is guest read-only and excluded from sandbox
+memory mappings so guest writes cannot replace the cache-sync code.
 
 ### Debug command flow
 

@@ -1537,7 +1537,12 @@ mod debug_tests {
         );
 
         let special = vm.sregs().unwrap();
+        vm.set_single_step(true).unwrap();
         vm.reset_vcpu().unwrap();
+        let values = vm.get_registers(&[WHV_ARM64_REGISTER_MDSCR_EL1]).unwrap();
+        // SAFETY: MDSCR_EL1 is a 64-bit system register.
+        assert_eq!(unsafe { values[0].0.Reg64 } & 1, 0);
+        assert_eq!(vm.regs().unwrap().pstate & PSTATE_SS, 0);
         vm.set_sregs(&special).unwrap();
         vm.set_regs(&regs).unwrap();
         assert!(matches!(
