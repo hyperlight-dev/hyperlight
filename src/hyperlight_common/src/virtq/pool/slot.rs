@@ -64,6 +64,15 @@ impl SlotLayout {
         })
     }
 
+    /// Address of slot `index`, or `None` outside the layout.
+    pub const fn slot_addr(self, index: usize) -> Option<u64> {
+        if index >= self.slot_count {
+            return None;
+        }
+
+        Some(self.base_addr + (index * self.slot_size()) as u64)
+    }
+
     /// Start address of the first slot.
     pub const fn base_addr(self) -> u64 {
         self.base_addr
@@ -87,6 +96,61 @@ impl SlotLayout {
     /// Exclusive end address.
     pub const fn end_addr(self) -> u64 {
         self.base_addr + self.byte_len() as u64
+    }
+}
+
+/// Validated pool geometry independent of live allocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolLayout {
+    lower: Option<SlotLayout>,
+    upper: SlotLayout,
+}
+
+impl PoolLayout {
+    /// Describe a pool with one slot size.
+    pub const fn single(layout: SlotLayout) -> Self {
+        Self {
+            lower: None,
+            upper: layout,
+        }
+    }
+
+    /// Validate ordered, non-overlapping tiers with nondecreasing slot sizes.
+    ///
+    /// Equal-sized tiers must be adjacent and are combined into one tier.
+    pub fn tiered(lower: SlotLayout, upper: SlotLayout) -> Result<Self, AllocError> {
+        if lower.slot_size > upper.slot_size || lower.end_addr() > upper.base_addr {
+            return Err(AllocError::InvalidArg);
+        }
+
+        if lower.slot_size == upper.slot_size {
+            if lower.end_addr() != upper.base_addr {
+                return Err(AllocError::InvalidArg);
+            }
+
+            let count = lower
+                .slot_count
+                .checked_add(upper.slot_count)
+                .ok_or(AllocError::Overflow)?;
+
+            let layout = SlotLayout::new(lower.base_addr, lower.slot_size(), count)?;
+            return Ok(Self::single(layout));
+        }
+
+        Ok(Self {
+            lower: Some(lower),
+            upper,
+        })
+    }
+
+    /// Pool tiers in lower-to-upper order.
+    pub fn tiers(self) -> impl Iterator<Item = SlotLayout> {
+        self.lower.into_iter().chain(core::iter::once(self.upper))
+    }
+
+    /// Total number of slots across all tiers.
+    pub fn slot_count(self) -> usize {
+        self.tiers().map(SlotLayout::slot_count).sum()
     }
 }
 
@@ -182,18 +246,6 @@ impl Tier {
         Ok(())
     }
 
-    /// Keep one queue-owned slot unavailable for a pool swap.
-    fn reserve_addr(&mut self, addr: u64) -> Result<(), AllocError> {
-        let slot = self.slot_of(addr)?;
-
-        if self.allocated.contains(slot) {
-            return Err(AllocError::InvalidArg);
-        }
-
-        self.allocated.insert(slot);
-        Ok(())
-    }
-
     /// Populate the free list from the allocation bitmap.
     fn rebuild_free(&mut self) {
         self.free.clear();
@@ -210,7 +262,7 @@ impl Tier {
     }
 
     fn slot_addr(&self, index: usize) -> Option<u64> {
-        (index < self.count).then(|| self.base_addr + (index * self.slot_size as usize) as u64)
+        self.layout().slot_addr(index)
     }
 
     fn num_free(&self) -> usize {
@@ -240,39 +292,10 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
-        let Some(lower) = lower else {
-            return Ok(Self {
-                lower: None,
-                upper: Tier::from_layout(upper)?,
-            });
-        };
-
-        if lower.slot_size > upper.slot_size || lower.end_addr() > upper.base_addr {
-            return Err(AllocError::InvalidArg);
-        }
-
-        if lower.slot_size == upper.slot_size {
-            if lower.end_addr() != upper.base_addr {
-                return Err(AllocError::InvalidArg);
-            }
-
-            let count = lower
-                .slot_count
-                .checked_add(upper.slot_count)
-                .ok_or(AllocError::Overflow)?;
-
-            let layout = SlotLayout::new(lower.base_addr, lower.slot_size(), count)?;
-
-            return Ok(Self {
-                lower: None,
-                upper: Tier::from_layout(layout)?,
-            });
-        }
-
+    fn new(layout: PoolLayout) -> Result<Self, AllocError> {
         Ok(Self {
-            lower: Some(Tier::from_layout(lower)?),
-            upper: Tier::from_layout(upper)?,
+            lower: layout.lower.map(Tier::from_layout).transpose()?,
+            upper: Tier::from_layout(layout.upper)?,
         })
     }
 
@@ -349,8 +372,11 @@ impl Inner {
         self.count() - self.num_free()
     }
 
-    fn layouts(&self) -> (Option<SlotLayout>, SlotLayout) {
-        (self.lower.as_ref().map(Tier::layout), self.upper.layout())
+    fn layout(&self) -> PoolLayout {
+        PoolLayout {
+            lower: self.lower.as_ref().map(Tier::layout),
+            upper: self.upper.layout(),
+        }
     }
 
     /// Byte span of both tiers, including any gap.
@@ -370,37 +396,29 @@ pub struct SlotPool {
 }
 
 impl SlotPool {
-    /// Whether both handles share allocation state.
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-
-    /// Create allocation state for a pool swap with the supplied live slots reserved.
-    ///
-    /// Invalid or duplicate reservations leave this pool unchanged.
-    pub(crate) fn swap(&self, reserved: impl Iterator<Item = u64>) -> Result<Self, AllocError> {
-        let current = self.inner.borrow();
-        let (lower, upper) = current.layouts();
-        let mut inner = Inner::new(lower, upper)?;
-
-        for addr in reserved {
-            // this address is a valid allocation in the current pool
-            current.allocation_len(addr)?;
-            if let Some(lower) = &mut inner.lower
-                && lower.contains(addr)
-            {
-                lower.reserve_addr(addr)?;
-            } else {
-                inner.upper.reserve_addr(addr)?;
-            }
-        }
-
-        Ok(Self::from_inner(inner))
-    }
-
     /// Create a single-tier recycling pool from exact slot placement.
     pub fn new(layout: SlotLayout) -> Result<Self, AllocError> {
-        Self::from_layouts(None, layout)
+        Self::from_layout(PoolLayout::single(layout))
+    }
+
+    /// Read-only allocation lookup, lower tier first and descending within each tier.
+    ///
+    /// Allocating each slot at its returned capacity reproduces this order in a fresh pool.
+    pub(crate) fn alloc_for(layout: PoolLayout, mut index: usize) -> Option<Allocation> {
+        for tier in layout.tiers() {
+            if index < tier.slot_count() {
+                let slot = tier.slot_count() - index - 1;
+
+                return Some(Allocation {
+                    addr: tier.slot_addr(slot)?,
+                    len: tier.slot_size,
+                });
+            }
+
+            index -= tier.slot_count();
+        }
+
+        None
     }
 
     /// Create a two-tier recycling pool from exact lower and upper layouts.
@@ -409,11 +427,12 @@ impl SlotPool {
     /// slot size must not exceed the upper slot size. Adjacent equal-sized
     /// layouts form one tier.
     pub fn new_tiered(lower: SlotLayout, upper: SlotLayout) -> Result<Self, AllocError> {
-        Self::from_layouts(Some(lower), upper)
+        Self::from_layout(PoolLayout::tiered(lower, upper)?)
     }
 
-    fn from_layouts(lower: Option<SlotLayout>, upper: SlotLayout) -> Result<Self, AllocError> {
-        Ok(Self::from_inner(Inner::new(lower, upper)?))
+    /// Create fresh allocation state for a validated pool layout.
+    pub fn from_layout(layout: PoolLayout) -> Result<Self, AllocError> {
+        Ok(Self::from_inner(Inner::new(layout)?))
     }
 
     fn from_inner(mut inner: Inner) -> Self {
@@ -432,9 +451,15 @@ impl SlotPool {
         self.inner.borrow().live_addrs()
     }
 
+    /// Pool geometry independent of current allocations.
+    pub fn layout(&self) -> PoolLayout {
+        self.inner.borrow().layout()
+    }
+
     /// Return the lower and upper tier layouts.
     pub fn layouts(&self) -> (Option<SlotLayout>, SlotLayout) {
-        self.inner.borrow().layouts()
+        let layout = self.layout();
+        (layout.lower, layout.upper)
     }
 
     /// Compute the address of slot `index`, with lower-tier slots first.

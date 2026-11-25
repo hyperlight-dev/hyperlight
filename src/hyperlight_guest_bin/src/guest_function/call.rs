@@ -86,20 +86,15 @@ pub(crate) fn internal_dispatch_function() {
         tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
     });
 
-    let dispatch = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
+    let DispatchAction::Call(cid, call) = transport::with_ctx(|ctx| ctx.recv_h2g_dispatch())
         .expect("H2G dispatch deserialization failed");
 
-    let result = match dispatch {
-        DispatchAction::Call(cid, fc) => {
-            // Reseed the libc PRNG if requested by the host.
-            #[cfg(feature = "libc")]
-            crate::refresh_libc_rng();
+    // Reseed the libc PRNG if requested by the host.
+    #[cfg(feature = "libc")]
+    crate::refresh_libc_rng();
 
-            let res = call_guest_function(fc).map_err(|err| GuestError::new(err.kind, err.message));
-            Some((cid, FunctionCallResult::new(res)))
-        }
-        DispatchAction::SnapshotCheckpoint => None,
-    };
+    let result = call_guest_function(call).map_err(|err| GuestError::new(err.kind, err.message));
+    let result = FunctionCallResult::new(result);
 
     // All this tracing logic shall be done right before the call to `hlt` which is done after this
     // function returns
@@ -120,16 +115,8 @@ pub(crate) fn internal_dispatch_function() {
         hyperlight_guest_tracing::flush();
     }
 
-    match result {
-        Some((cid, result)) => transport::with_ctx(|ctx| {
-            ctx.send_h2g_result(cid, result)
-                .expect("Failed to send function call result");
-        }),
-        None => {
-            // SAFETY: Host chain accesses are complete. The checkpoint protocol
-            // keeps consumers stopped until the host resets them.
-            unsafe { transport::prepare_snapshot() }
-                .expect("Failed to prepare transport for snapshot");
-        }
-    }
+    transport::with_ctx(|ctx| {
+        ctx.send_h2g_result(cid, result)
+            .expect("Failed to send function call result");
+    });
 }

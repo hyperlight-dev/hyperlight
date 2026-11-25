@@ -704,23 +704,6 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
         Ok(())
     }
-
-    /// Reset ring and inflight state to initial values.
-    ///
-    /// Fails while a chain polled by this consumer remains uncompleted.
-    ///
-    /// # Errors
-    ///
-    /// - [`VirtqError::InvalidState`] - one or more chains are still in flight
-    /// - [`VirtqError::RingError`] - device-event normalization failed
-    pub fn reset(&mut self) -> Result<(), VirtqError> {
-        if self.inner.num_inflight() != 0 {
-            return Err(VirtqError::InvalidState);
-        }
-
-        self.inner.reset()?;
-        Ok(())
-    }
 }
 
 struct ChainState<M: MemOps> {
@@ -1407,10 +1390,11 @@ mod tests {
         assert_eq!(producer.poll().unwrap().unwrap().token(), rejected);
         assert!(producer.poll().unwrap().is_none());
 
+        let pool = producer.pool().clone();
         drop(consumer);
         // SAFETY: The peer is stopped and all consumer chain handles are dropped.
-        unsafe { producer.reset().unwrap() };
-        assert_eq!(producer.pool().num_live(), 0);
+        unsafe { refresh_empty(&mut producer) };
+        assert_eq!(pool.num_live(), 0);
     }
 
     #[test]
@@ -1434,10 +1418,11 @@ mod tests {
         assert_eq!(consumer.next_token, 0);
         assert!(producer.poll().unwrap().is_none());
 
+        let pool = producer.pool().clone();
         drop(consumer);
         // SAFETY: The peer is stopped and all consumer chain handles are dropped.
-        unsafe { producer.reset().unwrap() };
-        assert_eq!(producer.pool().num_live(), 0);
+        unsafe { refresh_empty(&mut producer) };
+        assert_eq!(pool.num_live(), 0);
     }
 
     #[test]
@@ -1463,10 +1448,11 @@ mod tests {
         assert_eq!(consumer.next_token, 1);
         assert!(producer.poll().unwrap().is_none());
 
+        let pool = producer.pool().clone();
         drop(consumer);
         // SAFETY: The peer is stopped and all consumer chain handles are dropped.
-        unsafe { producer.reset().unwrap() };
-        assert_eq!(producer.pool().num_live(), 0);
+        unsafe { refresh_empty(&mut producer) };
+        assert_eq!(pool.num_live(), 0);
     }
 
     #[test]
@@ -1711,12 +1697,11 @@ mod tests {
         ));
         assert_eq!(consumer.inner.num_inflight(), 2);
         assert!(producer.poll().unwrap().is_none());
-        assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
 
-        drop((recv2, reply1));
+        drop((recv2, reply1, consumer));
 
-        // SAFETY: All consumer handles were dropped. The consumer stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        // SAFETY: The consumer and all its chain handles have been dropped.
+        unsafe { refresh_empty(&mut producer) };
     }
 
     #[test]
@@ -1740,56 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_virtq_consumer_reset() {
-        let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit and poll (but do not complete)
-        let se = producer.chain().writable(16).build().unwrap();
-        producer.submit(se).unwrap();
-
-        let (recv, reply) = poll_data(&mut consumer);
-        assert!(consumer.inner.num_inflight() > 0);
-        assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
-
-        // Complete first so we do not leak
-        consumer.complete(recv, reply).unwrap();
-
-        consumer.reset().unwrap();
-
-        assert_eq!(consumer.inner.num_inflight(), 0);
-
-        // SAFETY: The consumer completed all handles, reset, and stays inactive.
-        unsafe { producer.reset() }.unwrap();
-    }
-
-    #[test]
-    fn test_virtq_consumer_reset_clears_inflight() {
-        let ring = make_ring(16);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
-
-        // Submit two entries and poll both
-        let se1 = producer.chain().writable(16).build().unwrap();
-        producer.submit(se1).unwrap();
-        let se2 = producer.chain().writable(16).build().unwrap();
-        producer.submit(se2).unwrap();
-
-        let (e1, c1) = poll_data(&mut consumer);
-        let (e2, c2) = poll_data(&mut consumer);
-        // Complete both before reset
-        consumer.complete(e1, c1).unwrap();
-        consumer.complete(e2, c2).unwrap();
-
-        consumer.reset().unwrap();
-
-        assert_eq!(consumer.inner.num_inflight(), 0);
-
-        // SAFETY: The consumer completed all handles, reset, and stays inactive.
-        unsafe { producer.reset() }.unwrap();
-    }
-
-    #[test]
-    fn failed_completion_keeps_reset_blocked() {
+    fn failed_completion_keeps_chain_inflight() {
         use crate::virtq::ring::tests::FaultMem;
 
         let ring = make_ring(4);
@@ -1805,11 +1741,13 @@ mod tests {
             consumer.complete(recv, reply),
             Err(VirtqError::RingError(RingError::MemError { .. }))
         ));
-        mem.allow_writes();
         assert_eq!(consumer.inner.num_inflight(), 1);
-        assert!(matches!(consumer.reset(), Err(VirtqError::InvalidState)));
+        assert!(producer.poll().unwrap().is_none());
+        assert_eq!(producer.pool().num_live(), 1);
 
-        // SAFETY: Failed completion dropped both handles. The consumer stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        drop(consumer);
+
+        // SAFETY: The consumer and both failed-completion handles are gone.
+        unsafe { refresh_empty(&mut producer) };
     }
 }

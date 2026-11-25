@@ -22,5 +22,14 @@ static class RuntimeTests
         started.Commit();
         started.End();
         Check.True(table.Take(kept) == "kept", "gift kept after the call starts");
+        Check.True(table.Count == 0, "taken and undone entries are removed");
+
+        var loan = new CallScope();
+        var lent = table.Lend("lent", loan);
+        Check.Throws<WireFormatException>(() => table.Take(lent), "lent value cannot be taken");
+        loan.End();
+        Check.True(table.Count == 0, "ended loans are removed");
+        Check.Throws<WireFormatException>(() => table.Borrow(lent), "ended loan is invalid");
+        Check.True(table.Give("next") > lent, "handles are not reused");
     }
 }

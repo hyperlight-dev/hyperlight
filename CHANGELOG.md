@@ -5,16 +5,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added
+* ARM64 guests support CPUs without LSE atomics when built with `-C target-feature=-lse`.
 * Add `HYPERLIGHT_SURROGATE_EXTRACT_DIR` to configure the surrogate extraction directory on Windows.
 * Add `Sandbox::recreate()`, which rebuilds a sandbox's VM and memory from a snapshot. It recovers unrecoverable sandboxes and keeps configuration, host functions, and interrupt handles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1751
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 
 ### Changed
+* `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their
   contents. Callers must keep blobs immutable. Use the new
   `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
   atomically repair mismatched contents.
+* **Breaking:** Snapshots use ABI 12. Guests must be rebuilt and existing
+  snapshots regenerated. Capture and restore provide full H2G bootstrap
+  capacity before guest entry, independent of retained buffers. Snapshot
+  capture runs on the host while the guest is stopped.
+  On-disk snapshots store transport geometry. Loading rebuilds the ring images.
+  The checkpoint request, `prepare_snapshot`, `VirtqProducer::reclaim_slots`,
+  and queue reset APIs are removed.
 * `Snapshot::save` no longer synchronously flushes files to stable storage.
   Callers requiring power-loss durability must sync the snapshot files and
   directory hierarchy themselves after saving.
@@ -30,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
 * Host-written snapshot memory has instruction-cache coherence before guest execution.
 * Fix slow scratch zeroing on restore under KVM in default builds.
+* Fix C# component bindings keeping an entry for every resource handle passed to or from the guest.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
@@ -47,7 +57,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `hyperlight-component-csharp` crate for generating C# host bindings from WIT worlds by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1946
 
 ### Changed
-* `hyperlight-host` requires Rust 1.95.
 
 * Core dumps no longer record the guest binary path. The process name and command line are always `<unknown>`, as they already were for sandboxes created from snapshots by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1975
 

@@ -675,6 +675,31 @@ fn read_pattern() -> Vec<u8> {
     }
 }
 
+/// Buffer and generator state for [`heap_random_access`].
+static mut RANDOM_ACCESS: Option<(Vec<u64>, u64)> = None;
+
+/// Does `reads` dependent random reads from a `len`-byte heap buffer that the
+/// first call allocates. Each call continues the address sequence, so calls
+/// do not reuse cached lines. `len` must be a power of two of at least 8.
+#[guest_function("HeapRandomAccess")]
+fn heap_random_access(len: u64, reads: u64) -> u64 {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    let (buf, state) = unsafe {
+        RANDOM_ACCESS.get_or_insert_with(|| (vec![1u64; len as usize / 8], 0x9e37_79b9_7f4a_7c15))
+    };
+    let mask = buf.len() as u64 - 1;
+    let mut idx = 0u64;
+    for _ in 0..reads {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        // Each index depends on the previous load, so the loads cannot overlap.
+        idx = (buf[idx as usize] ^ *state) & mask;
+    }
+    idx
+}
+
 #[expect(
     clippy::empty_loop,
     reason = "This function is used to keep the CPU busy"

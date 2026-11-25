@@ -9,7 +9,6 @@ mod digest;
 mod fsutil;
 mod media_types;
 pub(crate) mod reference;
-mod transport;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,14 +29,14 @@ use self::media_types::{
 };
 pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
-    MT_CONFIG_V6, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
-    SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_V6, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
 use super::{NextAction, Snapshot, SnapshotBlob, SnapshotMemory};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+use crate::mem::virtq::VirtqSnapshot;
 
 pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
 
@@ -349,7 +348,7 @@ impl Snapshot {
     /// does not detect same-length corruption or host-side modifications.
     /// Use [`Snapshot::checked_save`] to verify existing blobs before reuse,
     /// or [`Snapshot::checked_load`] to verify persisted contents explicitly.
-    /// Metadata and transport blobs follow the normal write path.
+    /// Metadata blobs follow the normal write path.
     ///
     /// # Durability
     ///
@@ -572,7 +571,7 @@ impl Snapshot {
             crate::new_error!("failed to create OCI blobs dir {:?}: {}", blobs_dir, e)
         })?;
 
-        let mut descriptors = self
+        let descriptors = self
             .state
             .memory
             .blobs()
@@ -588,19 +587,6 @@ impl Snapshot {
                 blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())
             })
             .collect::<crate::Result<Vec<_>>>()?;
-
-        // Transport blob: the canonical ring image omitted from memory.
-        let transport = self.state.virtq.as_ref().ok_or_else(|| {
-            crate::new_error!("initialized snapshot has no canonical transport state")
-        })?;
-        let transport_bytes = transport::encode(&self.state.layout, transport)?;
-        let transport_digest = Digest256::from_bytes(&transport_bytes);
-        put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
-        descriptors.push(blob_descriptor(
-            MT_TRANSPORT_CURRENT,
-            &transport_digest,
-            transport_bytes.len(),
-        )?);
 
         // Config blob.
         let cfg_digest = Digest256::from_bytes(cfg_bytes);
@@ -799,7 +785,7 @@ impl Snapshot {
     /// Loads a snapshot like [`Snapshot::load`]. See its rustdoc for
     /// `path`, `reference`, portability, and the file-mutation
     /// hazard. This method additionally checks the manifest, config,
-    /// memory, and transport blobs against their recorded sha256 digests
+    /// and memory blobs against their recorded sha256 digests
     /// before use, at the expense of some performance.
     ///
     /// # Trust
@@ -881,14 +867,11 @@ impl Snapshot {
                 ));
             }
         }
-        let layers = manifest.layers();
-        let (data_descs, tail) = layers.split_at(layers.len().saturating_sub(1));
-        let [transport_desc] = tail else {
-            return Err(crate::new_error!(
-                "expected snapshot layers and one transport layer, found {} layers",
-                layers.len()
-            ));
-        };
+
+        // Validate the ABI before interpreting the layer layout.
+        let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
+        let data_descs = manifest.layers();
+
         for snap_desc in data_descs {
             let snap_media = snap_desc.media_type().to_string();
             match snap_media.as_str() {
@@ -902,20 +885,7 @@ impl Snapshot {
                 }
             }
         }
-        let transport_media = transport_desc.media_type().to_string();
-        match transport_media.as_str() {
-            MT_TRANSPORT_V1 => {}
-            other => {
-                return Err(crate::new_error!(
-                    "unexpected transport layer media type {:?} (supported: {:?})",
-                    other,
-                    MT_TRANSPORT_V1
-                ));
-            }
-        }
 
-        // 4. config blob
-        let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
         // A snapshot taken on a host with smaller pages may have a scratch
         // size this host cannot map: refuse it before reading the blobs.
         let host_page = crate::mem::layout::SandboxMemoryLayout::host_page_size();
@@ -936,9 +906,9 @@ impl Snapshot {
         }
         if data_descs.len() != cfg.layers.len() {
             return Err(crate::new_error!(
-                "expected {} snapshot layers and one transport layer, found {} layers",
+                "expected {} snapshot layers, found {} layers",
                 cfg.layers.len(),
-                layers.len()
+                data_descs.len()
             ));
         }
         if cfg.page_table_layer >= cfg.layers.len() {
@@ -989,13 +959,6 @@ impl Snapshot {
             .iter()
             .map(|desc| open_snapshot_blob(&blobs_dir, desc))
             .collect::<crate::Result<Vec<_>>>()?;
-        let transport_bytes = load_blob(
-            "transport",
-            &blobs_dir,
-            transport_desc,
-            transport::MAX_BLOB_SIZE,
-            verify_blobs,
-        )?;
 
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
@@ -1015,7 +978,7 @@ impl Snapshot {
         layout.set_code_gva(code_gva)?;
         layout.ensure_page_tables_fit(cfg.layers[cfg.page_table_layer].page_table_len)?;
 
-        let virtq = transport::decode(&layout, &transport_bytes)?;
+        let virtq = VirtqSnapshot::bootstrap(&layout)?;
 
         // 7. mmap the snapshot blobs (file-backed CoW). Each blob is
         //    a raw memory image. `ReadonlySharedMemory::from_file`

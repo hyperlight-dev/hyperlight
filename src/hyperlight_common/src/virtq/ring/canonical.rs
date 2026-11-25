@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn canon_reset_normalizes_empty_image() {
+    fn canon_initialization_normalizes_empty_image() {
         let ring = make_ring(8);
         let mut producer = make_producer(&ring);
         let mut consumer = make_consumer(&ring);
@@ -363,8 +363,7 @@ mod tests {
         producer.enable_used_notifications_desc(3, false).unwrap();
         consumer.enable_avail_notifications_desc(5, false).unwrap();
 
-        producer.reset().unwrap();
-        consumer.reset().unwrap();
+        ring.layout().initialize(&ring.mem()).unwrap();
 
         assert!(validate_all(&ring, 0).unwrap().is_empty());
         assert_eq!(
@@ -383,11 +382,9 @@ mod tests {
     #[test]
     fn canon_multi_desc_refill_is_visible_to_fresh_consumer() {
         let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        let mut consumer = make_consumer(&ring);
+        ring.layout().initialize(&ring.mem()).unwrap();
 
-        producer.reset().unwrap();
-        consumer.reset().unwrap();
+        let mut producer = make_producer(&ring);
 
         let chains = [
             writable_chain(0x1000, &[64, 128, 256]),

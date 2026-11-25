@@ -69,6 +69,13 @@ fn create_multiuse_sandbox_with_size(size: SandboxSize) -> Sandbox {
     size.builder().build().unwrap()
 }
 
+/// Runs `iteration` once, untimed. Criterion calls a benchmark function once
+/// per sample, so this keeps first-use costs, such as page faults, out of the
+/// sample.
+fn warm_up<T>(iteration: impl FnOnce() -> T) {
+    std::hint::black_box(iteration());
+}
+
 // ============================================================================
 // Benchmark Category: Sandbox Lifecycle
 // ============================================================================
@@ -120,12 +127,17 @@ fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
 
 fn bench_guest_call(b: &mut criterion::Bencher, size: SandboxSize) {
     let mut sbox = create_multiuse_sandbox_with_size(size);
+    warm_up(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
     b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
 }
 
 fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) {
     let mut sbox = create_multiuse_sandbox_with_size(size);
     let snapshot = sbox.snapshot().unwrap();
+    warm_up(|| {
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+    });
 
     b.iter(|| {
         sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
@@ -139,6 +151,11 @@ fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: Sandbox
         .host_function("HostAdd", |a: i32, b: i32| Ok(a + b))
         .build()
         .unwrap();
+    warm_up(|| {
+        multiuse_sandbox
+            .call::<i32>("Add", (1_i32, 41_i32))
+            .unwrap()
+    });
 
     b.iter(|| {
         multiuse_sandbox
@@ -230,6 +247,10 @@ fn bench_guest_call_heap_first_touch(b: &mut criterion::Bencher, size: SandboxSi
     let touch_size = (size.scratch_size() / 2) as u64;
     let mut sbox = create_multiuse_sandbox_with_size(size);
     let snapshot = sbox.snapshot().unwrap();
+    warm_up(|| {
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.call::<()>("AllocAndWritePattern", touch_size).unwrap();
+    });
 
     b.iter_custom(|iters| {
         let mut total_duration = Duration::ZERO;
@@ -241,6 +262,34 @@ fn bench_guest_call_heap_first_touch(b: &mut criterion::Bencher, size: SandboxSi
         }
         total_duration
     });
+}
+
+/// Writes half of scratch to heap in a sandbox just built from a snapshot.
+fn bench_guest_call_heap_first_touch_new_sandbox(b: &mut criterion::Bencher, size: SandboxSize) {
+    let touch_size = (size.scratch_size() / 2) as u64;
+    let snapshot = create_multiuse_sandbox_with_size(size).snapshot().unwrap();
+
+    b.iter_batched(
+        || {
+            SandboxBuilder::from_snapshot(snapshot.clone())
+                .build()
+                .unwrap()
+        },
+        |mut sbox| {
+            sbox.call::<()>("AllocAndWritePattern", touch_size).unwrap();
+            sbox
+        },
+        criterion::BatchSize::PerIteration,
+    );
+}
+
+/// Dependent random reads from a heap buffer of half the scratch size.
+fn bench_guest_call_heap_random_access(b: &mut criterion::Bencher, size: SandboxSize) {
+    const READS: u64 = 100_000;
+    let len = (size.scratch_size() / 2) as u64;
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    warm_up(|| sbox.call::<u64>("HeapRandomAccess", (len, READS)).unwrap());
+    b.iter(|| sbox.call::<u64>("HeapRandomAccess", (len, READS)).unwrap());
 }
 
 fn guest_calls_benchmark(c: &mut Criterion) {
@@ -279,6 +328,20 @@ fn guest_calls_benchmark(c: &mut Criterion) {
         });
     }
 
+    for size in [SandboxSize::Small, SandboxSize::Medium, SandboxSize::Large] {
+        group.bench_function(
+            format!("heap_first_touch_new_sandbox/{}", size.name()),
+            |b| bench_guest_call_heap_first_touch_new_sandbox(b, size),
+        );
+    }
+
+    // Smaller buffers fit in the CPU caches.
+    for size in [SandboxSize::Medium, SandboxSize::Large] {
+        group.bench_function(format!("heap_random_access/{}", size.name()), |b| {
+            bench_guest_call_heap_random_access(b, size)
+        });
+    }
+
     group.finish();
 }
 
@@ -289,6 +352,10 @@ fn guest_calls_benchmark(c: &mut Criterion) {
 fn bench_snapshot_create(b: &mut criterion::Bencher, size: SandboxSize) {
     b.iter_custom(|iters| {
         let mut sbox = create_multiuse_sandbox_with_size(size);
+        warm_up(|| {
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            sbox.snapshot().unwrap()
+        });
         let mut total_duration = Duration::ZERO;
 
         for _ in 0..iters {
@@ -312,6 +379,10 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
         let mut sbox = create_multiuse_sandbox_with_size(size);
         // Create initial snapshot
         let snapshot = sbox.snapshot().unwrap();
+        warm_up(|| {
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            sbox.restore(snapshot.clone()).unwrap();
+        });
         let mut total_duration = Duration::ZERO;
 
         for _ in 0..iters {
@@ -332,6 +403,10 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
 fn bench_snapshot_call_and_create(b: &mut criterion::Bencher, size: SandboxSize) {
     b.iter_custom(|iters| {
         let mut sbox = create_multiuse_sandbox_with_size(size);
+        warm_up(|| {
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            sbox.snapshot().unwrap()
+        });
         let mut total_duration = Duration::ZERO;
 
         for _ in 0..iters {
@@ -354,6 +429,12 @@ fn bench_snapshot_restore_alternate(b: &mut criterion::Bencher, size: SandboxSiz
         let first = sbox.snapshot().unwrap();
         sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
         let snapshots = [first, sbox.snapshot().unwrap()];
+        for snapshot in &snapshots {
+            warm_up(|| {
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                sbox.restore(snapshot.clone()).unwrap();
+            });
+        }
         let mut total_duration = Duration::ZERO;
 
         for i in 0..iters {
@@ -515,6 +596,11 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         )
         .unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
+        warm_up(|| {
+            sandbox
+                .call::<()>("LargeParameters", (large_vec.clone(), large_string.clone()))
+                .unwrap()
+        });
 
         b.iter_with_setup(
             || (large_vec.clone(), large_string.clone()),
@@ -670,6 +756,11 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
             .unwrap()
             .evolve()
             .unwrap();
+        warm_up(|| {
+            sandbox
+                .call::<Vec<u8>>("24K_in_8K_out", (vec![1; 24 * 1024],))
+                .unwrap()
+        });
 
         b.iter_with_setup(
             || vec![1; 24 * 1024],
@@ -707,6 +798,7 @@ fn shared_memory_benchmark(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("fill", name), &size, |b, &size| {
             let eshm = ExclusiveSharedMemory::new(size).unwrap();
             let (mut hshm, _) = eshm.build();
+            warm_up(|| hshm.fill(0xAB, 0, size).unwrap());
             b.iter(|| {
                 hshm.fill(0xAB, 0, size).unwrap();
             });
@@ -723,6 +815,7 @@ fn shared_memory_benchmark(c: &mut Criterion) {
                 let eshm = ExclusiveSharedMemory::new(size).unwrap();
                 let (hshm, _) = eshm.build();
                 let mut dst = vec![0u8; size];
+                warm_up(|| hshm.copy_to_slice(&mut dst, 0).unwrap());
                 b.iter(|| {
                     hshm.copy_to_slice(&mut dst, 0).unwrap();
                 });
@@ -740,6 +833,7 @@ fn shared_memory_benchmark(c: &mut Criterion) {
                 let eshm = ExclusiveSharedMemory::new(size).unwrap();
                 let (hshm, _) = eshm.build();
                 let src = vec![0xCDu8; size];
+                warm_up(|| hshm.copy_from_slice(&src, 0).unwrap());
                 b.iter(|| {
                     hshm.copy_from_slice(&src, 0).unwrap();
                 });

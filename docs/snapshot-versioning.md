@@ -7,7 +7,7 @@ existing snapshots loadable, or while rejecting them with a clear error.
 
 ## What is versioned
 
-A snapshot carries four independently evolvable version markers:
+A snapshot carries three independently evolvable version markers:
 
 * **Memory blob ABI**, `SNAPSHOT_ABI_VERSION` (a `u32` inside the
   config blob, defined in
@@ -23,10 +23,6 @@ A snapshot carries four independently evolvable version markers:
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
-* **Transport blob encoding**, `MT_TRANSPORT_V1`
-  (`application/vnd.hyperlight.snapshot.transport.v1`), aliased as
-  `MT_TRANSPORT_CURRENT`. This is the binary encoding of canonical
-  virtqueue state stored outside the memory layer.
 * **Config schema**, `MT_CONFIG_V6`
   (`application/vnd.hyperlight.snapshot.config.v6+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
@@ -35,10 +31,9 @@ A snapshot carries four independently evolvable version markers:
   sizes, `abi_version`, `hyperlight_version`, etc.). Renaming a field,
   changing its type, or adding a required field is a schema change and
   bumps this constant. Version 4 describes snapshot blobs, the blob with
-  the page tables, and transport geometry, and requires a transport
-  layer. Version 5 drops the heap size. Version 6 contains code and scratch
-  geometry without init-data fields. Config v1 to v5 are incompatible
-  with the current ABI.
+  the page tables, and transport geometry. Version 5 drops the heap size.
+  Version 6 contains code and scratch geometry without init-data fields.
+  Config v1 to v5 are incompatible with the current ABI.
 
 ABI 6 requires checkpoint readiness after guest initialization and permits
 H2G prefill to omit retained slots. Earlier snapshots must be regenerated.
@@ -58,6 +53,13 @@ host page size, and log level. Earlier snapshots must be regenerated.
 
 ABI 11 encodes control data with postcard and carries its length in a 16-byte
 message header. Earlier snapshots must be regenerated.
+
+ABI 12 generates deterministic queue bootstrap images from the saved transport
+layout. Capture and restore install empty G2H and fully prefilled H2G rings.
+Guest entry reconstructs ownership without changing host-written data.
+The mailbox reports initialization readiness.
+Snapshot capture runs on the host while the guest is stopped. Earlier snapshots
+must be regenerated.
 
 The `OCI_LAYOUT_VERSION` constant is pinned by the OCI image-layout
 spec at `1.0.0`.
@@ -93,6 +95,8 @@ hold a copy of every value that defines the format:
 OCI layout version, every `OutBAction` and
 `VmAction` discriminant, and `BASE_ADDRESS`. If the source value
 drifts from the copy in `tripwires.rs`, the crate fails to compile.
+A fixed-layout test in the same module pins the bootstrap ring bytes with
+architecture-specific SHA-256 hashes.
 
 Wire format tests in
 [src/hyperlight_common/src/flatbuffer_wrappers/abi_tests.rs](../src/hyperlight_common/src/flatbuffer_wrappers/abi_tests.rs)

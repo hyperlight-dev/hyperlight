@@ -15,6 +15,7 @@ use crate::hypervisor::virtual_machine::{HypervisorError, VirtualMachine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VmOperation {
+    RunVcpu,
     Map(MemoryRegionType),
     Unmap(MemoryRegionType),
     #[cfg(target_arch = "x86_64")]
@@ -128,6 +129,10 @@ impl VirtualMachine for FaultInjectingVirtualMachine {
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
     ) -> std::result::Result<VmExit, RunVcpuError> {
+        if self.should_fail(VmOperation::RunVcpu) {
+            return Err(RunVcpuError::Unknown(Self::injected_error()));
+        }
+
         self.inner_mut().run_vcpu(
             #[cfg(feature = "trace_guest")]
             tc,
