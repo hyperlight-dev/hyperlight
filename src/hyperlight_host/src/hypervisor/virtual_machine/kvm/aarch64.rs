@@ -36,6 +36,10 @@ impl DebuggableVm for KvmVm {
             Ok(())
         }
     }
+
+    fn set_single_step(&mut self, _enable: bool) -> Result<(), DebugError> {
+        Err(DebugError::Unsupported("ARM64 KVM debugging"))
+    }
 }
 
 /// Return `true` if the KVM API is available

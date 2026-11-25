@@ -678,9 +678,6 @@ impl VirtualMachine for MshvVm {
                     .add_hw_breakpoint(*address)
                     .map_err(|e| ResetVcpuError::Unknown(e.to_string()))?;
             }
-            replacement
-                .set_single_step(self.debug_state.single_step)
-                .map_err(|e| ResetVcpuError::Unknown(e.to_string()))?;
         }
         replacement.mapped_regions = std::mem::take(&mut self.mapped_regions);
         *self = replacement;
@@ -983,8 +980,10 @@ mod debug_tests {
             vm.get_reg64(mshv_bindings::hv_register_name_HV_ARM64_REGISTER_MDSCR_EL1)
                 .unwrap()
                 & (MDSCR_MDE | MDSCR_KDE | 1),
-            MDSCR_MDE | MDSCR_KDE | 1
+            MDSCR_MDE | MDSCR_KDE
         );
+        assert!(!vm.debug_state.single_step);
+        assert_eq!(vm.regs().unwrap().pstate & PSTATE_SS, 0);
         for (slot, address) in [0x2000, 0x1000].into_iter().enumerate() {
             assert_eq!(
                 vm.get_reg64(

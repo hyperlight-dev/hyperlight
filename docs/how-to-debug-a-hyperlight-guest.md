@@ -23,10 +23,6 @@ exceptions through HVC. Guest binaries must retain the
 `hyperlight_debug_vectors` symbol so the host can install these vectors before
 the initial debug stop. Watchpoints are not advertised.
 
-ARM64 snapshots reject installed software breakpoints, including those added
-during checkpointing. Restoring a poisoned sandbox discards its software
-breakpoint state and restores clean snapshot memory.
-
 ## Expected behavior
 
 Below is a list describing some cases of expected behavior from a gdb debug 
