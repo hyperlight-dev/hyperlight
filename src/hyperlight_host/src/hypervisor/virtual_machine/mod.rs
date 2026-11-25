@@ -38,6 +38,10 @@ pub(crate) mod whp;
 #[cfg(feature = "hw-interrupts")]
 pub(crate) mod x86_64;
 
+/// Processor features shared by MSHV and WHP partitions
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
+pub(crate) mod partition_features;
+
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
 /// Returns which type of hypervisor is available, if any
