@@ -308,7 +308,10 @@ impl Sandbox {
         let max_guest_log_level = config.get_max_guest_log_level();
         let load_info = snapshot.load_info();
 
-        let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
+        let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(
+            &snapshot,
+            config.scratch_transparent_huge_pages,
+        )?;
         let (mut hshm, gshm) = mgr.build()?;
         let restore_virtq = matches!(snapshot.next_action(), super::snapshot::NextAction::Call(_));
 
@@ -1577,6 +1580,57 @@ mod tests {
         assert_scratch_matches_gpa_offset(&sbox);
         let echo: String = sbox.call("Echo", "back".to_string()).unwrap();
         assert_eq!(echo, "back");
+    }
+
+    /// Scratch is advised only when the option is set, including after a
+    /// resize and from a snapshot.
+    #[test]
+    #[cfg(all(target_os = "linux", not(miri)))]
+    fn scratch_transparent_huge_pages_advises_scratch() {
+        let advised = |sbox: &Sandbox| {
+            let addr = sbox.mem_mgr.scratch_mem.base_addr();
+            let size = sbox.mem_mgr.scratch_mem.mem_size();
+            let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+            let mut inside = false;
+            for line in smaps.lines() {
+                if let Some(flags) = line.strip_prefix("VmFlags:") {
+                    if inside {
+                        return flags.split_whitespace().any(|flag| flag == "hg");
+                    }
+                } else if let Some((range, _)) = line.split_once(' ')
+                    && let Some((start, end)) = range.split_once('-')
+                    && let (Ok(start), Ok(end)) = (
+                        usize::from_str_radix(start, 16),
+                        usize::from_str_radix(end, 16),
+                    )
+                {
+                    inside = (start..end).contains(&addr);
+                    if inside {
+                        assert!(end >= addr + size, "scratch spans several mappings");
+                    }
+                }
+            }
+            panic!("no mapping holds scratch at {addr:#x}");
+        };
+
+        let mut sbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .scratch_size(8 << 20)
+            .scratch_transparent_huge_pages(true)
+            .build()
+            .unwrap();
+        assert!(advised(&sbox));
+        let snapshot = sbox.snapshot_with_options(&scratch(4 << 20)).unwrap();
+        assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 4 << 20);
+        assert!(advised(&sbox));
+
+        let clone = SandboxBuilder::from_snapshot(snapshot.clone())
+            .scratch_transparent_huge_pages(true)
+            .build()
+            .unwrap();
+        assert!(advised(&clone));
+
+        let plain = SandboxBuilder::from_snapshot(snapshot).build().unwrap();
+        assert!(!advised(&plain));
     }
 
     /// A snapshot can give a sandbox more scratch than it booted with, for

@@ -105,6 +105,10 @@ pub enum SharedMemoryError {
     #[error("mprotect failed with os error {0:?}")]
     MprotectFailed(Option<i32>),
 
+    /// A call to `madvise` failed, with the OS error code.
+    #[error("madvise failed with os error {0:?}")]
+    MadviseFailed(Option<i32>),
+
     /// A Windows virtual memory API call failed
     #[cfg(target_os = "windows")]
     #[error("Windows API Error Result {0:?}")]
@@ -727,20 +731,44 @@ impl ExclusiveSharedMemory {
 
     /// Like [`Self::new`], but [`SharedMemory::base_addr`] equals `gpa` modulo
     /// [`GUEST_MEMORY_ALIGNMENT`] when `min_size_bytes` is at least that size
-    /// and `gpa` is host-page aligned.
+    /// and `gpa` is host-page aligned. With `transparent_huge_pages`, requests
+    /// transparent huge pages with `MADV_HUGEPAGE`.
     #[cfg(all(target_os = "linux", not(miri)))]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn new_for_gpa(min_size_bytes: usize, gpa: u64) -> Result<Self> {
+    pub(crate) fn new_for_gpa(
+        min_size_bytes: usize,
+        gpa: u64,
+        transparent_huge_pages: bool,
+    ) -> Result<Self> {
         let gpa = gpa as usize;
-        if min_size_bytes < GUEST_MEMORY_ALIGNMENT || !gpa.is_multiple_of(page_size::get()) {
-            return Self::new(min_size_bytes);
+        let mem =
+            if min_size_bytes < GUEST_MEMORY_ALIGNMENT || !gpa.is_multiple_of(page_size::get()) {
+                Self::new(min_size_bytes)?
+            } else {
+                Self::new_with_offset(min_size_bytes, Some(gpa % GUEST_MEMORY_ALIGNMENT))?
+            };
+        if transparent_huge_pages {
+            // SAFETY: The range is a live, page-aligned mapping owned by `mem`.
+            // `MADV_HUGEPAGE` does not change its contents or permissions.
+            let ret = unsafe {
+                libc::madvise(mem.base_ptr().cast(), mem.mem_size(), libc::MADV_HUGEPAGE)
+            };
+            if ret != 0 {
+                return Err(SharedMemoryError::MadviseFailed(
+                    Error::last_os_error().raw_os_error(),
+                ));
+            }
         }
-        Self::new_with_offset(min_size_bytes, Some(gpa % GUEST_MEMORY_ALIGNMENT))
+        Ok(mem)
     }
 
-    /// Like [`Self::new`]. Only Linux hosts align the memory.
+    /// Like [`Self::new`]. Ignores `gpa` and `transparent_huge_pages`.
     #[cfg(not(all(target_os = "linux", not(miri))))]
-    pub(crate) fn new_for_gpa(min_size_bytes: usize, _gpa: u64) -> Result<Self> {
+    pub(crate) fn new_for_gpa(
+        min_size_bytes: usize,
+        _gpa: u64,
+        _transparent_huge_pages: bool,
+    ) -> Result<Self> {
         Self::new(min_size_bytes)
     }
 
@@ -2042,7 +2070,7 @@ mod tests {
                 4 * GUEST_MEMORY_ALIGNMENT,
             ] {
                 let gpa = (1u64 << 36) + offset as u64;
-                let mut eshm = ExclusiveSharedMemory::new_for_gpa(size, gpa).unwrap();
+                let mut eshm = ExclusiveSharedMemory::new_for_gpa(size, gpa, false).unwrap();
                 let base = eshm.base_addr();
                 assert_eq!(base % GUEST_MEMORY_ALIGNMENT, offset, "size {size:#x}");
                 assert_eq!(eshm.mem_size(), size);

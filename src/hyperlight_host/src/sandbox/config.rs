@@ -62,6 +62,8 @@ pub struct SandboxConfiguration {
     /// Note: Since real-time signals can vary across platforms, ensure that the offset
     /// results in a signal number that is not already in use by other components of the system.
     interrupt_vcpu_sigrtmin_offset: u8,
+    /// Whether to request transparent huge pages for scratch.
+    pub(super) scratch_transparent_huge_pages: bool,
     /// How much writable memory to offer the guest
     scratch_size: usize,
     /// The maximum log level enabled for guest code execution.
@@ -139,6 +141,7 @@ impl SandboxConfiguration {
     ) -> Self {
         Self {
             scratch_size,
+            scratch_transparent_huge_pages: false,
             max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
             g2h_queue_size: Self::DEFAULT_G2H_QUEUE_SIZE,
             h2g_queue_size: Self::DEFAULT_H2G_QUEUE_SIZE,
@@ -280,6 +283,19 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_scratch_size(&mut self, scratch_size: usize) {
         self.scratch_size = scratch_size;
+    }
+
+    /// Request transparent huge pages for scratch.
+    #[cfg(target_os = "linux")]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_scratch_transparent_huge_pages(&mut self, enabled: bool) {
+        self.scratch_transparent_huge_pages = enabled;
+    }
+
+    /// Whether transparent huge pages are requested for scratch.
+    #[cfg(target_os = "linux")]
+    pub fn get_scratch_transparent_huge_pages(&self) -> bool {
+        self.scratch_transparent_huge_pages
     }
 
     /// Sets the maximum log level for guest code execution.

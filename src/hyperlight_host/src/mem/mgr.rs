@@ -384,6 +384,8 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) h2g_consumer: Option<H2gConsumer>,
     /// Correlation ID sequence survives consumer replacement and manager cloning.
     next_guest_cid: u32,
+    /// Applied to scratch that a restore reallocates.
+    scratch_transparent_huge_pages: bool,
 }
 
 impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
@@ -399,6 +401,7 @@ impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            scratch_transparent_huge_pages: self.scratch_transparent_huge_pages,
         }
     }
 }
@@ -544,6 +547,7 @@ where
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: 1,
+            scratch_transparent_huge_pages: false,
         }
     }
 
@@ -554,16 +558,21 @@ where
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
-    pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
+    pub(crate) fn from_snapshot(
+        s: &Snapshot,
+        scratch_transparent_huge_pages: bool,
+    ) -> Result<Self> {
         let layout = *s.layout();
         let shared_mem = SnapshotMemoryBacking::from_snapshot(s.snapshot_memory().clone())?;
         let scratch_size = s.layout().get_scratch_size();
         let scratch_mem = ExclusiveSharedMemory::new_for_gpa(
             scratch_size,
             hyperlight_common::layout::scratch_base_gpa(scratch_size),
+            scratch_transparent_huge_pages,
         )?;
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
+        mgr.scratch_transparent_huge_pages = scratch_transparent_huge_pages;
         mgr.original_entrypoint = s.original_entrypoint();
         // Inherit the snapshot's generation number for the same
         // reason `restore_snapshot` does: the guest-visible counter
@@ -602,6 +611,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            scratch_transparent_huge_pages: self.scratch_transparent_huge_pages,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -614,6 +624,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             g2h_consumer: None,
             h2g_consumer: None,
             next_guest_cid: self.next_guest_cid,
+            scratch_transparent_huge_pages: self.scratch_transparent_huge_pages,
         };
         host_mgr.update_scratch_bookkeeping()?;
 
@@ -1034,6 +1045,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             let new_scratch_mem = ExclusiveSharedMemory::new_for_gpa(
                 new_scratch_size,
                 hyperlight_common::layout::scratch_base_gpa(new_scratch_size),
+                self.scratch_transparent_huge_pages,
             )?;
             let (hscratch, gscratch) = new_scratch_mem.build();
             // Even though this destroys the reference to the host
@@ -1617,7 +1629,7 @@ mod tests {
 
         let snapshot = Snapshot::from_binary(bin, config).unwrap();
 
-        let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
+        let mgr = SandboxMemoryManager::from_snapshot(&snapshot, false).unwrap();
         let (mgr, _) = mgr.build().unwrap();
 
         assert!(mgr.g2h_consumer.is_some());

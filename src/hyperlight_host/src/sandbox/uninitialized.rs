@@ -96,8 +96,10 @@ impl UninitializedSandbox {
 
         let sandbox_cfg = cfg.unwrap_or_default();
 
-        let mem_mgr_wrapper =
-            SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
+        let mem_mgr_wrapper = SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(
+            snapshot.as_ref(),
+            sandbox_cfg.scratch_transparent_huge_pages,
+        )?;
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::with_default_host_print()));
 
