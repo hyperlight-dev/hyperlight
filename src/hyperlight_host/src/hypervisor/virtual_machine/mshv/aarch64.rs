@@ -55,6 +55,10 @@ impl DebuggableVm for MshvVm {
             Ok(())
         }
     }
+
+    fn set_single_step(&mut self, _enable: bool) -> Result<(), DebugError> {
+        Err(DebugError::Unsupported("ARM64 MSHV debugging"))
+    }
 }
 
 fn mmio_write_info(syndrome: u64) -> Option<(u32, usize)> {

@@ -21,10 +21,6 @@ ARM64 Linux/KVM supports two hardware breakpoints, four-byte `BRK` software
 breakpoints, and hardware single-step. KVM reports debug exceptions through
 `KVM_EXIT_DEBUG`. Watchpoints are not advertised.
 
-ARM64 snapshots reject installed software breakpoints, including those added
-during checkpointing. Restoring a poisoned sandbox discards its software
-breakpoint state and restores clean snapshot memory.
-
 ## Expected behavior
 
 Below is a list describing some cases of expected behavior from a gdb debug 

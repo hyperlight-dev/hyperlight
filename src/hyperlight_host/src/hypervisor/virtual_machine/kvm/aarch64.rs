@@ -408,9 +408,12 @@ impl VirtualMachine for KvmVm {
         })?;
         #[cfg(gdb)]
         if self.debug_state.control != 0 {
+            let mut state = self.debug_state;
+            state.control &= !kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
             self.vcpu_fd
-                .set_guest_debug(&self.debug_state)
+                .set_guest_debug(&state)
                 .map_err(|e| ResetVcpuError::Hypervisor(e.into()))?;
+            self.debug_state = state;
         }
         Ok(())
     }
@@ -509,7 +512,7 @@ mod debug_tests {
         vm.add_hw_breakpoint(0x2000).unwrap();
         vm.set_single_step(true).unwrap();
         vm.reset_vcpu().unwrap();
-        assert_ne!(
+        assert_eq!(
             vm.debug_state.control & kvm_bindings::KVM_GUESTDBG_SINGLESTEP,
             0
         );
