@@ -297,13 +297,7 @@ pub(crate) trait DebuggableVm: VirtualMachine {
     fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Enable/disable single stepping
-    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
-        if enable {
-            Err(DebugError::Unsupported("single-step"))
-        } else {
-            Ok(())
-        }
-    }
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Add a hardware breakpoint at the given address.
     /// Must be idempotent.

@@ -41,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Fix slow scratch zeroing on restore under KVM in default builds.
 * Fix C# component bindings keeping an entry for every resource handle passed to or from the guest.
 * GDB memory reads and writes translate each guest page on hosts with larger pages.
-* ARM64 GDB snapshot recovery handles cancellation and crash detach. Snapshot checkpointing rejects software breakpoints before replacing memory.
+* GDB snapshot recovery handles cancellation and crash detach. Snapshot capture and restore reject installed software breakpoints on x86_64 and ARM64.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,

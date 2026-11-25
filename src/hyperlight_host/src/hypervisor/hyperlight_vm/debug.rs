@@ -17,12 +17,10 @@ use crate::hypervisor::gdb::{
 pub(crate) struct SoftwareBreakpoints(HashMap<u64, Vec<u8>>);
 
 impl SoftwareBreakpoints {
-    #[cfg(target_arch = "aarch64")]
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn clear(&mut self) {
         self.0.clear();
     }
@@ -48,13 +46,6 @@ impl SoftwareBreakpoints {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[derive(Clone, Debug)]
-pub(super) struct PendingSoftwareStep {
-    origin: u64,
-    report_stop: bool,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessDebugRequestError {
     #[error("Debug is not enabled")]
@@ -74,16 +65,13 @@ pub enum ProcessDebugRequestError {
 }
 
 impl HyperlightVm {
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn has_sw_breakpoints(&self) -> bool {
         !self.sw_breakpoints.is_empty()
     }
 
     /// Discard software debug state when poisoned guest memory will be replaced.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn discard_software_breakpoints(&mut self) {
         self.sw_breakpoints.clear();
-        self.pending_software_step = None;
     }
 
     pub(super) fn handle_debug(
@@ -218,18 +206,6 @@ impl HyperlightVm {
         Ok(())
     }
 
-    #[cfg(target_arch = "aarch64")]
-    pub(super) fn handle_initial_debug_stop(
-        &mut self,
-        mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
-    ) -> std::result::Result<(), HandleDebugError> {
-        if self.initial_debug_stop_pending {
-            self.initial_debug_stop_pending = false;
-            self.handle_debug(mem_mgr, VcpuStopReason::Initial)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn process_dbg_request(
         &mut self,
         req: DebugMsg,
@@ -252,24 +228,12 @@ impl HyperlightVm {
                     .is_ok(),
             )),
             DebugMsg::Continue => {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let pc = self.vm.regs().map_err(VmError::Register)?.pc;
-                    if self.sw_breakpoints.contains(pc) {
-                        self.begin_software_step(false, mem_access)?;
-                    } else {
-                        self.vm.set_single_step(false)?;
-                    }
-                }
-                #[cfg(target_arch = "x86_64")]
                 self.vm
                     .set_single_step(false)
                     .inspect_err(|e| tracing::error!("Failed to continue execution: {:?}", e))?;
                 Ok(DebugResponse::Continue)
             }
             DebugMsg::DisableDebug => {
-                #[cfg(target_arch = "aarch64")]
-                self.cancel_software_step(mem_access)?;
                 for address in self.sw_breakpoints.addresses() {
                     self.remove_sw_breakpoint(address, mem_access)?;
                 }
@@ -304,9 +268,6 @@ impl HyperlightVm {
                     .is_ok(),
             )),
             DebugMsg::Step => {
-                #[cfg(target_arch = "aarch64")]
-                self.begin_software_step(true, mem_access)?;
-                #[cfg(target_arch = "x86_64")]
                 self.vm.set_single_step(true).inspect_err(|e| {
                     tracing::error!("Failed to enable step instruction: {:?}", e)
                 })?;
@@ -449,98 +410,14 @@ impl HyperlightVm {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn begin_software_step(
+    pub(super) fn clear_single_step(
         &mut self,
-        report_stop: bool,
-        mem_access: &DebugMemoryView<'_>,
-    ) -> std::result::Result<(), ProcessDebugRequestError> {
-        if self.pending_software_step.is_some() {
-            self.cancel_software_step(mem_access)?;
-        }
-
-        let regs = self.vm.regs().map_err(VmError::Register)?;
-        let pc = regs.pc;
-        let Some(saved_instruction) = self.sw_breakpoints.get(pc).map(<[u8]>::to_vec) else {
-            self.vm.set_single_step(true)?;
-            return Ok(());
-        };
-        let result = self
-            .write_addrs(pc, &saved_instruction, mem_access)
-            .and_then(|()| self.vm.set_single_step(true).map_err(Into::into));
-        if let Err(error) = result {
-            if let Err(rollback_error) = self.write_addrs(pc, &SW_BP, mem_access) {
-                tracing::error!(
-                    "Failed to roll back breakpoint-step origin {pc:#x}: {rollback_error}"
-                );
-            }
-            return Err(error);
-        }
-
-        self.pending_software_step = Some(PendingSoftwareStep {
-            origin: pc,
-            report_stop,
-        });
-        Ok(())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn cancel_software_step(
-        &mut self,
-        mem_access: &DebugMemoryView<'_>,
-    ) -> std::result::Result<(), ProcessDebugRequestError> {
-        self.vm.set_single_step(false)?;
-        let Some(pending) = self.pending_software_step.clone() else {
-            return Ok(());
-        };
-        self.restore_software_step(&pending, mem_access)?;
-        self.pending_software_step = None;
-        Ok(())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn restore_software_step(
-        &mut self,
-        pending: &PendingSoftwareStep,
-        mem_access: &DebugMemoryView<'_>,
-    ) -> std::result::Result<(), ProcessDebugRequestError> {
-        self.write_addrs(pending.origin, &SW_BP, mem_access)?;
-        Ok(())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub(super) fn cancel_pending_software_step(
-        &mut self,
-        mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
     ) -> std::result::Result<(), ProcessDebugRequestError> {
         if self.gdb_conn.is_none() {
             return Ok(());
         }
-        let mapped_regions = self.get_mapped_regions().cloned().collect();
-        let mem_access = DebugMemoryView::new(mem_mgr, mapped_regions);
-        self.cancel_software_step(&mem_access)
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub(super) fn finish_software_step(
-        &mut self,
-        mem_mgr: &crate::mem::mgr::SandboxMemoryManager<crate::mem::shared_mem::HostSharedMemory>,
-        stop_reason: VcpuStopReason,
-    ) -> std::result::Result<Option<VcpuStopReason>, ProcessDebugRequestError> {
-        let pending = self
-            .pending_software_step
-            .clone()
-            .expect("software-step completion requires pending state");
-        let mapped_regions = self.get_mapped_regions().cloned().collect();
-        let mem_access = DebugMemoryView::new(mem_mgr, mapped_regions);
-        self.restore_software_step(&pending, &mem_access)?;
         self.vm.set_single_step(false)?;
-        self.pending_software_step = None;
-
-        if pending.report_stop || !matches!(stop_reason, VcpuStopReason::DoneStep) {
-            Ok(Some(stop_reason))
-        } else {
-            Ok(None)
-        }
+        Ok(())
     }
 }
 
@@ -687,49 +564,35 @@ mod tests {
         }
 
         #[test]
-        fn resume_translation_errors_keep_the_debug_session_stopped() {
-            let (mut vm, memory, _) = noncontiguous_pages();
-            let (debugger, connection) = DebugCommChannel::unbounded();
-            vm.gdb_conn = Some(connection);
+        fn resume_leaves_breakpoint_removal_to_the_client() {
+            let (mut vm, memory, root) = noncontiguous_pages();
+            let access = DebugMemoryView::new(&memory, Vec::new());
             let mut regs = vm.vm.regs().unwrap();
-            regs.pc = 4 * PAGE_SIZE as u64;
-            vm.vm.set_regs(&regs).unwrap();
-            vm.sw_breakpoints.insert(regs.pc, vec![0; 4]);
-            debugger.send(DebugMsg::Continue).unwrap();
-            debugger.send(DebugMsg::Step).unwrap();
             regs.pc = PAGE_SIZE as u64;
-            debugger
-                .send(DebugMsg::WriteRegisters(Box::new((
-                    regs,
-                    crate::hypervisor::regs::CommonFpu::default(),
-                ))))
-                .unwrap();
-            debugger.send(DebugMsg::Continue).unwrap();
-
-            vm.handle_debug(&memory, crate::hypervisor::gdb::VcpuStopReason::Initial)
-                .unwrap();
+            vm.vm.set_regs(&regs).unwrap();
             assert!(matches!(
-                debugger.try_recv().unwrap(),
-                DebugResponse::VcpuStopped(_)
+                vm.process_dbg_request(DebugMsg::AddSwBreakpoint(regs.pc), &access)
+                    .unwrap(),
+                DebugResponse::AddSwBreakpoint(true)
             ));
-            for _ in 0..2 {
-                assert!(matches!(
-                    debugger.try_recv().unwrap(),
-                    DebugResponse::NotAllowed
-                ));
-                assert!(matches!(
-                    debugger.try_recv().unwrap(),
-                    DebugResponse::VcpuStopped(_)
-                ));
+            for message in [DebugMsg::Continue, DebugMsg::Step] {
+                vm.process_dbg_request(message, &access).unwrap();
+                let mut instruction = [0; SW_BP_SIZE];
+                access
+                    .read(&mut instruction, root + 4 * PAGE_SIZE as u64)
+                    .unwrap();
+                assert_eq!(instruction, SW_BP);
             }
             assert!(matches!(
-                debugger.try_recv().unwrap(),
-                DebugResponse::WriteRegisters
+                vm.process_dbg_request(DebugMsg::RemoveSwBreakpoint(regs.pc), &access)
+                    .unwrap(),
+                DebugResponse::RemoveSwBreakpoint(true)
             ));
-            assert!(matches!(
-                debugger.try_recv().unwrap(),
-                DebugResponse::Continue
-            ));
+            let mut instruction = [0; SW_BP_SIZE];
+            access
+                .read(&mut instruction, root + 4 * PAGE_SIZE as u64)
+                .unwrap();
+            assert_eq!(instruction, [1; SW_BP_SIZE]);
         }
     }
 }

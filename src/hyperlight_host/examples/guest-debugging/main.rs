@@ -340,17 +340,24 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[serial]
     fn test_gdb_continue_over_sw_breakpoint() {
-        let (out_file_path, cmd_file_path, manifest_dir) = gdb_test_paths("gdb-aarch64-continue");
-        let cmd = format!(
-            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+        for step_commands in [
+            "",
+            "set $return_pc = $x30
+                stepi
+                if $pc != $return_pc
+                    echo Software breakpoint step missed its destination\\n
+                    quit 1
+                end",
+        ] {
+            let (out_file_path, cmd_file_path, manifest_dir) =
+                gdb_test_paths("gdb-aarch64-continue");
+            let cmd = format!(
+                "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
                 target remote :8080
                 set pagination off
                 set logging file {out_file_path}
                 set logging enabled on
                 break simpleguest::no_op
-                commands 1
-                    continue
-                end
                 break simpleguest::print_output
                 commands 2
                     echo Continued over ARM64 software breakpoint\\n
@@ -359,16 +366,19 @@ mod tests {
                     quit
                 end
                 continue
+                {step_commands}
+                continue
             "
-        );
-        #[cfg(windows)]
-        let cmd = format!("set osabi none\n{cmd}");
-        let checker =
-            |contents: String| contents.contains("Continued over ARM64 software breakpoint");
-        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
+            );
+            #[cfg(windows)]
+            let cmd = format!("set osabi none\n{cmd}");
+            let checker =
+                |contents: String| contents.contains("Continued over ARM64 software breakpoint");
+            let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
-        cleanup(&out_file_path, &cmd_file_path);
-        assert!(result.is_ok(), "{}", result.unwrap_err());
+            cleanup(&out_file_path, &cmd_file_path);
+            assert!(result.is_ok(), "{}", result.unwrap_err());
+        }
     }
 
     #[test]

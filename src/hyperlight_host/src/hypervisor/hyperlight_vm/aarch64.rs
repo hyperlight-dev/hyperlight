@@ -145,8 +145,6 @@ impl HyperlightVm {
             #[cfg(gdb)]
             sw_breakpoints: SoftwareBreakpoints::default(),
             #[cfg(gdb)]
-            pending_software_step: None,
-            #[cfg(gdb)]
             initial_debug_stop_pending: false,
         };
         ret.update_snapshot_mapping(snapshot_mem)?;
@@ -185,10 +183,6 @@ impl HyperlightVm {
         };
         self.vm.set_regs(&regs)?;
 
-        #[cfg(gdb)]
-        self.handle_initial_debug_stop(mem_mgr)
-            .map_err(super::RunVmError::DebugHandler)?;
-
         self.run(mem_mgr, host_funcs)
             .map_err(InitializeError::Run)?;
 
@@ -223,9 +217,6 @@ impl HyperlightVm {
         self.vm
             .set_regs(&regs)
             .map_err(DispatchGuestCallError::SetupRegs)?;
-        #[cfg(gdb)]
-        self.handle_initial_debug_stop(mem_mgr)
-            .map_err(super::RunVmError::DebugHandler)?;
         let result = self
             .run(mem_mgr, host_funcs)
             .map_err(DispatchGuestCallError::Run);
@@ -254,12 +245,6 @@ impl HyperlightVm {
             self.vm_can_reset_vcpu,
             "No fallback path for vcpu reset on aarch64"
         );
-        #[cfg(gdb)]
-        if self.gdb_conn.is_some() {
-            self.vm
-                .set_single_step(false)
-                .map_err(|error| ResetVcpuError::Unknown(error.to_string()))?;
-        }
         self.vm.reset_vcpu()?;
         self.apply_sregs(cr3, sregs)?;
         Ok(())

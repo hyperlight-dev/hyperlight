@@ -38,6 +38,11 @@ session of a guest binary running inside a Hyperlight sandbox.
   The debug target will refuse any resume, step actions and write operations to
   the guest memory and registers until the gdb client disconnects or the sandbox is stopped.
 
+Snapshots and restores reject installed software breakpoints on both x86_64 and
+ARM64. This keeps patched instructions and saved originals out of replacement
+snapshot mappings. Recovery of a poisoned sandbox discards breakpoint
+bookkeeping before restoring clean memory.
+
 ## Example
 
 ### Sandbox configuration
@@ -156,6 +161,20 @@ The gdb thread uses the `gdbstub` crate to handle the communication with the gdb
 When the gdb client requests one of the supported features mentioned above, a request
 is sent over the communication channel to the main thread for the sandbox
 to resolve.
+
+### ARM64 stops and stepping
+
+The host prepares the guest registers before reporting the initial debug stop.
+This stop happens once, before the first guest instruction executes. For a
+sandbox created from an initialized snapshot, it happens at the first dispatcher
+entry because guest initialization has already run.
+
+Software breakpoints replace one instruction with a four-byte `BRK`. GDB
+controls breakpoint removal and reinsertion when stepping over that instruction.
+Hyperlight handles the breakpoint packets and enables CPU single-step for a
+step request. It does not predict the next instruction address.
+
+### Debug command flow
 
 Below is a sequence diagram that shows the interaction between the entities
 involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or **MSHV** sandbox.

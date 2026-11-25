@@ -258,7 +258,7 @@ pub enum UpdateRegionError {
     MapMemory(#[from] MapMemoryError),
     #[error("VM unmap memory error: {0}")]
     UnmapMemory(#[from] UnmapMemoryError),
-    #[cfg(all(gdb, target_arch = "aarch64"))]
+    #[cfg(gdb)]
     #[error("Cannot replace snapshot memory while software breakpoints are installed")]
     ActiveSoftwareBreakpoints,
 }
@@ -392,8 +392,6 @@ pub(crate) struct HyperlightVm {
     pub(super) gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
     pub(super) sw_breakpoints: SoftwareBreakpoints,
-    #[cfg(all(gdb, target_arch = "aarch64"))]
-    pending_software_step: Option<debug::PendingSoftwareStep>,
     /// One-shot hw breakpoint installed at the entry address when gdb is
     /// enabled, so the gdb stub gets a `VcpuStopped` to enter its event
     /// loop on the first vCPU run after construction. Cleared by the
@@ -532,7 +530,7 @@ impl HyperlightVm {
         &mut self,
         snapshot: SnapshotMemoryBacking<GuestSharedMemory>,
     ) -> Result<(), UpdateRegionError> {
-        #[cfg(all(gdb, target_arch = "aarch64"))]
+        #[cfg(gdb)]
         if self.has_sw_breakpoints() {
             return Err(UpdateRegionError::ActiveSoftwareBreakpoints);
         }
@@ -637,6 +635,12 @@ impl HyperlightVm {
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
     ) -> std::result::Result<(), RunVmError> {
+        #[cfg(all(gdb, target_arch = "aarch64"))]
+        if self.initial_debug_stop_pending {
+            self.initial_debug_stop_pending = false;
+            self.handle_debug(mem_mgr, VcpuStopReason::Initial)?;
+        }
+
         // Keeps the trace context and open spans
         #[cfg(feature = "trace_guest")]
         let mut tc = crate::sandbox::trace::TraceContext::new();
@@ -743,16 +747,6 @@ impl HyperlightVm {
                             self.one_shot_entry_bp = None;
                         }
                     }
-                    #[cfg(target_arch = "aarch64")]
-                    let reason = if self.pending_software_step.is_some() {
-                        match self.finish_software_step(mem_mgr, reason) {
-                            Ok(Some(reason)) => reason,
-                            Ok(None) => continue,
-                            Err(e) => break Err(HandleDebugError::from(e).into()),
-                        }
-                    } else {
-                        reason
-                    };
                     if let Err(e) = self.handle_debug(mem_mgr, reason) {
                         break Err(e.into());
                     }
@@ -760,8 +754,7 @@ impl HyperlightVm {
 
                 Ok(VmExit::Halt()) => {
                     #[cfg(all(gdb, target_arch = "aarch64"))]
-                    self.cancel_pending_software_step(mem_mgr)
-                        .map_err(HandleDebugError::from)?;
+                    self.clear_single_step().map_err(HandleDebugError::from)?;
                     break Ok(());
                 }
                 Ok(VmExit::IoOut(port, data)) => {
@@ -818,7 +811,7 @@ impl HyperlightVm {
                     }
 
                     #[cfg(all(gdb, target_arch = "aarch64"))]
-                    if let Err(e) = self.cancel_pending_software_step(mem_mgr) {
+                    if let Err(e) = self.clear_single_step() {
                         break Err(HandleDebugError::from(e).into());
                     }
 
