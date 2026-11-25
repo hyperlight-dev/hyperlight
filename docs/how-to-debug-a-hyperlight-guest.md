@@ -38,10 +38,13 @@ session of a guest binary running inside a Hyperlight sandbox.
   The debug target will refuse any resume, step actions and write operations to
   the guest memory and registers until the gdb client disconnects or the sandbox is stopped.
 
-Snapshots and restores reject installed software breakpoints on both x86_64 and
-ARM64. This keeps patched instructions and saved originals out of replacement
-snapshot mappings. Recovery of a poisoned sandbox discards breakpoint
-bookkeeping before restoring clean memory.
+Sandboxes configured for debugging cannot create snapshots on x86_64 or ARM64,
+even after debugger detach. Debugger register and memory edits can violate guest
+invariants. This restriction applies regardless of installed breakpoints.
+
+Debugging supports loading and restoring existing snapshots. Restore rejects
+installed software breakpoints in a ready sandbox. Recovery of a poisoned
+sandbox discards breakpoint bookkeeping before restoring clean memory.
 
 ## Example
 

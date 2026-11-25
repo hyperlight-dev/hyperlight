@@ -423,6 +423,9 @@ impl Sandbox {
     /// each MSR declared with
     /// [`SandboxBuilder::guest_msrs`](crate::SandboxBuilder::guest_msrs).
     ///
+    /// Sandboxes configured for debugging cannot create snapshots, including
+    /// after debugger detach. Debugger edits can violate guest invariants.
+    ///
     /// ## Sandbox status
     ///
     /// This method returns [`crate::HyperlightError::PoisonedSandbox`] when the
@@ -474,9 +477,9 @@ impl Sandbox {
     pub fn snapshot_with_options(&mut self, options: &SnapshotOptions) -> Result<Arc<Snapshot>> {
         self.check_ready()?;
         #[cfg(gdb)]
-        if self.vm.has_sw_breakpoints() {
+        if self.config.get_guest_debug_info().is_some() {
             return Err(crate::new_error!(
-                "Cannot snapshot a sandbox while software breakpoints are installed"
+                "Cannot snapshot a sandbox configured for debugging"
             ));
         }
 
@@ -1319,7 +1322,8 @@ impl Sandbox {
 
     /// Returns the sandbox lifecycle status.
     ///
-    /// * [`Ready`](SandboxStatus::Ready) permits guest operations and snapshots.
+    /// * [`Ready`](SandboxStatus::Ready) permits guest operations. Snapshots also
+    ///   require a sandbox configured without debugging.
     /// * [`Poisoned`](SandboxStatus::Poisoned) rejects guest operations and
     ///   snapshots. A successful [`restore()`](Self::restore) makes it ready.
     /// * [`Unrecoverable`](SandboxStatus::Unrecoverable) rejects all
@@ -1486,10 +1490,25 @@ mod tests {
         };
         use crate::hypervisor::hyperlight_vm::HyperlightVm;
 
-        fn sandbox_with_debugger() -> (Sandbox, DebugCommChannel<DebugMsg, DebugResponse>, u64) {
-            let guest =
-                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+        fn sandbox_with_debugger() -> (
+            Sandbox,
+            DebugCommChannel<DebugMsg, DebugResponse>,
+            u64,
+            Arc<Snapshot>,
+        ) {
+            let snapshot = {
+                let mut sandbox = SandboxBuilder::from_file(simple_guest_as_pathbuf())
+                    .build()
                     .unwrap();
+                sandbox.snapshot().unwrap()
+            };
+            let mut config = SandboxConfiguration::default();
+            config.set_guest_debug_info(crate::sandbox::config::DebugInfo { port: 0 });
+            let guest = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_pathbuf()),
+                Some(config),
+            )
+            .unwrap();
             #[cfg(target_arch = "aarch64")]
             let vectors = guest.load_info.debug_vectors;
             let (mut host, memory) = guest.mgr.build().unwrap();
@@ -1546,6 +1565,7 @@ mod tests {
                 Sandbox::from_uninit(guest.host_funcs, host, vm, guest.config),
                 debugger,
                 entry,
+                snapshot,
             )
         }
 
@@ -1560,7 +1580,7 @@ mod tests {
         #[cfg(all(target_arch = "aarch64", target_os = "linux", any(kvm, mshv3)))]
         #[test]
         fn debugger_rejects_the_unbacked_io_page() {
-            let (mut sandbox, _debugger, _) = sandbox_with_debugger();
+            let (mut sandbox, _debugger, _, _) = sandbox_with_debugger();
             let address = hyperlight_common::layout::io_page().unwrap().1;
             let memory = DebugMemoryView::new(&sandbox.mem_mgr, Vec::new());
             let root = sandbox.vm.get_root_pt().unwrap();
@@ -1572,14 +1592,37 @@ mod tests {
         }
 
         #[test]
-        fn snapshot_and_restore_reject_breakpoints_without_poisoning() {
-            let (mut sandbox, _debugger, breakpoint) = sandbox_with_debugger();
-            let snapshot = sandbox.snapshot().unwrap();
+        fn debugging_rejects_snapshots_after_detach_and_restore() {
+            let (mut sandbox, _debugger, _, snapshot) = sandbox_with_debugger();
+            let assert_rejected = |sandbox: &mut Sandbox| {
+                let scratch_size = sandbox.mem_mgr.layout.get_scratch_size();
+                for options in [SnapshotOptions::default(), scratch(scratch_size * 2)] {
+                    let error = sandbox.snapshot_with_options(&options).unwrap_err();
+                    assert!(matches!(error, HyperlightError::Error(message)
+                            if message == "Cannot snapshot a sandbox configured for debugging"));
+                    assert_eq!(sandbox.status(), SandboxStatus::Ready);
+                    assert_eq!(sandbox.mem_mgr.layout.get_scratch_size(), scratch_size);
+                }
+            };
+            assert_rejected(&mut sandbox);
+            assert!(matches!(
+                request(&mut sandbox, DebugMsg::DisableDebug),
+                DebugResponse::DisableDebug
+            ));
+            sandbox.call::<()>("NoOp", ()).unwrap();
+            assert_rejected(&mut sandbox);
+            sandbox.restore(snapshot).unwrap();
+            assert_rejected(&mut sandbox);
+            sandbox.call::<()>("NoOp", ()).unwrap();
+        }
+
+        #[test]
+        fn restore_rejects_breakpoints_without_poisoning() {
+            let (mut sandbox, _debugger, breakpoint, snapshot) = sandbox_with_debugger();
             assert!(matches!(
                 request(&mut sandbox, DebugMsg::AddSwBreakpoint(breakpoint)),
                 DebugResponse::AddSwBreakpoint(true)
             ));
-            assert!(sandbox.snapshot().is_err());
             assert!(sandbox.restore(snapshot.clone()).is_err());
             assert_eq!(sandbox.status(), SandboxStatus::Ready);
             assert!(matches!(
@@ -1593,8 +1636,7 @@ mod tests {
         #[test]
         #[cfg(target_arch = "aarch64")]
         fn initialized_snapshot_stops_once_before_the_first_dispatch() {
-            let (mut sandbox, _debugger, _) = sandbox_with_debugger();
-            let snapshot = sandbox.snapshot().unwrap();
+            let (sandbox, _debugger, _, snapshot) = sandbox_with_debugger();
             let manager = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
             let (mut host, memory) = manager.build().unwrap();
             host.restore_virtq(snapshot.virtq().unwrap()).unwrap();
@@ -1639,7 +1681,7 @@ mod tests {
 
         #[test]
         fn cancelled_debug_session_can_restore_with_software_breakpoints() {
-            let (mut sandbox, _debugger, breakpoint) = sandbox_with_debugger();
+            let (mut sandbox, _debugger, breakpoint, snapshot) = sandbox_with_debugger();
             let interrupt = sandbox.interrupt_handle();
             sandbox
                 .register_host_function("HostNoOp", move || {
@@ -1647,7 +1689,6 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
-            let snapshot = sandbox.snapshot().unwrap();
             assert!(matches!(
                 request(&mut sandbox, DebugMsg::AddSwBreakpoint(breakpoint)),
                 DebugResponse::AddSwBreakpoint(true)
@@ -1666,8 +1707,7 @@ mod tests {
         #[test]
         #[cfg(target_arch = "aarch64")]
         fn crash_detach_can_restore_after_breakpoint_mapping_is_lost() {
-            let (mut sandbox, debugger, _) = sandbox_with_debugger();
-            let snapshot = sandbox.snapshot().unwrap();
+            let (mut sandbox, debugger, _, snapshot) = sandbox_with_debugger();
             // The guard-page backing is outside the guest allocator.
             let address = hyperlight_common::layout::scratch_transport_end_gpa();
             sandbox

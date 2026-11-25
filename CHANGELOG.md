@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 
 ### Changed
+* Sandboxes configured for debugging cannot create snapshots on x86_64 or ARM64, including after debugger detach.
 * `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their
@@ -41,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Fix slow scratch zeroing on restore under KVM in default builds.
 * Fix C# component bindings keeping an entry for every resource handle passed to or from the guest.
 * GDB memory reads and writes translate each guest page on hosts with larger pages.
-* GDB snapshot recovery handles cancellation and crash detach. Snapshot capture and restore reject installed software breakpoints on x86_64 and ARM64.
+* GDB snapshot recovery handles cancellation and crash detach. Restore rejects installed software breakpoints in ready sandboxes on x86_64 and ARM64.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
