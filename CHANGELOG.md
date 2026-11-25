@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * HVF sandbox initialization accepts seeds that match Apple hypercall identifiers.
 * Host-written snapshot memory has instruction-cache coherence before guest execution.
 * Fix slow scratch zeroing on restore under KVM in default builds.
+* Fix C# component bindings keeping an entry for every resource handle passed to or from the guest.
 
 ### Removed
 * **Breaking:** `SandboxBuilder::init_data`, `GuestEnvironment`, `GuestBlob`,
