@@ -777,6 +777,46 @@ fn execute_on_heap() -> String {
     String::from("Executed on heap successfully")
 }
 
+/// Writes code to the heap, maps its pages executable, then runs it.
+#[guest_function("ExecuteOnHeapAfterMapping")]
+fn execute_on_heap_after_mapping() -> String {
+    // NO-OP followed by RET
+    let mut heap_memory = Box::new(
+        #[cfg(target_arch = "x86_64")]
+        [0x90u8, 0xC3],
+        #[cfg(target_arch = "aarch64")]
+        [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6],
+    );
+    let code = heap_memory.as_mut_ptr();
+    let start = code as u64 & !(PAGE_SIZE as u64 - 1);
+    let end = (code as u64 + heap_memory.len() as u64).next_multiple_of(PAGE_SIZE as u64);
+    // SAFETY: the guest is single threaded, and the range covers only
+    // pages of this live allocation.
+    unsafe {
+        hyperlight_guest_bin::paging::modify_mapping(
+            start as *mut u8,
+            end - start,
+            |_, mapping| match mapping.kind {
+                MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
+                    executable: true,
+                    ..bm
+                }),
+                kind => kind,
+            },
+        );
+    }
+    // Drop cached non-executable translations.
+    hyperlight_guest_bin::paging::barrier::downgrade_in_place(start..end);
+    dicachesync(code, heap_memory.len());
+    // SAFETY: the bytes are a NOP/RET sequence in executable memory.
+    unsafe {
+        let heap_fn: fn() = core::mem::transmute(code);
+        heap_fn();
+        black_box(heap_fn);
+    }
+    String::from("Executed on heap successfully")
+}
+
 #[guest_function("TestMalloc")]
 fn test_rust_malloc(code: i32) -> i32 {
     let ptr = unsafe { malloc(code as usize) };

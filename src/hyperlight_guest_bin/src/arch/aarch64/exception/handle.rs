@@ -22,7 +22,7 @@ use crate::HyperlightAbortWriter;
 /// # Safety
 /// `far` must be in the stack or heap range and must not be mapped. No
 /// other page table operation may run concurrently.
-unsafe fn handle_stack_or_heap_fault(far: u64, executable: bool) {
+unsafe fn handle_stack_or_heap_fault(far: u64) {
     // SAFETY: the scratch allocator is set up before any exception can
     // occur, and the masked address is page aligned. The caller upholds
     // the rest of the `map_region` contract.
@@ -35,7 +35,7 @@ unsafe fn handle_stack_or_heap_fault(far: u64, executable: bool) {
             MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
-                executable,
+                executable: false,
             }),
         );
         // We don't use crate::barrier::first_valid_same_ctx, because
@@ -103,16 +103,13 @@ fn handle_internal_fault(exn: Exception, far: u64, orig_mapping: Option<Mapping>
                 // SAFETY: a translation fault in the stack region means
                 // the page is unmapped, and exception handling is the
                 // only page table writer.
-                unsafe { handle_stack_or_heap_fault(far, false) };
+                unsafe { handle_stack_or_heap_fault(far) };
                 true
             } else if (HEAP_GVA_START..HEAP_GVA_END).contains(&far) {
-                // SAFETY: the host writes the scratch-top metadata before entry.
-                let executable =
-                    unsafe { hyperlight_guest::layout::heap_executable_gva().read_volatile() } != 0;
                 // SAFETY: a translation fault in the heap region means
                 // the page is unmapped, and exception handling is the
                 // only page table writer.
-                unsafe { handle_stack_or_heap_fault(far, executable) };
+                unsafe { handle_stack_or_heap_fault(far) };
                 true
             } else if let Some(
                 m @ Mapping {

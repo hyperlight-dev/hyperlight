@@ -101,10 +101,9 @@ The `coverage-run` recipe mirrors the `test-like-ci` + `run-examples-like-ci` wo
 1. **Default features** — all drivers enabled (kvm + mshv3 + build-metadata)
 2. **Single driver** — only one hypervisor driver + build-metadata
 3. **Isolated tests** — tests that require running separately due to global state
-4. **Integration tests** — including `executable_heap` feature
-5. **Crashdump** — tests + example with the `crashdump` feature enabled
-6. **Tracing** — tests with `trace_guest` feature (host-side crates only)
-7. **Examples** — metrics, logging, tracing (with and without `function_call_metrics`), guest-debugging (with `gdb` feature)
+4. **Crashdump** — tests + example with the `crashdump` feature enabled
+5. **Tracing** — tests with `trace_guest` feature (host-side crates only)
+6. **Examples** — metrics, logging, tracing (with and without `function_call_metrics`), guest-debugging (with `gdb` feature)
 
 Each phase uses `--no-report` to accumulate raw profiling data. The report recipes (`coverage`, `coverage-html`, `coverage-lcov`) then generate the desired output format from the collected data. `coverage-ci` combines both steps into a single command.
 
