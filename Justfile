@@ -467,6 +467,7 @@ run-rust-examples target=default-target features="":
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example metrics {{ if features =="" {''} else { "--features " + features } }}
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example metrics {{ if features =="" {"--features function_call_metrics"} else {"--features function_call_metrics," + features} }}
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example logging {{ if features =="" {''} else { "--features " + features } }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example snapshot {{ if features =="" {''} else { "--features " + features } }}
 
 # The two tracing examples are flaky on windows so we run them on linux only for now, need to figure out why as they run fine locally on windows
 run-rust-examples-linux target=default-target features="": (run-rust-examples target features)

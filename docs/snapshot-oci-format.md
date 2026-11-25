@@ -4,6 +4,9 @@ Hyperlight serialises a `Snapshot` to disk as an [OCI Image Layout]
 directory. `Snapshot::save` writes one. `Snapshot::load` and
 `Snapshot::checked_load` read one back.
 
+For the workflow and registry commands, see
+[Saving, loading and distributing snapshots](./how-to-save-and-load-snapshots.md).
+
 Only a snapshot taken after the guest has run can be persisted. Such a
 snapshot carries the captured vCPU registers needed to resume a call.
 `Snapshot::save` rejects a pre-init snapshot.
