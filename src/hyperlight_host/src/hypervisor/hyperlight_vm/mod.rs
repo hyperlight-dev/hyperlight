@@ -717,22 +717,22 @@ impl HyperlightVm {
                     #[cfg(target_arch = "x86_64")]
                     exception,
                     #[cfg(target_arch = "aarch64")]
-                        reason: stop_reason,
+                    reason,
                 }) => {
-                    #[cfg(target_arch = "x86_64")]
                     // Classify the debug exit. `vcpu_stop_reason` is a
                     // pure classifier and has no side effects on the VM.
-                    let stop_reason = crate::hypervisor::gdb::arch::vcpu_stop_reason(
+                    #[cfg(target_arch = "x86_64")]
+                    let reason = crate::hypervisor::gdb::arch::vcpu_stop_reason(
                         self.vm.as_ref(),
                         dr6,
                         exception,
                     )?;
-                    #[cfg(target_arch = "x86_64")]
                     // Remove the one-shot entry breakpoint installed by
                     // `HyperlightVm::new` the first time it fires so it
                     // does not interfere with later user-installed
                     // breakpoints at the same address.
-                    if matches!(stop_reason, VcpuStopReason::HwBp)
+                    #[cfg(target_arch = "x86_64")]
+                    if matches!(reason, VcpuStopReason::HwBp)
                         && let Some(entry_addr) = self.one_shot_entry_bp
                     {
                         let rip = self.vm.regs().map_err(VcpuStopReasonError::GetRegs)?.rip;
@@ -744,16 +744,16 @@ impl HyperlightVm {
                         }
                     }
                     #[cfg(target_arch = "aarch64")]
-                    let stop_reason = if self.pending_software_step.is_some() {
-                        match self.finish_software_step(mem_mgr, stop_reason) {
+                    let reason = if self.pending_software_step.is_some() {
+                        match self.finish_software_step(mem_mgr, reason) {
                             Ok(Some(reason)) => reason,
                             Ok(None) => continue,
                             Err(e) => break Err(HandleDebugError::from(e).into()),
                         }
                     } else {
-                        stop_reason
+                        reason
                     };
-                    if let Err(e) = self.handle_debug(mem_mgr, stop_reason) {
+                    if let Err(e) = self.handle_debug(mem_mgr, reason) {
                         break Err(e.into());
                     }
                 }

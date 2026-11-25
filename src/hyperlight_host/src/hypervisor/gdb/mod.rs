@@ -101,31 +101,9 @@ impl<'a> DebugMemoryView<'a> {
 
     #[cfg(all(any(kvm, mshv3), target_arch = "aarch64"))]
     pub(crate) fn translate_gva(&self, gva: u64, root_pt: u64) -> Result<u64, DebugError> {
-        use crate::sandbox::snapshot::PageTableReader;
-
         self.mem_mgr
             .with_guest_memory(&self.guest_mmap_regions, |memory| {
-                let reader = PageTableReader::new(memory, root_pt);
-                // SAFETY: Debug requests run with the vCPU stopped. The reader bounds-checks table accesses.
-                let mapping =
-                    unsafe { hyperlight_common::vmem::virt_to_phys(&reader, gva, 1) }.next();
-                reader.finish()?;
-                let gpa = mapping
-                    .filter(|mapping| {
-                        matches!(
-                            mapping.kind,
-                            hyperlight_common::vmem::MappingKind::Basic(_)
-                                | hyperlight_common::vmem::MappingKind::Cow(_)
-                        )
-                    })
-                    .and_then(|mapping| {
-                        let offset = gva.checked_sub(mapping.virt_base)?;
-                        (offset < mapping.len)
-                            .then(|| mapping.phys_base.checked_add(offset))
-                            .flatten()
-                    })
-                    .filter(|&gpa| memory.resolve(gpa, 1).is_some());
-                gpa.ok_or_else(|| crate::new_error!("GVA is not mapped: {gva:#x}"))
+                crate::hypervisor::virtual_machine::aarch64::translate_gva(memory, gva, root_pt)
             })
             .map_err(|_| DebugError::TranslateGva(gva))
     }

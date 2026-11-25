@@ -17,6 +17,16 @@ use crate::hypervisor::gdb::{
 pub(crate) struct SoftwareBreakpoints(HashMap<u64, Vec<u8>>);
 
 impl SoftwareBreakpoints {
+    #[cfg(target_arch = "aarch64")]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
     pub(super) fn contains(&self, gva: u64) -> bool {
         self.0.contains_key(&gva)
     }
@@ -66,13 +76,13 @@ pub enum ProcessDebugRequestError {
 impl HyperlightVm {
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn has_sw_breakpoints(&self) -> bool {
-        !self.sw_breakpoints.0.is_empty()
+        !self.sw_breakpoints.is_empty()
     }
 
     /// Discard software debug state when poisoned guest memory will be replaced.
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn discard_software_breakpoints(&mut self) {
-        self.sw_breakpoints.0.clear();
+        self.sw_breakpoints.clear();
         self.pending_software_step = None;
     }
 

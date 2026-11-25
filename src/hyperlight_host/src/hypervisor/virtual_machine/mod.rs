@@ -40,6 +40,9 @@ pub(crate) mod whp;
 #[cfg(feature = "hw-interrupts")]
 pub(crate) mod x86_64;
 
+#[cfg(all(gdb, target_arch = "aarch64", any(kvm, mshv3)))]
+pub(crate) mod aarch64;
+
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
 /// Returns which type of hypervisor is available, if any
