@@ -1489,6 +1489,8 @@ mod tests {
             DebugCommChannel, DebugMemoryView, DebugMsg, DebugResponse, VcpuStopReason,
         };
         use crate::hypervisor::hyperlight_vm::HyperlightVm;
+        #[cfg(target_arch = "aarch64")]
+        use crate::mem::mgr::SandboxMemoryManager;
 
         fn sandbox_with_debugger() -> (
             Sandbox,
