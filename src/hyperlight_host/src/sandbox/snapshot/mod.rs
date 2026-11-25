@@ -83,10 +83,9 @@ impl SnapshotOptions {
     ///
     /// A size larger than the maximum memory size (`MemoryRequestTooBig`),
     /// too small for the transport (`MemoryRequestTooSmall`), or not a
-    /// whole number of host pages is rejected before the guest is entered.
+    /// whole number of host pages is rejected before memory capture.
     /// Room for the page tables depends on the guest's mappings and is
-    /// checked when the snapshot is built, after a pending transport
-    /// checkpoint has run in the guest: a size without it fails then, with
+    /// checked when the snapshot is built. A size without that room fails with
     /// `MemoryRequestTooSmall`. A larger size whose scratch window would
     /// cover a guest mapping below the current one fails then too. Both
     /// failures leave the sandbox usable. Whether guest function calls fit
@@ -162,9 +161,9 @@ struct SnapshotState {
     /// has mismatched signatures.
     host_functions: HostFunctionDetails,
 
-    /// Validated ring images omitted from ordinary snapshot pages.
+    /// Bootstrap ring images cached outside ordinary snapshot pages.
     ///
-    /// Construction and loading validate these images against `layout`.
+    /// Construction and loading generate these images from `layout`.
     /// Both the images and layout remain immutable afterwards.
     virtq: Option<VirtqSnapshot>,
 }
@@ -695,7 +694,7 @@ impl Snapshot {
     // the sandbox vm itself (which modifies it as it receives
     // requests from the sandbox).
     #[allow(clippy::too_many_arguments)]
-    /// Capture memory with optional validated transport images.
+    /// Capture memory with optional bootstrap images.
     ///
     /// `layout` is the sandbox's own: the live page tables and scratch are
     /// read with it. The snapshot's page tables are built for

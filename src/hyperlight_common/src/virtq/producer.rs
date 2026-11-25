@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
 
 use bytes::Bytes;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 
 use super::*;
 
@@ -73,7 +73,7 @@ impl UsedChain {
 struct Inflight<M> {
     token: Token,
     // Automatic cleanup could recycle buffers still accessible to the peer.
-    // Only completion or a stopped reset permits releasing this owner.
+    // Only completion or a stopped generation change permits releasing this owner.
     chain: ManuallyDrop<OwnedChain<M>>,
 }
 
@@ -171,8 +171,7 @@ impl<M> InflightTable<M> {
 ///
 /// Dropping a producer does not stop its peer, so inflight owners are
 /// deliberately leaked to avoid freeing buffers the peer may still use.
-/// Drain completions for all submitted chains, or stop the peer and call
-/// [`reset`](Self::reset), before dropping the producer.
+/// Drain completions for all submitted chains before dropping the producer.
 ///
 /// # Example
 ///
@@ -240,44 +239,9 @@ where
         self.inner.mem()
     }
 
-    /// Reclaim scratch slots held by retained views without changing in-flight chains.
-    ///
-    /// Retained views keep their original pools. Buffered completions or chains
-    /// from another allocator return [`VirtqError::InvalidState`].
-    ///
-    /// # Safety
-    ///
-    /// Allocations held outside this producer must have backing independent of
-    /// reused scratch. After a swap, old pool handles must not allocate again.
-    /// No unsent chains or builders may remain. Peer accesses must be stopped.
-    pub unsafe fn reclaim_slots(&mut self) -> Result<(), VirtqError> {
-        let live = &mut self.inflight.live;
-        // All pending used chains must be drained before we can swap pools
-        if !self.pending.is_empty() {
-            return Err(VirtqError::InvalidState);
-        }
-
-        // inflight chains must have the same pool as the producer before we swap
-        if live.iter().any(|inf| !self.pool.ptr_eq(&inf.chain.pool)) {
-            return Err(VirtqError::InvalidState);
-        }
-
-        let reserved = live
-            .iter()
-            .flat_map(|inf| inf.chain.buffers.iter().map(|buf| buf.addr));
-
-        // No retained slots need reclaiming when all live slots are in-flight.
-        if self.pool.num_live() == reserved.clone().count() {
-            return Ok(());
-        }
-
-        let pool = self.pool.swap(reserved)?;
-        for inf in live {
-            inf.chain.pool = pool.clone();
-        }
-
-        self.pool = pool;
-        Ok(())
+    /// Ring geometry independent of its current cursors.
+    pub fn layout(&self) -> Layout {
+        self.inner.layout()
     }
 
     /// Begin building a descriptor chain for submission.
@@ -285,6 +249,7 @@ where
     /// The builder captures the current free-descriptor budget.
     /// Submission checks capacity again.
     pub fn chain(&self) -> ChainBuilder<M> {
+        // TODO: Support owned refill buffers outside the fixed slot pool.
         ChainBuilder::new(
             self.inner.mem().clone(),
             self.pool.clone(),
@@ -353,7 +318,7 @@ where
         let published = self.inner.submit_available(&chain);
 
         // A failed write can still publish descriptors. Keep their allocations
-        // until a stopped reset, including when submission reports an error.
+        // until a stopped refresh, including when submission reports an error.
         let inf = Inflight {
             token,
             chain: ManuallyDrop::new(send.owned),
@@ -410,32 +375,90 @@ where
         self.inner.num_inflight()
     }
 
-    /// Reset a stopped producer and release transport-owned allocations.
+    /// Rebuild private state in place without accessing shared memory.
     ///
-    /// Buffered writable completions are guest-owned and make this operation fail.
-    /// Owner-backed payloads already returned to callers are not tracked as
-    /// in-flight and remain allocated.
+    /// Requires matching geometry and no buffered completions. Prepares resources
+    /// before retiring old owners. Retirement errors require discarding the producer.
     ///
     /// # Safety
     ///
-    /// All consumer-side chain handles must be dropped. The peer must stay
-    /// stopped until its consumer is reset or replaced. Surviving handles
-    /// could access recycled buffers, violating ownership of borrowed views.
-    ///
-    /// ```compile_fail,E0133
-    /// # use hyperlight_common::virtq::{MemOps, Notifier, VirtqProducer};
-    /// fn reset<M: MemOps + Clone, N: Notifier>(producer: &mut VirtqProducer<M, N>) {
-    ///     producer.reset().unwrap();
-    /// }
-    /// ```
-    pub unsafe fn reset(&mut self) -> Result<(), VirtqError> {
+    /// The old peer must have no live chain handles or future accesses.
+    /// No old [`SendChain`] or [`ChainBuilder`] may survive.
+    /// No producer may have used the matching bootstrap. Pool backing must be exclusive.
+    /// Retained views need independent backing. Old pool handles must not allocate.
+    /// Resume only after success.
+    pub unsafe fn refresh(&mut self, info: BootstrapInfo) -> Result<(), VirtqError> {
         if !self.pending.is_empty() {
             return Err(VirtqError::InvalidState);
         }
 
-        self.inner.reset()?;
-        self.next_token = 0;
+        // Check that the ring and pool layouts match the bootstrap info.
+        if self.layout() != info.layout() || self.pool.layout() != info.pool_layout() {
+            return Err(VirtqError::InvalidState);
+        }
 
+        let posted = usize::from(info.avail());
+        let inf_cnt = posted.saturating_sub(self.inflight.live.len());
+
+        self.inflight
+            .live
+            .try_reserve_exact(inf_cnt)
+            .map_err(|_| VirtqError::Bookkeeping)?;
+
+        let pool = SlotPool::from_layout(info.pool_layout())?;
+
+        for index in 0..info.avail() {
+            let desc = info.desc_at(index);
+            let allocation = pool.alloc(desc.len as usize)?;
+
+            if allocation.addr != desc.addr || allocation.len != desc.len {
+                return Err(VirtqError::InvalidState);
+            }
+        }
+
+        self.pool = pool;
+        self.next_token = u32::from(info.avail());
+
+        self.release_inflight()?;
+        self.restore_inflight(info);
+        // Rebuild the ring's private state as well
+        self.inner.refresh(info.avail());
+
+        Ok(())
+    }
+
+    /// Install in-flight owners for the prepared pool's posted slots.
+    fn restore_inflight(&mut self, info: BootstrapInfo) {
+        for index in 0..info.avail() {
+            let desc = info.desc_at(index);
+
+            let token = Token {
+                seq: u32::from(index),
+                id: desc.id,
+            };
+
+            let buffers = smallvec![BufferEntry {
+                addr: desc.addr,
+                capacity: desc.len,
+                written: 0,
+            }];
+
+            let chain = OwnedChain {
+                mem: self.memory().clone(),
+                pool: self.pool.clone(),
+                buffers,
+                readable: 0,
+            };
+
+            self.inflight.insert(Inflight {
+                token,
+                chain: ManuallyDrop::new(chain),
+            });
+        }
+    }
+
+    /// Release in-flight owners after the caller has stopped their peer.
+    fn release_inflight(&mut self) -> Result<(), VirtqError> {
         let mut maybe_err = None;
 
         while let Some(inflight) = self.inflight.pop() {
@@ -1212,7 +1235,9 @@ fn checked_descriptor_len(len: usize) -> Result<u32, VirtqError> {
 mod tests {
     use alloc::rc::Rc;
     use alloc::sync::Arc;
+    use core::num::NonZeroU16;
     use core::sync::atomic::Ordering;
+    use std::assert_matches;
 
     use super::*;
     use crate::virtq::ring::tests::{FaultMem, OwnedRing, TestMem, make_consumer, make_ring};
@@ -1361,9 +1386,528 @@ mod tests {
     }
 
     #[test]
+    fn empty_single_tier_bootstrap_supports_first_submission() {
+        let ring = make_ring(4);
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let info = BootstrapInfo::empty(ring.layout(), PoolLayout::single(slots)).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer = VirtqProducer::new(ring.layout(), ring.mem(), TestNotifier::new(), pool);
+
+        // SAFETY: This is the only producer for the matching bootstrap and pool.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        let mut chain = producer.chain().readable(32).build().unwrap();
+        chain.write_all(b"first request").unwrap();
+
+        let token = producer.submit(chain).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+
+        assert_matches!(producer.poll(), Ok(Some(UsedChain::Ack(ack))) if ack == token);
+        assert_eq!(producer.pool().num_free(), 2);
+        assert_eq!(producer.num_free(), ring.len());
+    }
+
+    #[test]
+    fn empty_bootstrap_refresh_reuses_bookkeeping_and_preserves_events() {
+        let ring = make_ring(4);
+        let mem = FaultMem::new(ring.mem());
+        let lower = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let upper = SlotLayout::new(lower.end_addr(), 128, 2).unwrap();
+        let old_pool = SlotPool::new_tiered(lower, upper).unwrap();
+        let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(32).unwrap());
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(
+            ring.layout(),
+            mem.clone(),
+            notifier.clone(),
+            old_pool.clone(),
+        );
+        let chain = producer.chain().readable(32).writable(96).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let by_id = producer.inflight.by_id.as_ptr();
+        let live = producer.inflight.live.as_ptr();
+        let notifications = notifier.notification_count();
+        let info = BootstrapInfo::empty(ring.layout(), old_pool.layout()).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        consumer
+            .set_avail_suppression(SuppressionKind::Disable)
+            .unwrap();
+
+        let mut before = vec![0; Layout::query_size(ring.len())];
+        mem.read(ring.layout().desc_table_addr(), &mut before)
+            .unwrap();
+        mem.fail_write_at(0);
+
+        // SAFETY: The old peer has no handles. The retained lease has no views.
+        // Only the new consumer has accessed the matching bootstrap.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        let mut after = vec![0; before.len()];
+        mem.read(ring.layout().desc_table_addr(), &mut after)
+            .unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(notifier.notification_count(), notifications);
+        assert_eq!(producer.inflight.by_id.as_ptr(), by_id);
+        assert_eq!(producer.inflight.live.as_ptr(), live);
+        assert_eq!(producer.num_inflight(), 0);
+        assert_eq!(producer.num_free(), ring.len());
+        assert_eq!(producer.pool().num_free_lower(), 2);
+        assert_eq!(producer.pool().num_free_upper(), 2);
+        assert_matches!(producer.poll(), Ok(None));
+
+        mem.allow_writes();
+
+        let mut chain = producer.chain().readable(32).writable(96).build().unwrap();
+        chain.write_all(b"request").unwrap();
+
+        drop(retained);
+        assert_eq!(old_pool.num_live(), 0);
+        assert_eq!(producer.pool().num_free_lower(), 1);
+        assert_eq!(producer.pool().num_free_upper(), 1);
+
+        let token = producer.submit(chain).unwrap();
+        assert_eq!(token.seq, 0);
+        assert_eq!(notifier.notification_count(), notifications);
+
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"response").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let used = producer.poll().unwrap().unwrap();
+        assert_eq!(used.token(), token);
+
+        let response = used.into_bytes().unwrap();
+        assert_eq!(response.as_ref(), b"response");
+        drop(response);
+
+        assert_eq!(producer.pool().num_free_lower(), 2);
+        assert_eq!(producer.pool().num_free_upper(), 2);
+        assert_eq!(producer.num_free(), ring.len());
+    }
+
+    #[test]
+    fn prefilled_bootstrap_reserves_each_tiers_original_capacity() {
+        let ring = make_ring(2);
+        let mem = FaultMem::new(ring.mem());
+        let lower = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 1).unwrap();
+        let upper = SlotLayout::new(lower.end_addr(), 128, 2).unwrap();
+        let layout = PoolLayout::tiered(lower, upper).unwrap();
+        let info = BootstrapInfo::prefilled(ring.layout(), layout).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"small").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(&[0xa5; 96]).unwrap();
+        consumer.complete(recv, reply).unwrap();
+        mem.fail_write_at(0);
+
+        let pool = SlotPool::from_layout(layout).unwrap();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), mem.clone(), TestNotifier::new(), pool);
+
+        // SAFETY: The pool is exclusive. Only the consumer has accessed the
+        // matching bootstrap, completing both posted buffers.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(producer.num_inflight(), 2);
+        assert_eq!(producer.pool().num_free_lower(), 0);
+        assert_eq!(producer.pool().num_free_upper(), 1);
+
+        let small = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        let large = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(small.as_ref(), b"small");
+        assert_eq!(large.as_ref(), &[0xa5; 96]);
+
+        drop((small, large));
+        assert_eq!(producer.pool().num_free_lower(), 1);
+        assert_eq!(producer.pool().num_free_upper(), 2);
+        assert_eq!(producer.num_free(), ring.len());
+
+        mem.allow_writes();
+
+        let mut chain = producer.chain().readable(32).build().unwrap();
+        chain.write_all(b"after bootstrap").unwrap();
+        let token = producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+
+        assert_matches!(producer.poll(), Ok(Some(UsedChain::Ack(ack))) if ack == token);
+        assert_eq!(producer.pool().num_free(), 3);
+    }
+
+    #[test]
+    fn adoption_preserves_requests_completed_before_guest_entry() {
+        let ring = make_ring(4);
+        let mem = FaultMem::new(ring.mem());
+        let slots = SlotLayout::new(ring.layout().dev_evt_addr() + 0x100, 64, 3).unwrap();
+        let notifier = TestNotifier::new();
+
+        let info = BootstrapInfo::prefilled(ring.layout(), PoolLayout::single(slots)).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+        reply.write_all(b"first").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+        reply.write_all(b"second request").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let mut before = vec![0; Layout::query_size(ring.len())];
+        mem.read(ring.layout().desc_table_addr(), &mut before)
+            .unwrap();
+        mem.fail_write_at(0);
+
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer = VirtqProducer::new(ring.layout(), mem.clone(), notifier.clone(), pool);
+
+        // SAFETY: The matching bootstrap owns these slots. Only the consumer
+        // has accessed the ring, completing two of its three buffers.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        let mut after = vec![0; before.len()];
+        mem.read(ring.layout().desc_table_addr(), &mut after)
+            .unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(notifier.notification_count(), 0);
+        assert_eq!(producer.num_inflight(), 3);
+        assert_matches!(
+            producer.chain().writable(64).build().err(),
+            Some(VirtqError::Backpressure)
+        );
+
+        let first = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        let second = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+
+        assert_eq!(first.as_ref(), b"first");
+        assert_eq!(second.as_ref(), b"second request");
+        assert!(producer.poll().unwrap().is_none());
+        assert_eq!(producer.pool().num_free(), 0);
+
+        drop((first, second));
+        assert_eq!(producer.pool().num_free(), 2);
+
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+        reply.write_all(&[0x5a; 64]).unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let third = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(third.as_ref(), &[0x5a; 64]);
+        drop(third);
+
+        assert_eq!(producer.pool().num_free(), 3);
+        assert_eq!(producer.num_free(), ring.len());
+    }
+
+    #[test]
+    fn adoption_uses_original_capacity_to_reject_oversized_completion() {
+        let ring = make_ring(1);
+        let slots = SlotLayout::new(ring.layout().dev_evt_addr() + 0x100, 64, 1).unwrap();
+
+        let info = BootstrapInfo::prefilled(ring.layout(), PoolLayout::single(slots)).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        let mut used = ring.read_desc(0);
+        used.len = 65;
+        used.mark_used(true);
+        ring.write_desc(0, used);
+
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer = VirtqProducer::new(ring.layout(), ring.mem(), TestNotifier::new(), pool);
+
+        // SAFETY: This is the only producer for the matching bootstrap.
+        // The forged completion did not write past the owned buffer.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        assert_matches!(producer.poll(), Err(VirtqError::InvalidState));
+        assert_eq!(producer.pool().num_free(), 1);
+        assert_eq!(producer.num_free(), 1);
+    }
+
+    #[test]
+    fn adopted_full_ring_refills_across_wrap_with_event_suppression() {
+        let ring = make_ring(2);
+        let slots = SlotLayout::new(ring.layout().dev_evt_addr() + 0x100, 64, 3).unwrap();
+        let notifier = TestNotifier::new();
+
+        let info = BootstrapInfo::prefilled(ring.layout(), PoolLayout::single(slots)).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        consumer
+            .set_avail_suppression(SuppressionKind::Disable)
+            .unwrap();
+
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer = VirtqProducer::new(ring.layout(), ring.mem(), notifier.clone(), pool);
+
+        // SAFETY: The pool is exclusively owned and only the consumer has
+        // accessed the matching bootstrap's event structure.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        assert_eq!(producer.num_free(), 0);
+        assert_eq!(producer.pool().num_free(), 1);
+
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+
+        let first = producer.poll().unwrap().unwrap();
+        let second = producer.poll().unwrap().unwrap();
+        assert_ne!(first.token(), second.token());
+        drop((first, second));
+
+        assert_eq!(producer.pool().num_free(), 3);
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        let token = producer.submit(chain).unwrap();
+
+        assert_eq!(token.seq, 2);
+        assert_eq!(notifier.notification_count(), 0);
+
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+        reply.write_all(b"wrapped").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let used = producer.poll().unwrap().unwrap();
+        assert_eq!(used.token(), token);
+        assert_eq!(used.into_bytes().unwrap().as_ref(), b"wrapped");
+
+        consumer
+            .set_avail_suppression(SuppressionKind::Descriptor(consumer.avail_cursor()))
+            .unwrap();
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        let token = producer.submit(chain).unwrap();
+
+        assert_eq!(notifier.notification_count(), 1);
+
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+
+        assert_eq!(producer.poll().unwrap().unwrap().token(), token);
+        assert_eq!(producer.pool().num_free(), 3);
+        assert_eq!(producer.num_free(), ring.len());
+    }
+
+    #[test]
+    fn prefilled_bootstrap_refresh_reuses_bookkeeping_and_preserves_requests() {
+        let ring = make_ring(4);
+        let mem = FaultMem::new(ring.mem());
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 3).unwrap();
+        let old_pool = SlotPool::new(slots).unwrap();
+        let retained = BufferLease::new(old_pool.clone(), old_pool.alloc(64).unwrap());
+        let notifier = TestNotifier::new();
+        let mut producer = VirtqProducer::new(
+            ring.layout(),
+            mem.clone(),
+            notifier.clone(),
+            old_pool.clone(),
+        );
+        producer.inflight.live.try_reserve_exact(3).unwrap();
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notifier.clone());
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let (recv, reply) = poll_received(&mut consumer);
+        consumer.complete(recv, reply).unwrap();
+        drop(producer.poll().unwrap().unwrap());
+        drop(consumer);
+
+        let by_id = producer.inflight.by_id.as_ptr();
+        let live = producer.inflight.live.as_ptr();
+        let live_capacity = producer.inflight.live.capacity();
+        let info = BootstrapInfo::prefilled(ring.layout(), old_pool.layout()).unwrap();
+        info.initialize(&mem).unwrap();
+
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), notifier.clone());
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"next generation").unwrap();
+        consumer.complete(recv, reply).unwrap();
+
+        let notifications = notifier.notification_count();
+        let mut before = vec![0; Layout::query_size(ring.len())];
+        mem.read(ring.layout().desc_table_addr(), &mut before)
+            .unwrap();
+        mem.fail_write_at(0);
+
+        // SAFETY: The old peer is gone. The retained lease has no views.
+        // Only the new consumer has accessed the matching bootstrap.
+        unsafe { producer.refresh(info) }.unwrap();
+
+        let mut after = vec![0; before.len()];
+        mem.read(ring.layout().desc_table_addr(), &mut after)
+            .unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(mem.0.writes.load(Ordering::Relaxed), 0);
+        assert_eq!(notifier.notification_count(), notifications);
+        assert_eq!(producer.inflight.by_id.as_ptr(), by_id);
+        assert_eq!(producer.inflight.live.as_ptr(), live);
+        assert_eq!(producer.inflight.live.capacity(), live_capacity);
+        assert_eq!(old_pool.num_live(), 1);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        drop(retained);
+        assert_eq!(old_pool.num_live(), 0);
+        assert_eq!(producer.pool().num_live(), 3);
+
+        let received = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(received.as_ref(), b"next generation");
+        drop(received);
+
+        mem.allow_writes();
+        let chain = producer.chain().writable(64).build().unwrap();
+        let token = producer.submit(chain).unwrap();
+        assert_eq!(token.seq, 3);
+
+        complete_avail(&mut producer, &mut consumer);
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_buffered_completion() {
+        let ring = make_ring(4);
+        let backing = Rc::new(ring.mem());
+        let mem = CopyingMem(&backing);
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let pool = SlotPool::new(slots).unwrap();
+        let info = BootstrapInfo::empty(ring.layout(), pool.layout()).unwrap();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), mem.clone(), TestNotifier::new(), pool);
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem.clone(), TestNotifier::new());
+
+        let chain = producer.chain().writable(64).build().unwrap();
+        producer.submit(chain).unwrap();
+        let (recv, ReplyChain::Writable(mut reply)) = poll_received(&mut consumer) else {
+            panic!("expected writable buffer");
+        };
+
+        reply.write_all(b"buffered").unwrap();
+        consumer.complete(recv, reply).unwrap();
+        producer.reclaim().unwrap();
+        drop(consumer);
+        info.initialize(&mem).unwrap();
+
+        // SAFETY: The old peer is gone. CopyingMem gives buffered data independent
+        // backing, and no producer has accessed the matching bootstrap.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        let buffered = producer.poll().unwrap().unwrap().into_bytes().unwrap();
+        assert_eq!(buffered.as_ref(), b"buffered");
+        drop(buffered);
+
+        // SAFETY: The peer remains stopped and the matching bootstrap is untouched.
+        unsafe { producer.refresh(info) }.unwrap();
+        assert_matches!(producer.poll(), Ok(None));
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_changed_ring_layout() {
+        let ring = make_ring(4);
+        let (mut producer, _consumer, _) = make_test_producer(&ring);
+        let chain = producer.chain().readable(16).build().unwrap();
+        producer.submit(chain).unwrap();
+        let pool = producer.pool().clone();
+        // SAFETY: The smaller ring fits within the existing aligned ring storage.
+        let layout = unsafe {
+            Layout::from_base(ring.layout().desc_table_addr(), NonZeroU16::new(2).unwrap())
+        }
+        .unwrap();
+        let info = BootstrapInfo::empty(layout, pool.layout()).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        // SAFETY: The old peer has no handles or future accesses. The matching
+        // bootstrap owns the pool storage and has had no producer activity.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        assert_eq!(producer.layout(), ring.layout());
+        assert_eq!(producer.num_inflight(), 1);
+        assert_eq!(pool.num_live(), 1);
+
+        // SAFETY: The peer remains stopped with no live handles.
+        unsafe { refresh_empty(&mut producer) };
+    }
+
+    #[test]
+    fn bootstrap_refresh_rejects_changed_pool_layout() {
+        let ring = make_ring(4);
+        let slots = SlotLayout::new(ring.layout().end_addr() + 0x100, 64, 2).unwrap();
+        let pool = SlotPool::new(slots).unwrap();
+        let mut producer =
+            VirtqProducer::new(ring.layout(), ring.mem(), TestNotifier::new(), pool.clone());
+        let chain = producer.chain().readable(16).build().unwrap();
+        producer.submit(chain).unwrap();
+
+        let changed = SlotLayout::new(slots.base_addr(), 64, 3).unwrap();
+        let info = BootstrapInfo::empty(ring.layout(), PoolLayout::single(changed)).unwrap();
+        info.initialize(&ring.mem()).unwrap();
+
+        // SAFETY: No peer has accessed either generation. The matching bootstrap
+        // owns the pool storage and has had no producer activity.
+        assert_matches!(
+            unsafe { producer.refresh(info) },
+            Err(VirtqError::InvalidState)
+        );
+
+        assert_eq!(producer.pool().layout(), pool.layout());
+        assert_eq!(producer.num_inflight(), 1);
+        assert_eq!(pool.num_live(), 1);
+
+        // SAFETY: The peer has no live handles or future accesses.
+        unsafe { refresh_empty(&mut producer) };
+    }
+
+    #[test]
     fn full_ring_still_reports_backpressure() {
         let ring = make_ring(4);
-        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         for _ in 0..ring.len() {
             let chain = producer.chain().readable(1).build().unwrap();
@@ -1374,8 +1918,8 @@ mod tests {
             producer.chain().readable(1).build(),
             Err(VirtqError::Backpressure)
         ));
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
@@ -1397,15 +1941,13 @@ mod tests {
         ));
         assert_eq!(pool.num_live(), 2);
 
-        // SAFETY: The consumer has never polled the ring and is reset next.
-        unsafe { producer.reset() }.unwrap();
-        consumer.reset().unwrap();
+        complete_avail(&mut producer, &mut consumer);
 
         assert_eq!(pool.num_live(), 0);
     }
 
     #[test]
-    fn publication_failure_keeps_allocations_until_stopped_reset() {
+    fn publication_failure_keeps_allocations_until_refresh() {
         for failed_write in 0..4 {
             let ring = make_ring(4);
             let orig_mem = FaultMem::new(ring.mem());
@@ -1438,7 +1980,7 @@ mod tests {
 
             mem.allow_writes();
             // SAFETY: No consumer is attached to this ring.
-            unsafe { producer.reset() }.unwrap();
+            unsafe { refresh_empty(&mut producer) };
 
             assert_eq!(pool.num_live(), 0);
             assert!(orig_gen.upgrade().is_none());
@@ -1503,10 +2045,6 @@ mod tests {
 
         assert_eq!(pool.num_live(), 1);
         assert_eq!(pool.strong_count(), 3);
-
-        // SAFETY: All consumer handles were completed. The consumer is reset next.
-        unsafe { producer.reset() }.unwrap();
-        consumer.reset().unwrap();
 
         drop(producer);
 
@@ -1599,13 +2137,6 @@ mod tests {
         let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
 
         producer.submit(chain).unwrap();
-
-        // SAFETY: No views exist and the consumer has not accessed the ring.
-        assert!(matches!(
-            unsafe { producer.reclaim_slots() },
-            Err(VirtqError::InvalidState)
-        ));
-        assert!(producer.pool().ptr_eq(&replacement));
 
         assert!(orig_gen.upgrade().is_some());
 
@@ -1833,105 +2364,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_swap_skips_pools_without_retained_allocations() {
-        let ring = make_ring(8);
-        let (mut producer, _consumer) = make_virtq_pair(&ring, 64);
-        let pool = producer.pool().clone();
-
-        // SAFETY: No allocations or peer accesses exist.
-        unsafe { producer.reclaim_slots() }.unwrap();
-        assert!(producer.pool().ptr_eq(&pool));
-
-        let chain = producer.chain().writable(64).build().unwrap();
-        producer.submit(chain).unwrap();
-        // SAFETY: Only the posted chain owns an allocation. The peer stays stopped.
-        unsafe { producer.reclaim_slots() }.unwrap();
-        assert!(producer.pool().ptr_eq(&pool));
-
-        // SAFETY: The consumer has not accessed the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
-        assert_eq!(pool.num_live(), 0);
-    }
-
-    #[test]
-    fn pool_swap_preserves_posted_requests_and_ring_state() {
-        let ring = make_ring(8);
-        let mem = ring.mem();
-        let (mut producer, mut consumer) = make_virtq_pair(&ring, 64);
-
-        let original = producer.pool().clone();
-        let allocation = original.alloc(64).unwrap();
-        let mut retained = vec![BufferLease::new(original.clone(), allocation)];
-
-        let mut tokens = Vec::new();
-        for _ in 0..2 {
-            let chain = producer.chain().writable(64).build().unwrap();
-            tokens.push(producer.submit(chain).unwrap());
-        }
-
-        let (recv, reply) = poll_received(&mut consumer);
-        let ReplyChain::Writable(mut reply) = reply else {
-            panic!("expected writable reply");
-        };
-        reply.write_all(b"first").unwrap();
-        consumer.complete(recv, reply).unwrap();
-
-        let mut ring_before = vec![0; Layout::query_size(ring.len())];
-        mem.read(mem.base_addr(), &mut ring_before).unwrap();
-
-        for round in 0..2 {
-            let previous = producer.pool().clone();
-            if round != 0 {
-                let allocation = previous.alloc(64).unwrap();
-                retained.push(BufferLease::new(previous.clone(), allocation));
-            }
-            // SAFETY: The retained lease has no views. No peer handles remain,
-            // and the consumer stays stopped during the swap.
-            unsafe { producer.reclaim_slots() }.unwrap();
-            assert!(!producer.pool().ptr_eq(&previous));
-
-            let mut ring_after = vec![0; ring_before.len()];
-            mem.read(mem.base_addr(), &mut ring_after).unwrap();
-            assert_eq!(ring_after, ring_before);
-        }
-
-        let pool = producer.pool().clone();
-        let reused = pool.alloc(64).unwrap();
-        assert_eq!(reused.addr, allocation.addr);
-
-        drop(retained);
-        assert_eq!(pool.num_live(), 3);
-
-        let first = producer.poll().unwrap().unwrap();
-        assert_eq!(first.token(), tokens[0]);
-
-        let first = first.into_bytes().unwrap();
-        assert_eq!(first.as_ref(), b"first");
-
-        drop(first);
-        assert_eq!(pool.num_live(), 2);
-
-        let (recv, reply) = poll_received(&mut consumer);
-        let ReplyChain::Writable(mut reply) = reply else {
-            panic!("expected writable reply");
-        };
-
-        reply.write_all(b"second").unwrap();
-        consumer.complete(recv, reply).unwrap();
-
-        let second = producer.poll().unwrap().unwrap();
-        assert_eq!(second.token(), tokens[1]);
-
-        let second = second.into_bytes().unwrap();
-        assert_eq!(second.as_ref(), b"second");
-
-        drop(second);
-        pool.dealloc(reused.addr).unwrap();
-        assert_eq!(pool.num_live(), 0);
-    }
-
-    #[test]
-    fn reset_reclaims_inflight_slots_and_reuses_ring() {
+    fn empty_bootstrap_refresh_reclaims_full_ring() {
         let ring = make_ring(8);
         let mem = ring.mem();
 
@@ -1950,11 +2383,12 @@ mod tests {
         assert_eq!(pool.num_free(), 0);
 
         // SAFETY: No consumer is attached to this ring.
-        unsafe { producer.reset() }.unwrap();
+        unsafe { refresh_empty(&mut producer) };
 
         assert_eq!(producer.num_inflight(), 0);
         assert_eq!(producer.num_free(), ring.len());
         assert_eq!(pool.num_free(), ring.len());
+        assert_eq!(producer.pool().num_free(), ring.len());
         assert!(producer.inflight.live.is_empty());
 
         for _ in 0..ring.len() {
@@ -1962,12 +2396,13 @@ mod tests {
             producer.submit(chain).unwrap();
         }
 
-        // SAFETY: No consumer is attached to this ring.
-        unsafe { producer.reset() }.unwrap();
+        let mut consumer = VirtqConsumer::new(ring.layout(), ring.mem(), TestNotifier::new());
+        complete_avail(&mut producer, &mut consumer);
+        assert_eq!(producer.pool().num_free(), ring.len());
     }
 
     #[test]
-    fn stopped_reset_reuses_slot_after_consumer_handles_drop() {
+    fn refresh_reuses_slot_after_consumer_handles_drop() {
         let ring = make_ring(4);
         let mem = ring.mem();
         let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
@@ -1987,7 +2422,7 @@ mod tests {
         assert_eq!(pool.num_live(), 1);
 
         // SAFETY: The consumer and all its chain handles have been dropped.
-        unsafe { producer.reset() }.unwrap();
+        unsafe { refresh_empty(&mut producer) };
         assert_eq!(pool.num_live(), 0);
 
         let mut replacement = producer.chain().readable(4).build().unwrap();
@@ -2000,44 +2435,7 @@ mod tests {
         assert_eq!(recv.to_bytes().unwrap().as_ref(), b"GOOD");
         consumer.complete(recv, reply).unwrap();
         producer.drain(drop).unwrap();
-        assert_eq!(pool.num_live(), 0);
-    }
-
-    #[test]
-    fn reset_and_pool_swap_reject_buffered_writable_completion() {
-        let ring = make_ring(8);
-        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
-        let chain = producer.chain().writable(64).build().unwrap();
-        producer.submit(chain).unwrap();
-
-        let (recv, reply) = poll_received(&mut consumer);
-        let ReplyChain::Writable(mut reply) = reply else {
-            panic!("expected writable reply");
-        };
-
-        reply.write_all(b"retained").unwrap();
-        consumer.complete(recv, reply).unwrap();
-        producer.reclaim().unwrap();
-
-        let pool = producer.pool().clone();
-        // SAFETY: No allocations are held outside the producer. The consumer
-        // completed its handles and stays inactive.
-        assert!(matches!(
-            unsafe { producer.reclaim_slots() },
-            Err(VirtqError::InvalidState)
-        ));
-        assert!(producer.pool().ptr_eq(&pool));
-
-        // SAFETY: The consumer completed its handles and stays inactive.
-        assert!(matches!(
-            unsafe { producer.reset() },
-            Err(VirtqError::InvalidState)
-        ));
-
-        drop(producer.poll().unwrap().unwrap());
-
-        // SAFETY: The consumer completed its handles and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        assert_eq!(producer.pool().num_live(), 0);
     }
 
     #[test]
@@ -2872,7 +3270,7 @@ mod tests {
     #[test]
     fn test_drop_chain_builder_deallocs() {
         let ring = make_ring(16);
-        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         {
             let _builder = producer.chain().readable(64).writable(128);
@@ -2884,14 +3282,13 @@ mod tests {
         let tok = producer.submit(se).unwrap();
         assert!(tok.id < 16);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
     fn test_drop_send_chain_deallocs() {
         let ring = make_ring(16);
-        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         {
             let _se = producer.chain().readable(64).writable(128).build().unwrap();
@@ -2903,14 +3300,13 @@ mod tests {
         let tok = producer.submit(se).unwrap();
         assert!(tok.id < 16);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
     fn test_submit_notifies() {
         let ring = make_ring(16);
-        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
 
         let initial_count = notifier.notification_count();
 
@@ -2920,14 +3316,13 @@ mod tests {
 
         assert!(notifier.notification_count() > initial_count);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
     fn test_submit_read_only_notifies_by_default() {
         let ring = make_ring(16);
-        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
 
         let initial_count = notifier.notification_count();
 
@@ -2937,14 +3332,13 @@ mod tests {
 
         assert!(notifier.notification_count() > initial_count);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
     fn test_submit_write_only_notifies_by_default() {
         let ring = make_ring(16);
-        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
 
         let initial_count = notifier.notification_count();
 
@@ -2953,8 +3347,7 @@ mod tests {
 
         assert!(notifier.notification_count() > initial_count);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
@@ -3013,8 +3406,7 @@ mod tests {
 
         assert_eq!(notifier.notification_count(), 1);
 
-        // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        complete_avail(&mut producer, &mut consumer);
     }
 
     #[test]
@@ -3163,8 +3555,9 @@ mod tests {
         producer.submit(se).unwrap();
         assert_eq!(producer.inner.num_inflight(), 1);
 
-        // SAFETY: Both consumers stay inactive and no chain handles survive.
-        unsafe { producer.reset() }.unwrap();
+        let (id, _) = ring_consumer.poll_available().unwrap();
+        ring_consumer.submit_used(id, 0).unwrap();
+        assert_matches!(producer.poll(), Ok(Some(_)));
     }
 
     #[test]
@@ -3186,6 +3579,6 @@ mod tests {
         assert_eq!(producer.inner.num_inflight(), 1);
 
         // SAFETY: The consumer has never polled the ring and stays inactive.
-        unsafe { producer.reset() }.unwrap();
+        unsafe { refresh_empty(&mut producer) };
     }
 }

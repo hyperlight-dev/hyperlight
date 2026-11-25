@@ -17,6 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contents. Callers must keep blobs immutable. Use the new
   `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
   atomically repair mismatched contents.
+* **Breaking:** Snapshots use ABI 12. Guests must be rebuilt and existing
+  snapshots regenerated. Capture and restore provide full H2G bootstrap
+  capacity before guest entry, independent of retained buffers. Snapshot
+  capture runs on the host while the guest is stopped.
+  On-disk snapshots store transport geometry. Loading rebuilds the ring images.
+  The checkpoint request, `prepare_snapshot`, `VirtqProducer::reclaim_slots`,
+  and queue reset APIs are removed.
 * `Snapshot::save` no longer synchronously flushes files to stable storage.
   Callers requiring power-loss durability must sync the snapshot files and
   directory hierarchy themselves after saving.

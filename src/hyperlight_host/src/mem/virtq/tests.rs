@@ -3,7 +3,7 @@
 
 use hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET;
 use hyperlight_common::virtq::{
-    DescFlags, Descriptor, MemOps, RingError, SlotLayout, SlotPool, VirtqError, VirtqProducer,
+    DescFlags, Descriptor, MemOps, RingError, RingProducer, SlotLayout, SlotPool, VirtqError,
 };
 
 use super::mem::HostMemOps;
@@ -41,15 +41,15 @@ impl TestCase {
             SlotLayout::new(h2g_pool_base, buffer_size, h2g_prefill_descs).unwrap();
         let h2g_pool = SlotPool::new(h2g_pool_layout).unwrap();
 
-        let mut producer = VirtqProducer::new(h2g_layout, mem.clone(), HostNotifier, h2g_pool);
-        let mut batch = producer.batch();
+        let mut producer = RingProducer::new(h2g_layout, mem.clone());
 
         for _ in 0..h2g_prefill_descs {
-            let chain = batch.chain().writable(buffer_size).build().unwrap();
-            batch.submit(chain).unwrap();
+            let allocation = h2g_pool.alloc(buffer_size).unwrap();
+            producer
+                .submit_one(allocation.addr, allocation.len, true)
+                .unwrap();
         }
 
-        batch.finish_without_notify();
         write_published_arena_gpa(&scratch, arena.base_addr()).unwrap();
 
         Self {
@@ -121,6 +121,23 @@ fn write_desc(mem: &HostMemOps, layout: VirtqLayout, index: u16, desc: Descripto
     .unwrap();
 }
 
+/// Read live rings for comparison with bootstrap images.
+fn read_snapshot(
+    layout: &SandboxMemoryLayout,
+    scratch: &HostSharedMemory,
+) -> Result<VirtqSnapshot> {
+    let (g2h_offset, h2g_offset) = ring_offsets(layout);
+    let mut g2h = vec![0; layout.get_g2h_queue_dims().ring_len()];
+    let mut h2g = vec![0; layout.get_h2g_queue_dims().ring_len()];
+    scratch.copy_to_slice(&mut g2h, g2h_offset)?;
+    scratch.copy_to_slice(&mut h2g, h2g_offset)?;
+
+    Ok(VirtqSnapshot {
+        g2h_ring: g2h,
+        h2g_ring: h2g,
+    })
+}
+
 #[test]
 fn snapshots_and_restores_rings() {
     let case = TestCase::new();
@@ -134,19 +151,20 @@ fn snapshots_and_restores_rings() {
         .copy_from_slice(&[0x5a; 16], spare_offset)
         .unwrap();
 
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+    let captured = VirtqSnapshot::bootstrap(&layout).unwrap();
+    assert_eq!(read_snapshot(&layout, &case.scratch).unwrap(), captured);
     let restored = host_scratch();
     let allocator = layout.get_pt_base_gpa();
     let allocator_offset = restored.mem_size() - SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
 
     let mbx_offset = layout.mbx_scratch_offset();
-    let cp = MailboxValue::CheckpointPending.as_bytes();
+    let status = MailboxValue::InitPending.as_bytes();
 
     restored.write::<u64>(allocator_offset, allocator).unwrap();
-    restored.copy_from_slice(cp, mbx_offset).unwrap();
+    restored.copy_from_slice(status, mbx_offset).unwrap();
 
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
-    let restored_snapshot = VirtqSnapshot::capture(&layout, &restored).unwrap();
+    let restored_snapshot = read_snapshot(&layout, &restored).unwrap();
     let restored_mem = HostMemOps::new(&restored);
     let mut pool_bytes = [0; 16];
     restored_mem
@@ -167,7 +185,7 @@ fn snapshots_and_restores_rings() {
     let mbx = restored.read::<u64>(mbx_offset).unwrap();
     assert_eq!(
         MailboxValue::try_from(mbx).unwrap(),
-        MailboxValue::CheckpointComplete
+        MailboxValue::InitComplete
     );
 
     assert!(g2h.poll(0).unwrap().is_none());
@@ -176,117 +194,7 @@ fn snapshots_and_restores_rings() {
 
     drop((g2h, h2g));
     captured.restore(&layout, &restored).unwrap();
-    assert_eq!(
-        VirtqSnapshot::capture(&layout, &restored).unwrap(),
-        captured
-    );
-}
-
-#[test]
-fn rejects_snapshot_geometry_mismatches() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-    let g2h = captured.g2h_ring();
-    let h2g = captured.h2g_ring();
-
-    for (g2h_len, h2g_len) in [(g2h.len() - 1, h2g.len()), (g2h.len(), h2g.len() - 1)] {
-        assert!(
-            VirtqSnapshot::new(&layout, g2h[..g2h_len].to_vec(), h2g[..h2g_len].to_vec()).is_err()
-        );
-    }
-}
-
-#[test]
-fn rejects_noncanonical_snapshot_images() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-
-    case.mem
-        .write(case.g2h_layout.desc_table_addr(), &[1])
-        .unwrap();
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("invalid canonical G2H image"));
-
-    case.mem
-        .write(case.g2h_layout.desc_table_addr(), &[0])
-        .unwrap();
-    case.mem
-        .write(case.h2g_layout.drv_evt_addr(), &[1])
-        .unwrap();
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("invalid canonical H2G image"));
-}
-
-#[test]
-fn rejects_h2g_snapshot_buffer_attributes() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let original = case.h2g_desc(0);
-
-    for (len, flags) in [
-        (original.len, original.flags & !DescFlags::WRITE.bits()),
-        (original.len - 1, original.flags),
-        (original.len + 1, original.flags),
-    ] {
-        let desc = Descriptor {
-            len,
-            flags,
-            ..original
-        };
-        case.set_h2g_desc(0, desc);
-        assert!(VirtqSnapshot::capture(&layout, &case.scratch).is_err());
-    }
-}
-
-/// Distinct descriptor IDs do not imply distinct receive slots.
-#[test]
-fn rejects_h2g_snapshot_duplicate_slots() {
-    let case = TestCase::new();
-    let first = case.h2g_desc(0);
-    let mut second = case.h2g_desc(1);
-
-    assert_ne!(first.id, second.id);
-
-    second.addr = first.addr;
-    case.set_h2g_desc(1, second);
-
-    let error = VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap_err();
-    assert!(error.to_string().contains("descriptor 1 buffer"), "{error}");
-}
-
-/// Slot alignment is relative to the pool, and free-list order may vary.
-#[test]
-fn accepts_h2g_snapshot_slot_permutations() {
-    let case = TestCase::new();
-    let mut first = case.h2g_desc(0);
-    let mut second = case.h2g_desc(1);
-
-    assert!(!case.h2g_pool_base.is_multiple_of(H2G_BUFFER_SIZE as u64));
-
-    std::mem::swap(&mut first.addr, &mut second.addr);
-    case.set_h2g_desc(0, first);
-    case.set_h2g_desc(1, second);
-
-    VirtqSnapshot::capture(&memory_layout(), &case.scratch).unwrap();
-}
-
-#[test]
-fn rejects_h2g_snapshot_chain_shape() {
-    let case = TestCase::new();
-    let layout = memory_layout();
-    let mut head = case.h2g_desc(0);
-    let mut tail = case.h2g_desc(1);
-    head.flags |= DescFlags::NEXT.bits();
-    tail.id = head.id;
-    case.set_h2g_desc(0, head);
-    case.set_h2g_desc(1, tail);
-
-    let error = VirtqSnapshot::capture(&layout, &case.scratch).unwrap_err();
-    assert!(
-        error.to_string().contains("must contain one descriptor"),
-        "{error}"
-    );
+    assert_eq!(read_snapshot(&layout, &restored).unwrap(), captured);
 }
 
 #[test]
@@ -321,13 +229,13 @@ fn uses_scratch_payloads_outside_pools() {
     assert_eq!(bytes, [4, 5, 6]);
 }
 
-/// Snapshot admission does not replace checks after the guest resumes.
+/// Guest-written descriptors are checked on use after restore.
 #[test]
 fn payload_bounds_are_checked_on_use() {
     let case = TestCase::new();
     let layout = memory_layout();
     let end = hyperlight_common::layout::scratch_base_gva(SCRATCH_SIZE) + SCRATCH_SIZE as u64;
-    let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
+    let captured = VirtqSnapshot::bootstrap(&layout).unwrap();
     let restored = host_scratch();
     let (mut g2h, mut h2g) = captured.restore(&layout, &restored).unwrap();
     let mem = HostMemOps::new(&restored);
@@ -369,27 +277,4 @@ fn malformed_descriptors_fail_when_polled() {
         h2g.poll(0),
         Err(VirtqError::RingError(RingError::BadChain))
     ));
-}
-
-#[test]
-fn restores_partially_prefilled_h2g_ring() {
-    for prefill in 0..=4 {
-        let case = TestCase::new();
-
-        for index in prefill..4 {
-            case.set_h2g_desc(index, Descriptor::new(0, 0, 0, DescFlags::empty()));
-        }
-
-        let layout = memory_layout();
-        let captured = VirtqSnapshot::capture(&layout, &case.scratch).unwrap();
-        let restored = host_scratch();
-        let (_, mut consumer) = captured.restore(&layout, &restored).unwrap();
-
-        for _ in 0..prefill {
-            let (request, reply) = consumer.poll(0).unwrap().unwrap();
-            consumer.complete(request, reply).unwrap();
-        }
-
-        assert!(consumer.poll(0).unwrap().is_none());
-    }
 }

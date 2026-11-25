@@ -74,7 +74,7 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
         .map_err(HyperlightVmError::Initialize)?;
 
     if initialise_guest {
-        hshm.finish_snapshot_checkpoint()?;
+        hshm.require_initialization_complete()?;
     }
 
     let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm, u_sbox.config);
@@ -135,11 +135,15 @@ pub(crate) fn set_up_hypervisor_partition(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+    use std::sync::Arc;
+
     use hyperlight_testing::simple_guest_as_pathbuf;
 
     use super::initialize_sandbox;
-    use crate::UninitializedSandbox;
+    use crate::sandbox::snapshot::Snapshot;
     use crate::sandbox::uninitialized::GuestBinary;
+    use crate::{HyperlightError, SandboxBuilder, UninitializedSandbox};
 
     #[test]
     fn test_evolve() {
@@ -149,5 +153,35 @@ mod tests {
                 UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path), None).unwrap();
             initialize_sandbox(u_sbox).unwrap();
         }
+    }
+
+    #[test]
+    fn evolve_rejects_incomplete_initialization() {
+        let path = simple_guest_as_pathbuf().with_file_name("simpleguest-incomplete-init");
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        let err = sandbox.evolve().unwrap_err();
+
+        assert_matches!(
+            err,
+            HyperlightError::TransportError(msg)
+                if msg == "Guest did not complete initialization"
+        );
+    }
+
+    #[test]
+    fn from_snapshot_rejects_incomplete_initialization() {
+        let path = simple_guest_as_pathbuf().with_file_name("simpleguest-incomplete-init");
+        let snapshot =
+            Snapshot::from_binary(GuestBinary::FilePath(path), Default::default()).unwrap();
+
+        let err = SandboxBuilder::from_snapshot(Arc::new(snapshot))
+            .build()
+            .unwrap_err();
+
+        assert_matches!(
+            err,
+            HyperlightError::TransportError(msg)
+                if msg == "Guest did not complete initialization"
+        );
     }
 }

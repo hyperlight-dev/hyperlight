@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The Hyperlight Authors.
 
-//! Host [`MemOps`] implementations for scratch and captured ring images.
+//! Host [`MemOps`] implementations for scratch and private ring images.
 //!
 //! Live scratch operations use [`HostSharedMemory`]'s checked API and acquire
 //! its lifecycle read lock. This preserves exclusive-memory coordination but
 //! makes descriptor traversal pay for one lock acquisition per field access.
 
+use core::cell::RefCell;
 use core::mem::{align_of, size_of};
+use core::ops::Range;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use hyperlight_common::layout::scratch_base_gva;
@@ -90,33 +92,51 @@ unsafe impl MemOps for HostMemOps {
     }
 }
 
-/// Read-only ring image addressed by its guest virtual base.
+/// Private ring image addressed by its guest virtual base.
 pub(super) struct ImageMem<'a> {
     base: u64,
-    bytes: &'a [u8],
+    bytes: RefCell<&'a mut [u8]>,
 }
 
 impl<'a> ImageMem<'a> {
-    pub(super) fn new(base: u64, bytes: &'a [u8]) -> Self {
-        Self { base, bytes }
+    /// Bind an exclusively borrowed image for single-threaded initialization.
+    pub(super) fn new(base: u64, bytes: &'a mut [u8]) -> Self {
+        Self {
+            base,
+            bytes: RefCell::new(bytes),
+        }
     }
 
-    fn slice(&self, addr: u64, len: usize) -> Result<&[u8]> {
+    /// Translate a guest address into a checked image range.
+    fn range(&self, addr: u64, len: usize) -> Result<Range<usize>> {
         let out_of_bounds = || new_error!("image memory access is out of bounds");
         let offset = addr.checked_sub(self.base).ok_or_else(out_of_bounds)?;
         let offset = usize::try_from(offset).map_err(|_| out_of_bounds())?;
         let end = offset.checked_add(len).ok_or_else(out_of_bounds)?;
-        self.bytes.get(offset..end).ok_or_else(out_of_bounds)
+
+        if end > self.bytes.borrow().len() {
+            return Err(out_of_bounds());
+        }
+
+        Ok(offset..end)
     }
 }
 
-// SAFETY: Reads stay within immutable host-owned bytes. Atomic loads check
-// alignment, writes fail, and returned slices borrow the backing image.
+// SAFETY: Copies stay within exclusively borrowed host storage. RefCell excludes
+// concurrent access, so aligned flag operations need no cross-thread ordering.
+// Borrowed slices are unsupported.
 unsafe impl MemOps for ImageMem<'_> {
     type Error = HyperlightError;
 
     fn read(&self, addr: u64, dst: &mut [u8]) -> Result<()> {
-        dst.copy_from_slice(self.slice(addr, dst.len())?);
+        let range = self.range(addr, dst.len())?;
+        dst.copy_from_slice(&self.bytes.borrow()[range]);
+        Ok(())
+    }
+
+    fn write(&self, addr: u64, src: &[u8]) -> Result<()> {
+        let range = self.range(addr, src.len())?;
+        self.bytes.borrow_mut()[range].copy_from_slice(src);
         Ok(())
     }
 
@@ -129,26 +149,28 @@ unsafe impl MemOps for ImageMem<'_> {
         Ok(u16::from_ne_bytes(bytes))
     }
 
-    unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8]> {
-        self.slice(addr, len)
+    fn store_release(&self, addr: u64, val: u16) -> Result<()> {
+        if !addr.is_multiple_of(align_of::<AtomicU16>() as u64) {
+            return Err(new_error!("image atomic access is unaligned"));
+        }
+
+        self.write(addr, &val.to_ne_bytes())
     }
 
-    fn write(&self, _addr: u64, _src: &[u8]) -> Result<()> {
-        Err(new_error!("image memory is read-only"))
-    }
-
-    fn store_release(&self, _addr: u64, _val: u16) -> Result<()> {
-        Err(new_error!("image memory is read-only"))
+    unsafe fn as_slice(&self, _addr: u64, _len: usize) -> Result<&[u8]> {
+        Err(new_error!("borrowed image access is unsupported"))
     }
 
     #[allow(clippy::mut_from_ref)]
     unsafe fn as_mut_slice(&self, _addr: u64, _len: usize) -> Result<&mut [u8]> {
-        Err(new_error!("image memory is read-only"))
+        Err(new_error!("borrowed image access is unsupported"))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use hyperlight_common::virtq::MemOps;
 
     use super::*;
@@ -209,9 +231,9 @@ mod tests {
     }
 
     #[test]
-    fn image_access_is_bounded_and_read_only() {
-        let bytes = [1, 2, 3, 4];
-        let mem = ImageMem::new(0x1000, &bytes);
+    fn image_access_is_bounded() {
+        let mut bytes = [1, 2, 3, 4];
+        let mem = ImageMem::new(0x1000, &mut bytes);
         let mut read = [0; 2];
         mem.read(0x1002, &mut read).unwrap();
         assert_eq!(read, [3, 4]);
@@ -219,12 +241,20 @@ mod tests {
             mem.load_acquire(0x1000).unwrap(),
             u16::from_ne_bytes([1, 2])
         );
-        assert!(mem.load_acquire(0x1001).is_err());
-        assert!(mem.read(0xfff, &mut read).is_err());
-        assert!(mem.read(0x1003, &mut read).is_err());
-        assert!(mem.read(u64::MAX, &mut read).is_err());
-        assert!(mem.slice(0x1001, usize::MAX).is_err());
-        assert!(mem.write(0x1000, &[0]).is_err());
-        assert!(mem.store_release(0x1000, 0).is_err());
+        assert_matches!(mem.load_acquire(0x1001), Err(_));
+        assert_matches!(mem.read(0xfff, &mut read), Err(_));
+        assert_matches!(mem.read(0x1003, &mut read), Err(_));
+        assert_matches!(mem.read(u64::MAX, &mut read), Err(_));
+        assert_matches!(mem.range(0x1001, usize::MAX), Err(_));
+
+        mem.write(0x1002, &[5, 6]).unwrap();
+        mem.read(0x1002, &mut read).unwrap();
+        assert_eq!(read, [5, 6]);
+
+        mem.store_release(0x1000, 0x1234).unwrap();
+        assert_eq!(mem.load_acquire(0x1000).unwrap(), 0x1234);
+        assert_matches!(mem.write(0x1003, &[5, 6]), Err(_));
+        assert_matches!(mem.store_release(0x1001, 0), Err(_));
+        assert_matches!(mem.store_release(0x1004, 0), Err(_));
     }
 }

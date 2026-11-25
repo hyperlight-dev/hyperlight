@@ -209,7 +209,7 @@ impl QueueDims {
     }
 }
 
-/// Addresses of both rings, the checkpoint mailbox, and pools in one fixed arena.
+/// Addresses of both rings, the initialization mailbox, and pools in one fixed arena.
 ///
 /// The G2H ring begins at the arena base. The H2G ring is descriptor aligned.
 /// The mailbox is `u64` aligned. Both pools are page aligned.
@@ -225,7 +225,7 @@ pub struct TransportArena {
     g2h_ring_addr: u64,
     /// Address of the H2G ring.
     h2g_ring_addr: u64,
-    /// Address of the snapshot checkpoint mailbox.
+    /// Address of the initialization mailbox.
     mbx_addr: u64,
     /// Address of the G2H pool.
     g2h_pool_addr: u64,
@@ -291,12 +291,12 @@ impl TransportArena {
         self.h2g_ring_addr
     }
 
-    /// Address of the snapshot checkpoint mailbox.
+    /// Address of the initialization mailbox.
     pub const fn mbx_addr(&self) -> u64 {
         self.mbx_addr
     }
 
-    /// Byte offset of the snapshot checkpoint mailbox from the arena base.
+    /// Byte offset of the initialization mailbox from the arena base.
     pub const fn mbx_offset(&self) -> usize {
         // `new` proves this difference is nonnegative and fits in `usize`.
         (self.mbx_addr - self.g2h_ring_addr) as usize

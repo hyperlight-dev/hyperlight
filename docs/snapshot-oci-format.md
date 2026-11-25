@@ -24,14 +24,13 @@ path/
     <config-digest>                   Hyperlight config JSON
     <data-digest>                     one raw blob per snapshot blob:
                                       guest data, then page tables
-    <transport-digest>                canonical virtqueue rings
 ```
 
-Four blob kinds per tag:
+Three blob kinds per tag:
 
 * **manifest** (`application/vnd.oci.image.manifest.v1+json`). Tiny JSON
-  pointer record selected via `index.json`. References one config,
-  the snapshot blobs, and one transport layer by digest.
+  pointer record selected via `index.json`. References one config and the
+  snapshot blobs by digest.
 * **config** (`application/vnd.hyperlight.snapshot.config.v6+json`). The
   snapshot descriptor: arch, hypervisor, CPU vendor, ABI version,
   resume address and captured registers, memory and transport layout,
@@ -44,15 +43,11 @@ Four blob kinds per tag:
   blob holds guest data followed by the page-table tree of the snapshot that
   created it. Each blob is mmap'd on restore, and the guest maps only its
   data.
-* **layer / transport**
-  (`application/vnd.hyperlight.snapshot.transport.v1`). A bounded
-  binary image of the canonical G2H and H2G rings. Loading checks ring
-  sizes and canonical state against the config.
 
-The runtime queue protocol and canonical checkpoint are described in
+The runtime queue protocol and snapshot bootstrap state are described in
 [Virtqueue host and guest communication](./virtio-host-guest-communication.md).
 
-Manifest layers are ordered data, then transport.
+Manifest layers follow the config's snapshot blob order.
 
 Blob filenames are the sha256 of the blob bytes, so identical blobs
 across tags are stored once.
@@ -65,13 +60,13 @@ filenames without reading or hashing their contents, even at a new destination.
 There is no backing-file cache. Missing blobs are written atomically; symlinks
 and wrong-length files are replaced.
 `Snapshot::checked_load` seeds the digest cache during verification; unchecked
-`load` does not. Metadata and transport blobs retain their normal write path.
+`load` does not. Metadata blobs retain their normal write path.
 
 Callers must keep loaded and published memory blobs immutable for the lifetime
 of these snapshots and outside writable guest mounts. Host-side mutation and
 silent storage corruption are outside the save-time threat boundary. Saving
 does not detect same-length corruption; use `Snapshot::checked_load` to verify
-persisted contents explicitly. The persisted OCI format is unchanged.
+persisted contents explicitly.
 
 `Snapshot::checked_save` takes the fully verifying path: it recomputes all
 memory-layer digests without using the cache and hashes existing memory blob
@@ -92,25 +87,14 @@ keys. Snapshots without metadata omit the field. The loader treats a missing
 field as an empty map, so snapshots written before metadata support remain
 loadable. Metadata counts toward the config blob size limit.
 
-## Transport framing
+## Transport initialization
 
-The transport layer is at most 2 MiB. Integers are unsigned and little-endian.
-Sizes and lengths are in bytes. The fixed header is 40 bytes:
+The config stores queue sizes, buffer sizes, pool sizes, and scratch geometry.
+Loading validates this layout and generates empty G2H and fully prefilled H2G
+bootstrap images. The snapshot ABI defines their initialization rules.
 
-| Offset | Bytes | Field |
-|---:|---:|---|
-| 0 | 8 | Magic `HLVQSNAP` |
-| 8 | 4 | Version, `1` |
-| 12 | 4 | Reserved, `0` |
-| 16 | 8 | Scratch size |
-| 24 | 8 | G2H ring image length |
-| 32 | 8 | H2G ring image length |
-
-The G2H image follows the header. The H2G image follows the G2H image.
-The blob length must equal the header size plus both image lengths.
-
-The codec validates framing. Snapshot loading validates the ring contents
-against the finalized memory layout before admitting the snapshot.
+Ring images stay cached in memory for bulk-copy restore. Retained payloads
+are stored in ordinary memory layers through their guest aliases.
 
 ## What is one snapshot
 
@@ -124,8 +108,7 @@ A single saved `Snapshot` consists of exactly:
   config blob for tooling visibility,
 * one **manifest** blob (referenced by that index entry),
 * one **config** blob (referenced by the manifest's `config` field),
-* one or more data **layer** blobs,
-* one transport **layer** blob.
+* one or more data **layer** blobs.
 
 Saving two snapshots under different tags into the same `path`
 produces two index entries and two manifests. Configs and layers are
@@ -172,7 +155,7 @@ podman), `go-containerregistry` (crane), and `regclient`.
 ## Read semantics
 
 `Snapshot::load(path, reference)` reads a snapshot. It does not check
-the manifest, config, data, or transport blobs against their sha256 digests.
+the manifest, config, or data blobs against their sha256 digests.
 `reference` is an
 [`OciReference`], either a tag that matches the
 `org.opencontainers.image.ref.name` annotation or the manifest

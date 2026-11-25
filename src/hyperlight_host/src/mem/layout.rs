@@ -222,7 +222,7 @@ impl SandboxMemoryLayout {
             - hyperlight_common::layout::scratch_base_gpa(self.scratch_size)) as usize
     }
 
-    /// Scratch offset of the checkpoint mailbox.
+    /// Scratch offset of the initialization mailbox.
     pub(crate) fn mbx_scratch_offset(&self) -> usize {
         self.arena_scratch_offset() + self.transport_arena.mbx_offset()
     }
