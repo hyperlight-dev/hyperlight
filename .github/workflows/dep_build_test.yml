@@ -224,7 +224,7 @@ jobs:
           just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
 
       - name: Run Rust Gdb tests
-        if: inputs.arch == 'X64'
+        if: inputs.arch == 'X64' || (inputs.arch == 'arm64' && inputs.hypervisor == 'hyperv-ws2025' && inputs.config == 'debug')
         env:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ inputs.config }}
