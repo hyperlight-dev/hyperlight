@@ -30,8 +30,6 @@ use windows::core::PCSTR;
 use super::memory_region::{
     HostGuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
 };
-#[cfg(kvm)]
-use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
 use crate::log_then_return;
 
 type Result<T> = core::result::Result<T, SharedMemoryError>;
@@ -98,6 +96,11 @@ pub enum SharedMemoryError {
     /// host operating system
     #[error("mprotect failed with os error {0:?}")]
     MprotectFailed(Option<i32>),
+
+    /// A request to discard anonymous memory failed.
+    #[cfg(kvm)]
+    #[error("madvise failed: {0}")]
+    MadviseFailed(std::io::Error),
 
     /// A Windows virtual memory API call failed
     #[cfg(target_os = "windows")]
@@ -1509,54 +1512,27 @@ impl HostSharedMemory {
 }
 
 impl HostSharedMemory {
-    /// Reset this memory region to all-zeros, choosing the fastest
-    /// strategy for the current platform and hypervisor configuration.
-    ///
-    /// When the running hypervisor is KVM, uses `MADV_DONTNEED` for
-    /// lazy zeroing. Otherwise, uses `fill(0)`.
-    ///
-    /// On Windows, zeroing via `fill(0)` is prohibitively expensive
-    /// for large regions (e.g. 448 MiB scratch).  Instead, the
-    /// mapping is replaced with a fresh demand-zero allocation.
-    /// Returns `Some(GuestSharedMemory)` when the mapping was
-    /// replaced (the caller must update the VM mapping), or `None`
-    /// when zeroed in place.
-    ///
-    // TODO: Find the break-even point between zero-in-place and
-    // replace for each hypervisor and use a size-based heuristic
-    // instead of a compile-time platform check.
-    pub(crate) fn zero_or_replace(&mut self) -> Result<Option<GuestSharedMemory>> {
-        #[cfg(target_os = "windows")]
-        {
-            let new_mem = ExclusiveSharedMemory::new(self.mem_size())?;
-            let (hscratch, gscratch) = new_mem.build();
-            *self = hscratch;
-            Ok(Some(gscratch))
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.with_exclusivity(|e| {
-                // TODO: Find a similar lazy zeroing approach that works on MSHV.
-                //       (See Note [Keeping mappings in sync between userspace and the guest])
-                #[cfg(kvm)]
-                if matches!(get_available_hypervisor(), Some(HypervisorType::Kvm)) {
-                    // SAFETY: `with_exclusivity` holds the write lock on this private anonymous
-                    // mapping. KVM MMU notifiers make the guest also read zeros after discard.
-                    let ret = unsafe {
-                        libc::madvise(
-                            e.region.ptr() as *mut libc::c_void,
-                            e.region.size(),
-                            libc::MADV_DONTNEED,
-                        )
-                    };
-                    if ret == 0 {
-                        return;
-                    }
-                }
-                e.as_mut_slice().fill(0);
-            })?;
-            Ok(None)
-        }
+    pub(crate) fn zero_in_place(&mut self) -> Result<()> {
+        self.with_exclusivity(|e| e.as_mut_slice().fill(0))
+    }
+
+    /// The caller must use KVM, whose MMU notifiers invalidate guest mappings.
+    #[cfg(kvm)]
+    pub(crate) fn discard_pages(&mut self) -> Result<()> {
+        self.with_exclusivity(|e| {
+            // SAFETY: The write lock covers this private anonymous mapping.
+            let ret = unsafe {
+                libc::madvise(
+                    e.region.ptr() as *mut libc::c_void,
+                    e.region.size(),
+                    libc::MADV_DONTNEED,
+                )
+            };
+            if ret != 0 {
+                return Err(SharedMemoryError::MadviseFailed(Error::last_os_error()));
+            }
+            Ok(())
+        })?
     }
 }
 
@@ -1952,6 +1928,40 @@ mod tests {
 
         assert!(hshm.fill(0, 0, mem_size + 1).is_err());
         assert!(hshm.fill(0, mem_size, 1).is_err());
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn in_place_resets_clear_full_region() {
+        let resets: &[fn(&mut HostSharedMemory) -> Result<()>] = &[
+            HostSharedMemory::zero_in_place,
+            #[cfg(kvm)]
+            HostSharedMemory::discard_pages,
+        ];
+        for reset in resets {
+            for size in [page_size::get(), 100 * page_size::get()] {
+                for pattern in [0x55, 0xaa] {
+                    let memory = ExclusiveSharedMemory::new(size).unwrap();
+                    let (mut host, mut guest) = memory.build();
+                    host.with_exclusivity(|e| e.as_mut_slice().fill(pattern))
+                        .unwrap();
+                    let base = host.base_addr();
+
+                    reset(&mut host).unwrap();
+
+                    assert!(
+                        host.with_exclusivity(|e| e.as_slice().iter().all(|&b| b == 0))
+                            .unwrap()
+                    );
+                    assert_eq!(host.base_addr(), base);
+                    assert!(
+                        guest
+                            .with_exclusivity(|e| e.as_slice().iter().all(|&b| b == 0))
+                            .unwrap()
+                    );
+                }
+            }
+        }
     }
 
     /// Verify that `bounds_check!` rejects offset + size combinations that

@@ -6,6 +6,7 @@ use tracing::{Span, instrument};
 use super::SandboxConfiguration;
 use super::snapshot::NextAction;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
+use crate::hypervisor::virtual_machine::get_available_hypervisor;
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::GuestSharedMemory;
@@ -88,11 +89,15 @@ pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox
 
 pub(crate) fn set_up_hypervisor_partition(
     mgr: SandboxMemoryManager<GuestSharedMemory>,
-    #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    config: &SandboxConfiguration,
     stack_top_gva: u64,
     page_size: usize,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
+    if let Some(hypervisor) = get_available_hypervisor() {
+        hypervisor.resolve_memory_reset_strategy(config.get_memory_reset_strategy())?;
+    }
+
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
     let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {

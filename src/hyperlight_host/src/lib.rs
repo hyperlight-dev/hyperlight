@@ -73,6 +73,8 @@ pub(crate) mod testing;
 pub use error::HyperlightError;
 /// The re-export for the `is_hypervisor_present` type
 pub use hypervisor::virtual_machine::is_hypervisor_present;
+/// How writable guest memory is cleared during snapshot restore.
+pub use sandbox::MemoryResetStrategy;
 /// Deprecated name for [`Sandbox`].
 #[allow(deprecated)]
 pub use sandbox::MultiUseSandbox;

@@ -39,8 +39,8 @@ pub(crate) mod trace;
 
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
-/// Re-export for `SandboxConfiguration` type
-pub use config::SandboxConfiguration;
+/// Configuration and memory reset settings for a sandbox.
+pub use config::{MemoryResetStrategy, SandboxConfiguration};
 /// Re-export for the deprecated `MultiUseSandbox` name
 #[allow(deprecated)]
 pub use initialized::MultiUseSandbox;

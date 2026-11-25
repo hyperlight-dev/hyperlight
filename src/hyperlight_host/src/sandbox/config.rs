@@ -32,6 +32,33 @@ pub enum GuestMsrError {
     },
 }
 
+/// Tunes snapshot restore performance by choosing how scratch is cleared.
+///
+/// All strategies clear scratch to zero. Performance depends on sandbox
+/// size, workload, and backend.
+///
+/// The strategy controls equal-size restores.
+/// Size changes, construction, and recreation allocate fresh scratch.
+/// Unsupported strategies and reset failures return errors.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum MemoryResetStrategy {
+    /// Use the backend's default mechanism.
+    ///
+    /// KVM falls back to in-place zeroing if discard fails.
+    #[default]
+    PlatformDefault,
+    /// Overwrite the existing scratch allocation with zeros.
+    ZeroInPlace,
+    /// Discard scratch contents using OS discard or allocation replacement.
+    ///
+    /// KVM uses `MADV_DONTNEED`. Windows replaces the allocation and remaps
+    /// guest memory. MSHV and HVF do not support this strategy.
+    /// Page allocation and mapping costs can be deferred until the guest
+    /// accesses the memory.
+    Discard,
+}
+
 /// The complete set of configuration needed to create a Sandbox
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -64,6 +91,7 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    memory_reset_strategy: MemoryResetStrategy,
     /// The maximum log level enabled for guest code execution.
     ///
     /// If unset, the level is determined from the `RUST_LOG` environment
@@ -139,6 +167,7 @@ impl SandboxConfiguration {
     ) -> Self {
         Self {
             scratch_size,
+            memory_reset_strategy: MemoryResetStrategy::default(),
             max_guest_log_level: Self::MAX_GUEST_LOG_LEVEL_UNSET,
             g2h_queue_size: Self::DEFAULT_G2H_QUEUE_SIZE,
             h2g_queue_size: Self::DEFAULT_H2G_QUEUE_SIZE,
@@ -279,6 +308,21 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_scratch_size(&mut self, scratch_size: usize) {
         self.scratch_size = scratch_size;
+    }
+
+    /// Tunes snapshot restore performance with [`MemoryResetStrategy`].
+    ///
+    /// The strategy controls equal-size restores.
+    /// The destination keeps this setting across resizing and recreation.
+    /// Unsupported choices fail during sandbox initialization with
+    /// [`crate::HyperlightError::UnsupportedMemoryResetStrategy`].
+    pub fn set_memory_reset_strategy(&mut self, strategy: MemoryResetStrategy) {
+        self.memory_reset_strategy = strategy;
+    }
+
+    /// Returns the requested strategy, including an unresolved `PlatformDefault`.
+    pub fn get_memory_reset_strategy(&self) -> MemoryResetStrategy {
+        self.memory_reset_strategy
     }
 
     /// Sets the maximum log level for guest code execution.

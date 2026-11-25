@@ -11,13 +11,13 @@ use tracing_core::LevelFilter;
 
 use crate::func::HostFunction;
 use crate::mem::memory_region::MemoryRegion;
-use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 #[cfg(target_arch = "x86_64")]
 use crate::sandbox::config::GuestMsrError;
 use crate::sandbox::host_funcs::FunctionEntry;
 use crate::sandbox::snapshot::Snapshot;
+use crate::sandbox::{MemoryResetStrategy, SandboxConfiguration};
 use crate::{GuestBinary, HostFunctions, Result, Sandbox, UninitializedSandbox};
 
 /// What a [`SandboxBuilder`] builds the sandbox from.
@@ -281,6 +281,42 @@ impl SandboxBuilder {
     /// How much writable memory is offered to the guest.
     pub fn get_scratch_size(&self) -> usize {
         self.cfg.get_scratch_size()
+    }
+
+    /// Chooses how snapshot restore clears scratch to zero.
+    ///
+    /// `ZeroInPlace` writes zeros to existing pages and keeps their mappings.
+    /// It can be faster for small sandboxes, but clearing a large
+    /// [`scratch_size`](Self::scratch_size) can slow restores.
+    ///
+    /// `Discard` releases pages on KVM and replaces the allocation on WHP.
+    /// It can speed up restores for larger sandboxes, but may slow subsequent
+    /// guest calls. Accessing the memory can trigger faults that allocate
+    /// physical pages and map them into the VM.
+    ///
+    /// We recommend benchmarking the strategies supported on your platform
+    /// with your workload, measuring both restore time and subsequent guest calls.
+    ///
+    /// | Platform / hypervisor | Supported strategies | `PlatformDefault` |
+    /// | --- | --- | --- |
+    /// | Linux / KVM | `ZeroInPlace`, `Discard` | `Discard` |
+    /// | Linux / MSHV | `ZeroInPlace` | `ZeroInPlace` |
+    /// | Windows / WHP | `ZeroInPlace`, `Discard` | `Discard` |
+    /// | macOS / HVF | `ZeroInPlace` | `ZeroInPlace` |
+    ///
+    /// On KVM, `PlatformDefault` falls back to `ZeroInPlace` if discard fails.
+    ///
+    /// Applies to equal-size restores. Size changes and recreation always allocate
+    /// fresh scratch. Unsupported choices fail at [`Self::build`] with
+    /// [`crate::HyperlightError::UnsupportedMemoryResetStrategy`].
+    pub fn memory_reset_strategy(mut self, strategy: MemoryResetStrategy) -> Self {
+        self.cfg.set_memory_reset_strategy(strategy);
+        self
+    }
+
+    /// Returns the requested strategy, including an unresolved `PlatformDefault`.
+    pub fn get_memory_reset_strategy(&self) -> MemoryResetStrategy {
+        self.cfg.get_memory_reset_strategy()
     }
 
     /// Set the G2H virtqueue descriptor count.
