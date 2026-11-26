@@ -29,6 +29,25 @@ fn create_c_test_sandbox() -> Sandbox {
     SandboxBuilder::from_file(path).build().unwrap()
 }
 
+fn snapshot_with_shared_blobs(snapshot: &Snapshot, base: Option<&Snapshot>) -> Snapshot {
+    let source = snapshot.snapshot_memory();
+    let mut memory = SnapshotMemory::new(
+        source.layers().to_vec().into_boxed_slice(),
+        source.page_table_blob().clone(),
+    )
+    .unwrap();
+    if let Some(base) = base {
+        memory.record_base(base.snapshot_memory());
+    }
+    Snapshot {
+        state: Arc::new(super::SnapshotState {
+            memory: Arc::new(memory),
+            ..(*snapshot.state).clone()
+        }),
+        metadata: snapshot.metadata.clone(),
+    }
+}
+
 /// Startup replies survive release in the source guest, restore, and OCI loading.
 #[test]
 fn retained_initial_data_survives_snapshots() {
@@ -709,6 +728,134 @@ fn save_reuses_hashes_across_saves_and_checked_loads() {
 }
 
 #[test]
+fn overlay_requires_whole_base_provenance_without_retaining_unused_layers() {
+    let base = create_snapshot();
+    let unrelated = snapshot_with_shared_blobs(&base, None);
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    unrelated.save(dir.path(), &tag).unwrap();
+    for checked in [false, true] {
+        let result = if checked {
+            base.checked_load_overlay(dir.path(), tag.clone())
+        } else {
+            base.load_overlay(dir.path(), tag.clone())
+        };
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("does not declare")
+        );
+    }
+
+    let packed = unrelated.compact(None).unwrap();
+    let overlay = packed.compact(Some(&base)).unwrap();
+    assert!(overlay.snapshot_memory().blobs().all(|blob| {
+        !base
+            .snapshot_memory()
+            .blobs()
+            .any(|base| Arc::ptr_eq(blob, base))
+    }));
+    overlay.save(dir.path(), &tag).unwrap();
+    base.load_overlay(dir.path(), tag.clone()).unwrap();
+    base.checked_load_overlay(dir.path(), tag.clone()).unwrap();
+
+    rewrite_config(dir.path(), |config| {
+        config.as_object_mut().unwrap().remove("bases");
+    });
+    assert!(base.load_overlay(dir.path(), tag.clone()).is_err());
+    assert!(base.checked_load_overlay(dir.path(), tag).is_err());
+}
+
+#[test]
+fn overlay_preserves_saved_base_identity_through_uncompacted_captures() {
+    let mut sandbox = create_test_sandbox();
+    let base = sandbox.snapshot().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    base.save(base_dir.path(), &tag).unwrap();
+    let loaded_base = Snapshot::checked_load(base_dir.path(), tag.clone()).unwrap();
+    let mut restored = SandboxBuilder::from_snapshot(base.clone()).build().unwrap();
+    let mut directories = Vec::new();
+    for value in 1..=3 {
+        assert_eq!(restored.call::<i32>("AddToStatic", 1i32).unwrap(), value);
+        let captured = restored.snapshot().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        captured.save(dir.path(), &tag).unwrap();
+        let ordinary = loaded_base.load_overlay(dir.path(), tag.clone()).unwrap();
+        let checked = loaded_base
+            .checked_load_overlay(dir.path(), tag.clone())
+            .unwrap();
+        assert_eq!(ordinary.snapshot_memory().id, captured.snapshot_memory().id);
+        assert_eq!(checked.snapshot_memory().id, captured.snapshot_memory().id);
+        restored.restore(Arc::new(checked)).unwrap();
+        directories.push(dir);
+    }
+    assert_eq!(restored.call::<i32>("GetStatic", ()).unwrap(), 3);
+    drop(restored);
+    drop(directories);
+
+    let mut previous = base;
+    for value in 1..=3 {
+        assert_eq!(sandbox.call::<i32>("AddToStatic", 1i32).unwrap(), value);
+        let captured = sandbox.snapshot().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        captured.save(dir.path(), &tag).unwrap();
+        loaded_base.load_overlay(dir.path(), tag.clone()).unwrap();
+        previous
+            .checked_load_overlay(dir.path(), tag.clone())
+            .unwrap();
+        previous = captured;
+    }
+}
+
+#[test]
+fn malformed_snapshot_provenance_is_rejected_and_legacy_layouts_load() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    for (id, bases) in [
+        (serde_json::json!("not-an-id"), serde_json::json!([])),
+        (
+            serde_json::json!(uuid::Uuid::nil().to_string()),
+            serde_json::json!([]),
+        ),
+        (
+            serde_json::json!(snapshot.snapshot_memory().id.to_string()),
+            serde_json::json!([snapshot.snapshot_memory().id.to_string()]),
+        ),
+        (
+            serde_json::Value::Null,
+            serde_json::json!([snapshot.snapshot_memory().id.to_string()]),
+        ),
+    ] {
+        snapshot.save(dir.path(), &tag).unwrap();
+        rewrite_config(dir.path(), |config| {
+            config["snapshot_id"] = id;
+            config["bases"] = bases;
+        });
+        assert!(Snapshot::load(dir.path(), tag.clone()).is_err());
+        assert!(Snapshot::checked_load(dir.path(), tag.clone()).is_err());
+    }
+    snapshot.save(dir.path(), &tag).unwrap();
+    rewrite_config(dir.path(), |config| {
+        config.as_object_mut().unwrap().remove("snapshot_id");
+        config.as_object_mut().unwrap().remove("bases");
+    });
+    let legacy = Snapshot::checked_load(dir.path(), tag.clone()).unwrap();
+    assert!(snapshot.load_overlay(dir.path(), tag.clone()).is_err());
+    legacy.save(dir.path(), &tag).unwrap();
+    assert_eq!(
+        Snapshot::load(dir.path(), tag)
+            .unwrap()
+            .snapshot_memory()
+            .id,
+        legacy.snapshot_memory().id
+    );
+}
+
+#[test]
 fn load_reuses_declared_digests_without_promoting_them_to_verified() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
@@ -720,18 +867,40 @@ fn load_reuses_declared_digests_without_promoting_them_to_verified() {
         .map(|blob| blob.memory().as_slice().len())
         .sum();
     let before = super::file::test_hashed_bytes();
-    let loaded = Snapshot::load(dir.path(), tag.clone()).unwrap();
+    let base = Snapshot::load(dir.path(), tag.clone()).unwrap();
     assert!(super::file::test_hashed_bytes() - before < memory_bytes);
     assert!(
-        loaded
-            .snapshot_memory()
+        base.snapshot_memory()
             .blobs()
-            .all(|blob| blob.sha256.get().is_none() && blob.declared_sha256.is_some())
+            .all(|blob| { blob.sha256.get().is_none() && blob.declared_sha256.is_some() })
     );
+
     let other = tempfile::tempdir().unwrap();
     let before = super::file::test_hashed_bytes();
-    loaded.save(other.path(), &tag).unwrap();
+    let derived = snapshot_with_shared_blobs(&base, Some(&base));
+    derived.save(other.path(), &tag).unwrap();
     assert!(super::file::test_hashed_bytes() - before < memory_bytes);
+    for blob in base.snapshot_memory().blobs() {
+        std::fs::remove_file(
+            other
+                .path()
+                .join("blobs/sha256")
+                .join(blob.declared_sha256.as_ref().unwrap()),
+        )
+        .unwrap();
+    }
+    assert!(
+        base.checked_load_overlay(other.path(), tag.clone())
+            .is_err()
+    );
+    let loaded = base.load_overlay(other.path(), tag.clone()).unwrap();
+    for (layer, base) in loaded
+        .snapshot_memory()
+        .blobs()
+        .zip(base.snapshot_memory().blobs())
+    {
+        assert!(Arc::ptr_eq(layer, base));
+    }
     let checked_dir = tempfile::tempdir().unwrap();
     let before = super::file::test_hashed_bytes();
     loaded.checked_save(checked_dir.path(), &tag).unwrap();
@@ -751,6 +920,14 @@ fn load_accepts_wrong_content_digest_but_rejects_wrong_size() {
     std::fs::write(&path, &bytes).unwrap();
     assert!(Snapshot::checked_load(dir.path(), tag.clone()).is_err());
     let trusted = Snapshot::load(dir.path(), tag.clone()).unwrap();
+    let derived = snapshot_with_shared_blobs(&trusted, Some(&trusted));
+    let derived_dir = tempfile::tempdir().unwrap();
+    derived.save(derived_dir.path(), &tag).unwrap();
+    assert!(
+        trusted
+            .checked_load_overlay(derived_dir.path(), tag.clone())
+            .is_err()
+    );
     let output = tempfile::tempdir().unwrap();
     trusted.save(output.path(), &tag).unwrap();
     assert!(Snapshot::checked_load(output.path(), tag.clone()).is_err());
@@ -760,6 +937,121 @@ fn load_accepts_wrong_content_digest_but_rejects_wrong_size() {
     bytes.pop();
     std::fs::write(path, bytes).unwrap();
     assert!(Snapshot::load(dir.path(), tag).is_err());
+}
+
+#[test]
+fn checked_overlay_resolves_missing_blobs_without_rehashing() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    let base = Snapshot::checked_load(dir.path(), tag.clone()).unwrap();
+    let uncached = Snapshot::load(dir.path(), tag.clone()).unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let derived = snapshot_with_shared_blobs(&snapshot, Some(&snapshot));
+    derived.save(other.path(), &tag).unwrap();
+    let memory_bytes: usize = base
+        .snapshot_memory()
+        .blobs()
+        .map(|blob| {
+            std::fs::remove_file(
+                other
+                    .path()
+                    .join("blobs/sha256")
+                    .join(blob.sha256.get().unwrap()),
+            )
+            .unwrap();
+            blob.memory().as_slice().len()
+        })
+        .sum();
+
+    assert!(Snapshot::checked_load(other.path(), tag.clone()).is_err());
+    assert!(
+        uncached
+            .checked_load_overlay(other.path(), tag.clone())
+            .is_err()
+    );
+    let before = super::file::test_hashed_bytes();
+    let loaded = base
+        .checked_load_overlay(other.path(), tag.clone())
+        .unwrap();
+    assert!(super::file::test_hashed_bytes() - before < memory_bytes);
+    for (loaded, base) in loaded
+        .snapshot_memory()
+        .blobs()
+        .zip(base.snapshot_memory().blobs())
+    {
+        assert!(Arc::ptr_eq(loaded, base));
+    }
+    let before = super::file::test_hashed_bytes();
+    loaded.save(other.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < memory_bytes);
+    let mut sandbox = SandboxBuilder::from_snapshot(Arc::new(loaded))
+        .build()
+        .unwrap();
+    assert_eq!(sandbox.call::<i32>("AddToStatic", 1i32).unwrap(), 1);
+}
+
+#[test]
+#[cfg(not(unshared_snapshot_mem))]
+fn checked_overlay_retains_shared_layers_and_verifies_new_memory() {
+    let mut sandbox = create_test_sandbox();
+    let base = sandbox.snapshot().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    base.save(base_dir.path(), &tag).unwrap();
+    let base = Arc::new(Snapshot::checked_load(base_dir.path(), tag.clone()).unwrap());
+    sandbox.restore(base.clone()).unwrap();
+    let mut last_dir = None;
+    for value in 1..=3 {
+        assert_eq!(sandbox.call::<i32>("AddToStatic", 1i32).unwrap(), value);
+        let captured = sandbox.snapshot().unwrap();
+        assert!(captured.snapshot_memory().layers().iter().any(|layer| {
+            base.snapshot_memory()
+                .layers()
+                .iter()
+                .any(|base| Arc::ptr_eq(layer, base))
+        }));
+        let compacted = captured.compact(Some(&base)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        compacted.save(dir.path(), &tag).unwrap();
+        let loaded = Arc::new(base.checked_load_overlay(dir.path(), tag.clone()).unwrap());
+        assert!(loaded.snapshot_memory().layers().iter().any(|layer| {
+            base.snapshot_memory()
+                .layers()
+                .iter()
+                .any(|base| Arc::ptr_eq(layer, base))
+        }));
+        assert!(
+            loaded.snapshot_memory().layers().len() <= base.snapshot_memory().layers().len() + 1
+        );
+        sandbox.restore(loaded).unwrap();
+        last_dir = Some(dir);
+    }
+    assert_eq!(sandbox.call::<i32>("GetStatic", ()).unwrap(), 3);
+    drop(sandbox);
+    let dir = last_dir.unwrap();
+    let loaded = base.checked_load_overlay(dir.path(), tag.clone()).unwrap();
+    let new_blob = loaded
+        .snapshot_memory()
+        .blobs()
+        .find(|blob| {
+            !base
+                .snapshot_memory()
+                .blobs()
+                .any(|base| Arc::ptr_eq(blob, base))
+        })
+        .unwrap();
+    let path = dir
+        .path()
+        .join("blobs/sha256")
+        .join(new_blob.sha256.get().unwrap());
+    drop(loaded);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    let error = base.checked_load_overlay(dir.path(), tag).err().unwrap();
+    assert!(error.to_string().contains("digest mismatch"), "{error}");
 }
 
 #[test]

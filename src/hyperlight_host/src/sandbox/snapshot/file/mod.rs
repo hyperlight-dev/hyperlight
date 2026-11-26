@@ -711,6 +711,14 @@ impl Snapshot {
                 .ok_or_else(|| crate::new_error!("snapshot page-table blob is missing"))?,
             host_functions,
             snapshot_generation: self.state.snapshot_generation,
+            snapshot_id: Some(self.state.memory.id.to_string()),
+            bases: self
+                .state
+                .memory
+                .bases
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             metadata: self.metadata.clone(),
         })
     }
@@ -788,7 +796,7 @@ impl Snapshot {
     /// # }
     /// ```
     pub fn load(path: impl AsRef<Path>, reference: impl Into<OciReference>) -> crate::Result<Self> {
-        Self::load_inner(path.as_ref(), &reference.into(), false)
+        Self::load_inner(path.as_ref(), &reference.into(), false, None)
     }
 
     /// Loads a snapshot like [`Snapshot::load`]. See its rustdoc for
@@ -807,13 +815,83 @@ impl Snapshot {
         path: impl AsRef<Path>,
         reference: impl Into<OciReference>,
     ) -> crate::Result<Self> {
-        Self::load_inner(path.as_ref(), &reference.into(), true)
+        Self::load_inner(path.as_ref(), &reference.into(), true, None)
+    }
+
+    /// Loads and verifies a descendant snapshot, sharing matching memory blobs with `self`.
+    ///
+    /// Unlike [`Snapshot::load`], this method requires a declared base relationship
+    /// with `self`, can reuse its memory layers instead of loading their files
+    /// from `path`, and verifies content digests. See [`Snapshot::load_overlay`]
+    /// for how base sharing differs from loading a self-contained snapshot.
+    ///
+    /// Layers with the same geometry and a matching cached SHA-256 digest are
+    /// shared with `self` without opening or reading their files in `path`.
+    /// These files may be omitted from the layout. Other blobs are loaded and
+    /// verified as in [`Snapshot::checked_load`]. A base with an incompatible
+    /// memory layout is rejected.
+    ///
+    /// Only computed or verified digests are reused. Ordinary loading retains
+    /// declarations, which ordinary saving does not promote to verified identity.
+    /// Layers without computed or verified digests are not reused. Keep the base's backing
+    /// files immutable for the lifetime of the returned snapshot and any derived
+    /// sandboxes, as described in [`Snapshot::load`].
+    /// The persisted provenance must declare `self` as a base, as recorded by
+    /// compaction or restore/capture. This declaration is trusted, not a proof
+    /// of ancestry; digest verification only checks content consistency.
+    pub fn checked_load_overlay(
+        &self,
+        path: impl AsRef<Path>,
+        reference: impl Into<OciReference>,
+    ) -> crate::Result<Self> {
+        Self::load_inner(path.as_ref(), &reference.into(), true, Some(self))
+    }
+
+    /// Loads a descendant snapshot like [`Snapshot::load`], sharing memory with `self`.
+    ///
+    /// Unlike [`Snapshot::load`], which loads every memory layer from `path`
+    /// without requiring a base relationship, this method uses `self` as the
+    /// declared base and can reuse its matching layers when their files are
+    /// absent from `path`. Both methods trust declared content digests.
+    ///
+    /// The saved snapshot supplies the complete target state, including its
+    /// registers, metadata, and layer list. This method reuses backing memory;
+    /// it does not merge state or append otherwise unused layers from `self`.
+    ///
+    /// The persisted provenance must declare `self` as a base. Compaction with
+    /// an explicit base and capture after restoration record this relationship,
+    /// including inherited bases, without retaining unused memory layers.
+    ///
+    /// Matching layers are shared by digest and geometry without opening their
+    /// files, which may be omitted from the layout. A base with an incompatible
+    /// memory layout is rejected. Ordinary saves reuse declared digests without
+    /// hashing memory, as with [`Snapshot::load`].
+    ///
+    /// # Trust
+    ///
+    /// A declared digest is not verified content identity or authorization.
+    /// Only supply bases the caller is allowed to read; do not admit these
+    /// declarations into a cross-actor content cache. Keep backing files
+    /// immutable as required by [`Snapshot::load`]. Incorrect declarations may
+    /// substitute guest state or publish blobs under incorrect filenames.
+    ///
+    /// Declared digests remain separate from verified digest caches:
+    /// [`Snapshot::checked_load_overlay`] does not reuse them, and
+    /// [`Snapshot::checked_save`] still verifies all memory bytes.
+    /// Base provenance is also a trusted declaration, not a proof of ancestry.
+    pub fn load_overlay(
+        &self,
+        path: impl AsRef<Path>,
+        reference: impl Into<OciReference>,
+    ) -> crate::Result<Self> {
+        Self::load_inner(path.as_ref(), &reference.into(), false, Some(self))
     }
 
     fn load_inner(
         path: &Path,
         reference: &OciReference,
         verify_blobs: bool,
+        base: Option<&Snapshot>,
     ) -> crate::Result<Self> {
         let meta = std::fs::metadata(path)
             .map_err(|e| crate::new_error!("load failed to stat {:?}: {}", path, e))?;
@@ -879,6 +957,26 @@ impl Snapshot {
 
         // Validate the ABI before interpreting the layer layout.
         let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
+        let id = cfg
+            .snapshot_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| crate::new_error!("invalid snapshot ID: {}", e))?
+            .unwrap_or_else(uuid::Uuid::new_v4);
+        let bases = cfg
+            .bases
+            .iter()
+            .map(|id| uuid::Uuid::parse_str(id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| crate::new_error!("invalid snapshot base ID: {}", e))?;
+        if let Some(base) = base
+            && !bases.contains(&base.state.memory.id)
+        {
+            return Err(crate::new_error!(
+                "snapshot does not declare the supplied snapshot as a base"
+            ));
+        }
         let data_descs = manifest.layers();
 
         for snap_desc in data_descs {
@@ -961,14 +1059,6 @@ impl Snapshot {
                 })?;
         }
 
-        // 5. snapshot blobs: open each once, hash and mmap the same
-        //    handle so an attacker cannot swap the file between
-        //    verification and mapping.
-        let mut snap_files = data_descs
-            .iter()
-            .map(|desc| open_snapshot_blob(&blobs_dir, desc))
-            .collect::<crate::Result<Vec<_>>>()?;
-
         // 6. Reconstruct layout.
         let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
         sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
@@ -986,6 +1076,11 @@ impl Snapshot {
         };
         layout.set_code_gva(code_gva)?;
         layout.ensure_page_tables_fit(cfg.layers[cfg.page_table_layer].page_table_len)?;
+        if base.is_some_and(|base| base.state.layout != layout) {
+            return Err(crate::new_error!(
+                "snapshot base has an incompatible memory layout"
+            ));
+        }
 
         let virtq = VirtqSnapshot::bootstrap(&layout)?;
 
@@ -1000,22 +1095,42 @@ impl Snapshot {
         //    next layer and with `map_file_cow` regions installed
         //    immediately after the snapshot in guest PA space.
         let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+        let mut snap_files = Vec::with_capacity(data_descs.len());
         let blobs = cfg
             .layers
             .iter()
             .zip(data_descs)
-            .zip(&snap_files)
-            .map(|((layer, desc), file)| {
+            .map(|(layer, desc)| {
+                let digest = parse_oci_digest(desc.digest())?;
+                let shared = base.and_then(|base| {
+                    base.state.memory.blobs().find(|blob| {
+                        blob.gpa_start() == layer.gpa_start
+                            && blob.data_len() == layer.data_len
+                            && blob.page_table_len() == layer.page_table_len
+                            && blob.memory().as_slice().len() as u64 == desc.size()
+                            && (blob.sha256.get() == Some(&digest)
+                                || (!verify_blobs
+                                    && blob.declared_sha256.as_ref() == Some(&digest)))
+                    })
+                });
+                if let Some(blob) = shared {
+                    snap_files.push(None);
+                    return Ok(blob.clone());
+                }
+                // Verify and map the same handle; never reopen by pathname.
+                let file = open_snapshot_blob(&blobs_dir, desc)?;
                 let mut blob = SnapshotBlob::new(
-                    map_snapshot_blob(file, desc, layer.data_len)?,
+                    map_snapshot_blob(&file, desc, layer.data_len)?,
                     layer.gpa_start,
                     layer.page_table_len,
                     scratch_base,
                 )?;
                 if !verify_blobs {
-                    blob.declared_sha256 = Some(parse_oci_digest(desc.digest())?);
+                    blob.declared_sha256 = Some(digest);
                 }
-                Ok(Arc::new(blob))
+                let blob = Arc::new(blob);
+                snap_files.push(Some(file));
+                Ok(blob)
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let page_tables = blobs[cfg.page_table_layer].clone();
@@ -1024,14 +1139,19 @@ impl Snapshot {
             .filter(|blob| blob.data_len() > 0)
             .cloned()
             .collect();
-        let memory = Arc::new(SnapshotMemory::new(data_layers, page_tables)?);
+        let mut memory = SnapshotMemory::new(data_layers, page_tables)?;
+        memory.id = id;
+        memory.bases = bases;
+        let memory = Arc::new(memory);
         // Hash after validating the layers so malformed snapshots fail
         // cheaply.
         if verify_blobs {
             for ((desc, file), blob) in data_descs.iter().zip(&mut snap_files).zip(&blobs) {
-                let digest = parse_oci_digest(desc.digest())?;
-                verify_blob_file("snapshot", file, &digest)?;
-                blob.sha256.get_or_init(|| digest);
+                if let Some(file) = file {
+                    let digest = parse_oci_digest(desc.digest())?;
+                    verify_blob_file("snapshot", file, &digest)?;
+                    blob.sha256.get_or_init(|| digest);
+                }
             }
         }
 

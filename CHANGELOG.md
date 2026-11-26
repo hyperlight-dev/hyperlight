@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * `Snapshot::load` retains declared memory-layer digests for ordinary saves
   instead of hashing the loaded bytes on first save. Incorrect declarations
   are preserved; use `checked_load` or `checked_save` for content consistency.
+  `base.load_overlay` and `base.checked_load_overlay` resolve matching layers from
+  a caller-authorized, declared whole-snapshot base, keeping declared and
+  verified digests separate. Persisted snapshot IDs and inherited base
+  declarations support both compacted and uncompacted descendants without
+  retaining unused base layers.
 * `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their

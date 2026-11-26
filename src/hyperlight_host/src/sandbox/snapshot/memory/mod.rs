@@ -38,6 +38,11 @@ pub(crate) const MAX_SNAPSHOT_LAYERS: usize = 30;
 /// Layer ranges never overlap.
 #[derive(Debug)]
 pub(crate) struct SnapshotMemory {
+    /// Identity of the whole snapshot, not any individual blob. Metadata-only
+    /// copies share this object and retain the same identity.
+    pub(super) id: uuid::Uuid,
+    /// Trusted whole-snapshot ancestor IDs, independent of retained layers.
+    pub(super) bases: Vec<uuid::Uuid>,
     /// Blobs with guest data, sorted by start GPA, which lookups binary
     /// search.
     layers: Box<[Arc<SnapshotBlob>]>,
@@ -168,9 +173,19 @@ impl SnapshotMemory {
         }
 
         Ok(Self {
+            id: uuid::Uuid::new_v4(),
+            bases: Vec::new(),
             layers,
             page_tables,
         })
+    }
+
+    pub(super) fn record_base(&mut self, base: &Self) {
+        for id in base.bases.iter().copied().chain(std::iter::once(base.id)) {
+            if id != self.id && !self.bases.contains(&id) {
+                self.bases.push(id);
+            }
+        }
     }
 
     /// Builds a one-layer snapshot from `memory`, which holds guest data

@@ -82,11 +82,44 @@ and wrong-length files are replaced.
 retains declared digests separately for reuse on save without hashing memory.
 Metadata blobs retain their normal write path.
 
+`base.checked_load_overlay(path, reference)` resolves memory layers from an existing base
+when their cached SHA-256, size, GPA and data/page-table geometry match. It shares
+the base's layer objects without opening or reading those files from the new
+layout; the matching files may be omitted. Other blobs are verified normally.
+This is explicit content resolution from the supplied base, not validation of
+an on-disk copy of a reused blob. Retaining the same objects through restore,
+capture and base-preserving compaction avoids both byte comparisons and repeated
+hashing of immutable base memory.
+
 `Snapshot::load` trusts declared memory digests without reading memory to verify
-them. Ordinary saves preserve those declarations instead of computing digests
-from actual bytes, including when the declared digest is incorrect. Declared
-hashes are stored separately from computed or verified hashes; checked saving
-still hashes every layer. Structural validation remains enabled.
+them. Ordinary saves preserve those declarations, and
+`base.load_overlay(path, reference)` resolves matching layers
+by digest and geometry. Declared hashes are stored separately from computed or
+verified hashes: checked base loading never reuses a mere declaration, and
+checked saving still hashes every layer. This changes prior ordinary
+`load`-then-`save` behavior: it preserves declared digests instead of computing
+them from actual bytes, including when the declared digest is incorrect.
+Structural validation remains enabled in all modes. A declaration is neither
+content authentication nor permission to read another actor's memory; callers
+must restrict base sharing to authorized, immutable objects. Incorrect digests
+can substitute guest state or publish bytes under an incorrect name.
+
+Both overlay methods require persisted provenance declaring the supplied whole
+snapshot as a base; a matching memory layer alone is insufficient. Each new VM
+snapshot has a stable UUID stored as `snapshot_id` in the OCI config, with
+ancestor IDs in `bases`. Metadata-only copies retain the VM snapshot's ID.
+Restore/capture inherits the restored snapshot and its bases, including without
+compaction. `compact(Some(base))` also records the specified base and its bases;
+`compact(None)` preserves ancestry. Neither operation retains unused layers
+merely to establish provenance.
+Provenance is carried by the whole `SnapshotMemory` object, not individual
+blobs, so capture inherits it directly from the existing memory backing.
+
+These IDs are trusted declarations, not content digests or cryptographic proofs
+of ancestry, even with checked loading. Legacy configs without provenance still
+load standalone, receiving a new in-memory ID. Save that base to persist its ID
+before relying on independently loaded copies for overlay. A layout without a
+matching base declaration cannot be overlaid.
 
 Callers must keep loaded and published memory blobs immutable for the lifetime
 of these snapshots and outside writable guest mounts. Host-side mutation and
@@ -182,7 +215,8 @@ podman), `go-containerregistry` (crane), and `regclient`.
 
 `Snapshot::load(path, reference)` reads a snapshot. It does not check
 the manifest, config, or data blobs against their sha256 digests.
-It retains declared memory digests for ordinary saves.
+It retains declared memory digests for ordinary saves; `load_overlay` also
+shares matching layers from an explicitly supplied, authorized base.
 `reference` is an
 [`OciReference`], either a tag that matches the
 `org.opencontainers.image.ref.name` annotation or the manifest

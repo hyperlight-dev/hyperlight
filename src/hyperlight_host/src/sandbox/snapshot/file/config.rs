@@ -213,6 +213,10 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) bases: Vec<String>,
     /// Application-owned metadata keyed by namespace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) metadata: BTreeMap<String, serde_json::Value>,
@@ -430,6 +434,20 @@ impl OciSnapshotConfig {
     }
 
     pub(super) fn validate_for_load(&self) -> crate::Result<()> {
+        if self.snapshot_id.is_none() && !self.bases.is_empty() {
+            return Err(crate::new_error!("snapshot bases require a snapshot ID"));
+        }
+        let mut ids = std::collections::HashSet::new();
+        for id in self.snapshot_id.iter().chain(&self.bases) {
+            let id = uuid::Uuid::parse_str(id)
+                .map_err(|e| crate::new_error!("invalid snapshot provenance ID: {}", e))?;
+            if id.is_nil() {
+                return Err(crate::new_error!("snapshot provenance ID must not be nil"));
+            }
+            if !ids.insert(id) {
+                return Err(crate::new_error!("duplicate snapshot provenance ID"));
+            }
+        }
         if self.arch != Arch::current() {
             return Err(crate::new_error!(
                 "snapshot architecture mismatch: file is {:?}, current host is {:?} \
@@ -808,6 +826,8 @@ mod tests {
     /// gating checks under test short-circuit before reading it.
     fn gating_config() -> OciSnapshotConfig {
         OciSnapshotConfig {
+            snapshot_id: None,
+            bases: Vec::new(),
             hyperlight_version: "test".to_string(),
             arch: Arch::current(),
             abi_version: SNAPSHOT_ABI_VERSION,
