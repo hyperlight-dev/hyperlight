@@ -557,7 +557,11 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
         let layout = *s.layout();
         let shared_mem = SnapshotMemoryBacking::from_snapshot(s.snapshot_memory().clone())?;
-        let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
+        let scratch_size = s.layout().get_scratch_size();
+        let scratch_mem = ExclusiveSharedMemory::new_for_gpa(
+            scratch_size,
+            hyperlight_common::layout::scratch_base_gpa(scratch_size),
+        )?;
         let next_action = s.next_action();
         let mut mgr = Self::new(layout, shared_mem, scratch_mem, next_action);
         mgr.original_entrypoint = s.original_entrypoint();
@@ -1027,7 +1031,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             // the current platform (see SharedMemory::zero_or_replace).
             self.scratch_mem.zero_or_replace()?
         } else {
-            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
+            let new_scratch_mem = ExclusiveSharedMemory::new_for_gpa(
+                new_scratch_size,
+                hyperlight_common::layout::scratch_base_gpa(new_scratch_size),
+            )?;
             let (hscratch, gscratch) = new_scratch_mem.build();
             // Even though this destroys the reference to the host
             // side of the old scratch mapping, the VM should still

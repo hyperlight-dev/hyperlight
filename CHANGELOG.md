@@ -32,6 +32,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   page size, and log level.
 * **Breaking:** Encode function calls with serde/postcard instead of FlatBuffers.
 * Stop resetting guest FPU state between guest calls to improve performance.
+* Align scratch memory of 2 MiB or more with its guest address on Linux so
+  KVM and MSHV can map it with 2 MiB pages when transparent huge pages are set
+  to `always`. First heap use is up to 10× faster on KVM.
 
 ### Fixed
 * Fix surrogate process creation for Windows paths containing Unicode or spaces.

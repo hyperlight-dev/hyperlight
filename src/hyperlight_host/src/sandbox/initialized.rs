@@ -1465,6 +1465,17 @@ mod tests {
         assert!(sbox.mem_mgr.h2g_consumer.is_some());
     }
 
+    #[cfg(all(target_os = "linux", not(miri)))]
+    fn assert_scratch_matches_gpa_offset(sbox: &Sandbox) {
+        use crate::mem::shared_mem::GUEST_MEMORY_ALIGNMENT;
+        let scratch = &sbox.mem_mgr.scratch_mem;
+        let gpa = hyperlight_common::layout::scratch_base_gpa(scratch.mem_size()) as usize;
+        assert_eq!(
+            scratch.base_addr() % GUEST_MEMORY_ALIGNMENT,
+            gpa % GUEST_MEMORY_ALIGNMENT
+        );
+    }
+
     /// The page between the transport arena and the reserved top pages is
     /// unmapped at boot, after a resized capture, and after restoring it, so
     /// an exception stack overrun faults before it reaches the arena.
@@ -1500,6 +1511,8 @@ mod tests {
             .scratch_size(8 << 20)
             .build()
             .unwrap();
+        #[cfg(all(target_os = "linux", not(miri)))]
+        assert_scratch_matches_gpa_offset(&sbox);
         let full = sbox.snapshot().unwrap();
         // Default options and the sandbox's own size are a plain snapshot,
         // already taken.
@@ -1560,6 +1573,8 @@ mod tests {
 
         sbox.restore(full).unwrap();
         assert_eq!(sbox.mem_mgr.scratch_mem.mem_size(), 8 << 20);
+        #[cfg(all(target_os = "linux", not(miri)))]
+        assert_scratch_matches_gpa_offset(&sbox);
         let echo: String = sbox.call("Echo", "back".to_string()).unwrap();
         assert_eq!(echo, "back");
     }
