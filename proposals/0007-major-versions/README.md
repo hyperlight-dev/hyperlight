@@ -103,9 +103,8 @@ Hyperlight, especially not while the guest-host boundary is still moving.
 
 So instead we only promise API stability. If you upgrade from 1.0 to 1.1 you'll
 need to recompile your guests and regenerate your snapshots, but you shouldn't
-need to change any code. Guests targeting WebAssembly through `hyperlight-wasm`
-can retain their Wasm binaries across Hyperlight upgrades. The native runtime
-still needs to be rebuilt, and any Hyperlight snapshots regenerated.
+need to change any code. The native runtime still needs to be rebuilt, and any
+Hyperlight snapshots regenerated.
 
 ### Why are you planning to release more major versions?
 
