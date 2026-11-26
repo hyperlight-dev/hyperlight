@@ -37,7 +37,7 @@ fn snapshot_with_shared_blobs(snapshot: &Snapshot, base: Option<&Snapshot>) -> S
     )
     .unwrap();
     if let Some(base) = base {
-        memory.record_base(base.snapshot_memory());
+        memory.inherit_base(base.snapshot_memory());
     }
     Snapshot {
         state: Arc::new(super::SnapshotState {
@@ -208,6 +208,48 @@ fn compact_sparse_memory_round_trips_with_both_loaders() {
 }
 
 #[test]
+fn compaction_resets_ancestry_and_can_recover_config_save_capacity() {
+    let root = create_snapshot();
+    let selected = snapshot_with_shared_blobs(&root, Some(&root));
+    let mut bloated = snapshot_with_shared_blobs(&root, None);
+    Arc::get_mut(&mut Arc::get_mut(&mut bloated.state).unwrap().memory)
+        .unwrap()
+        .bases = (1..=30_000).map(uuid::Uuid::from_u128).collect();
+    let directory = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    for checked in [false, true] {
+        let error = if checked {
+            bloated.checked_save(directory.path(), &tag)
+        } else {
+            bloated.save(directory.path(), &tag)
+        }
+        .unwrap_err();
+        assert!(error.to_string().contains("config blob"), "{error}");
+        assert!(
+            error.to_string().contains("1048576 byte maximum"),
+            "{error}"
+        );
+    }
+
+    let cleared = bloated.compact(None).unwrap();
+    assert!(cleared.snapshot_memory().bases.is_empty());
+    cleared.save(directory.path(), &tag).unwrap();
+    cleared.checked_save(directory.path(), &tag).unwrap();
+    assert!(root.load_overlay(directory.path(), tag.clone()).is_err());
+
+    let anchored = bloated.compact(Some(&selected)).unwrap();
+    let mut expected = selected.snapshot_memory().bases.clone();
+    expected.push(selected.snapshot_memory().id);
+    assert_eq!(anchored.snapshot_memory().bases, expected);
+    anchored.save(directory.path(), &tag).unwrap();
+    root.load_overlay(directory.path(), tag.clone()).unwrap();
+    selected
+        .checked_load_overlay(directory.path(), tag.clone())
+        .unwrap();
+    assert!(bloated.load_overlay(directory.path(), tag).is_err());
+}
+
+#[test]
 fn compact_round_trip_preserves_base_blobs_and_execution_state() {
     let mut sandbox = create_test_sandbox();
     let base = sandbox.snapshot().unwrap();
@@ -227,6 +269,12 @@ fn compact_round_trip_preserves_base_blobs_and_execution_state() {
                 .with_metadata("compact-test", &value)
                 .unwrap();
             let compacted = captured.compact(preserve.then_some(&loaded_base)).unwrap();
+            let mut expected_bases = Vec::new();
+            if preserve {
+                expected_bases.clone_from(&loaded_base.snapshot_memory().bases);
+                expected_bases.push(loaded_base.snapshot_memory().id);
+            }
+            assert_eq!(compacted.snapshot_memory().bases, expected_bases);
             let limit = if preserve {
                 base.snapshot_memory().layers().len() + 1
             } else {

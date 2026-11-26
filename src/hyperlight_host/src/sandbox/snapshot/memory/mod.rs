@@ -180,12 +180,10 @@ impl SnapshotMemory {
         })
     }
 
-    pub(super) fn record_base(&mut self, base: &Self) {
-        for id in base.bases.iter().copied().chain(std::iter::once(base.id)) {
-            if id != self.id && !self.bases.contains(&id) {
-                self.bases.push(id);
-            }
-        }
+    pub(super) fn inherit_base(&mut self, base: &Self) {
+        // Validated bases are unique and exclude the base's own ID.
+        self.bases.clone_from(&base.bases);
+        self.bases.push(base.id);
     }
 
     /// Builds a one-layer snapshot from `memory`, which holds guest data

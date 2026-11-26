@@ -109,14 +109,20 @@ snapshot as a base; a matching memory layer alone is insufficient. Each new VM
 snapshot has a stable UUID stored as `snapshot_id` in the OCI config, with
 ancestor IDs in `bases`. Metadata-only copies retain the VM snapshot's ID.
 Restore/capture inherits the restored snapshot and its bases, including without
-compaction. `compact(Some(base))` also records the specified base and its bases;
-`compact(None)` preserves ancestry. Neither operation retains unused layers
-merely to establish provenance.
+compaction. `compact(Some(base))` replaces the target's history with the specified
+base's inherited bases plus the base itself; `compact(None)` clears all bases.
+Neither operation retains unused layers merely to establish provenance.
 Provenance is carried by the whole `SnapshotMemory` object, not individual
 blobs, so capture inherits it directly from the existing memory backing.
 
+Uncompacted captures can grow ancestry even without adding memory layers.
+Periodically compact without a base to reset it, or compact against a fixed
+base with a short ancestry list to retain that base without accumulating the
+target's checkpoint history. Both operations can recover save capacity after
+ancestry exceeds the config JSON size limit.
+
 These IDs are trusted declarations, not content digests or cryptographic proofs
-of ancestry, even with checked loading. Legacy configs without provenance still
+of ancestry, even with checked loading. Legacy v6 configs without provenance still
 load standalone, receiving a new in-memory ID. Save that base to persist its ID
 before relying on independently loaded copies for overlay. A layout without a
 matching base declaration cannot be overlaid.

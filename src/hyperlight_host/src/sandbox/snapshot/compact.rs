@@ -18,9 +18,10 @@ impl Snapshot {
     /// layers and unreferenced pages in merged layers are discarded, except
     /// for minimal padding required by the snapshot format. Retained base
     /// layers are kept whole.
-    /// The result records this snapshot and the specified base as ancestors,
-    /// including their inherited bases, for [`Snapshot::load_overlay`]. Provenance
-    /// does not require retaining any otherwise unused layer.
+    /// With a base, the result inherits that base's declared ancestors and records
+    /// the base itself for [`Snapshot::load_overlay`], discarding this snapshot's
+    /// previous ancestry. Without a base, the result clears all base provenance.
+    /// Provenance does not require retaining any otherwise unused layer.
     ///
     /// Registers, metadata, transport state, generation, and page-table roots
     /// are preserved. The result uses the existing snapshot file format.
@@ -162,9 +163,8 @@ impl Snapshot {
             layers.push(blob.clone());
         }
         let mut memory = SnapshotMemory::new(layers.into_boxed_slice(), blob)?;
-        memory.record_base(self.snapshot_memory());
         if let Some(base) = base {
-            memory.record_base(base.snapshot_memory());
+            memory.inherit_base(base.snapshot_memory());
         }
         Ok(Arc::new(Self {
             state: Arc::new(SnapshotState {

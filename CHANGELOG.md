@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 * Snapshot writers emit config v7 with provenance. Config v6 remains readable
   without provenance; the guest ABI and memory-layer encoding are unchanged.
+* Compaction replaces ancestry with the specified base's inherited list and ID,
+  or clears it without a base. This resets accumulated checkpoint history;
+  provenance inheritance copies the validated list in linear time.
 * `Snapshot::load` retains declared memory-layer digests for ordinary saves
   instead of hashing the loaded bytes on first save. Incorrect declarations
   are preserved; use `checked_load` or `checked_save` for content consistency.

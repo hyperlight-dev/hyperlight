@@ -883,6 +883,8 @@ impl Snapshot {
     /// The persisted provenance must declare `self` as a base. Compaction with
     /// an explicit base and capture after restoration record this relationship,
     /// including inherited bases, without retaining unused memory layers.
+    /// Compaction replaces provenance with the chosen base's inherited list
+    /// and ID; compaction without a base clears provenance entirely.
     ///
     /// Matching layers are shared by digest and geometry without opening their
     /// files, which may be omitted from the layout. A base with an incompatible
