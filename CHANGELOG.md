@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 
 ### Changed
+* `Snapshot::load` retains declared memory-layer digests for ordinary saves
+  instead of hashing the loaded bytes on first save. Incorrect declarations
+  are preserved; use `checked_load` or `checked_save` for content consistency.
 * `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their

@@ -57,6 +57,7 @@ pub(crate) struct SnapshotBlob {
     gpa_start: u64,
     page_table_len: usize,
     pub(super) sha256: OnceLock<String>,
+    pub(super) declared_sha256: Option<String>,
 }
 
 impl SnapshotBlob {
@@ -98,6 +99,7 @@ impl SnapshotBlob {
             gpa_start,
             page_table_len,
             sha256: OnceLock::new(),
+            declared_sha256: None,
         })
     }
 

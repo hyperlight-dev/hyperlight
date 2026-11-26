@@ -78,8 +78,15 @@ blob files with the expected length are trusted by their content-addressed
 filenames without reading or hashing their contents, even at a new destination.
 There is no backing-file cache. Missing blobs are written atomically; symlinks
 and wrong-length files are replaced.
-`Snapshot::checked_load` seeds the digest cache during verification; unchecked
-`load` does not. Metadata blobs retain their normal write path.
+`Snapshot::checked_load` seeds the verified digest cache; ordinary `load`
+retains declared digests separately for reuse on save without hashing memory.
+Metadata blobs retain their normal write path.
+
+`Snapshot::load` trusts declared memory digests without reading memory to verify
+them. Ordinary saves preserve those declarations instead of computing digests
+from actual bytes, including when the declared digest is incorrect. Declared
+hashes are stored separately from computed or verified hashes; checked saving
+still hashes every layer. Structural validation remains enabled.
 
 Callers must keep loaded and published memory blobs immutable for the lifetime
 of these snapshots and outside writable guest mounts. Host-side mutation and
@@ -175,6 +182,7 @@ podman), `go-containerregistry` (crane), and `regclient`.
 
 `Snapshot::load(path, reference)` reads a snapshot. It does not check
 the manifest, config, or data blobs against their sha256 digests.
+It retains declared memory digests for ordinary saves.
 `reference` is an
 [`OciReference`], either a tag that matches the
 `org.opencontainers.image.ref.name` annotation or the manifest

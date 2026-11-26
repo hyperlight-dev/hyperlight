@@ -709,6 +709,60 @@ fn save_reuses_hashes_across_saves_and_checked_loads() {
 }
 
 #[test]
+fn load_reuses_declared_digests_without_promoting_them_to_verified() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    let memory_bytes: usize = snapshot
+        .snapshot_memory()
+        .blobs()
+        .map(|blob| blob.memory().as_slice().len())
+        .sum();
+    let before = super::file::test_hashed_bytes();
+    let loaded = Snapshot::load(dir.path(), tag.clone()).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < memory_bytes);
+    assert!(
+        loaded
+            .snapshot_memory()
+            .blobs()
+            .all(|blob| blob.sha256.get().is_none() && blob.declared_sha256.is_some())
+    );
+    let other = tempfile::tempdir().unwrap();
+    let before = super::file::test_hashed_bytes();
+    loaded.save(other.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before < memory_bytes);
+    let checked_dir = tempfile::tempdir().unwrap();
+    let before = super::file::test_hashed_bytes();
+    loaded.checked_save(checked_dir.path(), &tag).unwrap();
+    assert!(super::file::test_hashed_bytes() - before >= memory_bytes);
+    Snapshot::checked_load(checked_dir.path(), tag).unwrap();
+}
+
+#[test]
+fn load_accepts_wrong_content_digest_but_rejects_wrong_size() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    let path = find_snapshot_blob(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(Snapshot::checked_load(dir.path(), tag.clone()).is_err());
+    let trusted = Snapshot::load(dir.path(), tag.clone()).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    trusted.save(output.path(), &tag).unwrap();
+    assert!(Snapshot::checked_load(output.path(), tag.clone()).is_err());
+    trusted.checked_save(output.path(), &tag).unwrap();
+    Snapshot::checked_load(output.path(), tag.clone()).unwrap();
+    drop(trusted);
+    bytes.pop();
+    std::fs::write(path, bytes).unwrap();
+    assert!(Snapshot::load(dir.path(), tag).is_err());
+}
+
+#[test]
 fn save_trusts_replaced_files_and_writes_new_destinations() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();

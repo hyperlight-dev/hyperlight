@@ -579,6 +579,8 @@ impl Snapshot {
                 let bytes = blob.memory().as_slice();
                 let digest = if verify_blobs {
                     Digest256::from_bytes(bytes)
+                } else if let Some(hex) = blob.sha256.get().or(blob.declared_sha256.as_ref()) {
+                    Digest256 { hex: hex.clone() }
                 } else {
                     let hex = blob.sha256.get_or_init(|| Digest256::from_bytes(bytes).hex);
                     Digest256 { hex: hex.clone() }
@@ -749,9 +751,16 @@ impl Snapshot {
     ///
     /// # Verification
     ///
-    /// This method does not check the manifest, config, memory, or transport
+    /// This method does not check the manifest, config, or memory
     /// blobs against their recorded sha256 digests. Load only from a
     /// layout you trust.
+    /// Declared memory-layer digests are retained and reused by ordinary
+    /// [`Snapshot::save`] without hashing the mapped bytes. Incorrect declarations
+    /// can therefore publish bytes under incorrect filenames; use checked loading
+    /// or [`Snapshot::checked_save`] when content consistency is required.
+    /// Structural validation remains enabled. Declared hashes are kept separate
+    /// from computed or verified hashes, so checked APIs do not treat them as
+    /// established content identity.
     ///
     /// To check the digests on load at the expense of some
     /// performance, use [`Snapshot::checked_load`].
@@ -997,12 +1006,16 @@ impl Snapshot {
             .zip(data_descs)
             .zip(&snap_files)
             .map(|((layer, desc), file)| {
-                Ok(Arc::new(SnapshotBlob::new(
+                let mut blob = SnapshotBlob::new(
                     map_snapshot_blob(file, desc, layer.data_len)?,
                     layer.gpa_start,
                     layer.page_table_len,
                     scratch_base,
-                )?))
+                )?;
+                if !verify_blobs {
+                    blob.declared_sha256 = Some(parse_oci_digest(desc.digest())?);
+                }
+                Ok(Arc::new(blob))
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let page_tables = blobs[cfg.page_table_layer].clone();
