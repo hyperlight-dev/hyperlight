@@ -117,7 +117,7 @@ impl SandboxBuilder {
 
     /// Build a sandbox restoring the guest from `snapshot`.
     ///
-    /// The snapshot's layout overrides scratch and transport settings.
+    /// The snapshot's layout overrides scratch size and transport settings.
     pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
         Self::with_source(Source::Snapshot(snapshot))
     }
@@ -272,7 +272,8 @@ impl SandboxBuilder {
 
 impl SandboxBuilder {
     /// Set how much writable memory to offer the guest. Scratch backs the
-    /// guest heap and stack.
+    /// guest heap and stack. On x86-64, a multiple of 2 MiB may let MSHV
+    /// fault in guest memory faster.
     pub fn scratch_size(mut self, size: usize) -> Self {
         self.cfg.set_scratch_size(size);
         self
@@ -281,6 +282,30 @@ impl SandboxBuilder {
     /// How much writable memory is offered to the guest.
     pub fn get_scratch_size(&self) -> usize {
         self.cfg.get_scratch_size()
+    }
+
+    /// Request transparent huge pages for scratch with
+    /// `madvise(MADV_HUGEPAGE)`. On hosts whose
+    /// `/sys/kernel/mm/transparent_hugepage/enabled` is `madvise`, this turns
+    /// them on. KVM and MSHV may then map scratch of 2 MiB or more with 2 MiB
+    /// pages. This may speed up guests that use a large part of their scratch.
+    /// On KVM, each touched 2 MiB block may use 2 MiB of host memory. See the
+    /// [kernel documentation](https://docs.kernel.org/admin-guide/mm/transhuge.html)
+    /// for host settings and costs. The default, `false`, leaves scratch to the
+    /// host's transparent huge page policy.
+    ///
+    /// Building the sandbox fails if the kernel lacks transparent huge page
+    /// support.
+    #[cfg(target_os = "linux")]
+    pub fn scratch_transparent_huge_pages(mut self, enabled: bool) -> Self {
+        self.cfg.set_scratch_transparent_huge_pages(enabled);
+        self
+    }
+
+    /// Whether transparent huge pages are requested for scratch.
+    #[cfg(target_os = "linux")]
+    pub fn get_scratch_transparent_huge_pages(&self) -> bool {
+        self.cfg.get_scratch_transparent_huge_pages()
     }
 
     /// Set the G2H virtqueue descriptor count.
