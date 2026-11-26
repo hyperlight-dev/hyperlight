@@ -498,14 +498,14 @@ fn layered_writer_preserves_blobs_and_transport_geometry() {
     let layers = manifest["layers"].as_array().unwrap();
     assert_eq!(
         manifest["config"]["mediaType"],
-        "application/vnd.hyperlight.snapshot.config.v6+json"
+        "application/vnd.hyperlight.snapshot.config.v7+json"
     );
     // `artifactType` mirrors `config.mediaType` so registries that surface
     // the distribution-spec referrers API report a useful type, and tooling
     // that falls back to `config.mediaType` sees the same value.
     assert_eq!(
         manifest["artifactType"],
-        "application/vnd.hyperlight.snapshot.config.v6+json"
+        "application/vnd.hyperlight.snapshot.config.v7+json"
     );
     assert_eq!(config["abi_version"], 12);
     let blobs = snapshot.snapshot_memory().blobs().collect::<Vec<_>>();
@@ -811,6 +811,28 @@ fn overlay_preserves_saved_base_identity_through_uncompacted_captures() {
 }
 
 #[test]
+fn config_v6_rejects_provenance_fields() {
+    let snapshot = create_snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = OciTag::new("latest").unwrap();
+    snapshot.save(dir.path(), &tag).unwrap();
+    rewrite_manifest(dir.path(), |manifest| {
+        manifest["config"]["mediaType"] = super::file::MT_CONFIG_V6.into();
+        manifest["artifactType"] = super::file::MT_CONFIG_V6.into();
+    });
+    for checked in [false, true] {
+        let error = if checked {
+            Snapshot::checked_load(dir.path(), tag.clone())
+        } else {
+            Snapshot::load(dir.path(), tag.clone())
+        }
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("v6 cannot contain"), "{error}");
+    }
+}
+
+#[test]
 fn malformed_snapshot_provenance_is_rejected_and_legacy_layouts_load() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
@@ -843,6 +865,12 @@ fn malformed_snapshot_provenance_is_rejected_and_legacy_layouts_load() {
         config.as_object_mut().unwrap().remove("snapshot_id");
         config.as_object_mut().unwrap().remove("bases");
     });
+    assert!(Snapshot::load(dir.path(), tag.clone()).is_err());
+    rewrite_manifest(dir.path(), |manifest| {
+        manifest["config"]["mediaType"] = super::file::MT_CONFIG_V6.into();
+        manifest["artifactType"] = super::file::MT_CONFIG_V6.into();
+    });
+    Snapshot::load(dir.path(), tag.clone()).unwrap();
     let legacy = Snapshot::checked_load(dir.path(), tag.clone()).unwrap();
     assert!(snapshot.load_overlay(dir.path(), tag.clone()).is_err());
     legacy.save(dir.path(), &tag).unwrap();

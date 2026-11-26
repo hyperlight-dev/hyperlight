@@ -29,7 +29,7 @@ use self::media_types::{
 };
 pub(super) use self::media_types::{
     MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
-    MT_CONFIG_V6, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, SNAPSHOT_ABI_VERSION,
+    MT_CONFIG_V6, MT_CONFIG_V7, MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, SNAPSHOT_ABI_VERSION,
 };
 use self::reference::{OciDigest, OciReference, OciTag};
 use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
@@ -230,6 +230,28 @@ fn load_config(
     )?;
     let cfg: OciSnapshotConfig = serde_json::from_slice(&cfg_bytes)
         .map_err(|e| crate::new_error!("failed to parse Hyperlight config JSON: {}", e))?;
+    match cfg_desc.media_type().to_string().as_str() {
+        MT_CONFIG_V6 => {
+            let value: serde_json::Value = serde_json::from_slice(&cfg_bytes)
+                .map_err(|e| crate::new_error!("failed to parse legacy config JSON: {}", e))?;
+            if value.get("snapshot_id").is_some() || value.get("bases").is_some() {
+                return Err(crate::new_error!(
+                    "config v6 cannot contain snapshot provenance"
+                ));
+            }
+        }
+        MT_CONFIG_V7 => {
+            if cfg.snapshot_id.is_none() {
+                return Err(crate::new_error!("config v7 requires a snapshot ID"));
+            }
+        }
+        other => {
+            return Err(crate::new_error!(
+                "unsupported snapshot config media type {:?}",
+                other
+            ));
+        }
+    }
     cfg.validate_for_load()?;
     Ok(cfg)
 }
@@ -916,7 +938,7 @@ impl Snapshot {
         // Loader dispatch on config media type.
         let cfg_media = cfg_desc.media_type().to_string();
         match cfg_media.as_str() {
-            MT_CONFIG_V6 => {}
+            MT_CONFIG_V6 | MT_CONFIG_V7 => {}
             MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 | MT_CONFIG_V5 => {
                 return Err(crate::new_error!(
                     "snapshot config media type {:?} is incompatible with snapshot ABI {}",
@@ -926,9 +948,10 @@ impl Snapshot {
             }
             other => {
                 return Err(crate::new_error!(
-                    "unexpected config media type {:?} (supported: {:?})",
+                    "unexpected config media type {:?} (supported: {:?}, {:?})",
                     other,
-                    MT_CONFIG_V6
+                    MT_CONFIG_V6,
+                    MT_CONFIG_V7
                 ));
             }
         }

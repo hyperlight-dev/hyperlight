@@ -163,7 +163,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v6+json`.
+/// `application/vnd.hyperlight.snapshot.config.v7+json`, with defaults for v6.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -1130,7 +1130,9 @@ mod schema_pin {
       "return_type": "void"
     }
   ],
-  "snapshot_generation": 42
+  "snapshot_generation": 42,
+  "snapshot_id": "00000000-0000-0000-0000-000000000001",
+  "bases": ["00000000-0000-0000-0000-000000000002"]
 }"#;
 
     #[cfg(target_arch = "aarch64")]
@@ -1180,7 +1182,9 @@ mod schema_pin {
       "return_type": "void"
     }
   ],
-  "snapshot_generation": 42
+  "snapshot_generation": 42,
+  "snapshot_id": "00000000-0000-0000-0000-000000000001",
+  "bases": ["00000000-0000-0000-0000-000000000002"]
 }"#;
 
     const PINNED_ARCH: &str = r#"[
