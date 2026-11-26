@@ -386,9 +386,9 @@ impl<'a> PendingMessage<'a> {
         Ok(Self { streams, body })
     }
 
-    /// Own `result` and prepare its reader transfer for publication as `cid`.
+    /// Own `result` and prepare its reader transfers for publication as `cid`.
     pub fn new_result(result: FunctionCallResult, cid: u32, streams: &'a mut Mux) -> Result<Self> {
-        let xfers = streams.prepare_transfers(result.reader())?;
+        let xfers = streams.prepare_transfers(result.readers())?;
 
         let body = PendingBody::Result { result, cid, xfers };
         Ok(Self { streams, body })
@@ -448,7 +448,7 @@ impl<'a> PendingMessage<'a> {
                 (MsgKind::Request, *cid, control)
             }
             PendingBody::Result { result, cid, xfers } => {
-                let control = result.encode(buffer, &mut externals, xfers.first().copied())?;
+                let control = result.encode(buffer, &mut externals, xfers)?;
                 (MsgKind::Response, *cid, control)
             }
             PendingBody::Stream { records, payloads } => {
@@ -483,7 +483,7 @@ impl<'a> PendingMessage<'a> {
                         self.streams.commit_transfers(readers.zip(xfers));
                     }
                     PendingBody::Result { result, xfers, .. } => {
-                        let readers = result.into_reader().into_iter();
+                        let readers = result.into_readers();
                         self.streams.commit_transfers(readers.zip(xfers));
                     }
                     PendingBody::Stream { records, .. } => {

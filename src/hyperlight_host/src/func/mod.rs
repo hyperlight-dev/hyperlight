@@ -31,5 +31,5 @@ pub use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFu
 /// Re-export for `HostFunctionDetails`
 pub use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 pub use hyperlight_common::func::{
-    ParameterTuple, ResultType, SupportedParameterType, SupportedReturnType,
+    ParameterTuple, ResultType, SupportedParameterType, SupportedReturnType, TupleElement,
 };

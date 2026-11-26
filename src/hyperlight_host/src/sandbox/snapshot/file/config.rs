@@ -306,6 +306,7 @@ enum ReturnTypeRepr {
     VecBytes,
     ByteChunks,
     StreamReader,
+    Tuple,
 }
 
 impl From<&ParameterType> for ParameterTypeRepr {
@@ -359,6 +360,7 @@ impl From<&ReturnType> for ReturnTypeRepr {
             ReturnType::VecBytes => Self::VecBytes,
             ReturnType::ByteChunks => Self::ByteChunks,
             ReturnType::StreamReader => Self::StreamReader,
+            ReturnType::Tuple => Self::Tuple,
         }
     }
 }
@@ -378,6 +380,7 @@ impl From<ReturnTypeRepr> for ReturnType {
             ReturnTypeRepr::VecBytes => Self::VecBytes,
             ReturnTypeRepr::ByteChunks => Self::ByteChunks,
             ReturnTypeRepr::StreamReader => Self::StreamReader,
+            ReturnTypeRepr::Tuple => Self::Tuple,
         }
     }
 }
@@ -769,6 +772,7 @@ mod tests {
             ReturnType::VecBytes,
             ReturnType::ByteChunks,
             ReturnType::StreamReader,
+            ReturnType::Tuple,
         ];
         for r in variants {
             let back: ReturnType = ReturnTypeRepr::from(&r).into();

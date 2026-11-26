@@ -37,7 +37,7 @@ use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::future::{self, FutureReader};
-use hyperlight_guest::stream::{self, StreamError, StreamReader};
+use hyperlight_guest::stream::{self, StreamError, StreamReader, StreamWriter};
 #[cfg(target_arch = "x86_64")]
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
@@ -546,24 +546,30 @@ fn stream_panic() -> StreamReader<u8> {
     })
 }
 
-/// Return a reader of `len` bytes. Byte `i` is `i % 251`, so windows do not repeat the pattern.
-/// The producer builds a chunk at a time, so guest memory stays bounded for any `len`.
-#[guest_function("StreamPattern")]
-fn stream_pattern(len: u32) -> StreamReader<u8> {
+/// Write `len` bytes to `writer`. Byte `i` is `i % 251`, so windows do not repeat the pattern.
+/// It builds a chunk at a time, so guest memory stays bounded for any `len`.
+async fn write_pattern(
+    writer: &mut StreamWriter<u8>,
+    len: u32,
+) -> core::result::Result<(), StreamError> {
     const CHUNK_LEN: u32 = 4096;
 
-    stream::produce(async move |writer| {
-        let mut start = 0;
+    let mut start = 0;
 
-        while start < len {
-            let end = len.min(start.saturating_add(CHUNK_LEN));
-            let chunk: Vec<u8> = (start..end).map(|i| (i % 251) as u8).collect();
-            writer.write_chunk(chunk.into()).await?;
-            start = end;
-        }
+    while start < len {
+        let end = len.min(start.saturating_add(CHUNK_LEN));
+        let chunk: Vec<u8> = (start..end).map(|i| (i % 251) as u8).collect();
+        writer.write_chunk(chunk.into()).await?;
+        start = end;
+    }
 
-        Ok::<_, StreamError>(())
-    })
+    Ok(())
+}
+
+/// Return a reader of [`write_pattern`]'s `len` bytes.
+#[guest_function("StreamPattern")]
+fn stream_pattern(len: u32) -> StreamReader<u8> {
+    stream::produce(async move |writer| write_pattern(writer, len).await)
 }
 
 /// The `StreamThenWait` producers that have not dropped.
@@ -748,6 +754,29 @@ fn send_stream(data: Vec<u8>) -> Result<FutureReader<()>> {
         writer.close();
         Ok::<_, StreamError>(())
     }))
+}
+
+/// Return a reader of [`write_pattern`]'s `len` bytes and a future of its producer's outcome, as
+/// WASI's `tuple<stream<u8>, future<result<_, error-code>>>` does.
+#[guest_function("StreamWithOutcome")]
+fn stream_with_outcome(len: u32) -> (StreamReader<u8>, FutureReader<()>) {
+    let (reader, mut writer) = stream::new();
+    let outcome = future::produce(async move {
+        write_pattern(&mut writer, len).await?;
+        writer.close();
+        Ok::<_, StreamError>(())
+    });
+
+    (reader, outcome)
+}
+
+#[host_function("HostTuple")]
+fn host_tuple() -> Result<(StreamReader<u8>, Vec<u8>, FutureReader<String>)>;
+
+/// Return the tuple that the host function `HostTuple` returns.
+#[guest_function("ForwardHostTuple")]
+fn forward_host_tuple() -> Result<(StreamReader<u8>, Vec<u8>, FutureReader<String>)> {
+    host_tuple()
 }
 
 #[guest_function("EchoI32")]

@@ -24,7 +24,7 @@ pub use error::Error;
 /// Re-export for `HostFunction` trait
 pub use functions::Function;
 pub use param_type::{ParameterTuple, SupportedParameterType};
-pub use ret_type::{ResultType, SupportedReturnType};
+pub use ret_type::{ResultType, SupportedReturnType, TupleElement};
 
 /// Re-export for chunk-preserving byte values
 pub use crate::flatbuffer_wrappers::function_types::Bytes;
