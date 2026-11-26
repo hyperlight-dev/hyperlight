@@ -1009,6 +1009,7 @@ fn load_accepts_wrong_content_digest_but_rejects_wrong_size() {
     assert!(Snapshot::checked_load(output.path(), tag.clone()).is_err());
     trusted.checked_save(output.path(), &tag).unwrap();
     Snapshot::checked_load(output.path(), tag.clone()).unwrap();
+    drop(derived);
     drop(trusted);
     bytes.pop();
     std::fs::write(path, bytes).unwrap();
