@@ -125,3 +125,9 @@ What we're proposing here only affects the `hyperlight-dev/hyperlight` crates.
 Hyperlight Wasm, Hyperlight Unikraft, and all other guests are not required to
 reach 1.0 status when Hyperlight does. Though a follow-up goal will of course be
 to have those reach 1.0 status too.
+
+### Which APIs have stability guarantees?
+
+The guarantees cover documented public APIs in the host and guest crates.
+Implementation crates such as `hyperlight-common` and
+`hyperlight-component-util`, along with `#[doc(hidden)]` APIs, are excluded.
