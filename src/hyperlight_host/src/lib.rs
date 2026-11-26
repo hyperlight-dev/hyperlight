@@ -65,6 +65,10 @@ pub mod sandbox;
 /// Signal handling for Linux
 #[cfg(target_os = "linux")]
 pub(crate) mod signal_handlers;
+/// Byte streams. Transferring a reader to the guest requires the `streams` feature.
+pub mod stream {
+    pub use hyperlight_common::stream::{StreamError, StreamReader, StreamWriter, new};
+}
 /// Utilities for testing including interacting with `simpleguest` testing guest binary
 #[cfg(test)]
 pub(crate) mod testing;

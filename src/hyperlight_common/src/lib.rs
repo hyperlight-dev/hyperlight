@@ -26,6 +26,9 @@ pub mod outb;
 /// cbindgen:ignore
 pub mod resource;
 
+/// cbindgen:ignore
+pub mod stream;
+
 /// Shared guest and host transport protocol.
 // cbindgen:ignore
 pub mod transport;

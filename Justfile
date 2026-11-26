@@ -111,6 +111,7 @@ test-like-ci config=default-target hypervisor="kvm":
 
     @# with default features
     just test {{config}}
+    just test-streams {{config}}
 
     @# with only one driver enabled + build-metadata
     just test {{config}} build-metadata,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
@@ -181,6 +182,7 @@ build-test-like-ci config=default-target hypervisor="kvm":
 
     @# Run Rust tests
     just test {{config}}
+    just test-streams {{config}}
 
     @# Run Rust tests with single driver
     {{ if os() == "linux" { "just test " + config+ " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
@@ -346,6 +348,10 @@ test-no-surrogate target=default-target:
 test-rust-gdb-debugging target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host --lib {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- hypervisor::gdb::
+
+# Stream unit and integration tests use the Rust simple guest.
+test-streams target=default-target:
+    {{ cargo-cmd }} test -p hyperlight-common -p hyperlight-guest -p hyperlight-host --features streams --lib --test stream_tests --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":

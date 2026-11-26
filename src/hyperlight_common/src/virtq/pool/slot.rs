@@ -523,6 +523,21 @@ impl SlotPool {
         self.inner.borrow().upper.slot_size as usize
     }
 
+    /// Size in bytes of the largest free slot, or `None` when every slot is allocated.
+    pub fn max_free_slot_size(&self) -> Option<usize> {
+        let inner = self.inner.borrow();
+
+        if inner.upper.num_free() != 0 {
+            return Some(inner.upper.slot_size as usize);
+        }
+
+        inner
+            .lower
+            .as_ref()
+            .filter(|lower| lower.num_free() != 0)
+            .map(|lower| lower.slot_size as usize)
+    }
+
     /// Total number of slots across all tiers.
     pub fn count(&self) -> usize {
         self.inner.borrow().count()

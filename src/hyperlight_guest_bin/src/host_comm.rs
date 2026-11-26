@@ -2,6 +2,7 @@
 // Copyright 2025 The Hyperlight Authors.
 
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
@@ -44,7 +45,7 @@ pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<Retur
     if let ParameterValue::String(message) = function_call.parameters.unwrap().remove(0) {
         let res = call_host_function::<i32>(
             "HostPrint",
-            Some(Vec::from(&[ParameterValue::String(message)])),
+            Some(vec![ParameterValue::String(message)]),
             ReturnType::Int,
         )?;
 

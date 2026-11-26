@@ -10,7 +10,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, ParameterValue, ReturnType};
-use hyperlight_common::transport::ExternalValues;
+use hyperlight_common::stream::{DEFAULT_WINDOW, Mux, Side};
+use hyperlight_common::transport::PendingMessage;
 use hyperlight_common::vmem::PAGE_SIZE;
 use hyperlight_host::func::Registerable;
 use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
@@ -692,48 +693,55 @@ fn function_call_codec_benchmark(c: &mut Criterion) {
 
     let vec_call = codec_benchmark_call(ParameterValue::VecBytes(vec_bytes.clone()));
     let chunk_call = codec_benchmark_call(ParameterValue::ByteChunks(byte_chunks.clone()));
+    let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+    let mut buffer = Vec::new();
     let mut group = c.benchmark_group("function_call_codec");
 
-    for (name, function_call) in [("vec_bytes", &vec_call), ("byte_chunks", &chunk_call)] {
+    for (name, function_call) in [("vec_bytes", vec_call), ("byte_chunks", chunk_call)] {
+        let pending = PendingMessage::new_call(function_call, 1, &mut mux).unwrap();
+
         group.bench_function(BenchmarkId::new("encode_control", name), |b| {
             b.iter(|| {
-                let mut buffer = Vec::new();
-                let mut exts = ExternalValues::new();
-
-                let control = function_call.encode(&mut buffer, &mut exts).unwrap();
-                std::hint::black_box((control, exts.total_len()));
+                let message = pending.encode(&mut buffer).unwrap();
+                std::hint::black_box((message.control(), message.external_len()));
             });
         });
     }
 
-    let mut buffer = Vec::new();
-    let mut external_values = ExternalValues::new();
-
-    let vec_control = vec_call
-        .encode(&mut buffer, &mut external_values)
-        .unwrap()
-        .to_vec();
+    let vec_control = PendingMessage::new_call(
+        codec_benchmark_call(ParameterValue::VecBytes(vec_bytes.clone())),
+        1,
+        &mut mux,
+    )
+    .unwrap()
+    .encode(&mut buffer)
+    .unwrap()
+    .control()
+    .to_vec();
 
     group.bench_function("decode_vec_bytes_copy", |b| {
         b.iter(|| {
             let mut src = BenchExternalSource::new(BenchExternalValue::Bytes(&vec_bytes));
-            let function_call = FunctionCall::decode(&vec_control, &mut src).unwrap();
+            let function_call = FunctionCall::decode(&vec_control, &mut src, &mut mux).unwrap();
             std::hint::black_box(function_call);
         });
     });
 
-    let mut buffer = Vec::new();
-    let mut external_values = ExternalValues::new();
-
-    let chunk_control = chunk_call
-        .encode(&mut buffer, &mut external_values)
-        .unwrap()
-        .to_vec();
+    let chunk_control = PendingMessage::new_call(
+        codec_benchmark_call(ParameterValue::ByteChunks(byte_chunks.clone())),
+        1,
+        &mut mux,
+    )
+    .unwrap()
+    .encode(&mut buffer)
+    .unwrap()
+    .control()
+    .to_vec();
 
     group.bench_function("decode_byte_chunks_owner_backed", |b| {
         b.iter(|| {
             let mut src = BenchExternalSource::new(BenchExternalValue::Chunks(&byte_chunks));
-            let function_call = FunctionCall::decode(&chunk_control, &mut src).unwrap();
+            let function_call = FunctionCall::decode(&chunk_control, &mut src, &mut mux).unwrap();
             std::hint::black_box(function_call);
         });
     });

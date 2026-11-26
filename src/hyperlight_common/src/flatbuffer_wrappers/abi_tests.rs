@@ -18,6 +18,7 @@ use super::guest_error::{ErrorCode, GuestError};
 use super::guest_log_data::GuestLogData;
 use super::guest_log_level::LogLevel;
 use super::wire::WireValue;
+use crate::stream::{Side, StreamId, Transfer};
 use crate::transport::{ExternalValues, MsgHeader, MsgKind};
 
 #[track_caller]
@@ -63,7 +64,7 @@ fn function_call() {
     );
     let mut buffer = Vec::new();
     let mut external_values = ExternalValues::new();
-    let encoded = call.encode(&mut buffer, &mut external_values).unwrap();
+    let encoded = call.encode(&mut buffer, &mut external_values, &[]).unwrap();
 
     #[rustfmt::skip]
     let expected = [
@@ -85,7 +86,7 @@ fn function_result() {
     let mut external_values = ExternalValues::new();
 
     let ok = FunctionCallResult::new(Ok(ReturnValue::UInt(300)));
-    let encoded = ok.encode(&mut buffer, &mut external_values).unwrap();
+    let encoded = ok.encode(&mut buffer, &mut external_values, None).unwrap();
     // Ok, UInt, varint 300.
     assert_wire_bytes("FunctionCallResult::Ok", encoded, &[0, 1, 0xac, 0x02]);
 
@@ -93,7 +94,7 @@ fn function_result() {
         ErrorCode::GuestFunctionNotFound,
         "no".to_string(),
     )));
-    let encoded = err.encode(&mut buffer, &mut external_values).unwrap();
+    let encoded = err.encode(&mut buffer, &mut external_values, None).unwrap();
     // Err, code 4, message "no".
     assert_wire_bytes("FunctionCallResult::Err", encoded, &[1, 4, 2, b'n', b'o']);
     assert_eq!(external_values.total_len(), 0);
@@ -118,6 +119,13 @@ fn value_tags() {
             },
             9,
         ),
+        (
+            WireValue::StreamReader(Transfer {
+                sid: StreamId::new(Side::Host, 1).unwrap(),
+                position: 0,
+            }),
+            10,
+        ),
     ];
     for (value, tag) in cases {
         let what = alloc::format!("{value:?}");
@@ -139,6 +147,7 @@ fn return_type_tags() {
         ReturnType::Void,
         ReturnType::VecBytes,
         ReturnType::ByteChunks,
+        ReturnType::StreamReader,
     ];
     for (tag, value) in types.into_iter().enumerate() {
         let what = alloc::format!("ReturnType::{value:?}");

@@ -4,14 +4,15 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
-use super::codec::{ExternalValueSink, ExternalValueSource};
+use super::codec::{ExternalValueSink, ExternalValueSource, control_cap};
 use super::function_types::{ParameterValue, ReturnType};
 use super::util::try_byte_chunks_len;
-use super::wire::{CallHead, ParamsOut, decode_call, encode_value};
+use super::wire::{CallHead, ParamsOut, decode_call, encode_capped};
+use crate::stream::{Mux, StreamReader, Transfer};
 
 /// The type of function call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,6 @@ pub enum FunctionCallType {
 }
 
 /// `Functioncall` represents a call to a function in the guest or host.
-#[derive(Clone)]
 pub struct FunctionCall {
     /// The function name
     pub function_name: String,
@@ -55,51 +55,70 @@ impl FunctionCall {
         self.function_call_type.clone()
     }
 
-    /// Encode control data and collect byte parameters as external values.
-    pub fn encode<'a, 'b, S>(
+    /// Encode control data and supply borrowed byte parameters to `external_values`.
+    ///
+    /// `transfers` describes the reader parameters in their value order.
+    pub(crate) fn encode<'a, 'b, S>(
         &'a self,
         buffer: &'b mut Vec<u8>,
         external_values: &mut S,
+        transfers: &[Transfer],
     ) -> Result<&'b [u8]>
     where
         S: ExternalValueSink<'a> + ?Sized,
     {
         let parameters = self.parameters.as_deref().unwrap_or_default();
+        let mut external_len = 0usize;
+
         for parameter in parameters {
-            match parameter {
-                ParameterValue::VecBytes(value) => {
-                    u64::try_from(value.len()).map_err(|_| {
-                        anyhow::anyhow!("External VecBytes parameter length does not fit in u64")
-                    })?;
-                    external_values.push_bytes(value)?;
-                }
-                ParameterValue::ByteChunks(value) => {
-                    let length = try_byte_chunks_len(value).ok_or_else(|| {
-                        anyhow::anyhow!("External ByteChunks parameter length overflow")
-                    })?;
-                    u64::try_from(length).map_err(|_| {
-                        anyhow::anyhow!("External ByteChunks parameter length does not fit in u64")
-                    })?;
-                    external_values.push_chunks(value)?;
-                }
-                _ => {}
-            }
+            let length = match parameter {
+                ParameterValue::VecBytes(value) => value.len(),
+                ParameterValue::ByteChunks(value) => try_byte_chunks_len(value)
+                    .ok_or_else(|| anyhow!("External ByteChunks parameter length overflow"))?,
+                _ => continue,
+            };
+
+            external_len = external_len
+                .checked_add(length)
+                .ok_or_else(|| anyhow!("External parameters length overflow"))?;
         }
 
+        let cap = control_cap(external_len)?;
         let head = CallHead {
             name: &self.function_name,
             host: self.function_call_type == FunctionCallType::Host,
             return_type: self.expected_return_type,
         };
-        encode_value(&(head, ParamsOut(parameters)), buffer)
+        let params = ParamsOut {
+            values: parameters,
+            xfers: transfers,
+        };
+        encode_capped(&(head, params), buffer, cap)?;
+
+        for parameter in parameters {
+            match parameter {
+                ParameterValue::VecBytes(value) => external_values.push_bytes(value)?,
+                ParameterValue::ByteChunks(value) => external_values.push_chunks(value)?,
+                _ => {}
+            }
+        }
+
+        Ok(buffer.as_slice())
     }
 
-    /// Decode control data and consume external byte parameters.
-    pub fn decode<S>(value: &[u8], external_values: &mut S) -> Result<Self>
+    /// Decode control data and receive its readers through `streams`.
+    ///
+    /// Each parameter is built as it is parsed, taking byte values from `external_values` and
+    /// receiving readers in order. A failure drops the parameters built so far, which closes
+    /// their readers. It also fails `streams`, since later transfers stay unreceived.
+    pub fn decode<S>(control: &[u8], external_values: &mut S, streams: &mut Mux) -> Result<Self>
     where
         S: ExternalValueSource + ?Sized,
     {
-        let (head, params) = decode_call(value, external_values)?;
+        let (head, params) = decode_call(control, external_values, streams)
+            .and_then(|call| external_values.finish().map(|()| call))
+            .inspect_err(|_| streams.fail())?;
+
         let function_call_type = if head.host {
             FunctionCallType::Host
         } else {
@@ -107,7 +126,6 @@ impl FunctionCall {
         };
         let parameters = (!params.is_empty()).then_some(params);
 
-        external_values.finish()?;
         Ok(Self {
             function_name: head.name.to_string(),
             parameters,
@@ -115,9 +133,31 @@ impl FunctionCall {
             expected_return_type: head.return_type,
         })
     }
+
+    /// Borrow reader parameters in their wire order.
+    pub(crate) fn readers(&self) -> impl Iterator<Item = &StreamReader<u8>> {
+        self.parameters
+            .iter()
+            .flatten()
+            .filter_map(|value| match value {
+                ParameterValue::StreamReader(reader) => Some(reader),
+                _ => None,
+            })
+    }
+
+    /// Take reader parameters to commit their transfers.
+    pub(crate) fn into_readers(self) -> impl Iterator<Item = StreamReader<u8>> {
+        self.parameters
+            .into_iter()
+            .flatten()
+            .filter_map(|value| match value {
+                ParameterValue::StreamReader(reader) => Some(reader),
+                _ => None,
+            })
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use alloc::collections::VecDeque;
     use alloc::vec;
@@ -125,6 +165,9 @@ mod tests {
     use super::*;
     use crate::flatbuffer_wrappers::function_types::{Bytes, ReturnType};
     use crate::flatbuffer_wrappers::wire::{WireValue, decode_value};
+    use crate::stream::{DEFAULT_WINDOW, Side};
+    use crate::transport::{EncodedMessage, ExternalValues, MsgKind};
+    use crate::virtq::Segments;
 
     #[derive(Debug, Clone, PartialEq)]
     enum TestExternalValue {
@@ -142,20 +185,6 @@ mod tests {
             Self {
                 values: values.into_iter().collect(),
             }
-        }
-    }
-
-    impl<'a> ExternalValueSink<'a> for TestExternalValues {
-        fn push_bytes(&mut self, value: &'a [u8]) -> Result<()> {
-            self.values
-                .push_back(TestExternalValue::VecBytes(value.to_vec()));
-            Ok(())
-        }
-
-        fn push_chunks(&mut self, value: &'a [Bytes]) -> Result<()> {
-            self.values
-                .push_back(TestExternalValue::ByteChunks(value.to_vec()));
-            Ok(())
         }
     }
 
@@ -189,11 +218,31 @@ mod tests {
         }
     }
 
+    /// Encode a call without stream readers and copy its external bytes.
+    fn encode(call: &FunctionCall) -> Result<(Vec<u8>, Segments)> {
+        let mut buffer = Vec::new();
+        let mut externals = ExternalValues::new();
+        let control = call.encode(&mut buffer, &mut externals, &[])?;
+        let message = EncodedMessage::new(MsgKind::Request, 1, control, externals).unwrap();
+
+        Ok((
+            message.control().to_vec(),
+            Segments::new(message.external_chunks().map(Bytes::copy_from_slice)),
+        ))
+    }
+
+    /// Decode a call from `control` and `external_values`.
+    fn decode(
+        control: &[u8],
+        external_values: &mut impl ExternalValueSource,
+    ) -> Result<FunctionCall> {
+        let mut mux = Mux::new(Side::Guest, DEFAULT_WINDOW);
+        FunctionCall::decode(control, external_values, &mut mux)
+    }
+
     #[test]
     fn twelve_parameters_round_trip() -> Result<()> {
-        let mut buffer = Vec::new();
-        let mut external_values = TestExternalValues::default();
-        let test_data = FunctionCall::new(
+        let (control, mut external_values) = encode(&FunctionCall::new(
             "PrintTwelveArgs".to_string(),
             Some(vec![
                 ParameterValue::String("1".to_string()),
@@ -211,10 +260,9 @@ mod tests {
             ]),
             FunctionCallType::Guest,
             ReturnType::Int,
-        )
-        .encode(&mut buffer, &mut external_values)?;
+        ))?;
 
-        let function_call = FunctionCall::decode(test_data, &mut external_values)?;
+        let function_call = decode(&control, &mut external_values)?;
         assert_eq!(function_call.function_name, "PrintTwelveArgs");
         assert!(function_call.parameters.is_some());
         let parameters = function_call.parameters.unwrap();
@@ -241,48 +289,36 @@ mod tests {
 
     #[test]
     fn byte_parameters_round_trip_in_external_value_order() {
-        let mut buffer = Vec::new();
-        let expected_parameters = vec![
-            ParameterValue::Int(7),
-            ParameterValue::UInt(8),
-            ParameterValue::Long(-9),
-            ParameterValue::ULong(10),
-            ParameterValue::Float(1.25),
-            ParameterValue::Double(2.5),
-            ParameterValue::Bool(true),
-            ParameterValue::VecBytes(vec![0xa5; 4096]),
-            ParameterValue::String("middle".to_string()),
-            ParameterValue::ByteChunks(vec![
-                Bytes::from_static(b"chunk one"),
-                Bytes::from_static(b" and two"),
-            ]),
-            ParameterValue::VecBytes(Vec::new()),
-            ParameterValue::ByteChunks(Vec::new()),
-        ];
         let call = FunctionCall::new(
             "external_bytes".to_string(),
-            Some(expected_parameters.clone()),
-            FunctionCallType::Host,
-            ReturnType::ByteChunks,
-        );
-        let mut external_values = TestExternalValues::default();
-        let encoded = call.encode(&mut buffer, &mut external_values).unwrap();
-
-        assert!(encoded.len() < 4096);
-        assert_eq!(
-            external_values.values,
-            VecDeque::from([
-                TestExternalValue::VecBytes(vec![0xa5; 4096]),
-                TestExternalValue::ByteChunks(vec![
+            Some(vec![
+                ParameterValue::Int(7),
+                ParameterValue::UInt(8),
+                ParameterValue::Long(-9),
+                ParameterValue::ULong(10),
+                ParameterValue::Float(1.25),
+                ParameterValue::Double(2.5),
+                ParameterValue::Bool(true),
+                ParameterValue::VecBytes(vec![0xa5; 4096]),
+                ParameterValue::String("middle".to_string()),
+                ParameterValue::ByteChunks(vec![
                     Bytes::from_static(b"chunk one"),
                     Bytes::from_static(b" and two"),
                 ]),
-                TestExternalValue::VecBytes(Vec::new()),
-                TestExternalValue::ByteChunks(Vec::new()),
-            ])
+                ParameterValue::VecBytes(Vec::new()),
+                ParameterValue::ByteChunks(Vec::new()),
+            ]),
+            FunctionCallType::Host,
+            ReturnType::ByteChunks,
         );
 
-        let (_, params): (CallHead, Vec<WireValue>) = decode_value(encoded).unwrap();
+        let (encoded, mut external_values) = encode(&call).unwrap();
+
+        assert!(encoded.len() < 4096);
+        assert_eq!(external_values.len(), 4096 + 17);
+
+        let (_, params): (CallHead, Vec<WireValue>) = decode_value(&encoded).unwrap();
+
         for (index, length, chunked) in [
             (7, 4096, false),
             (9, 17, true),
@@ -292,12 +328,12 @@ mod tests {
             assert_eq!(params[index], WireValue::ExternalBytes { length, chunked });
         }
 
-        let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();
+        let decoded = decode(&encoded, &mut external_values).unwrap();
         assert_eq!(decoded.function_name, "external_bytes");
-        assert_eq!(decoded.parameters, Some(expected_parameters));
+        assert_eq!(decoded.parameters, call.parameters);
         assert_eq!(decoded.function_call_type(), FunctionCallType::Host);
         assert_eq!(decoded.expected_return_type, ReturnType::ByteChunks);
-        assert!(external_values.values.is_empty());
+        assert!(external_values.is_empty());
     }
 
     #[test]
@@ -311,44 +347,40 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::Bool,
         );
-        let mut buffer = Vec::new();
-        let mut external_values = TestExternalValues::default();
-        let encoded = call.encode(&mut buffer, &mut external_values).unwrap();
+        let (encoded, mut external_values) = encode(&call).unwrap();
 
-        assert!(external_values.values.is_empty());
-        let decoded = FunctionCall::decode(encoded, &mut external_values).unwrap();
+        assert!(external_values.is_empty());
+        let decoded = decode(&encoded, &mut external_values).unwrap();
         assert_eq!(decoded.function_name, "scalars");
     }
 
     #[test]
     fn external_parameter_decoder_rejects_invalid_value_sequences() {
-        let mut buffer = Vec::new();
         let call = FunctionCall::new(
             "external_bytes".to_string(),
             Some(vec![ParameterValue::VecBytes(vec![1, 2, 3])]),
             FunctionCallType::Guest,
             ReturnType::Void,
         );
-        let mut encoded_values = TestExternalValues::default();
-        let encoded = call.encode(&mut buffer, &mut encoded_values).unwrap();
+        let (encoded, _) = encode(&call).unwrap();
 
         let mut missing = TestExternalValues::default();
-        assert!(FunctionCall::decode(encoded, &mut missing).is_err());
+        assert!(decode(&encoded, &mut missing).is_err());
 
         let mut wrong_type =
             TestExternalValues::from_values([TestExternalValue::ByteChunks(vec![
                 Bytes::from_static(b"123"),
             ])]);
-        assert!(FunctionCall::decode(encoded, &mut wrong_type).is_err());
+        assert!(decode(&encoded, &mut wrong_type).is_err());
 
         let mut wrong_length =
             TestExternalValues::from_values([TestExternalValue::VecBytes(vec![1, 2])]);
-        assert!(FunctionCall::decode(encoded, &mut wrong_length).is_err());
+        assert!(decode(&encoded, &mut wrong_length).is_err());
 
         let mut extra = TestExternalValues::from_values([
             TestExternalValue::VecBytes(vec![1, 2, 3]),
             TestExternalValue::VecBytes(Vec::new()),
         ]);
-        assert!(FunctionCall::decode(encoded, &mut extra).is_err());
+        assert!(decode(&encoded, &mut extra).is_err());
     }
 }

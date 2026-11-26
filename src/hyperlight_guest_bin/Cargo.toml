@@ -14,6 +14,7 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 
 [features]
 default = ["libc", "macros"]
+streams = ["hyperlight-guest/streams"]
 libc = ["dep:hyperlight-libc"] # compile libc from picolibc
 trace_guest = ["hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/mem_profile"]

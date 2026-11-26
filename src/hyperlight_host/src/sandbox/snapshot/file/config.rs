@@ -286,6 +286,7 @@ enum ParameterTypeRepr {
     Bool,
     VecBytes,
     ByteChunks,
+    StreamReader,
 }
 
 /// JSON-friendly mirror of
@@ -304,6 +305,7 @@ enum ReturnTypeRepr {
     Void,
     VecBytes,
     ByteChunks,
+    StreamReader,
 }
 
 impl From<&ParameterType> for ParameterTypeRepr {
@@ -319,6 +321,7 @@ impl From<&ParameterType> for ParameterTypeRepr {
             ParameterType::Bool => Self::Bool,
             ParameterType::VecBytes => Self::VecBytes,
             ParameterType::ByteChunks => Self::ByteChunks,
+            ParameterType::StreamReader => Self::StreamReader,
         }
     }
 }
@@ -336,6 +339,7 @@ impl From<ParameterTypeRepr> for ParameterType {
             ParameterTypeRepr::Bool => Self::Bool,
             ParameterTypeRepr::VecBytes => Self::VecBytes,
             ParameterTypeRepr::ByteChunks => Self::ByteChunks,
+            ParameterTypeRepr::StreamReader => Self::StreamReader,
         }
     }
 }
@@ -354,6 +358,7 @@ impl From<&ReturnType> for ReturnTypeRepr {
             ReturnType::Void => Self::Void,
             ReturnType::VecBytes => Self::VecBytes,
             ReturnType::ByteChunks => Self::ByteChunks,
+            ReturnType::StreamReader => Self::StreamReader,
         }
     }
 }
@@ -372,6 +377,7 @@ impl From<ReturnTypeRepr> for ReturnType {
             ReturnTypeRepr::Void => Self::Void,
             ReturnTypeRepr::VecBytes => Self::VecBytes,
             ReturnTypeRepr::ByteChunks => Self::ByteChunks,
+            ReturnTypeRepr::StreamReader => Self::StreamReader,
         }
     }
 }
@@ -738,6 +744,7 @@ mod tests {
             ParameterType::Bool,
             ParameterType::VecBytes,
             ParameterType::ByteChunks,
+            ParameterType::StreamReader,
         ];
         for p in variants {
             let back: ParameterType = ParameterTypeRepr::from(&p).into();
@@ -761,6 +768,7 @@ mod tests {
             ReturnType::Void,
             ReturnType::VecBytes,
             ReturnType::ByteChunks,
+            ReturnType::StreamReader,
         ];
         for r in variants {
             let back: ReturnType = ReturnTypeRepr::from(&r).into();

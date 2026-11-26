@@ -19,3 +19,8 @@ pub mod paging;
 pub mod prim_alloc;
 pub mod transport;
 pub mod types;
+
+#[cfg(feature = "streams")]
+pub mod stream;
+#[cfg_attr(not(feature = "streams"), path = "task_noop.rs", doc(hidden))]
+pub mod task;

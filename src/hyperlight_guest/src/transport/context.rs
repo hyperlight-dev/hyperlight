@@ -3,6 +3,7 @@
 
 //! Guest virtqueue context.
 
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::result;
 
@@ -10,22 +11,24 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
+use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::layout::scratch_transport_end_gva;
 use hyperlight_common::outb::OutBAction;
+use hyperlight_common::stream::{DEFAULT_WINDOW, Mux, Side};
 use hyperlight_common::transport::{
-    EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind,
+    EncodedMessage, ExternalValues, MailboxValue, MsgHeader, MsgKind, PendingMessage,
 };
 use hyperlight_common::virtq::{
     AllocError, BootstrapInfo, G2H_LOWER_SLOT_COUNT, G2H_LOWER_SLOT_SIZE, Layout, Notifier,
-    QueueStats, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError, VirtqProducer,
-    h2g_pool_layout,
+    QueueStats, Segments, SendChain, SlotLayout, SlotPool, Token, UsedChain, VirtqError,
+    VirtqProducer, h2g_pool_layout,
 };
 use hyperlight_common::vmem::PAGE_SIZE;
 
 use super::{GuestMemOps, codec};
 use crate::error::{GuestErrorContext, Result};
 use crate::exit::out32;
-use crate::{bail, layout};
+use crate::{bail, ensure, layout, task};
 
 /// Exits to the host to process available virtqueue work.
 #[derive(Clone, Copy)]
@@ -56,7 +59,8 @@ type H2gProducer = VirtqProducer<GuestMemOps, NoopNotifier>;
 pub enum DispatchAction {
     /// Invoke one guest function and return its correlation ID.
     Call(u32, FunctionCall),
-    // TODO: Add Progress for task and stream rounds.
+    /// Run ready tasks and flush stream records.
+    Progress,
 }
 
 /// Configuration for one queue passed to [`GuestContext::new`].
@@ -107,6 +111,10 @@ pub struct GuestContext {
     mbx_gva: u64,
     /// Correlation ID assigned to the next host-function request.
     next_cid: u32,
+    /// Stream state of the session. Function calls and results move readers through it.
+    mux: Mux,
+    /// Reusable control storage for outgoing messages.
+    encode_buffer: Vec<u8>,
 }
 
 impl GuestContext {
@@ -159,6 +167,8 @@ impl GuestContext {
             h2g_slot_size: h2g.buffer_size,
             mbx_gva,
             next_cid: 1,
+            mux: Mux::new(Side::Guest, DEFAULT_WINDOW),
+            encode_buffer: Vec::new(),
         };
 
         ctx.prefill_h2g()?;
@@ -187,39 +197,35 @@ impl GuestContext {
             return_type,
         );
 
-        let mut buffer = Vec::new();
-        let mut externals = ExternalValues::new();
-
-        // Encode control data separately from borrowed external byte values.
-        let control = fc
-            .encode(&mut buffer, &mut externals)
-            .with_context(|| "failed to encode host function call")?;
-
-        // Frame the request and include external values in its total length.
         let cid = self.allocate_cid();
-        let msg = EncodedMessage::new(MsgKind::Request, cid, control, externals)
-            .context("G2H message length overflow")?;
+        let pending = PendingMessage::new_call(fc, cid, &mut self.mux)
+            .with_context(|| "failed to prepare host function call")?;
+        let message = pending
+            .encode(&mut self.encode_buffer)
+            .with_context(|| "failed to encode host function call")?;
 
         let reply_cap = ReplyCapacity::for_return_type(return_type);
 
         // Submit once more after forcing the host to drain on backpressure.
-        let token = match self.try_send(&msg, reply_cap) {
+        let mut res = Self::try_send(&mut self.g2h_producer, &message, reply_cap);
+        let retried = matches!(&res, Err(error) if error.is_transient());
+
+        if retried {
+            self.g2h_producer.notify_backpressure();
+
+            if let Err(error) = self.g2h_producer.reclaim() {
+                bail!("G2H reclaim: {error}");
+            }
+
+            res = Self::try_send(&mut self.g2h_producer, &message, reply_cap);
+        }
+
+        drop(message);
+
+        let token = match pending.settle(res) {
             Ok(token) => token,
-            Err(error) if error.is_transient() => {
-                self.g2h_producer.notify_backpressure();
-
-                if let Err(error) = self.g2h_producer.reclaim() {
-                    bail!("G2H reclaim: {error}");
-                }
-
-                match self.try_send(&msg, reply_cap) {
-                    Ok(token) => token,
-                    Err(error) => bail!("G2H call retry: {error}"),
-                }
-            }
-            Err(error) => {
-                bail!("G2H call: {error}");
-            }
+            Err(error) if retried => bail!("G2H call retry: {error}"),
+            Err(error) => bail!("G2H call: {error}"),
         };
 
         // Poll completions, skipping earlier one-way acknowledgements until
@@ -243,7 +249,7 @@ impl GuestContext {
 
         // Decode external ByteChunks without flattening their transport-backed
         // segments.
-        let fcr = codec::decode_response(segments, cid)?;
+        let fcr = codec::decode_response(segments, cid, &mut self.mux)?;
         Ok(fcr.into_inner()?)
     }
 
@@ -256,13 +262,52 @@ impl GuestContext {
             .reclaim()
             .with_context(|| "G2H completion reclaim failed")?;
 
+        let Some((header, payload)) = self.recv_h2g_message()? else {
+            return Ok(DispatchAction::Progress);
+        };
+
+        let action = match header.kind {
+            MsgKind::Request => {
+                ensure!(header.cid != 0, "Invalid request framing");
+                let call = codec::decode_request(header.control_len, payload, &mut self.mux)?;
+                DispatchAction::Call(header.cid, call)
+            }
+            MsgKind::Stream => {
+                // ensure cid downstream
+                self.recv_stream(header, payload)?;
+                DispatchAction::Progress
+            }
+            _ => bail!("H2G buffer has invalid request framing"),
+        };
+
+        // Apply the Stream messages that follow.
+        while let Some((header, payload)) = self.recv_h2g_message()? {
+            self.recv_stream(header, payload)?;
+        }
+
+        Ok(action)
+    }
+
+    /// Apply one H2G `Stream` message.
+    fn recv_stream(&mut self, header: MsgHeader, payload: Segments) -> Result<()> {
+        ensure!(
+            header.kind == MsgKind::Stream && header.cid == 0,
+            "Invalid stream record"
+        );
+        codec::recv_stream(header.control_len, payload, &mut self.mux)
+    }
+
+    /// Receive the next H2G message header and payload, or `None` when no buffer is used.
+    ///
+    /// A message fills its first buffer and the continuation buffers its payload length needs.
+    fn recv_h2g_message(&mut self) -> Result<Option<(MsgHeader, Segments)>> {
         let Some(used) = self.h2g_producer.poll()? else {
-            bail!("H2G: expected a guest function call buffer");
+            return Ok(None);
         };
 
         let mut payload = match used {
             UsedChain::Data(_, segments) => segments,
-            UsedChain::Ack(_) => bail!("H2G: guest function call buffer was ack-only"),
+            UsedChain::Ack(_) => bail!("H2G buffer was ack-only"),
         };
 
         let header = payload
@@ -273,10 +318,6 @@ impl GuestContext {
         let Some(header) = MsgHeader::from_bytes(&header) else {
             bail!("H2G buffer has an invalid message header");
         };
-
-        if header.kind != MsgKind::Request || header.cid == 0 {
-            bail!("H2G buffer has invalid request framing");
-        }
 
         let payload_len =
             usize::try_from(header.payload_len).context("H2G payload length overflow")?;
@@ -310,40 +351,176 @@ impl GuestContext {
             payload.append(segments);
         }
 
-        let call = codec::decode_request(header.control_len, payload)?;
-        Ok(DispatchAction::Call(header.cid, call))
+        Ok(Some((header, payload)))
     }
 
-    /// Return a guest-function result and replenish H2G receive buffers.
+    /// Return a guest-function result, flush stream records and STATUS, and replenish H2G receive
+    /// buffers.
     pub fn send_h2g_result(&mut self, cid: u32, result: FunctionCallResult) -> Result<()> {
-        self.g2h_producer
-            .reclaim()
-            .with_context(|| "G2H response reclaim failed")?;
+        self.g2h_producer.reclaim()?;
 
-        {
-            let mut buffer = Vec::new();
-            let mut externals = ExternalValues::new();
+        if let Some(message) = self.send_result(cid, result)? {
+            let error =
+                FunctionCallResult::new(Err(GuestError::new(ErrorCode::GuestError, message)));
 
-            let control = result
-                .encode(&mut buffer, &mut externals)
-                .with_context(|| "failed to encode guest function result")?;
-
-            let msg = EncodedMessage::new(MsgKind::Response, cid, control, externals)
-                .context("G2H response length overflow")?;
-
-            self.try_send_deferred(&msg, ReplyCapacity::None)
-                .with_context(|| "G2H response submission failed")?;
+            if let Some(reason) = self.send_result(cid, error)? {
+                bail!("G2H error response submission failed: {reason}");
+            }
         }
 
-        drop(result);
+        self.flush_streams(1)?;
+        self.publish_status(false)?;
         self.prefill_h2g()
     }
 
+    /// Publish a result, or return the admission error to send to the host.
+    fn send_result(&mut self, cid: u32, result: FunctionCallResult) -> Result<Option<String>> {
+        // Committing a reader transfer can change STATUS.
+        let moves_reader = result.reader().is_some();
+
+        let pending = match PendingMessage::new_result(result, cid, &mut self.mux) {
+            Ok(pending) => pending,
+            Err(error) => return Ok(Some(error.to_string())),
+        };
+
+        let encoded = pending
+            .encode(&mut self.encode_buffer)
+            .with_context(|| "failed to encode guest function result")?;
+
+        let prod = &mut self.g2h_producer;
+        let reserved = usize::from(moves_reader);
+
+        let chain = Self::build_g2h_chain(prod, &encoded, reserved, ReplyCapacity::None);
+        drop(encoded);
+
+        let res = match chain {
+            Ok(chain) if moves_reader => pending.settle(Self::submit_deferred(prod, chain)),
+            Ok(chain) => {
+                // There are no transfers to commit. Dropping the byte owners can free slots
+                // or wake a guest task, so check room and STATUS after they drop.
+                drop(pending);
+
+                let full = chain.desc_count() == prod.num_free() || prod.pool().num_free() == 0;
+                let maybe_status = PendingMessage::new_status(&mut self.mux, task::status());
+
+                if full && maybe_status.is_some() {
+                    Err(VirtqError::Backpressure)
+                } else {
+                    Self::submit_deferred(prod, chain)
+                }
+            }
+            Err(error) => Err(error),
+        };
+
+        match res {
+            Ok(_) => Ok(None),
+            Err(error) if error.is_transient() => Ok(Some(
+                "Guest response exceeds virtqueue capacity".to_string(),
+            )),
+            Err(error) => {
+                self.mux.fail();
+                bail!("G2H response submission failed: {error}");
+            }
+        }
+    }
+
     /// Publish successful guest initialization at the startup halt.
-    pub fn complete_initialization(&mut self) {
+    ///
+    /// Fails while guest tasks or streams are live, since initialization publishes no STATUS for
+    /// the host's snapshot gate.
+    pub fn complete_initialization(&mut self) -> Result<()> {
+        ensure!(
+            task::status().is_empty() && !self.mux.has_live_streams(),
+            "Initialization left live tasks or streams"
+        );
+
         let status = MailboxValue::InitComplete.raw();
         // SAFETY: Construction requires an exclusively owned, mapped mailbox.
         unsafe { (self.mbx_gva as *mut u64).write_volatile(status) };
+
+        Ok(())
+    }
+
+    /// End a progress turn: flush stream records, publish STATUS, and replenish H2G receive
+    /// buffers.
+    ///
+    /// The flush may fill G2H. STATUS then notifies the host to drain it and retries once.
+    pub fn finish_progress_turn(&mut self) -> Result<()> {
+        self.g2h_producer.reclaim()?;
+        self.flush_streams(0)?;
+        self.publish_status(true)?;
+        self.prefill_h2g()
+    }
+
+    /// Publish pending stream records for the host to apply after the final halt.
+    ///
+    /// Each message fits the largest G2H slot free when the flush starts, and leaves `reserve`
+    /// descriptors and slots free. Retained host replies can hold every upper slot, and lower
+    /// slots then carry the records. A full queue or pool stops the flush and leaves the remaining
+    /// records pending for the next turn. Any other error is fatal.
+    fn flush_streams(&mut self, reserve: usize) -> Result<()> {
+        // Once per flush, so DATA splits into lower-slot messages only when no upper slot is free.
+        let Some(max_len) = self.g2h_producer.pool().max_free_slot_size() else {
+            return Ok(());
+        };
+
+        let prod = &mut self.g2h_producer;
+
+        while let Some(pending) = PendingMessage::next_stream(&mut self.mux, max_len) {
+            let encoded = pending
+                .encode(&mut self.encode_buffer)
+                .with_context(|| "failed to encode G2H stream message")?;
+
+            let res = Self::try_send_deferred(prod, &encoded, reserve, ReplyCapacity::None);
+            drop(encoded);
+
+            match pending.settle(res) {
+                Ok(_) => {}
+                Err(error) if error.is_transient() => break,
+                Err(error) => bail!("G2H stream message: {error}"),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Publish STATUS when the guest's activity changed.
+    ///
+    /// Call it after the flush, so READY covers the records left pending. A call turn publishes
+    /// into the room its flush left and cannot retry, since nothing after the Response notifies
+    /// the host. A progress turn retries once after the host drains G2H.
+    fn publish_status(&mut self, retry: bool) -> Result<()> {
+        let status = task::status();
+
+        let Some(pending) = PendingMessage::new_status(&mut self.mux, status) else {
+            return Ok(());
+        };
+
+        let encoded = pending
+            .encode(&mut self.encode_buffer)
+            .with_context(|| "failed to encode G2H status")?;
+
+        let producer = &mut self.g2h_producer;
+        let mut res = Self::try_send_deferred(producer, &encoded, 0, ReplyCapacity::None);
+
+        // Retry once on backpressure
+        if retry && matches!(&res, Err(err) if err.is_transient()) {
+            producer.notify_backpressure();
+
+            if let Err(err) = producer.reclaim() {
+                bail!("G2H status reclaim: {err}");
+            }
+
+            res = Self::try_send_deferred(producer, &encoded, 0, ReplyCapacity::None);
+        }
+
+        drop(encoded);
+
+        if let Err(error) = pending.settle(res) {
+            bail!("G2H status: {error}");
+        }
+
+        Ok(())
     }
 
     /// Reconstruct transport ownership for the host's current generation.
@@ -424,7 +601,7 @@ impl GuestContext {
     /// Completed acknowledgements remain available for normal polling or
     /// reclamation when later submissions encounter backpressure.
     fn send_g2h_oneshot(&mut self, message: &EncodedMessage<'_>) -> Result<()> {
-        match self.try_send(message, ReplyCapacity::None) {
+        match Self::try_send(&mut self.g2h_producer, message, ReplyCapacity::None) {
             Ok(_) => Ok(()),
             Err(error) if error.is_transient() => {
                 // VM exit so host drains and completes G2H entries.
@@ -434,7 +611,7 @@ impl GuestContext {
                     bail!("G2H one-way reclaim: {error}");
                 }
 
-                match self.try_send(message, ReplyCapacity::None) {
+                match Self::try_send(&mut self.g2h_producer, message, ReplyCapacity::None) {
                     Ok(_) => Ok(()),
                     Err(error) => bail!("G2H one-way retry: {error}"),
                 }
@@ -445,39 +622,51 @@ impl GuestContext {
 
     /// Build and submit one G2H descriptor chain.
     ///
-    /// `reply_cap` defines optional host-function reply space.
+    /// `reply_cap` defines optional host-function reply space. The helpers
+    /// borrow only the producer, so they run while an outgoing call borrows
+    /// the Mux.
     fn try_send(
-        &mut self,
+        producer: &mut G2hProducer,
         message: &EncodedMessage<'_>,
         reply_cap: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
-        let chain = self.build_g2h_chain(message, reply_cap)?;
-        self.g2h_producer.submit(chain)
+        let chain = Self::build_g2h_chain(producer, message, 0, reply_cap)?;
+        producer.submit(chain)
     }
 
-    /// Submit one G2H message for polling after the existing final halt.
+    /// Submit one G2H message for polling after the existing final halt leaving `reserve`
+    /// ring descriptors and pool slots free, or reports backpressure.
     fn try_send_deferred(
-        &mut self,
+        producer: &mut G2hProducer,
         message: &EncodedMessage<'_>,
-        reply_capacity: ReplyCapacity,
+        reserve: usize,
+        reply_cap: ReplyCapacity,
     ) -> result::Result<Token, VirtqError> {
-        let chain = self.build_g2h_chain(message, reply_capacity)?;
-        let mut batch = self.g2h_producer.batch();
+        let chain = Self::build_g2h_chain(producer, message, reserve, reply_cap)?;
+        Self::submit_deferred(producer, chain)
+    }
 
+    /// Leave notification of this chain to the turn's halt.
+    fn submit_deferred(
+        producer: &mut G2hProducer,
+        chain: SendChain<GuestMemOps>,
+    ) -> result::Result<Token, VirtqError> {
+        let mut batch = producer.batch();
         let token = batch.submit(chain)?;
-        batch.finish_without_notify();
 
+        batch.finish_without_notify();
         Ok(token)
     }
 
-    /// Build and initialize one G2H message chain.
+    /// Build and initialize one G2H message chain, leaving `reserve` descriptors and slots free.
     fn build_g2h_chain(
-        &self,
+        producer: &G2hProducer,
         message: &EncodedMessage<'_>,
+        reserve: usize,
         reply_cap: ReplyCapacity,
     ) -> result::Result<SendChain<GuestMemOps>, VirtqError> {
-        let segment_len = self.g2h_producer.preferred_segment_len();
-        let mut builder = self.g2h_producer.chain();
+        let segment_len = producer.preferred_segment_len();
+        let mut builder = producer.chain().keep_free(reserve);
 
         for len in message_region_lengths(message, segment_len) {
             builder = builder.readable(len);

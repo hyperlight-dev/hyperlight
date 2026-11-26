@@ -177,6 +177,9 @@ jobs:
         # ARM64 MSHV selects its driver here to avoid a duplicate full run.
         run: just test ${{ inputs.config }} ${{ inputs.arch == 'arm64' && inputs.hypervisor == 'mshv3' && 'mshv3 "nextest run"' || '' }}
 
+      - name: Test streams
+        run: just test-streams ${{ inputs.config }}
+
       - name: Run Rust tests with single driver
         # ARM64 MSHV runs this suite in the preceding step.
         if: runner.os == 'Linux' && (inputs.arch == 'X64' || (inputs.full_aarch64 == 'true' && inputs.hypervisor != 'mshv3'))

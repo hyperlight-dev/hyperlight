@@ -32,6 +32,7 @@ tracing-core = { version = "0.1.36", default-features = false }
 
 [features]
 default = ["tracing"]
+streams = []
 tracing = ["dep:tracing"]
 fuzzing = ["dep:arbitrary"]
 trace_guest = []

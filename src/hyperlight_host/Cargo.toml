@@ -127,6 +127,7 @@ cc = "1.2"
 
 [features]
 default = ["kvm", "mshv3", "hvf", "build-metadata"]
+streams = ["hyperlight-common/streams"]
 function_call_metrics = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono", "dep:elfcore"]

@@ -14,7 +14,7 @@ use crate::flatbuffer_wrappers::function_types::{ReturnType, ReturnValue};
 /// may avoid flattening them into one allocation. Chunk boundaries are a
 /// storage detail and may change during transport. They do not delimit messages
 /// or values.
-pub trait SupportedReturnType: Sized + Clone + Send + Sync + 'static {
+pub trait SupportedReturnType: Sized + Send + Sync + 'static {
     /// The return type of the supported return value
     const TYPE: ReturnType;
 
@@ -40,6 +40,7 @@ macro_rules! for_each_return_type {
         $macro!(bool, Bool);
         $macro!(Vec<u8>, VecBytes);
         $macro!(Vec<$crate::func::Bytes>, ByteChunks);
+        $macro!($crate::stream::StreamReader<u8>, StreamReader);
     };
 }
 
@@ -56,7 +57,7 @@ macro_rules! impl_supported_return_type {
                 match value {
                     ReturnValue::$enum(i) => Ok(i),
                     other => Err(Error::ReturnValueConversionFailure(
-                        other.clone(),
+                        other,
                         stringify!($type),
                     )),
                 }

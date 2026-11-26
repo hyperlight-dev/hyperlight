@@ -13,7 +13,7 @@ use hyperlight_testing::simple_guest_as_pathbuf;
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
     with_all_guests, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from, with_rust_sandbox,
-    with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
+    with_rust_sandbox_from, with_rust_uninit_sandbox, with_rust_uninit_sandbox_cfg,
 };
 
 #[test]
@@ -868,6 +868,38 @@ fn oversized_host_response_returns_transport_error() {
                 if message == "Host response exceeds virtqueue capacity"
         ));
         sandbox.call::<()>("RoundTripHostNoOp", ()).unwrap();
+    });
+}
+
+#[test]
+fn oversized_guest_result_returns_guest_error() {
+    // The default scratch cannot hold the pattern and its copy.
+    let configure = |builder: SandboxBuilder| builder.scratch_size(1 << 20);
+
+    with_rust_sandbox_from(configure, |mut sandbox| {
+        // The result needs 16 G2H slots, and the default pool has 11.
+        sandbox
+            .call::<()>("AllocAndWritePattern", 64 * 1024_u64)
+            .unwrap();
+
+        let error = sandbox.call::<Vec<u8>>("ReadPattern", ()).unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                HyperlightError::GuestError(ErrorCode::GuestError, message)
+                    if message == "Guest response exceeds virtqueue capacity"
+            ),
+            "{error:?}"
+        );
+        assert!(sandbox.status().is_ready());
+
+        sandbox
+            .call::<()>("AllocAndWritePattern", 8 * 1024_u64)
+            .unwrap();
+
+        let pattern: Vec<u8> = sandbox.call("ReadPattern", ()).unwrap();
+        assert_eq!(pattern.len(), 8 * 1024);
     });
 }
 

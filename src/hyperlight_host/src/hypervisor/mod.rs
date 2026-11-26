@@ -29,11 +29,23 @@ use std::fmt::Debug;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicU8, Ordering};
+#[cfg(feature = "streams")]
+use std::sync::{Arc, Mutex, PoisonError};
+#[cfg(feature = "streams")]
+use std::task::Waker;
 #[cfg(any(kvm, mshv3, hvf))]
 use std::time::Duration;
 
 #[derive(Debug)]
-pub(crate) struct InterruptHandleStateMachine(AtomicU8);
+pub(crate) struct InterruptHandleStateMachine {
+    /// The running, cancel, and debug interrupt bits.
+    flags: AtomicU8,
+    /// The waker of the [`Sandbox::block_on`](crate::Sandbox::block_on) drive,
+    /// which cancellation wakes.
+    #[cfg(feature = "streams")]
+    waker: Mutex<Option<Waker>>,
+}
+
 impl InterruptHandleStateMachine {
     const RUNNING_BIT: u8 = 1 << 1;
     const CANCEL_BIT: u8 = 1 << 0;
@@ -41,7 +53,11 @@ impl InterruptHandleStateMachine {
     const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 
     fn new() -> Self {
-        Self(AtomicU8::new(0))
+        Self {
+            flags: AtomicU8::new(0),
+            #[cfg(feature = "streams")]
+            waker: Mutex::new(None),
+        }
     }
 
     /// Set the running state
@@ -49,13 +65,13 @@ impl InterruptHandleStateMachine {
         // Release ordering to ensure that the tid store (which uses Release)
         // is visible to any thread that observes running=true via Acquire ordering.
         // This prevents the interrupt thread from reading a stale tid value.
-        self.0.fetch_or(Self::RUNNING_BIT, Ordering::Release);
+        self.flags.fetch_or(Self::RUNNING_BIT, Ordering::Release);
     }
 
     /// Clear the running state
     pub(crate) fn clear_running(&self) {
         // Release ordering to ensure all vcpu operations are visible before clearing running
-        self.0.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
+        self.flags.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
     }
 
     /// Check if cancellation was requested
@@ -63,11 +79,24 @@ impl InterruptHandleStateMachine {
         self.get_running_cancel_debug().1
     }
 
-    /// Set the cancellation request flag
+    /// Set the cancellation request flag, then wake the drive.
     fn set_cancel(&self) {
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
         // when it checks is_cancelled() with Acquire ordering
-        self.0.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+        self.flags.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+
+        #[cfg(feature = "streams")]
+        {
+            let mut guard = self.waker.lock().unwrap_or_else(PoisonError::into_inner);
+            let waker = guard.take();
+
+            drop(guard);
+
+            // Wake outside the lock, since a waker can run arbitrary code.
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
     }
 
     /// Clear the cancellation request flag
@@ -75,7 +104,17 @@ impl InterruptHandleStateMachine {
         // Release ordering to ensure that any operations from the previous run()
         // are visible to other threads. While this is typically called by the vcpu thread
         // at the start of run(), the VM itself can move between threads across guest calls.
-        self.0.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+        self.flags.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    /// Replace the drive's waker.
+    #[cfg(feature = "streams")]
+    fn set_waker(&self, waker: Option<Waker>) {
+        let mut guard = self.waker.lock().unwrap_or_else(PoisonError::into_inner);
+        let _replaced = std::mem::replace(&mut *guard, waker);
+
+        // Drop the replaced waker outside the lock.
+        drop(guard);
     }
 
     /// Check if debug interrupt was requested (always returns false when gdb feature is disabled)
@@ -93,20 +132,20 @@ impl InterruptHandleStateMachine {
     /// Clear the debug interrupt request flag
     #[cfg(gdb)]
     fn set_debug_interrupt(&self) {
-        self.0
+        self.flags
             .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
     }
 
     /// Clear the debug interrupt request flag
     #[cfg(gdb)]
     fn clear_debug_interrupt(&self) {
-        self.0
+        self.flags
             .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
     }
 
     /// Get the running, cancel and debug flags atomically.
     fn get_running_cancel_debug(&self) -> (bool, bool, bool) {
-        let state = self.0.load(Ordering::Acquire);
+        let state = self.flags.load(Ordering::Acquire);
         let running = state & Self::RUNNING_BIT != 0;
         let cancel = state & Self::CANCEL_BIT != 0;
         #[cfg(gdb)]
@@ -114,6 +153,38 @@ impl InterruptHandleStateMachine {
         #[cfg(not(gdb))]
         let debug = false;
         (running, cancel, debug)
+    }
+}
+
+/// The cancellation scope of one [`Sandbox::block_on`](crate::Sandbox::block_on) drive.
+///
+/// Starting it clears cancellation. Until it drops, cancellation wakes the drive.
+#[cfg(feature = "streams")]
+pub(crate) struct CancelScope(Arc<dyn InterruptHandle>);
+
+#[cfg(feature = "streams")]
+impl CancelScope {
+    /// Clear cancellation, then register `waker` for cancellation to wake.
+    pub(crate) fn start(handle: Arc<dyn InterruptHandle>, waker: &Waker) -> Self {
+        let state = handle.state();
+
+        // Clear first, so a kill between the two steps stays set for the drive to see.
+        state.clear_cancel();
+        state.set_waker(Some(waker.clone()));
+
+        Self(handle)
+    }
+
+    /// Whether cancellation was requested since the drive started.
+    pub(crate) fn is_requested(&self) -> bool {
+        self.0.state().is_cancelled()
+    }
+}
+
+#[cfg(feature = "streams")]
+impl Drop for CancelScope {
+    fn drop(&mut self) {
+        self.0.state().set_waker(None);
     }
 }
 
@@ -150,6 +221,7 @@ pub trait InterruptHandle: Send + Sync + Debug + InterruptHandleInternal {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// - If this is called while the the sandbox currently executing a guest function call, it will interrupt the sandbox and return `true`.
+    /// - If this is called during `Sandbox::block_on` while the guest is not running, it ends the drive and returns `false`.
     /// - If this is called while the sandbox is not running (for example before or after calling a guest function), it will do nothing and return `false`.
     ///
     /// # Note

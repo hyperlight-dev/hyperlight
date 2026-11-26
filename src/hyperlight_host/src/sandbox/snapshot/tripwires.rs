@@ -5,7 +5,8 @@
 //!
 //! Each assertion pins one piece of the contract that snapshots
 //! depend on: the manifest media types, the OCI Image Layout version,
-//! the `OutBAction` and `VmAction` port numbers, and `BASE_ADDRESS`.
+//! the `OutBAction` and `VmAction` port numbers, `BASE_ADDRESS`, the
+//! transport message kinds, the STATUS flags, and the stream limits.
 //! A change to any of these breaks loading of older snapshots.
 //!
 //! The host-guest message encoding is pinned by tests in
@@ -65,6 +66,24 @@ const _: () = {
 const _: () = {
     use crate::mem::layout::SandboxMemoryLayout;
     abi_assert!(SandboxMemoryLayout::BASE_ADDRESS == 0x4000);
+};
+
+const _: () = {
+    use hyperlight_common::transport::MsgKind;
+
+    abi_assert!(MsgKind::Request as u8 == 0x01);
+    abi_assert!(MsgKind::Response as u8 == 0x02);
+    abi_assert!(MsgKind::Stream as u8 == 0x03);
+    abi_assert!(MsgKind::Log as u8 == 0x06);
+};
+
+const _: () = {
+    use hyperlight_common::stream::{MAX_STREAMS, MAX_TRANSFERS, StatusFlags};
+
+    abi_assert!(StatusFlags::READY.bits() == 0x01);
+    abi_assert!(StatusFlags::ACTIVE.bits() == 0x02);
+    abi_assert!(MAX_STREAMS == 16);
+    abi_assert!(MAX_TRANSFERS == 16);
 };
 
 const fn str_eq(a: &str, b: &str) -> bool {

@@ -218,6 +218,38 @@ fn test_tiered_slot_pool_reports_free_tier_counts() {
 }
 
 #[test]
+fn test_tiered_slot_pool_max_free_slot_size_prefers_upper() {
+    let pool = make_tiered_slot_pool(1, 1);
+    assert_eq!(pool.max_free_slot_size(), Some(4096));
+}
+
+#[test]
+fn test_tiered_slot_pool_max_free_slot_size_falls_back_to_lower() {
+    let pool = make_tiered_slot_pool(1, 1);
+    let _ = pool.alloc(4096).unwrap();
+
+    assert_eq!(pool.max_free_slot_size(), Some(256));
+}
+
+#[test]
+fn test_tiered_slot_pool_max_free_slot_size_is_none_when_full() {
+    let pool = make_tiered_slot_pool(1, 1);
+    let _ = pool.alloc(4096).unwrap();
+    let _ = pool.alloc(128).unwrap();
+
+    assert_eq!(pool.max_free_slot_size(), None);
+}
+
+#[test]
+fn test_slot_pool_max_free_slot_size() {
+    let pool = make_slot_pool(1, 4096);
+    assert_eq!(pool.max_free_slot_size(), Some(4096));
+
+    let _ = pool.alloc(4096).unwrap();
+    assert_eq!(pool.max_free_slot_size(), None);
+}
+
+#[test]
 fn test_tiered_slot_pool_dealloc_routes_by_region() {
     let pool = make_tiered_slot_pool(1, 1);
     let lower = pool.alloc(128).unwrap();

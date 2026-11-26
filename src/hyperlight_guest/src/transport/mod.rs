@@ -17,13 +17,16 @@ use core::sync::atomic::{AtomicU8, Ordering};
 pub use context::{DispatchAction, GuestContext, QueueConfig};
 pub(crate) use mem::GuestMemOps;
 
+use crate::error::Result;
+
 const UNINITIALIZED: u8 = 0;
 const INITIALIZED: u8 = 1;
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(UNINITIALIZED);
 static GLOBAL_CONTEXT: SyncWrap<RefCell<Option<GuestContext>>> = SyncWrap(RefCell::new(None));
 
-struct SyncWrap<T>(T);
+/// A static's value, shared without synchronization.
+pub(crate) struct SyncWrap<T>(pub(crate) T);
 
 // SAFETY: Hyperlight guests have one vCPU and serialize guest entry.
 unsafe impl<T> Sync for SyncWrap<T> {}
@@ -71,7 +74,9 @@ pub fn maybe_refresh() {
 }
 
 /// Publish successful guest initialization at the startup halt.
+///
+/// Fails while guest tasks or streams are live.
 #[inline]
-pub fn complete_initialization() {
-    with_ctx(GuestContext::complete_initialization);
+pub fn complete_initialization() -> Result<()> {
+    with_ctx(GuestContext::complete_initialization)
 }
