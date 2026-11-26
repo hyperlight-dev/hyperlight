@@ -16,6 +16,7 @@ use super::guest_error::GuestError;
 use super::util::arbitrary_byte_chunks;
 use super::util::try_byte_chunks_len;
 use super::wire::{WireResult, WireValue, decode_value, encode_capped};
+use crate::future::{FutureReader, FutureValue};
 use crate::stream::{Mux, StreamReader, Transfer};
 
 pub struct FunctionCallResult(core::result::Result<ReturnValue, GuestError>);
@@ -500,6 +501,14 @@ impl TryFrom<ParameterValue> for StreamReader<u8> {
     }
 }
 
+impl<T: FutureValue> TryFrom<ParameterValue> for FutureReader<T> {
+    type Error = Error;
+
+    fn try_from(value: ParameterValue) -> Result<Self> {
+        StreamReader::try_from(value).map(Self::from_stream)
+    }
+}
+
 impl TryFrom<ReturnValue> for i32 {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
@@ -636,6 +645,14 @@ impl TryFrom<ReturnValue> for StreamReader<u8> {
             ReturnValue::StreamReader(v) => Ok(v),
             _ => bail!("Unexpected return value type: {:?}", value),
         }
+    }
+}
+
+impl<T: FutureValue> TryFrom<ReturnValue> for FutureReader<T> {
+    type Error = Error;
+
+    fn try_from(value: ReturnValue) -> Result<Self> {
+        StreamReader::try_from(value).map(Self::from_stream)
     }
 }
 

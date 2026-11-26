@@ -3,8 +3,8 @@
 
 //! Guest tasks, which run futures across turns.
 //!
-//! [`stream::produce`](crate::stream::produce) spawns a task. Each turn polls the ready tasks with
-//! [`run_ready`].
+//! [`stream::produce`](crate::stream::produce) and [`future::produce`](crate::future::produce)
+//! spawn tasks. Each turn polls the ready tasks with [`run_ready`].
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;

@@ -361,6 +361,7 @@ pub mod __private {
     use alloc::string::String;
 
     use hyperlight_common::for_each_return_type;
+    use hyperlight_common::future::{FutureReader, FutureValue};
 
     macro_rules! impl_maybe_unwrap {
         ($ty:ty, $enum:ident) => {
@@ -383,6 +384,22 @@ pub mod __private {
     }
 
     for_each_return_type!(impl_maybe_unwrap);
+
+    impl<T: FutureValue> FromResult for FutureReader<T> {
+        type Output = Self;
+        fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+            // Unwrapping here is fine as this would only run in a guest
+            // and not in the host.
+            res.unwrap()
+        }
+    }
+
+    impl<T: FutureValue> FromResult for Result<FutureReader<T>, HyperlightGuestError> {
+        type Output = FutureReader<T>;
+        fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+            res
+        }
+    }
 }
 
 #[cfg(feature = "macros")]

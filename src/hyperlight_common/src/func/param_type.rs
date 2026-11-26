@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use super::error::Error;
 use super::utils::for_each_tuple;
 use crate::flatbuffer_wrappers::function_types::{Bytes, ParameterType, ParameterValue};
+use crate::future::{FutureReader, FutureValue};
 use crate::stream::StreamReader;
 
 /// This is a marker trait that is used to indicate that a type is a
@@ -66,6 +67,25 @@ macro_rules! impl_supported_param_type {
 }
 
 for_each_param_type!(impl_supported_param_type);
+
+/// A future crosses as the reader of the stream that carries its value.
+impl<T: FutureValue + 'static> SupportedParameterType for FutureReader<T> {
+    const TYPE: ParameterType = ParameterType::StreamReader;
+
+    fn into_value(self) -> ParameterValue {
+        ParameterValue::StreamReader(self.into_stream())
+    }
+
+    fn from_value(value: ParameterValue) -> Result<Self, Error> {
+        match value {
+            ParameterValue::StreamReader(reader) => Ok(Self::from_stream(reader)),
+            other => Err(Error::ParameterValueConversionFailure(
+                other,
+                "FutureReader",
+            )),
+        }
+    }
+}
 
 /// A trait to describe the tuple of parameters that a host function can take.
 ///

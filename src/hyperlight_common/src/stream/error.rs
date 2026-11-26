@@ -20,6 +20,12 @@ pub enum StreamError {
     /// The writer aborted the stream to report a failure.
     #[error("stream writer aborted")]
     Aborted,
+    /// A future's value exceeds [`MAX_VALUE`](crate::future::MAX_VALUE) bytes.
+    #[error("future value too large")]
+    ValueTooLarge,
+    /// A future's bytes do not decode to its value type.
+    #[error("invalid future value")]
+    InvalidValue,
 }
 
 /// A peer broke the stream protocol. The session fails when it finds one.

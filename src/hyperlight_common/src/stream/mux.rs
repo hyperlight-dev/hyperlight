@@ -677,12 +677,12 @@ impl Drop for Mux {
     /// End the session's side of every stream.
     ///
     /// Writes to readers on the peer fail with
-    /// [`StreamError::ReaderClosed`](super::StreamError::ReaderClosed). Readers from the peer see
-    /// EOF after their buffered bytes.
+    /// [`StreamError::ReaderClosed`](super::StreamError::ReaderClosed). Readers from the peer fail
+    /// with [`StreamError::Aborted`](super::StreamError::Aborted) after their buffered bytes.
     fn drop(&mut self) {
-        // Send streams close their readers as they drop.
+        // Send streams close their readers as they drop. An ended receive stream keeps its end.
         for stream in self.recv.values() {
-            stream.pipe.close_writer();
+            stream.pipe.abort_writer();
         }
     }
 }
@@ -1379,6 +1379,34 @@ mod tests {
             Poll::Ready(Err(StreamError::ReaderClosed))
         );
         assert_eq!(recv_pipe.poll_read(&mut cx, &mut buf), Poll::Ready(Ok(2)));
-        assert_eq!(recv_pipe.poll_read(&mut cx, &mut buf), Poll::Ready(Ok(0)));
+        assert_eq!(
+            recv_pipe.poll_read(&mut cx, &mut buf),
+            Poll::Ready(Err(StreamError::Aborted))
+        );
+    }
+
+    #[test]
+    fn drop_keeps_an_end_that_arrived() {
+        let (mut host, mut guest) = pair();
+        let (pipe, reader) = local(b"ab");
+        let reader = transfer(&mut host, &mut guest, reader);
+
+        pipe.close_writer();
+
+        assert_eq!(
+            transmit(&mut host, &mut guest, MAX_LEN),
+            Some(vec![
+                Record::Data { sid: H1, len: 2 },
+                Record::End {
+                    sid: H1,
+                    aborted: false
+                },
+            ])
+        );
+
+        drop(guest);
+
+        assert_eq!(read(&reader), Poll::Ready(Ok(b"ab".to_vec())));
+        assert_eq!(read(&reader), Poll::Ready(Ok(vec![])));
     }
 }

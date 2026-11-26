@@ -87,7 +87,10 @@ impl NoopMux {
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+    use crate::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
     use crate::flatbuffer_wrappers::function_types::{FunctionCallResult, ReturnValue};
+    use crate::func::{ParameterTuple, ReturnType};
+    use crate::future;
     use crate::stream::{self, DEFAULT_WINDOW};
     use crate::transport::PendingMessage;
     use crate::virtq::Segments;
@@ -110,6 +113,21 @@ mod tests {
         let err = PendingMessage::new_result(result, 1, &mut mux)
             .err()
             .unwrap();
+        assert_eq!(err.downcast_ref(), Some(&ProtocolError::Disabled));
+    }
+
+    #[test]
+    fn rejects_a_future_argument() {
+        let mut mux = Mux::new(Side::Host, DEFAULT_WINDOW);
+        let (reader, _writer) = future::new::<()>();
+        let call = FunctionCall::new(
+            "read".into(),
+            Some(reader.into_value()),
+            FunctionCallType::Guest,
+            ReturnType::Void,
+        );
+
+        let err = PendingMessage::new_call(call, 1, &mut mux).err().unwrap();
         assert_eq!(err.downcast_ref(), Some(&ProtocolError::Disabled));
     }
 

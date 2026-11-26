@@ -199,6 +199,26 @@ impl Pipe {
         });
     }
 
+    /// Append `chunk` whatever the capacity, then close the writer end.
+    pub(crate) fn write_last(&self, chunk: &mut Bytes) -> Result<(), StreamError> {
+        self.with(|state, deferred| {
+            if state.reader.is_closed() {
+                return Err(StreamError::ReaderClosed);
+            }
+
+            let chunk = mem::take(chunk);
+
+            if !chunk.is_empty() {
+                state.len += chunk.len();
+                state.buffer.push_back(chunk);
+            }
+
+            deferred.stale = state.writer.close();
+            deferred.wake = state.reader.notify();
+            Ok(())
+        })
+    }
+
     /// Run the read steps, taking buffered bytes with `take` and returning `eof` at EOF.
     fn poll_read_with<T>(
         &self,
@@ -732,6 +752,54 @@ mod tests {
         pipe.close_writer();
         assert_eq!(reader.count(), 1);
         assert_eq!(pipe.poll_read_chunk(&mut cx), Poll::Ready(Ok(None)));
+    }
+
+    #[test]
+    fn write_last_skips_capacity_and_closes_the_writer() {
+        let pipe = Pipe::new(1);
+        let (reader, waker) = Counter::waker();
+        let mut chunk = Bytes::from_static(b"abc");
+
+        assert_eq!(
+            pipe.poll_read_chunk(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        );
+
+        assert_eq!(pipe.write_last(&mut chunk), Ok(()));
+        assert_eq!(reader.count(), 1);
+        assert!(chunk.is_empty());
+        assert_eq!(
+            pipe.state(),
+            PipeState {
+                len: 3,
+                reader: EndState::Open,
+                writer: EndState::Closed,
+            }
+        );
+        assert_eq!(
+            pipe.poll_read_chunk(&mut noop()),
+            Poll::Ready(Ok(Some(Bytes::from_static(b"abc"))))
+        );
+        assert_eq!(pipe.poll_read_chunk(&mut noop()), Poll::Ready(Ok(None)));
+    }
+
+    #[test]
+    fn write_last_to_a_closed_reader_keeps_the_chunk() {
+        let pipe = Pipe::new(4);
+        let mut chunk = Bytes::from_static(b"abc");
+
+        pipe.close_reader();
+
+        assert_eq!(pipe.write_last(&mut chunk), Err(StreamError::ReaderClosed));
+        assert_eq!(chunk, b"abc"[..]);
+        assert_eq!(
+            pipe.state(),
+            PipeState {
+                len: 0,
+                reader: EndState::Closed,
+                writer: EndState::Open,
+            }
+        );
     }
 
     #[test]

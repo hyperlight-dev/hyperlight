@@ -214,10 +214,11 @@ The active message kinds are:
 * `Stream` (requires the `streams` feature)
 
 Enable the `streams` Cargo feature on both `hyperlight-host` and
-`hyperlight-guest-bin` to exchange readers. It is off by default. Local pipes
-do not need it. Ordinary calls and logs work across builds with different
-feature settings. A peer without streams rejects stream records, reader values,
-and calls declaring a reader result. Both builds use the same wire tags.
+`hyperlight-guest-bin` to exchange stream or future readers. It is off by
+default. Local pipes do not need it. Ordinary calls and logs work across
+builds with different feature settings. A peer without streams rejects stream
+records, reader values, and calls declaring a reader result. Both builds use
+the same wire tags.
 
 The control data holds the typed function call or result and the lengths of
 external byte values. It is one [postcard](https://docs.rs/postcard) value.
@@ -499,8 +500,8 @@ Layout validation and bootstrap generation precede changes to sandbox status,
 the cached snapshot, and memory mappings.
 
 Restore starts a fresh host Mux and ends the current cross-boundary streams.
-Host writers fail with `ReaderClosed`. Host readers reach EOF after their
-buffered bytes.
+Host writers fail with `ReaderClosed`. Host readers fail with `Aborted` after
+their buffered bytes, unless their stream already ended.
 
 Restore writes the arena GPA metadata, an `InitComplete` mailbox value,
 and both ring images into fresh scratch. It attaches new host consumers at

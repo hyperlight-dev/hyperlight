@@ -684,7 +684,9 @@ impl Sandbox {
     ///
     /// Restore ends live cross-boundary streams. Writes to guest readers fail
     /// with [`ReaderClosed`](hyperlight_common::stream::StreamError::ReaderClosed).
-    /// Readers from the guest reach EOF after their buffered bytes.
+    /// Readers from the guest fail with
+    /// [`Aborted`](hyperlight_common::stream::StreamError::Aborted) after their
+    /// buffered bytes, unless their stream already ended.
     ///
     /// The sandbox's registered host functions must be a superset of
     /// those required by the snapshot (matched by name and
@@ -2535,7 +2537,10 @@ mod tests {
             pin!(writer.write(b"x")).poll(&mut cx),
             Poll::Ready(Err(StreamError::ReaderClosed))
         );
-        assert_matches!(pin!(reader.read(&mut bt)).poll(&mut cx), Poll::Ready(Ok(0)));
+        assert_matches!(
+            pin!(reader.read(&mut bt)).poll(&mut cx),
+            Poll::Ready(Err(StreamError::Aborted))
+        );
         sandbox.snapshot().unwrap();
     }
 
@@ -2564,7 +2569,10 @@ mod tests {
             pin!(writer.write(b"x")).poll(&mut cx),
             Poll::Ready(Err(StreamError::ReaderClosed))
         );
-        assert_matches!(pin!(reader.read(&mut bt)).poll(&mut cx), Poll::Ready(Ok(0)));
+        assert_matches!(
+            pin!(reader.read(&mut bt)).poll(&mut cx),
+            Poll::Ready(Err(StreamError::Aborted))
+        );
         sandbox.snapshot().unwrap();
     }
 

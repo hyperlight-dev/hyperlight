@@ -40,6 +40,12 @@ pub(crate) mod built_info {
 pub mod error;
 /// Wrappers for host and guest functions.
 pub mod func;
+/// Futures, streams that carry one value across the sandbox boundary.
+pub mod future {
+    pub use hyperlight_common::future::{
+        FutureRead, FutureReader, FutureValue, FutureWriter, MAX_VALUE, new,
+    };
+}
 /// Wrappers for hypervisor implementations
 pub mod hypervisor;
 /// Functionality to establish and manage an individual sandbox's
