@@ -7,14 +7,21 @@ to start listening for a gdb connection.
 ## Supported features
 
 The Hyperlight `gdb` feature enables guest debugging to:
-   - stop at an entry point breakpoint which is automatically set by Hyperlight
-   - add and remove HW breakpoints (maximum 4 set breakpoints at a time)
+   - stop at the entry point
    - add and remove SW breakpoints
    - read and write registers
    - read and write addresses
-   - step/continue
+   - continue
+   - single-step
    - get code offset from target
    - stop when a crash occurs and only allow read access to the guest memory and registers
+
+On x86_64, gdb supports up to four hardware breakpoints.
+ARM64 Linux/MSHV supports two hardware breakpoints, four-byte `BRK` software
+breakpoints, and hardware single-step. Guest exception vectors forward debug
+exceptions through HVC. Guest binaries must retain the
+`hyperlight_debug_vectors` symbol so the host can install these vectors before
+the initial debug stop. Watchpoints are not advertised.
 
 ## Expected behavior
 
@@ -37,6 +44,14 @@ session of a guest binary running inside a Hyperlight sandbox.
   vCPU is stopped, allowing the gdb client to inspect the state of the guest.
   The debug target will refuse any resume, step actions and write operations to
   the guest memory and registers until the gdb client disconnects or the sandbox is stopped.
+
+Sandboxes configured for debugging cannot create snapshots on x86_64 or ARM64,
+even after debugger detach. Debugger register and memory edits can violate guest
+invariants. This restriction applies regardless of installed breakpoints.
+
+Debugging supports loading and restoring existing snapshots. Restore rejects
+installed software breakpoints in a ready sandbox. Recovery of a poisoned
+sandbox discards breakpoint bookkeeping before restoring clean memory.
 
 ## Example
 
@@ -156,6 +171,20 @@ The gdb thread uses the `gdbstub` crate to handle the communication with the gdb
 When the gdb client requests one of the supported features mentioned above, a request
 is sent over the communication channel to the main thread for the sandbox
 to resolve.
+
+### ARM64 stops and stepping
+
+The host prepares the guest registers before reporting the initial debug stop.
+This stop happens once, before the first guest instruction executes. For a
+sandbox created from an initialized snapshot, it happens at the first dispatcher
+entry because guest initialization has already run.
+
+Software breakpoints replace one instruction with a four-byte `BRK`. GDB
+controls breakpoint removal and reinsertion when stepping over that instruction.
+Hyperlight handles the breakpoint packets and enables CPU single-step for a
+step request. It does not predict the next instruction address.
+
+### Debug command flow
 
 Below is a sequence diagram that shows the interaction between the entities
 involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or **MSHV** sandbox.

@@ -792,7 +792,11 @@ impl VirtualMachine for MshvVm {
 
 #[cfg(gdb)]
 impl DebuggableVm for MshvVm {
-    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
+    fn translate_gva(
+        &self,
+        gva: u64,
+        _memory: &crate::hypervisor::gdb::DebugMemoryView<'_>,
+    ) -> std::result::Result<u64, DebugError> {
         use mshv_bindings::HV_TRANSLATE_GVA_VALIDATE_READ;
 
         // Do not use HV_TRANSLATE_GVA_VALIDATE_WRITE, since many
