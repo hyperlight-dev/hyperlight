@@ -8,6 +8,9 @@
 //! allocation bitmap. Eligible requests try the lower tier first and fall back
 //! to the upper tier only when the lower tier has no free slot.
 //!
+//! [`SlotPool::add_slots`] grows the upper tier with slots outside the layout.
+//! Requests take them once the layout's upper slots are allocated.
+//!
 //! Each allocation occupies one slot. [`SlotPool::live_addrs`] reports ownership
 //! in deterministic index order.
 
@@ -286,9 +289,106 @@ impl Tier {
     }
 }
 
+/// Upper-size slots outside the pool's layout.
+///
+/// Slots stay sorted by address, so binary search finds them and rejects double
+/// frees and unknown addresses.
+#[derive(Default)]
+struct ExtraSlots {
+    /// Slot start addresses in ascending order, each with whether it is allocated.
+    slots: Vec<(u64, bool)>,
+    /// Free slot addresses, popped/pushed LIFO.
+    free: Vec<u64>,
+}
+
+impl ExtraSlots {
+    /// Whether an extra slot of `slot_size` bytes overlaps `start..end`.
+    fn overlaps(&self, start: u64, end: u64, slot_size: u64) -> bool {
+        // Extra slots are disjoint and equal-sized, so only the last one that
+        // starts before `end` can reach into the range.
+        let before_end = self.slots.partition_point(|&(addr, _)| addr < end);
+
+        self.slots[..before_end]
+            .last()
+            .is_some_and(|&(addr, _)| addr + slot_size > start)
+    }
+
+    /// Add the free slots of `layout`, which overlaps no existing slot.
+    ///
+    /// Both lists reserve room first, so an error leaves them unchanged. The free
+    /// list keeps room for every slot, so frees never reallocate.
+    fn add(&mut self, layout: SlotLayout) -> Result<(), AllocError> {
+        let count = layout.slot_count();
+
+        self.slots
+            .try_reserve(count)
+            .map_err(|_| AllocError::Bookkeeping)?;
+
+        // The reservation succeeded, so this sum cannot overflow.
+        let total = self.slots.len() + count;
+
+        self.free
+            .try_reserve(total - self.free.len())
+            .map_err(|_| AllocError::Bookkeeping)?;
+
+        for addr in (0..count).filter_map(|index| layout.slot_addr(index)) {
+            self.slots.push((addr, false));
+            self.free.push(addr);
+        }
+
+        self.slots.sort_unstable_by_key(|&(addr, _)| addr);
+        Ok(())
+    }
+
+    /// Index of the extra slot starting at `addr`.
+    fn find(&self, addr: u64) -> Option<usize> {
+        self.slots
+            .binary_search_by_key(&addr, |&(slot, _)| slot)
+            .ok()
+    }
+
+    fn alloc(&mut self, slot_size: u32) -> Result<Allocation, AllocError> {
+        let addr = self.free.pop().ok_or(AllocError::NoSpace)?;
+
+        // Free addresses always name extra slots, so this marks one allocated.
+        if let Some(index) = self.find(addr) {
+            self.slots[index].1 = true;
+        }
+
+        Ok(Allocation {
+            addr,
+            len: slot_size,
+        })
+    }
+
+    fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
+        let index = self
+            .find(addr)
+            .filter(|&index| self.slots[index].1)
+            .ok_or(AllocError::InvalidFree(addr, 0))?;
+
+        self.slots[index].1 = false;
+        self.free.push(addr);
+        Ok(())
+    }
+
+    fn is_live(&self, addr: u64) -> bool {
+        self.find(addr).is_some_and(|index| self.slots[index].1)
+    }
+
+    fn append_live_addrs(&self, addrs: &mut Vec<u64>) {
+        addrs.extend(
+            self.slots
+                .iter()
+                .filter_map(|&(addr, live)| live.then_some(addr)),
+        );
+    }
+}
+
 struct Inner {
     lower: Option<Tier>,
     upper: Tier,
+    extra: ExtraSlots,
 }
 
 impl Inner {
@@ -296,6 +396,7 @@ impl Inner {
         Ok(Self {
             lower: layout.lower.map(Tier::from_layout).transpose()?,
             upper: Tier::from_layout(layout.upper)?,
+            extra: ExtraSlots::default(),
         })
     }
 
@@ -314,7 +415,29 @@ impl Inner {
             }
         }
 
-        self.upper.alloc(len)
+        match self.upper.alloc(len) {
+            Err(AllocError::NoSpace) => self.extra.alloc(self.upper.slot_size),
+            res => res,
+        }
+    }
+
+    /// Grow the upper tier by `count` slots at `base_addr`, outside every slot.
+    fn add_slots(&mut self, base_addr: u64, count: usize) -> Result<(), AllocError> {
+        let slot_size = self.upper.slot_size;
+        let layout = SlotLayout::new(base_addr, slot_size as usize, count)?;
+        let (start, end) = (layout.base_addr(), layout.end_addr());
+
+        let in_tier = self
+            .lower
+            .iter()
+            .chain(core::iter::once(&self.upper))
+            .any(|tier| start < tier.end() && tier.base_addr < end);
+
+        if in_tier || self.extra.overlaps(start, end, u64::from(slot_size)) {
+            return Err(AllocError::InvalidArg);
+        }
+
+        self.extra.add(layout)
     }
 
     fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
@@ -323,7 +446,12 @@ impl Inner {
         {
             return lower.dealloc_addr(addr);
         }
-        self.upper.dealloc_addr(addr)
+
+        if self.upper.contains(addr) {
+            return self.upper.dealloc_addr(addr);
+        }
+
+        self.extra.dealloc_addr(addr)
     }
 
     fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
@@ -332,17 +460,33 @@ impl Inner {
         {
             return lower.allocation_len(addr);
         }
-        self.upper.allocation_len(addr)
+
+        if self.upper.contains(addr) {
+            return self.upper.allocation_len(addr);
+        }
+
+        if !self.extra.is_live(addr) {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        Ok(self.upper.slot_size as usize)
     }
 
-    fn slot_addr(&self, index: usize) -> Option<u64> {
+    fn slot_addr(&self, mut index: usize) -> Option<u64> {
         if let Some(lower) = &self.lower {
             if index < lower.count {
                 return lower.slot_addr(index);
             }
-            return self.upper.slot_addr(index - lower.count);
+
+            index -= lower.count;
         }
-        self.upper.slot_addr(index)
+
+        if index < self.upper.count {
+            return self.upper.slot_addr(index);
+        }
+
+        let extra = index - self.upper.count;
+        self.extra.slots.get(extra).map(|&(addr, _)| addr)
     }
 
     fn live_addrs(&self) -> Vec<u64> {
@@ -351,6 +495,7 @@ impl Inner {
             lower.append_live_addrs(&mut addrs);
         }
         self.upper.append_live_addrs(&mut addrs);
+        self.extra.append_live_addrs(&mut addrs);
         addrs
     }
 
@@ -361,11 +506,16 @@ impl Inner {
     }
 
     fn count(&self) -> usize {
-        self.lower.as_ref().map_or(0, |lower| lower.count) + self.upper.count
+        let lower = self.lower.as_ref().map_or(0, |lower| lower.count);
+        lower + self.upper.count + self.extra.slots.len()
     }
 
     fn num_free(&self) -> usize {
-        self.lower.as_ref().map_or(0, Tier::num_free) + self.upper.num_free()
+        self.lower.as_ref().map_or(0, Tier::num_free) + self.num_free_upper()
+    }
+
+    fn num_free_upper(&self) -> usize {
+        self.upper.num_free() + self.extra.free.len()
     }
 
     fn num_live(&self) -> usize {
@@ -379,7 +529,7 @@ impl Inner {
         }
     }
 
-    /// Byte span of both tiers, including any gap.
+    /// Byte span of the layout's tiers, including any gap.
     fn byte_len(&self) -> usize {
         (self.upper.layout().end_addr() - self.base_addr()) as usize
     }
@@ -387,9 +537,9 @@ impl Inner {
 
 /// A buffer pool with one or two fixed-slot tiers.
 ///
-/// Allocation and deallocation are O(1) per slot. Eligible allocations first
-/// try the optional lower tier and fall back to the required upper tier when
-/// the lower tier is full.
+/// Allocation and deallocation are O(1) per layout slot and O(log n) per extra
+/// slot. Eligible allocations first try the optional lower tier and fall back to
+/// the required upper tier when the lower tier is full.
 #[derive(Clone)]
 pub struct SlotPool {
     inner: Rc<RefCell<Inner>>,
@@ -451,7 +601,7 @@ impl SlotPool {
         self.inner.borrow().live_addrs()
     }
 
-    /// Pool geometry independent of current allocations.
+    /// Pool geometry independent of current allocations and extra slots.
     pub fn layout(&self) -> PoolLayout {
         self.inner.borrow().layout()
     }
@@ -462,9 +612,10 @@ impl SlotPool {
         (layout.lower, layout.upper)
     }
 
-    /// Compute the address of slot `index`, with lower-tier slots first.
+    /// Compute the address of slot `index`.
     ///
-    /// Returns `None` if `index >= count`.
+    /// Lower-tier slots come first, then upper-tier slots, then extra slots in
+    /// address order. Returns `None` if `index >= count`.
     pub fn slot_addr(&self, index: usize) -> Option<u64> {
         self.inner.borrow().slot_addr(index)
     }
@@ -484,9 +635,25 @@ impl SlotPool {
         self.inner.borrow().lower.as_ref().map_or(0, Tier::num_free)
     }
 
-    /// Total number of free slots in the upper tier.
+    /// Total number of free slots in the upper tier, including extra slots.
     pub fn num_free_upper(&self) -> usize {
-        self.inner.borrow().upper.num_free()
+        self.inner.borrow().num_free_upper()
+    }
+
+    /// Grow the upper tier with `count` slots of the upper slot size at `base_addr`.
+    ///
+    /// The slots must not overlap the layout or existing extra slots. Requests take
+    /// them once the layout's upper slots are allocated, and they stay until the
+    /// pool drops. Returns [`AllocError::InvalidArg`] for an overlap,
+    /// [`AllocError::Bookkeeping`] when the slot lists cannot grow, and the errors
+    /// of [`SlotLayout::new`] for an invalid range.
+    ///
+    /// # Safety
+    ///
+    /// The range must be valid memory for the pool's producer. Nothing else may use
+    /// it while that producer allocates from the pool.
+    pub unsafe fn add_slots(&self, base_addr: u64, count: usize) -> Result<(), AllocError> {
+        self.inner.borrow_mut().add_slots(base_addr, count)
     }
 
     /// Free a previously allocated slot by address.
@@ -499,7 +666,7 @@ impl SlotPool {
         self.inner.borrow().allocation_len(addr)
     }
 
-    /// Base address of the first managed tier.
+    /// Base address of the layout's first tier.
     pub fn base_addr(&self) -> u64 {
         self.inner.borrow().base_addr()
     }
@@ -527,7 +694,7 @@ impl SlotPool {
     pub fn max_free_slot_size(&self) -> Option<usize> {
         let inner = self.inner.borrow();
 
-        if inner.upper.num_free() != 0 {
+        if inner.num_free_upper() != 0 {
             return Some(inner.upper.slot_size as usize);
         }
 
@@ -548,7 +715,7 @@ impl SlotPool {
         self.inner.borrow_mut().alloc(len)
     }
 
-    /// Byte span from the first slot to the last, including any gap between tiers.
+    /// Byte span of the layout, including any gap between tiers.
     pub fn byte_len(&self) -> usize {
         self.inner.borrow().byte_len()
     }

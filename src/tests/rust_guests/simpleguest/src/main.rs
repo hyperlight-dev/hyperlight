@@ -457,6 +457,18 @@ fn retain_guest_byte_chunks(data: Vec<Bytes>) -> i32 {
     len as i32
 }
 
+/// Retain `data` after the bytes already retained, and return the total retained length.
+#[guest_function("AppendGuestByteChunks")]
+fn append_guest_byte_chunks(data: Vec<Bytes>) -> i32 {
+    // SAFETY: the guest is single threaded, so the static has no concurrent access.
+    #[allow(static_mut_refs)]
+    unsafe {
+        let retained = RETAINED_GUEST_CHUNKS.get_or_insert_default();
+        retained.extend(data);
+        retained.iter().map(Bytes::len).sum::<usize>() as i32
+    }
+}
+
 /// Return the retained bytes without releasing their buffers.
 #[guest_function("ReadRetainedGuestByteChunks")]
 fn read_retained_guest_byte_chunks() -> Vec<Bytes> {
@@ -512,7 +524,7 @@ fn release_host_byte_chunks() -> i32 {
 #[guest_function("StreamBytes")]
 fn stream_bytes(data: Vec<u8>, abort: bool) -> StreamReader<u8> {
     stream::produce(async move |writer| {
-        writer.write_all(&data).await?;
+        writer.write_chunk(data.into()).await?;
 
         if abort {
             Err(StreamError::Aborted)
@@ -541,7 +553,7 @@ fn stream_panic() -> StreamReader<u8> {
     let data = vec![0; len];
 
     stream::produce::<_, StreamError>(async move |writer| {
-        writer.write_all(&data).await?;
+        writer.write_chunk(data.into()).await?;
         panic!("stream task panic");
     })
 }
@@ -598,7 +610,7 @@ fn stream_then_wait(data: Vec<u8>) -> StreamReader<u8> {
 
     stream::produce(async move |writer| {
         let _live = live;
-        writer.write_all(&data).await?;
+        writer.write_chunk(data.into()).await?;
         core::future::pending::<core::result::Result<(), StreamError>>().await
     })
 }
@@ -750,7 +762,7 @@ fn send_stream(data: Vec<u8>) -> Result<FutureReader<()>> {
     host_keep_stream(reader)?;
 
     Ok(future::produce(async move {
-        writer.write_all(&data).await?;
+        writer.write_chunk(data.into()).await?;
         writer.close();
         Ok::<_, StreamError>(())
     }))

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Bytes;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{HyperlightError, Result, SandboxBuilder, new_error};
+use hyperlight_host::{HyperlightError, Result, Sandbox, SandboxBuilder, new_error};
 use hyperlight_testing::simple_guest_as_pathbuf;
 
 pub mod common; // pub to disable dead_code warning
@@ -629,23 +629,95 @@ fn h2g_capacity_failure_does_not_poison_sandbox() {
 
     with_rust_uninit_sandbox_cfg(cfg, |sandbox| {
         let mut sandbox = sandbox.evolve().unwrap();
-        let retained = vec![0u8; 12_000];
 
-        sandbox
-            .call::<i32>(
-                "RetainGuestByteChunks",
-                vec![Bytes::copy_from_slice(&retained)],
-            )
-            .unwrap();
-
+        // The request alone needs 5 of the 4 posted buffers.
         let error = sandbox
-            .call::<Vec<u8>>("EchoGuestVecBytes", vec![0u8; 9 * 1024])
+            .call::<Vec<u8>>("EchoGuestVecBytes", vec![0u8; 16 * 1024])
             .unwrap_err();
 
         assert!(error.to_string().contains("H2G capacity"));
+        assert!(!sandbox.status().is_poisoned());
+
+        let expected = vec![0x5a; 9 * 1024];
+        let actual: Vec<u8> = sandbox.call("EchoGuestVecBytes", expected.clone()).unwrap();
+        assert_eq!(actual, expected);
+    });
+}
+
+/// Retain one more 1 KiB chunk, then fill every posted H2G buffer and read the chunks back.
+fn append_and_fill_h2g(sandbox: &mut Sandbox, chunks: &mut Vec<Bytes>, fill: u8) {
+    let chunk = Bytes::from(vec![fill; 1024]);
+    chunks.push(chunk.clone());
+
+    let retained: i32 = sandbox.call("AppendGuestByteChunks", vec![chunk]).unwrap();
+    assert_eq!(retained as usize, chunks.len() * 1024);
+
+    // The request and its spare take all 8 buffers the default H2G pool posts.
+    let len: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x3c; 24 * 1024])])
+        .unwrap();
+    assert_eq!(len, 24 * 1024);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), chunks.concat());
+}
+
+/// Each retained chunk keeps its H2G buffer, and the guest posts another buffer in its place.
+#[test]
+fn retained_guest_byte_chunks_keep_h2g_capacity() {
+    with_rust_sandbox(|mut sandbox| {
+        let mut chunks = Vec::new();
+
+        // 12 retained buffers against the 8 in the pool.
+        for fill in 1..=12 {
+            append_and_fill_h2g(&mut sandbox, &mut chunks, fill);
+        }
+
+        // Buffers added after capture or restore leave the captured chunks intact.
+        let snapshot = sandbox.snapshot().unwrap();
+        append_and_fill_h2g(&mut sandbox, &mut chunks, 13);
+
+        sandbox.restore(snapshot).unwrap();
+        chunks.truncate(12);
+        append_and_fill_h2g(&mut sandbox, &mut chunks, 14);
 
         let released: i32 = sandbox.call("ReleaseGuestByteChunks", ()).unwrap();
-        assert_eq!(released as usize, retained.len());
+        assert_eq!(released, 13 * 1024);
+    });
+}
+
+/// Retained guest chunks grow the H2G pool until scratch runs out, which aborts the guest.
+#[test]
+fn retained_guest_byte_chunks_abort_when_scratch_runs_out() {
+    with_rust_sandbox(|mut sandbox| {
+        let snapshot = sandbox.snapshot().unwrap();
+        let chunk = Bytes::from(vec![0x5a; 1024]);
+        let mut retained = 0;
+
+        // Each chunk holds a 4 KiB slot, and 400 KiB of scratch holds fewer than 100.
+        let error = loop {
+            assert!(retained < 100, "scratch never ran out");
+
+            match sandbox.call::<i32>("AppendGuestByteChunks", vec![chunk.clone()]) {
+                Ok(len) => {
+                    retained += 1;
+                    assert_eq!(len, retained * 1024);
+                }
+                Err(error) => break error,
+            }
+        };
+
+        // More chunks than the 8 slots of the default H2G pool.
+        assert!(retained > 8, "{retained}");
+        assert!(
+            matches!(&error, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "{error:?}"
+        );
+        assert!(sandbox.status().is_poisoned());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert!(actual.is_empty());
     });
 }
 

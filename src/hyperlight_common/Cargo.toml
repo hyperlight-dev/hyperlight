@@ -57,5 +57,9 @@ name = "buffer_pool"
 harness = false
 
 [[bench]]
+name = "stream_pipe"
+harness = false
+
+[[bench]]
 name = "virtq_api"
 harness = false

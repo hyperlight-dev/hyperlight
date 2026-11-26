@@ -84,7 +84,7 @@ mod tests {
         let (mut output, mut writer) = stream::new();
 
         let (reader, task) = producer(async move {
-            writer.write_all(&data).await?;
+            writer.write_chunk(data.into()).await?;
             writer.close();
             Ok::<_, StreamError>(())
         });
