@@ -40,7 +40,8 @@ pub(super) fn put_blob(blobs_dir: &Path, digest: &Digest256, bytes: &[u8]) -> cr
 /// existing regular file at `blobs_dir/<hex>` if it has the expected
 /// length. Unless `verify_existing` is set, the content-addressed
 /// filename is trusted without reading the file. With verification,
-/// mismatched contents are replaced. Callers must keep published blobs
+/// mismatched contents are rejected. Existing nonfiles or wrong-length
+/// files are rejected in either mode. Callers must keep published blobs
 /// immutable while snapshots use them.
 pub(super) fn put_blob_if_absent(
     blobs_dir: &Path,
@@ -49,34 +50,70 @@ pub(super) fn put_blob_if_absent(
     verify_existing: bool,
 ) -> crate::Result<()> {
     let target = blobs_dir.join(&digest.hex);
-    match std::fs::symlink_metadata(&target) {
-        Ok(meta) if meta.is_file() && meta.len() == bytes.len() as u64 => {
-            if !verify_existing {
-                return Ok(());
-            }
-            let mut file = open_no_follow(&target)?;
-            match verify_blob_file("existing snapshot", &mut file, &digest.hex) {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    tracing::warn!(
-                        ?target,
-                        %error,
-                        "Replacing snapshot blob after failed content verification"
-                    );
-                }
-            }
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(crate::new_error!(
-                "failed to stat snapshot blob {:?}: {}",
-                target,
-                error
-            ));
-        }
+    if check_existing_blob(&target, digest, bytes.len(), verify_existing)? {
+        return Ok(());
     }
-    replace_file_atomic(&target, bytes)
+    let mut tmp = NamedTempFile::new_in(blobs_dir)
+        .map_err(|e| crate::new_error!("failed to create snapshot blob temporary file: {}", e))?;
+    tmp.write_all(bytes)
+        .map_err(|e| crate::new_error!("failed to write snapshot blob {:?}: {}", target, e))?;
+    // Another writer may publish after our absence check. Never overwrite its
+    // blob; validate and reuse the winner under the same policy instead.
+    match tmp.persist_noclobber(&target) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if check_existing_blob(&target, digest, bytes.len(), verify_existing)? {
+                Ok(())
+            } else {
+                Err(crate::new_error!(
+                    "snapshot blob {:?} disappeared during publication",
+                    target
+                ))
+            }
+        }
+        Err(error) => Err(crate::new_error!(
+            "failed to publish snapshot blob {:?}: {}",
+            target,
+            error
+        )),
+    }
+}
+
+fn check_existing_blob(
+    target: &Path,
+    digest: &Digest256,
+    expected_len: usize,
+    verify_existing: bool,
+) -> crate::Result<bool> {
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(crate::new_error!(
+                    "snapshot blob {:?} is not a regular file",
+                    target
+                ));
+            }
+            if meta.len() != expected_len as u64 {
+                return Err(crate::new_error!(
+                    "snapshot blob {:?} size mismatch: expected {}, found {}",
+                    target,
+                    expected_len,
+                    meta.len()
+                ));
+            }
+            if verify_existing {
+                let mut file = open_no_follow(target)?;
+                verify_blob_file("existing snapshot", &mut file, &digest.hex)?;
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(crate::new_error!(
+            "failed to stat snapshot blob {:?}: {}",
+            target,
+            error
+        )),
+    }
 }
 
 /// Reject a path that is a symbolic link.
@@ -165,16 +202,42 @@ pub(super) fn read_bounded(path: &Path, max_size: u64) -> crate::Result<Vec<u8>>
     Ok(buf)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
-
     use super::*;
 
     #[test]
+    fn concurrent_blob_publication_reuses_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = vec![0x5a; 256 * 1024];
+        let digest = Digest256::from_bytes(&bytes);
+        let barrier = std::sync::Barrier::new(4);
+        // Race memory-blob publication only, not the separate metadata/index
+        // replacement path used by whole saves to the same layout.
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        put_blob_if_absent(dir.path(), &digest, &bytes, true).unwrap();
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.join().unwrap();
+            }
+        });
+        assert_eq!(std::fs::read(dir.path().join(&digest.hex)).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn open_no_follow_rejects_fifo() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fifo");
         let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();

@@ -23,8 +23,8 @@ A snapshot carries three independently evolvable version markers:
   `MT_SNAPSHOT_CURRENT`. This is the on-wire format of the snapshot
   blob: framing, section ordering, alignment, dirty/zero-page elision,
   anything about how the bytes are packed inside the OCI layer.
-* **Config schema**, `MT_CONFIG_V6`
-  (`application/vnd.hyperlight.snapshot.config.v6+json`), aliased as
+* **Config schema**, `MT_CONFIG_V7`
+  (`application/vnd.hyperlight.snapshot.config.v7+json`), aliased as
   `MT_CONFIG_CURRENT`. This is the JSON shape of the config blob:
   field names, types, required vs optional, the descriptors the loader
   needs in order to reconstruct the sandbox (memory sizes, buffer
@@ -33,6 +33,9 @@ A snapshot carries three independently evolvable version markers:
   bumps this constant. Version 4 describes snapshot blobs, the blob with
   the page tables, and transport geometry. Version 5 drops the heap size.
   Version 6 contains code and scratch geometry without init-data fields.
+  Version 7 adds a required snapshot ID and optional inherited base IDs.
+  Version 6 remains readable without provenance; existing v6 readers reject
+  v7 by media type rather than interpreting a changed v6 schema.
   Config v1 to v5 are incompatible with the current ABI.
 
 ABI 6 requires checkpoint readiness after guest initialization and permits
@@ -80,6 +83,9 @@ Writers omit an empty map, and readers treat a missing field as empty.
 
 Record compatibility paths here when a future hard snapshot break can remove
 them.
+
+Config v6 loading supplies no base provenance and assigns an in-memory snapshot
+ID. The next hard snapshot break may remove this compatibility path.
 
 ## Enforcement
 

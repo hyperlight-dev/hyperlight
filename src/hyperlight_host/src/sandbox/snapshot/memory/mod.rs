@@ -17,10 +17,11 @@
 //! ```
 
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use hyperlight_common::vmem::PAGE_SIZE;
 
+use super::file::digest::BlobHash;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::{Result, new_error};
@@ -38,6 +39,11 @@ pub(crate) const MAX_SNAPSHOT_LAYERS: usize = 30;
 /// Layer ranges never overlap.
 #[derive(Debug)]
 pub(crate) struct SnapshotMemory {
+    /// Identity of the whole snapshot, not any individual blob. Metadata-only
+    /// copies share this object and retain the same identity.
+    pub(super) id: uuid::Uuid,
+    /// Trusted whole-snapshot ancestor IDs, independent of retained layers.
+    pub(super) bases: Vec<uuid::Uuid>,
     /// Blobs with guest data, sorted by start GPA, which lookups binary
     /// search.
     layers: Box<[Arc<SnapshotBlob>]>,
@@ -56,7 +62,7 @@ pub(crate) struct SnapshotBlob {
     memory: ReadonlySharedMemory,
     gpa_start: u64,
     page_table_len: usize,
-    pub(super) sha256: OnceLock<String>,
+    pub(super) hash: BlobHash,
 }
 
 impl SnapshotBlob {
@@ -97,7 +103,7 @@ impl SnapshotBlob {
             memory,
             gpa_start,
             page_table_len,
-            sha256: OnceLock::new(),
+            hash: BlobHash::default(),
         })
     }
 
@@ -166,9 +172,17 @@ impl SnapshotMemory {
         }
 
         Ok(Self {
+            id: uuid::Uuid::new_v4(),
+            bases: Vec::new(),
             layers,
             page_tables,
         })
+    }
+
+    pub(super) fn inherit_base(&mut self, base: &Self) {
+        // Validated bases are unique and exclude the base's own ID.
+        self.bases.clone_from(&base.bases);
+        self.bases.push(base.id);
     }
 
     /// Builds a one-layer snapshot from `memory`, which holds guest data

@@ -11,12 +11,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Add ARM64 Linux MSHV support by @cshung in https://github.com/hyperlight-dev/hyperlight/pull/1626
 
 ### Changed
+* Snapshot writers emit config v7 with provenance. Config v6 remains readable
+  without provenance; the guest ABI and memory-layer encoding are unchanged.
+* Snapshot saving rejects detected memory-layer digest inconsistencies rather
+  than repairing them. Checked saves reject corrupted existing blobs; both
+  save modes reject wrong-length blobs and nonfiles without replacing them.
+  A detected layer hash mismatch also prevents subsequent shared-layer reuse.
+* Compaction requires a supplied base to be declared in the target's provenance.
+  It replaces ancestry with the specified base's inherited list and ID,
+  or clears it without a base. This resets accumulated checkpoint history;
+  provenance inheritance copies the validated list in linear time.
+* `Snapshot::load` retains declared memory-layer digests for ordinary saves
+  instead of hashing the loaded bytes on first save. Incorrect declarations
+  are preserved; use `checked_load` or `checked_save` for content consistency.
+  `base.load_overlay` and `base.checked_load_overlay` resolve matching layers from
+  a caller-authorized, declared whole-snapshot base, keeping declared and
+  verified digests separate. Persisted snapshot IDs and inherited base
+  declarations support both compacted and uncompacted descendants without
+  retaining unused base layers.
 * `hyperlight-host` requires Rust 1.95.
 * `Snapshot::save` caches memory-layer hashes and trusts existing same-length
   regular blobs by their content-addressed filenames without verifying their
   contents. Callers must keep blobs immutable. Use the new
   `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
-  atomically repair mismatched contents.
+  reject mismatched contents without modifying existing memory blobs or the index.
 * **Breaking:** Snapshots use ABI 12. Guests must be rebuilt and existing
   snapshots regenerated. Capture and restore provide full H2G bootstrap
   capacity before guest entry, independent of retained buffers. Snapshot

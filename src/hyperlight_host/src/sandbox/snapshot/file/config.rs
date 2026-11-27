@@ -163,7 +163,7 @@ impl CpuVendor {
 
 /// Top-level Hyperlight snapshot config JSON. Lives at
 /// `blobs/sha256/<config-digest>` with media type
-/// `application/vnd.hyperlight.snapshot.config.v6+json`.
+/// `application/vnd.hyperlight.snapshot.config.v7+json`, with defaults for v6.
 ///
 /// In OCI terms this is the "image config" blob that the manifest's
 /// `config` descriptor points to. It describes the accompanying
@@ -213,6 +213,15 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
+    /// Persisted UUID of the whole snapshot, required in v7 and absent in v6.
+    /// Overlay loading uses this identity rather than matching memory blobs alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) snapshot_id: Option<String>,
+    /// Trusted ancestor snapshot UUIDs eligible as overlay bases.
+    /// Capture inherits the source history; compaction replaces it with the
+    /// chosen base's history and ID, or clears it when no base is chosen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) bases: Vec<String>,
     /// Application-owned metadata keyed by namespace.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) metadata: BTreeMap<String, serde_json::Value>,
@@ -430,6 +439,20 @@ impl OciSnapshotConfig {
     }
 
     pub(super) fn validate_for_load(&self) -> crate::Result<()> {
+        if self.snapshot_id.is_none() && !self.bases.is_empty() {
+            return Err(crate::new_error!("snapshot bases require a snapshot ID"));
+        }
+        let mut ids = std::collections::HashSet::new();
+        for id in self.snapshot_id.iter().chain(&self.bases) {
+            let id = uuid::Uuid::parse_str(id)
+                .map_err(|e| crate::new_error!("invalid snapshot provenance ID: {}", e))?;
+            if id.is_nil() {
+                return Err(crate::new_error!("snapshot provenance ID must not be nil"));
+            }
+            if !ids.insert(id) {
+                return Err(crate::new_error!("duplicate snapshot provenance ID"));
+            }
+        }
         if self.arch != Arch::current() {
             return Err(crate::new_error!(
                 "snapshot architecture mismatch: file is {:?}, current host is {:?} \
@@ -808,6 +831,8 @@ mod tests {
     /// gating checks under test short-circuit before reading it.
     fn gating_config() -> OciSnapshotConfig {
         OciSnapshotConfig {
+            snapshot_id: None,
+            bases: Vec::new(),
             hyperlight_version: "test".to_string(),
             arch: Arch::current(),
             abi_version: SNAPSHOT_ABI_VERSION,
@@ -1110,7 +1135,9 @@ mod schema_pin {
       "return_type": "void"
     }
   ],
-  "snapshot_generation": 42
+  "snapshot_generation": 42,
+  "snapshot_id": "00000000-0000-0000-0000-000000000001",
+  "bases": ["00000000-0000-0000-0000-000000000002"]
 }"#;
 
     #[cfg(target_arch = "aarch64")]
@@ -1160,7 +1187,9 @@ mod schema_pin {
       "return_type": "void"
     }
   ],
-  "snapshot_generation": 42
+  "snapshot_generation": 42,
+  "snapshot_id": "00000000-0000-0000-0000-000000000001",
+  "bases": ["00000000-0000-0000-0000-000000000002"]
 }"#;
 
     const PINNED_ARCH: &str = r#"[

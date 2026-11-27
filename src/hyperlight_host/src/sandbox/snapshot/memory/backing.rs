@@ -88,6 +88,10 @@ impl SnapshotMemoryBacking<ExclusiveSharedMemory> {
 }
 
 impl<S: SharedMemory> SnapshotMemoryBacking<S> {
+    pub(crate) fn snapshot_memory(&self) -> &SnapshotMemory {
+        &self.memory
+    }
+
     #[cfg(all(test, not(unshared_snapshot_mem)))]
     pub(crate) fn layers(&self) -> &[Arc<SnapshotBlob>] {
         self.memory.layers()

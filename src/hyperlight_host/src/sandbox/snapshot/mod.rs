@@ -982,7 +982,9 @@ impl Snapshot {
             layers.push(blob.clone());
         }
         // Validates the layer limit.
-        let memory = Arc::new(SnapshotMemory::new(layers.into_boxed_slice(), blob)?);
+        let mut memory = SnapshotMemory::new(layers.into_boxed_slice(), blob)?;
+        memory.inherit_base(memory_view.snapshot().snapshot_memory());
+        let memory = Arc::new(memory);
 
         Ok(Self {
             state: Arc::new(SnapshotState {
