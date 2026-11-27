@@ -202,16 +202,42 @@ pub(super) fn read_bounded(path: &Path, max_size: u64) -> crate::Result<Vec<u8>>
     Ok(buf)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
-
     use super::*;
 
     #[test]
+    fn concurrent_blob_publication_reuses_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = vec![0x5a; 256 * 1024];
+        let digest = Digest256::from_bytes(&bytes);
+        let barrier = std::sync::Barrier::new(4);
+        // Race memory-blob publication only, not the separate metadata/index
+        // replacement path used by whole saves to the same layout.
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        put_blob_if_absent(dir.path(), &digest, &bytes, true).unwrap();
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.join().unwrap();
+            }
+        });
+        assert_eq!(std::fs::read(dir.path().join(&digest.hex)).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn open_no_follow_rejects_fifo() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fifo");
         let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();

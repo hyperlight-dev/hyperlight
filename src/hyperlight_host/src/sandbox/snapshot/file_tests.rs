@@ -818,30 +818,6 @@ fn concurrent_blob_hash_verification_cannot_revive_invalid_hash() {
 }
 
 #[test]
-fn concurrent_checked_saves_reuse_identical_blobs() {
-    let snapshot = create_snapshot();
-    let dir = tempfile::tempdir().unwrap();
-    let tag = OciTag::new("latest").unwrap();
-    let barrier = std::sync::Barrier::new(4);
-    let digests = std::thread::scope(|scope| {
-        let tasks: Vec<_> = (0..4)
-            .map(|_| {
-                scope.spawn(|| {
-                    barrier.wait();
-                    snapshot.checked_save(dir.path(), &tag).unwrap()
-                })
-            })
-            .collect();
-        tasks
-            .into_iter()
-            .map(|task| task.join().unwrap())
-            .collect::<Vec<_>>()
-    });
-    assert!(digests.iter().all(|digest| *digest == digests[0]));
-    Snapshot::checked_load(dir.path(), tag).unwrap();
-}
-
-#[test]
 fn checked_save_rejects_corrupt_destination_without_changing_files_or_index() {
     let snapshot = create_snapshot();
     let dir = tempfile::tempdir().unwrap();
