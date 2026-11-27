@@ -76,8 +76,9 @@ across tags are stored once.
 `Snapshot::save` caches each shared memory layer's SHA-256. Existing regular
 blob files with the expected length are trusted by their content-addressed
 filenames without reading or hashing their contents, even at a new destination.
-There is no backing-file cache. Missing blobs are written atomically; symlinks
-and wrong-length files are replaced.
+There is no backing-file cache. Missing blobs are written atomically without
+overwriting a concurrently published blob. Symlinks, other nonfiles, and
+wrong-length files are rejected in both save modes.
 `Snapshot::checked_load` seeds the verified digest cache; ordinary `load`
 retains declared digests separately for reuse on save without hashing memory.
 Metadata blobs retain their normal write path.
@@ -94,8 +95,22 @@ hashing of immutable base memory.
 `Snapshot::load` trusts declared memory digests without reading memory to verify
 them. Ordinary saves preserve those declarations, and
 `base.load_overlay(path, reference)` resolves matching layers
-by digest and geometry. Declared hashes are stored separately from computed or
-verified hashes: checked base loading never reuses a mere declaration, and
+by digest and geometry. `BlobHash` stores one immutable digest with an atomic
+status. `get()` reconstructs `Unknown`, `Declared(&str)`, or `Verified(&str)`;
+permanent invalidation is returned as an error.
+`HashState::as_digest()` returns an owned digest for declared or verified states,
+or `None` for unknown.
+Constructors are `unknown()`,
+`declared(digest)`, and `verified(digest)`; the caller must have computed or verified
+the digest against the blob's bytes before using `verified`. `Default` initializes
+unknown. `verify_bytes(bytes)`
+and `verify_file(file)` always hash the supplied bytes or open file before
+checking and updating the state. Recording a computed digest is private.
+Computing a hash that differs
+from the declaration or a previous computation is an error, not a correction.
+Once such a mismatch is detected, all later hash access through that shared
+layer fails, including ordinary saves and overlay matching. Checked base loading
+never reuses a mere declaration, and
 checked saving still hashes every layer. This changes prior ordinary
 `load`-then-`save` behavior: it preserves declared digests instead of computing
 them from actual bytes, including when the declared digest is incorrect.
@@ -109,8 +124,11 @@ snapshot as a base; a matching memory layer alone is insufficient. Each new VM
 snapshot has a stable UUID stored as `snapshot_id` in the OCI config, with
 ancestor IDs in `bases`. Metadata-only copies retain the VM snapshot's ID.
 Restore/capture inherits the restored snapshot and its bases, including without
-compaction. `compact(Some(base))` replaces the target's history with the specified
+compaction. `compact(Some(base))` requires that base's ID to already appear in
+the target's `bases`; matching memory alone is insufficient, and the target
+cannot use itself as a base. It replaces the target's history with the specified
 base's inherited bases plus the base itself; `compact(None)` clears all bases.
+Once cleared, compaction cannot reintroduce a discarded base.
 Neither operation retains unused layers merely to establish provenance.
 Provenance is carried by the whole `SnapshotMemory` object, not individual
 blobs, so capture inherits it directly from the existing memory backing.
@@ -135,8 +153,11 @@ persisted contents explicitly.
 
 `Snapshot::checked_save` takes the fully verifying path: it recomputes all
 memory-layer digests without using the cache and hashes existing memory blob
-files before reusing them. Mismatched contents are atomically replaced from
-the snapshot's memory. It otherwise has the same layout and tag semantics as
+files before reusing them. Digest or existing-content mismatches are errors;
+neither copy is presumed trustworthy. Existing memory blobs and the published
+index remain unchanged on these errors, though earlier newly written blobs
+may remain unreferenced. Recovery requires a trusted source or a fresh capture,
+not automatic repair. It otherwise has the same layout and tag semantics as
 `save`. This is not protection against concurrent modification of loaded
 backing files, which must remain immutable while snapshots use them.
 

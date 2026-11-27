@@ -5,7 +5,7 @@
 //! `docs/snapshot-oci-format.md` for the on-disk format.
 
 mod config;
-mod digest;
+pub(super) mod digest;
 mod fsutil;
 mod media_types;
 pub(crate) mod reference;
@@ -22,7 +22,10 @@ use oci_spec::image::{
 use self::config::{
     Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig, OciSnapshotLayer,
 };
-use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
+use self::digest::{
+    BlobHash, Digest256, HashState, oci_digest, parse_oci_digest, verify_blob_bytes,
+    verify_blob_file,
+};
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
     ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
@@ -364,6 +367,7 @@ impl Snapshot {
     /// Memory-layer digests are cached across snapshots sharing those layers.
     /// Existing regular blob files with the expected length are trusted by
     /// their content-addressed filenames without reading or hashing them.
+    /// Existing nonfiles and wrong-length blobs are rejected, not replaced.
     ///
     /// The caller must keep loaded and saved memory blobs immutable for the
     /// lifetime of these snapshots and outside writable guest mounts. Saving
@@ -423,8 +427,12 @@ impl Snapshot {
     /// existing blob contents before reuse.
     ///
     /// Unlike [`Self::save`], this method bypasses the memory-layer digest
-    /// cache and hashes existing memory blob files. Blobs with mismatched
-    /// contents are atomically replaced with the snapshot's memory contents.
+    /// cache and hashes existing memory blob files. A digest differing from
+    /// the layer's declaration or cached computation is an error, as are
+    /// mismatched existing blob contents. No repair is attempted; existing
+    /// memory blobs and the published index remain unchanged on these errors.
+    /// A rejected layer hash cannot subsequently be reused by ordinary saves
+    /// or overlay loading through snapshots sharing that layer.
     /// It uses the same layout, tag semantics, durability guarantees and return
     /// value as [`Self::save`]; it does not sync files or directories.
     ///
@@ -599,14 +607,19 @@ impl Snapshot {
             .blobs()
             .map(|blob| {
                 let bytes = blob.memory().as_slice();
-                let digest = if verify_blobs {
-                    Digest256::from_bytes(bytes)
-                } else if let Some(hex) = blob.sha256.get().or(blob.declared_sha256.as_ref()) {
-                    Digest256 { hex: hex.clone() }
-                } else {
-                    let hex = blob.sha256.get_or_init(|| Digest256::from_bytes(bytes).hex);
-                    Digest256 { hex: hex.clone() }
-                };
+                if blob.hash.get()? == HashState::Unknown || verify_blobs {
+                    // Checked saves rehash even verified blobs to detect mutation
+                    // since the last verification.
+                    blob.hash.verify_bytes(bytes)?;
+                }
+                let hex = blob
+                    .hash
+                    .get()?
+                    .as_digest()
+                    // Verification resolves Unknown; states never revert to it.
+                    // Concurrent invalidation is returned by get()? above.
+                    .expect("save must resolve a blob digest");
+                let digest = Digest256 { hex };
                 put_blob_if_absent(&blobs_dir, &digest, bytes, verify_blobs)?;
                 blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())
             })
@@ -1101,7 +1114,9 @@ impl Snapshot {
         };
         layout.set_code_gva(code_gva)?;
         layout.ensure_page_tables_fit(cfg.layers[cfg.page_table_layer].page_table_len)?;
-        if base.is_some_and(|base| base.state.layout != layout) {
+        if let Some(base) = base
+            && base.state.layout != layout
+        {
             return Err(crate::new_error!(
                 "snapshot base has an incompatible memory layout"
             ));
@@ -1127,20 +1142,31 @@ impl Snapshot {
             .zip(data_descs)
             .map(|(layer, desc)| {
                 let digest = parse_oci_digest(desc.digest())?;
-                let shared = base.and_then(|base| {
-                    base.state.memory.blobs().find(|blob| {
-                        blob.gpa_start() == layer.gpa_start
+                let mut shared = None;
+                if let Some(base) = base {
+                    for blob in base.state.memory.blobs() {
+                        if blob.gpa_start() == layer.gpa_start
                             && blob.data_len() == layer.data_len
                             && blob.page_table_len() == layer.page_table_len
                             && blob.memory().as_slice().len() as u64 == desc.size()
-                            && (blob.sha256.get() == Some(&digest)
-                                || (!verify_blobs
-                                    && blob.declared_sha256.as_ref() == Some(&digest)))
-                    })
-                });
+                        {
+                            // A checked overlay may skip reading a base blob
+                            // only if its immutable bytes were already verified.
+                            let hash = match blob.hash.get()? {
+                                HashState::Verified(hex) => Some(hex),
+                                HashState::Declared(hex) if !verify_blobs => Some(hex),
+                                _ => None,
+                            };
+                            if hash == Some(digest.as_str()) {
+                                shared = Some(blob.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
                 if let Some(blob) = shared {
                     snap_files.push(None);
-                    return Ok(blob.clone());
+                    return Ok(blob);
                 }
                 // Verify and map the same handle; never reopen by pathname.
                 let file = open_snapshot_blob(&blobs_dir, desc)?;
@@ -1150,9 +1176,9 @@ impl Snapshot {
                     layer.page_table_len,
                     scratch_base,
                 )?;
-                if !verify_blobs {
-                    blob.declared_sha256 = Some(digest);
-                }
+                // Checked loading must compare the file with this declaration,
+                // then promote it before exposing the snapshot to the caller.
+                blob.hash = BlobHash::declared(digest);
                 let blob = Arc::new(blob);
                 snap_files.push(Some(file));
                 Ok(blob)
@@ -1171,11 +1197,9 @@ impl Snapshot {
         // Hash after validating the layers so malformed snapshots fail
         // cheaply.
         if verify_blobs {
-            for ((desc, file), blob) in data_descs.iter().zip(&mut snap_files).zip(&blobs) {
+            for (file, blob) in snap_files.iter_mut().zip(&blobs) {
                 if let Some(file) = file {
-                    let digest = parse_oci_digest(desc.digest())?;
-                    verify_blob_file("snapshot", file, &digest)?;
-                    blob.sha256.get_or_init(|| digest);
+                    blob.hash.verify_file(file)?;
                 }
             }
         }

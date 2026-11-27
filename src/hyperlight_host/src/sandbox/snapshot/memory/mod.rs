@@ -17,13 +17,15 @@
 //! ```
 
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use hyperlight_common::vmem::PAGE_SIZE;
 
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::{Result, new_error};
+
+use super::file::digest::BlobHash;
 
 mod backing;
 pub(crate) use backing::SnapshotMemoryBacking;
@@ -61,8 +63,7 @@ pub(crate) struct SnapshotBlob {
     memory: ReadonlySharedMemory,
     gpa_start: u64,
     page_table_len: usize,
-    pub(super) sha256: OnceLock<String>,
-    pub(super) declared_sha256: Option<String>,
+    pub(super) hash: BlobHash,
 }
 
 impl SnapshotBlob {
@@ -103,8 +104,7 @@ impl SnapshotBlob {
             memory,
             gpa_start,
             page_table_len,
-            sha256: OnceLock::new(),
-            declared_sha256: None,
+            hash: BlobHash::default(),
         })
     }
 

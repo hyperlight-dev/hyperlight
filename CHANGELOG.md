@@ -13,7 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 * Snapshot writers emit config v7 with provenance. Config v6 remains readable
   without provenance; the guest ABI and memory-layer encoding are unchanged.
-* Compaction replaces ancestry with the specified base's inherited list and ID,
+* Snapshot saving rejects detected memory-layer digest inconsistencies rather
+  than repairing them. Checked saves reject corrupted existing blobs; both
+  save modes reject wrong-length blobs and nonfiles without replacing them.
+  A detected layer hash mismatch also prevents subsequent shared-layer reuse.
+* Compaction requires a supplied base to be declared in the target's provenance.
+  It replaces ancestry with the specified base's inherited list and ID,
   or clears it without a base. This resets accumulated checkpoint history;
   provenance inheritance copies the validated list in linear time.
 * `Snapshot::load` retains declared memory-layer digests for ordinary saves
@@ -29,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   regular blobs by their content-addressed filenames without verifying their
   contents. Callers must keep blobs immutable. Use the new
   `Snapshot::checked_save` to recompute hashes, verify existing blobs, and
-  atomically repair mismatched contents.
+  reject mismatched contents without modifying existing memory blobs or the index.
 * **Breaking:** Snapshots use ABI 12. Guests must be rebuilt and existing
   snapshots regenerated. Capture and restore provide full H2G bootstrap
   capacity before guest entry, independent of retained buffers. Snapshot

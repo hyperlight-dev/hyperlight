@@ -18,6 +18,7 @@ impl Snapshot {
     /// layers and unreferenced pages in merged layers are discarded, except
     /// for minimal padding required by the snapshot format. Retained base
     /// layers are kept whole.
+    /// A supplied base must already appear in this snapshot's provenance.
     /// With a base, the result inherits that base's declared ancestors and records
     /// the base itself for [`Snapshot::load_overlay`], discarding this snapshot's
     /// previous ancestry. Without a base, the result clears all base provenance.
@@ -28,7 +29,8 @@ impl Snapshot {
     ///
     /// # Errors
     ///
-    /// Returns an error if the base has a different memory layout, allocation
+    /// Returns an error if the base is not declared in this snapshot's provenance,
+    /// the base has a different memory layout, allocation
     /// fails, or the compacted memory cannot fit within the address-space or
     /// layer limits.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -38,6 +40,13 @@ impl Snapshot {
         {
             return Err(crate::new_error!(
                 "compaction base has an incompatible memory layout"
+            ));
+        }
+        if let Some(base) = base
+            && !self.state.memory.bases.contains(&base.state.memory.id)
+        {
+            return Err(crate::new_error!(
+                "snapshot does not declare the supplied snapshot as a compaction base"
             ));
         }
 
@@ -263,12 +272,49 @@ mod tests {
         }
     }
 
+    fn descendant(base: &Snapshot) -> Snapshot {
+        let mut memory = SnapshotMemory::new(
+            base.state.memory.layers().to_vec().into_boxed_slice(),
+            base.state.memory.page_table_blob().clone(),
+        )
+        .unwrap();
+        memory.inherit_base(base.snapshot_memory());
+        Snapshot {
+            state: Arc::new(SnapshotState {
+                memory: Arc::new(memory),
+                ..(*base.state).clone()
+            }),
+            metadata: base.metadata.clone(),
+        }
+    }
+
+    #[test]
+    fn compact_requires_declared_base_even_with_identical_memory() {
+        let base = layered_snapshot();
+        let unrelated = layered_snapshot();
+        for target in [&unrelated, &base] {
+            let error = target.compact(Some(&base)).err().unwrap();
+            assert!(error.to_string().contains("does not declare"), "{error}");
+        }
+        unrelated.compact(None).unwrap();
+
+        let child = descendant(&base);
+        let grandchild = descendant(&child);
+        grandchild.compact(Some(&base)).unwrap();
+        grandchild.compact(Some(&child)).unwrap();
+
+        let cleared = grandchild.compact(None).unwrap();
+        let error = cleared.compact(Some(&base)).err().unwrap();
+        assert!(error.to_string().contains("does not declare"), "{error}");
+    }
+
     #[test]
     fn compact_packs_live_pages_and_preserves_aliases_and_permissions() {
-        let original = layered_snapshot();
+        let base = layered_snapshot();
+        let original = descendant(&base);
         let start = SandboxMemoryLayout::BASE_ADDRESS as u64;
         for preserve in [false, true] {
-            let compacted = original.compact(preserve.then_some(&original)).unwrap();
+            let compacted = original.compact(preserve.then_some(&base)).unwrap();
             let memory = &compacted.state.memory;
             assert_eq!(memory.layers().len(), if preserve { 2 } else { 1 });
             assert_eq!(
@@ -323,8 +369,10 @@ mod tests {
                 .unwrap(),
             ..(*original.state).clone()
         });
+        let base = original;
+        let original = descendant(&base);
         for preserve in [false, true] {
-            let compacted = original.compact(preserve.then_some(&original)).unwrap();
+            let compacted = original.compact(preserve.then_some(&base)).unwrap();
             let memory = &compacted.state.memory;
             assert_eq!(memory.layers().len(), if preserve { 3 } else { 1 });
             assert!(memory.gpa_span_len() >= 10 * alignment);
@@ -399,6 +447,9 @@ mod tests {
             ),
             ..(*current.state).clone()
         });
+        Arc::get_mut(&mut Arc::get_mut(&mut current.state).unwrap().memory)
+            .unwrap()
+            .inherit_base(base.snapshot_memory());
         let compacted = current.compact(Some(&base)).unwrap();
         let layers = compacted.state.memory.layers();
         assert_eq!(layers.len(), 2);

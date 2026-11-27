@@ -213,8 +213,13 @@ pub(super) struct OciSnapshotConfig {
     /// `SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET` is continuous across
     /// save/load.
     pub(super) snapshot_generation: u64,
+    /// Persisted UUID of the whole snapshot, required in v7 and absent in v6.
+    /// Overlay loading uses this identity rather than matching memory blobs alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) snapshot_id: Option<String>,
+    /// Trusted ancestor snapshot UUIDs eligible as overlay bases.
+    /// Capture inherits the source history; compaction replaces it with the
+    /// chosen base's history and ID, or clears it when no base is chosen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) bases: Vec<String>,
     /// Application-owned metadata keyed by namespace.
