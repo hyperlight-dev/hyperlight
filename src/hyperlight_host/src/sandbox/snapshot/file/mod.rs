@@ -617,7 +617,7 @@ impl Snapshot {
                     .as_digest()
                     // Verification resolves Unknown; states never revert to it.
                     // Concurrent invalidation is returned by get()? above.
-                    .expect("save must resolve a blob digest");
+                    .ok_or_else(|| crate::new_error!("save did not resolve a blob digest"))?;
                 let digest = Digest256 { hex };
                 put_blob_if_absent(&blobs_dir, &digest, bytes, verify_blobs)?;
                 blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())

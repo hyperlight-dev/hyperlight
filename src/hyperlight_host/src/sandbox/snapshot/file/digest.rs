@@ -81,16 +81,19 @@ impl BlobHash {
     fn decode(&self, state: u32) -> crate::Result<HashState<'_>> {
         match state {
             UNKNOWN_HASH_STATE => Ok(HashState::Unknown),
-            DECLARED_HASH_STATE => Ok(HashState::Declared(
-                self.hash.get().expect("declared hash must be initialized"),
-            )),
-            VERIFIED_HASH_STATE => Ok(HashState::Verified(
-                self.hash.get().expect("verified hash must be initialized"),
-            )),
+            DECLARED_HASH_STATE => Ok(HashState::Declared(self.hash.get().ok_or_else(|| {
+                crate::new_error!("declared snapshot blob hash is not initialized")
+            })?)),
+            VERIFIED_HASH_STATE => Ok(HashState::Verified(self.hash.get().ok_or_else(|| {
+                crate::new_error!("verified snapshot blob hash is not initialized")
+            })?)),
             INVALID_HASH_STATE => Err(crate::new_error!(
                 "snapshot blob digest mismatch: hash is invalid"
             )),
-            _ => unreachable!("invalid internal blob hash state"),
+            _ => Err(crate::new_error!(
+                "invalid internal snapshot blob hash state: {}",
+                state
+            )),
         }
     }
 
