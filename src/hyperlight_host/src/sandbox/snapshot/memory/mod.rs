@@ -21,11 +21,10 @@ use std::sync::Arc;
 
 use hyperlight_common::vmem::PAGE_SIZE;
 
+use super::file::digest::BlobHash;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::{Result, new_error};
-
-use super::file::digest::BlobHash;
 
 mod backing;
 pub(crate) use backing::SnapshotMemoryBacking;

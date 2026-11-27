@@ -758,8 +758,9 @@ fn computed_blob_hash_mismatch_blocks_all_later_access() {
 
 #[test]
 fn blob_hash_verifies_open_file_once_and_rejects_later_corruption() {
-    use super::file::digest::BlobHash;
     use std::io::{Seek, SeekFrom, Write};
+
+    use super::file::digest::BlobHash;
 
     let bytes = b"immutable file bytes";
     let digest = hex::encode(Sha256::digest(bytes));
