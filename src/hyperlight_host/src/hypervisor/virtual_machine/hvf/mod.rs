@@ -210,6 +210,9 @@ impl HvfCpu {
             ret
         }
         .is_success()?;
+        if exit.is_null() {
+            return Err(HypervisorError::Error("hv_vcpu_create returned a null exit pointer"));
+        }
         Ok(Self {
             id: unsafe { vcpu.assume_init() },
             exit,
