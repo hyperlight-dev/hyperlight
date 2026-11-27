@@ -24,7 +24,6 @@ use self::config::{
 };
 use self::digest::{
     BlobHash, Digest256, HashState, oci_digest, parse_oci_digest, verify_blob_bytes,
-    verify_blob_file,
 };
 use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
 use self::media_types::{
